@@ -10,7 +10,7 @@
 | Проверка | Windows | Linux X11 | Linux Wayland | macOS |
 |---|---|---|---|---|
 | Новый source: локальные workspace tests | 141 tests + 1 doctest PASS | Не запускались локально | Не запускались локально | Не запускались локально |
-| Полный финальный workspace CI alpha | Результат ожидается | Результат ожидается | Тот же Linux compile job | Результат ожидается |
+| Полный финальный workspace CI alpha | PASS | PASS | Тот же Linux compile job | PASS |
 | Gallery GPU: text/resize/redraw | Vulkan и DX12 PASS, RTX 3090, scale 1.5 | Не проверено | Не проверено | Не проверено |
 | Native posted mouse gallery scenario | PASS: pages/Ribbon/theme/resize/close | Не проверено | Не проверено | Не проверено |
 | Native IME preedit/candidate/commit/cancel | Не проверено | Не проверено | Не проверено | Не проверено |
@@ -20,6 +20,9 @@
 | Физический device loss | Не проверено | Не проверено | Не проверено | Не проверено |
 
 Text/layout/controls unit tests проверяют CPU модели и shaped geometry без окна.
+[Публичный CI](https://github.com/S-typy/rust-ui-engine/actions/runs/37947371371)
+на source `43c6de1` прошёл полностью на Windows, Linux и macOS: fmt, clippy,
+tests, release build и rustdoc. Это не GPU/IME runtime gate.
 Локальный Windows font probe получил `.notdef = 0` для Latin/Cyrillic/Arabic/
 Hebrew/CJK/emoji. Это покрытие конкретных системных шрифтов, не гарантия для всех
 машин и не оценка качества каждого glyph raster.

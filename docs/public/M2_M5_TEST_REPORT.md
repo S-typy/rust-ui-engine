@@ -16,8 +16,10 @@ and sources pass. Multiple dependency versions remain warnings; license evidence
 and distribution limitations are recorded in [dependencies](dependencies.md).
 
 The optimized workspace release build and rustdoc with warnings denied also
-pass. Platform CI is running. CI compilation does not establish successful
-native window or IME operation.
+pass. Published source `43c6de1` passes the complete
+[Windows, Linux and macOS CI](https://github.com/S-typy/rust-ui-engine/actions/runs/37947371371):
+formatting, strict clippy, tests, release build and rustdoc. CI compilation
+does not establish successful native window or IME operation.
 
 ## Native Windows evidence
 
