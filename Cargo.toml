@@ -3,8 +3,13 @@ resolver = "3"
 members = [
     "crates/ui-core",
     "crates/ui-layout",
+    "crates/ui-text",
+    "crates/ui-controls",
+    "crates/ui-treegrid",
     "crates/ui-render-wgpu",
+    "crates/ui-platform-winit",
     "examples/gpu-shell",
+    "examples/controls-gallery",
 ]
 
 [workspace.package]
@@ -19,7 +24,13 @@ wgpu = { version = "=30.0.1", default-features = false, features = ["std", "park
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 bytemuck = { version = "1.23", features = ["derive"] }
 pollster = "0.4"
-taffy = { version = "=0.14.0", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
+taffy = { version = "=0.14.0", default-features = false, features = ["std", "taffy_tree", "flexbox", "grid"] }
+parley = { version = "=0.11.1", default-features = false, features = ["system", "complex-scripts"] }
+swash = { version = "=0.2.10", default-features = false, features = ["std", "scale", "render"] }
+unicode-segmentation = "=1.13.3"
+accesskit = "=0.25.1"
+accesskit_winit = { version = "=0.34.1", default-features = false, features = ["rwh_06", "accesskit_unix", "async-io"] }
+arboard = { version = "=3.6.1", default-features = false, features = ["wayland-data-control"] }
 
 [profile.release]
 lto = "thin"

@@ -1,5 +1,5 @@
 [package]
-name = "rust-desktop-ui-render-wgpu"
+name = "rust-desktop-ui-text"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,8 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-wgpu.workspace = true
-bytemuck.workspace = true
 rust-desktop-ui-core = { version = "0.1.0", path = "../ui-core" }
-winit.workspace = true
-rust-desktop-ui-text = { version = "0.1.0", path = "../ui-text" }
+parley.workspace = true
+swash.workspace = true
+unicode-segmentation.workspace = true

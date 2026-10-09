@@ -12,13 +12,25 @@
 | bytemuck | `^1.23`, `derive` | Проверяемое представление данных для GPU buffers | Zlib OR Apache-2.0 OR MIT |
 | pollster | `^0.4` | Ожидание инициализации GPU в примере | Apache-2.0 OR MIT |
 | taffy | `=0.14.0` | Расчёт layout за независимым API | MIT |
+| parley | `=0.11.1` | Shaping, bidi, wrapping и системный font fallback | Apache-2.0 OR MIT |
+| swash | `=0.2.10` | Glyph outline/color rasterization | Apache-2.0 OR MIT |
+| unicode-segmentation | `=1.13.3` | Extended grapheme и word boundaries | MIT OR Apache-2.0 |
+| accesskit | `=0.25.1` | Семантическое дерево и actions | MIT OR Apache-2.0 |
+| accesskit_winit | `=0.34.1` | Native accessibility adapter | Apache-2.0 |
+| arboard | `=3.6.1` | Текстовый системный clipboard | MIT OR Apache-2.0 |
 
 Версии и лицензии сверены с опубликованными пакетами:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/source/Cargo.toml),
 [winit](https://docs.rs/crate/winit/0.30.13/source/Cargo.toml),
 [bytemuck](https://docs.rs/crate/bytemuck/1.25.2/source/Cargo.toml),
 [pollster](https://docs.rs/crate/pollster/0.4.0/source/Cargo.toml),
-[taffy](https://docs.rs/crate/taffy/0.14.0/source/Cargo.toml).
+[taffy](https://docs.rs/crate/taffy/0.14.0/source/Cargo.toml),
+[Parley](https://docs.rs/crate/parley/0.11.1/source/Cargo.toml),
+[Swash](https://docs.rs/crate/swash/0.2.10/source/Cargo.toml),
+[unicode-segmentation](https://docs.rs/crate/unicode-segmentation/1.13.3/source/Cargo.toml),
+[AccessKit](https://docs.rs/crate/accesskit/0.25.1/source/Cargo.toml),
+[AccessKit winit](https://docs.rs/crate/accesskit_winit/0.34.1/source/Cargo.toml),
+[arboard](https://docs.rs/crate/arboard/3.6.1/source/Cargo.toml).
 `pollster` использует старую запись `Apache-2.0/MIT`, эквивалентную выбору одной
 из двух лицензий. Это преобразование отмечено отдельно в inventory.
 
@@ -40,11 +52,26 @@ Adwaita. Описание feature flags:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/features).
 
 `ui-core` не имеет внешних зависимостей. `ui-layout` зависит от него и Taffy:
-включены только `std`, `taffy_tree`, `flexbox`, default features отключены.
-Grid, Block, float layout, parser, serde и дополнительные алгоритмы Taffy не
-включены. Активная ветка layout содержит `arrayvec`, `slotmap` и build dependency
+включены `std`, `taffy_tree`, `flexbox`, `grid`, default features отключены.
+Block, float layout, parser и serde Taffy не включены.
+Активная ветка layout содержит `arrayvec`, `slotmap` и build dependency
 `version_check`; wgpu/winit принадлежат renderer и примеру. Ни GPU-типы, ни
-типы Taffy не входят в независимые API core.
+типы Taffy не входят в независимые API core. Text/controls/TreeGrid также не
+зависят от winit/wgpu; native host находится в отдельном пакете.
+
+Parley включает `system` и `complex-scripts`; Swash — `std`, `scale`, `render`,
+default features обеих библиотек отключены. Shaping/font parsing/rasterization
+в этой ветке выполняют Rust-библиотеки Parley/fontique/harfrust/skrifa/Swash;
+системный font discovery использует платформенные API. Parley не является
+GPU renderer: bitmap glyphs загружаются собственным wgpu atlas. Шрифты не
+копируются в репозиторий и не входят в binary package.
+
+`accesskit_winit` включает `rwh_06`, `accesskit_unix`, `async-io`, без default
+features. На Linux accessibility использует AT-SPI через D-Bus; Windows/macOS
+используют соответствующие системные accessibility API. Arboard включает только
+`wayland-data-control`, без image-data default feature. Текстовый clipboard
+на Wayland зависит от поддержки compositor protocols. Это системные адаптеры,
+не готовая UI-библиотека компонентов.
 
 Taffy и slotmap написаны на Rust. Taffy не имеет build script; `slotmap 1.1.1`
 использует build.rs только для определения версии Rust и вывода Cargo cfg.
@@ -66,12 +93,28 @@ Slotmap декларирует Zlib и содержит
 | Linux X11 | `x11-dl`, `x11rb`, `xkbcommon-dl`, `ash` | X11/XCB, xkbcommon, Vulkan loader и driver |
 | Linux Wayland | `wayland-*`, `smithay-client-toolkit`, `xkbcommon-dl`, `ash` | Wayland client, xkbcommon, Vulkan loader и driver |
 | macOS | `objc2-*`, `block2`, Core Foundation/Graphics bindings | AppKit/Foundation, Metal, QuartzCore и Objective-C runtime |
+| Font discovery | fontique, `yeslogic-fontconfig-sys`, Windows/CoreText bindings | Системные fonts; на Linux Fontconfig |
+| Accessibility и clipboard | accesskit adapters, arboard, atspi/zbus | UI Automation, NSAccessibility, AT-SPI/D-Bus, нативный clipboard и Wayland protocols |
 
 Это системные API/драйверы, а не включение готового UI-фреймворка в renderer.
 `wgpu-hal` также содержит Rust bindings `renderdoc-sys` для работы с уже
 загруженным инструментом захвата GPU; RenderDoc не скачивается и не включается
 в поставку. При использовании внешнего shader compiler или инструмента захвата
 их собственные условия поставки действуют отдельно.
+
+`yeslogic-fontconfig-sys 6.0.1` по умолчанию ищет Fontconfig через pkg-config и
+линкует системную библиотеку. Feature `fontconfig-dlopen` не включён. На Linux
+нужен development package, например `libfontconfig1-dev`; fonts-dejavu-core и
+fonts-noto-core обеспечивают часть тестового покрытия письменностей. Установленные
+fonts имеют собственные лицензии; отсутствие bundling не означает универсального
+покрытия Cyrillic/CJK/emoji на каждой машине.
+
+Windows clipboard transitives `clipboard-win 5.4.1` и `error-code 3.4.0`
+используют [Boost Software License 1.0](https://www.boost.org/LICENSE_1_0.txt).
+Для `error-code` проверен архивный LICENSE; для `clipboard-win`, чей crate
+archive его не содержит, проверен LICENSE точной исходной ревизии. BSL-1.0
+добавлена в допустимые лицензии после этой проверки. Требования к сохранению
+текстов/атрибуции применяются при соответствующем виде поставки.
 
 All-target dependency graph может содержать Android, iOS, WebAssembly и Redox
 пакеты. Их присутствие в lockfile не означает поддержку этих платформ или
@@ -105,15 +148,22 @@ metadata не доказывает компиляцию этой зависим�
 заменяет проверку назначения новой библиотеки; успешная автоматическая проверка
 не равна проверке всех исходников и условий бинарной поставки.
 
-На 2026-10-09 `cargo-deny 0.19.9` завершил проверки licenses, sources, bans и
-advisories без ошибок: 239 сторонних crates, 15 предупреждений о нескольких
-версиях транзитивных зависимостей. Проверена актуализированная RustSec database
-на revision `7eebec69c352c7191b1f13eb95dd510eeca5d1de`. `cargo-audit` отдельно
-не запускался. Из 239 пакетов у 204 найдены license/notice files в архиве,
-для ещё 34 материалы сверены с точным upstream revision. Для
-`dispatch 0.2.0` доступна только декларация MIT; отсутствие отдельного текста
-отмечено в notices. Также остаются условия Apple SDK, перечисленные upstream
-objc2: эти вопросы должны быть закрыты перед распространением macOS binaries.
+Инвентаризация alpha от 2026-10-09 соответствует текущему Cargo.lock: **349**
+сторонних registry packages и девять workspace packages. Для 303 пакетов
+найдены и хешированы license/notice files в архиве; для ещё 45 проверены
+материалы точного upstream revision. Единственный прежний manifest-only случай —
+`dispatch 0.2.0` с декларацией MIT. Его attribution packaging и условия Apple SDK,
+перечисленные upstream objc2, остаются открытыми перед поставкой macOS binaries.
+AccessKit evidence включает LICENSE.chromium и AUTHORS наряду с MIT/Apache
+текстами: одной SPDX-декларации manifest недостаточно для упаковки notices.
+
+Финальная проверка `cargo deny --locked --log-level error check` этого
+349-package snapshot завершилась 2026-10-09 с exit code 0 после проверки и
+разрешения BSL-1.0. Режим error не выдаёт счётчик duplicate warnings;
+это не утверждение об их отсутствии. Исторический M1 audit 239 пакетов
+завершился без ошибок, с 15 duplicate warnings и RustSec revision
+`7eebec69c352c7191b1f13eb95dd510eeca5d1de`; этот результат не переносится на
+новые зависимости автоматически. `cargo-audit` отдельно не запускался.
 
 Upstream wgpu 30.0.1 декларирует Rust 1.87, winit 0.30.13 — Rust 1.70,
 taffy 0.14.0 — Rust 1.71, slotmap 1.1.1 — Rust 1.58. Это

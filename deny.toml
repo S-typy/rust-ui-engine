@@ -12,6 +12,8 @@ allow = [
     "Apache-2.0",
     "BSD-2-Clause",
     "BSD-3-Clause",
+    # Windows clipboard's clipboard-win/error-code: reviewed Boost 1.0 license.
+    "BSL-1.0",
     "ISC",
     "MIT",
     "Unicode-3.0",

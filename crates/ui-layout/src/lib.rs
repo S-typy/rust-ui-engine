@@ -1,7 +1,8 @@
 //! Layout adapter for the retained, backend-independent `ui-core` model.
 //!
 //! `Stack` uses a single line with fixed child main-axis sizes, `Flex` distributes
-//! free space through Taffy, and `Overlay` places independent children in the same
+//! free space through Taffy, `Grid` places children in explicit or automatic tracks,
+//! and `Overlay` places independent children in the same
 //! padded area. An overlay needs an explicit or parent-assigned size: its children
 //! do not contribute intrinsic size. Auto overlay child dimensions fill that area
 //! subject to min/max constraints. Child offsets are applied after arrangement.
@@ -11,13 +12,13 @@
 //! rebuilds a temporary Taffy tree; the runtime skips this work for paint and idle.
 
 use rust_desktop_ui_core::{
-    Align, Axis, Justify, LayoutEngine, LayoutError, LayoutKind, LayoutSnapshot, LayoutStyle,
-    Length, Rect, Size, UiTree, WidgetId,
+    Align, Axis, GridPlacement, GridTrack, Justify, LayoutEngine, LayoutError, LayoutKind,
+    LayoutSnapshot, LayoutStyle, Length, Rect, Size, UiTree, WidgetId,
 };
 use std::collections::HashMap;
 use taffy::{
-    AvailableSpace, Dimension, FlexDirection, LengthPercentage, LengthPercentageAuto, Position,
-    Style, TaffyTree,
+    AvailableSpace, Dimension, Display, FlexDirection, LengthPercentage, LengthPercentageAuto,
+    Position, Style, TaffyTree,
 };
 
 /// Maximum root-to-node edge count supported by this recursive backend.
@@ -72,6 +73,24 @@ impl LayoutEngine for TaffyLayout {
                     message: "Leaf layout nodes cannot contain children",
                 });
             }
+            if node.props.style.kind == LayoutKind::Grid {
+                // Bound implicit track growth before Taffy's indexed placement.
+                let spans = children
+                    .iter()
+                    .try_fold((0usize, 0usize), |(rows, cols), child| {
+                        let child = tree.node(*child).ok_or(LayoutError::MissingNode(*child))?;
+                        Ok::<_, LayoutError>((
+                            rows + usize::from(child.props.style.grid_row.span),
+                            cols + usize::from(child.props.style.grid_column.span),
+                        ))
+                    })?;
+                if spans.0 > 4096 || spans.1 > 4096 {
+                    return Err(LayoutError::InvalidStyle {
+                        node: id,
+                        message: "A grid supports at most 4096 cumulative child spans per axis",
+                    });
+                }
+            }
             order.push(id);
             pending.extend(children.iter().rev().map(|&child| (child, depth + 1)));
         }
@@ -97,6 +116,7 @@ impl LayoutEngine for TaffyLayout {
                     height: LengthPercentageAuto::length(viewport.height),
                 };
                 style.max_size = style.min_size;
+                style.margin = taffy::Rect::zero();
             }
             let mut children = Vec::new();
             for &child in tree.children(id).ok_or(LayoutError::MissingNode(id))? {
@@ -213,6 +233,25 @@ fn justification(justify: Justify) -> taffy::JustifyContent {
     }
 }
 
+fn grid_track(track: GridTrack) -> taffy::GridTemplateComponent<String> {
+    use taffy::prelude::{auto, fr, length, percent};
+    match track {
+        GridTrack::Auto => auto(),
+        GridTrack::Px(value) => length(value),
+        GridTrack::Percent(value) => percent(value),
+        GridTrack::Fr(value) => fr(value),
+    }
+}
+
+fn grid_placement(placement: GridPlacement) -> taffy::Line<taffy::GridPlacement<String>> {
+    taffy::Line {
+        start: placement.start.map_or(taffy::GridPlacement::Auto, |start| {
+            taffy::prelude::line(start as i16)
+        }),
+        end: taffy::prelude::span(placement.span),
+    }
+}
+
 fn map_style(style: &LayoutStyle, parent: Option<&LayoutStyle>) -> Style {
     let (flex_grow, flex_shrink) = match parent.map(|p| p.kind) {
         Some(LayoutKind::Stack(_)) => (0.0, 0.0),
@@ -220,6 +259,11 @@ fn map_style(style: &LayoutStyle, parent: Option<&LayoutStyle>) -> Style {
         _ => (style.flex_grow, style.flex_shrink),
     };
     Style {
+        display: if style.kind == LayoutKind::Grid {
+            Display::Grid
+        } else {
+            Display::Flex
+        },
         size: taffy::Size {
             width: dimension(style.width),
             height: dimension(style.height),
@@ -238,6 +282,17 @@ fn map_style(style: &LayoutStyle, parent: Option<&LayoutStyle>) -> Style {
             top: LengthPercentage::length(style.padding.top),
             bottom: LengthPercentage::length(style.padding.bottom),
         },
+        margin: taffy::Rect {
+            left: LengthPercentageAuto::length(style.margin.left),
+            right: LengthPercentageAuto::length(style.margin.right),
+            top: LengthPercentageAuto::length(style.margin.top),
+            bottom: LengthPercentageAuto::length(style.margin.bottom),
+        },
+        grid_template_columns: style.grid_columns.iter().copied().map(grid_track).collect(),
+        grid_template_rows: style.grid_rows.iter().copied().map(grid_track).collect(),
+        grid_column: grid_placement(style.grid_column),
+        grid_row: grid_placement(style.grid_row),
+        justify_items: Some(alignment(style.align)),
         gap: taffy::Size {
             width: LengthPercentage::length(style.gap),
             height: LengthPercentage::length(style.gap),
@@ -779,5 +834,251 @@ mod tests {
         let snapshot = compute(&tree, 100.0, 50.0);
         assert_rect(&snapshot, hidden, Rect::new(0.0, 0.0, 20.0, 20.0));
         assert_rect(&snapshot, next, Rect::new(20.0, 0.0, 20.0, 20.0));
+    }
+
+    #[test]
+    fn grid_fixed_fractional_tracks_span_and_resize() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Grid,
+                grid_columns: vec![GridTrack::Px(40.0), GridTrack::Fr(1.0), GridTrack::Fr(2.0)],
+                grid_rows: vec![GridTrack::Px(20.0), GridTrack::Fr(1.0)],
+                padding: Edges::all(5.0),
+                gap: 3.0,
+                ..LayoutStyle::default()
+            },
+        )
+        .unwrap();
+        let header = tree
+            .insert(
+                root,
+                props(LayoutStyle {
+                    grid_column: GridPlacement {
+                        start: Some(1),
+                        span: 3,
+                    },
+                    grid_row: GridPlacement {
+                        start: Some(1),
+                        span: 1,
+                    },
+                    ..LayoutStyle::default()
+                }),
+            )
+            .unwrap();
+        let left = tree
+            .insert(
+                root,
+                props(LayoutStyle {
+                    grid_column: GridPlacement {
+                        start: Some(1),
+                        span: 1,
+                    },
+                    grid_row: GridPlacement {
+                        start: Some(2),
+                        span: 1,
+                    },
+                    ..LayoutStyle::default()
+                }),
+            )
+            .unwrap();
+        let middle = tree
+            .insert(
+                root,
+                props(LayoutStyle {
+                    grid_column: GridPlacement {
+                        start: Some(2),
+                        span: 1,
+                    },
+                    grid_row: GridPlacement {
+                        start: Some(2),
+                        span: 1,
+                    },
+                    ..LayoutStyle::default()
+                }),
+            )
+            .unwrap();
+        let right = tree
+            .insert(
+                root,
+                props(LayoutStyle {
+                    grid_column: GridPlacement {
+                        start: Some(3),
+                        span: 1,
+                    },
+                    grid_row: GridPlacement {
+                        start: Some(2),
+                        span: 1,
+                    },
+                    ..LayoutStyle::default()
+                }),
+            )
+            .unwrap();
+        for width in [200.0, 260.0] {
+            let layout = compute(&tree, width, 100.0);
+            let fr = (width - 56.0) / 3.0;
+            assert_rect(&layout, header, Rect::new(5.0, 5.0, width - 10.0, 20.0));
+            assert_rect(&layout, left, Rect::new(5.0, 28.0, 40.0, 67.0));
+            assert_rect(&layout, middle, Rect::new(48.0, 28.0, fr, 67.0));
+            assert_rect(&layout, right, Rect::new(51.0 + fr, 28.0, 2.0 * fr, 67.0));
+        }
+    }
+
+    #[test]
+    fn grid_auto_placement_percent_tracks_and_item_alignment() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Grid,
+                grid_columns: vec![GridTrack::Percent(0.25), GridTrack::Fr(1.0)],
+                grid_rows: vec![GridTrack::Px(30.0), GridTrack::Px(40.0)],
+                align: Align::Center,
+                ..LayoutStyle::default()
+            },
+        )
+        .unwrap();
+        let first = tree.insert(root, props(sized(20.0, 10.0))).unwrap();
+        let second = tree.insert(root, props(sized(20.0, 10.0))).unwrap();
+        let third = tree.insert(root, props(sized(20.0, 10.0))).unwrap();
+        let layout = compute(&tree, 200.0, 70.0);
+        assert_rect(&layout, first, Rect::new(15.0, 10.0, 20.0, 10.0));
+        assert_rect(&layout, second, Rect::new(115.0, 10.0, 20.0, 10.0));
+        assert_rect(&layout, third, Rect::new(15.0, 45.0, 20.0, 10.0));
+    }
+
+    #[test]
+    fn margins_participate_in_stack_flex_grid_and_overlay_without_being_painted() {
+        for kind in [
+            LayoutKind::Stack(Axis::Horizontal),
+            LayoutKind::Flex(Axis::Horizontal),
+            LayoutKind::Grid,
+            LayoutKind::Overlay,
+        ] {
+            let mut tree = UiTree::new();
+            let root = tree.root();
+            tree.set_style(
+                root,
+                LayoutStyle {
+                    kind,
+                    grid_columns: vec![GridTrack::Fr(1.0)],
+                    grid_rows: vec![GridTrack::Fr(1.0)],
+                    padding: Edges::all(5.0),
+                    margin: Edges::all(100.0),
+                    ..LayoutStyle::default()
+                },
+            )
+            .unwrap();
+            let child = tree
+                .insert(
+                    root,
+                    props(LayoutStyle {
+                        margin: Edges {
+                            left: 7.0,
+                            right: 11.0,
+                            top: 3.0,
+                            bottom: 9.0,
+                        },
+                        ..sized(20.0, 10.0)
+                    }),
+                )
+                .unwrap();
+            let layout = compute(&tree, 100.0, 60.0);
+            assert_rect(&layout, root, Rect::new(0.0, 0.0, 100.0, 60.0));
+            assert_rect(&layout, child, Rect::new(12.0, 8.0, 20.0, 10.0));
+        }
+    }
+
+    #[test]
+    fn auto_overlay_and_flex_sizes_subtract_margins_and_negative_margin_can_overlap() {
+        for kind in [LayoutKind::Overlay, LayoutKind::Flex(Axis::Horizontal)] {
+            let mut tree = UiTree::new();
+            let root = tree.root();
+            tree.set_style(
+                root,
+                LayoutStyle {
+                    kind,
+                    ..LayoutStyle::default()
+                },
+            )
+            .unwrap();
+            let child = tree
+                .insert(
+                    root,
+                    props(LayoutStyle {
+                        margin: Edges::all(5.0),
+                        flex_grow: 1.0,
+                        ..LayoutStyle::default()
+                    }),
+                )
+                .unwrap();
+            assert_rect(
+                &compute(&tree, 100.0, 60.0),
+                child,
+                Rect::new(5.0, 5.0, 90.0, 50.0),
+            );
+        }
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Stack(Axis::Horizontal),
+                ..LayoutStyle::default()
+            },
+        )
+        .unwrap();
+        tree.insert(root, props(sized(20.0, 10.0))).unwrap();
+        let overlap = tree
+            .insert(
+                root,
+                props(LayoutStyle {
+                    margin: Edges {
+                        left: -5.0,
+                        ..Edges::default()
+                    },
+                    ..sized(20.0, 10.0)
+                }),
+            )
+            .unwrap();
+        assert_rect(
+            &compute(&tree, 100.0, 60.0),
+            overlap,
+            Rect::new(15.0, 0.0, 20.0, 10.0),
+        );
+    }
+
+    #[test]
+    fn oversized_implicit_grid_is_rejected_before_backend_placement() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Grid,
+                ..LayoutStyle::default()
+            },
+        )
+        .unwrap();
+        for _ in 0..5 {
+            tree.insert(
+                root,
+                props(LayoutStyle {
+                    grid_column: GridPlacement {
+                        start: None,
+                        span: 1024,
+                    },
+                    ..LayoutStyle::default()
+                }),
+            )
+            .unwrap();
+        }
+        assert!(matches!(
+            TaffyLayout::new().compute(&tree, Size::new(100.0, 100.0)),
+            Err(LayoutError::InvalidStyle { .. })
+        ));
     }
 }

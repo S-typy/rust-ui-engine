@@ -14,6 +14,13 @@ pub enum PointerButton {
 /// Navigation keys used by the foundation. Text input belongs to a separate API.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Key {
+    Backspace,
+    Alt,
+    F10,
+    F2,
+    PageUp,
+    PageDown,
+    Insert,
     Tab,
     Enter,
     Space,

@@ -176,6 +176,14 @@ impl UiRuntime {
             .map(|node| node.bounds)
     }
 
+    /// Last resolved ancestor clip in logical global coordinates.
+    pub fn clip(&self, id: WidgetId) -> Option<Rect> {
+        self.visual
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| node.clip)
+    }
+
     /// Hit testing and painting use the same stable sibling z-order and clip.
     pub fn hit_test(&self, point: Point) -> Option<WidgetId> {
         self.visual
@@ -615,7 +623,7 @@ impl UiRuntime {
     }
 
     fn rebuild_scene(&mut self) {
-        self.scene.rectangles.clear();
+        self.scene.clear();
         for visual in &self.visual {
             let Some(node) = self.tree.node(visual.id) else {
                 continue;

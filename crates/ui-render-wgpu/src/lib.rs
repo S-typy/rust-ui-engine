@@ -2,9 +2,13 @@
 //! Scenes are provided by ui-core; application state stays in the host.
 
 use bytemuck::{Pod, Zeroable};
-use rust_desktop_ui_core::Scene;
+mod glyphs;
+use glyphs::GlyphRenderer;
+use rust_desktop_ui_core::{DrawCommand, Rect, Scene};
 use std::{
     fmt,
+    iter::Peekable,
+    ops::Range,
     sync::{Arc, Mutex},
 };
 use wgpu::util::DeviceExt;
@@ -63,6 +67,8 @@ struct ViewportUniform {
 }
 
 const MAX_RECTANGLES: usize = 16_384;
+const MAX_TEXT_RUNS: usize = 16_384;
+const MAX_TEXT_BYTES: usize = 1024 * 1024;
 
 /// A frame is counted as presented only after submitting and presenting it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,6 +109,8 @@ pub enum GpuError {
     DeviceLost(String),
     Backend(String),
     SurfaceValidation,
+    Text(String),
+    InvalidScene,
 }
 
 impl fmt::Display for GpuError {
@@ -135,6 +143,8 @@ impl fmt::Display for GpuError {
             Self::DeviceLost(message) => write!(f, "GPU device lost: {message}"),
             Self::Backend(message) => write!(f, "GPU backend error: {message}"),
             Self::SurfaceValidation => f.write_str("GPU surface validation failed"),
+            Self::Text(message) => write!(f, "Text rendering failed: {message}"),
+            Self::InvalidScene => f.write_str("Scene has invalid geometry, color or painter order"),
         }
     }
 }
@@ -208,6 +218,111 @@ fn check_frame_inputs(rectangles: usize, scale_factor: f32) -> Result<(), GpuErr
     Ok(())
 }
 
+fn physical_rect(bounds: Rect, scale: f32) -> Option<Rect> {
+    let physical = Rect::new(
+        bounds.x * scale,
+        bounds.y * scale,
+        bounds.width * scale,
+        bounds.height * scale,
+    );
+    (bounds.is_valid() && physical.is_valid()).then_some(physical)
+}
+
+// Scene's typed arrays are public for inspection. Validate them again at the
+// backend boundary because direct mutation can bypass Scene::fill/text.
+fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
+    check_frame_inputs(scene.rectangles.len(), scale)?;
+    if scene.texts.len() > MAX_TEXT_RUNS {
+        return Err(GpuError::Text("text run count exceeds 16384".into()));
+    }
+    if scene.commands().len() != scene.rectangles.len() + scene.texts.len() {
+        return Err(GpuError::InvalidScene);
+    }
+    let (mut rectangle, mut text) = (0, 0);
+    for command in scene.commands() {
+        match *command {
+            DrawCommand::Rectangle(index) if index == rectangle => rectangle += 1,
+            DrawCommand::Text(index) if index == text => text += 1,
+            _ => return Err(GpuError::InvalidScene),
+        }
+    }
+    if rectangle != scene.rectangles.len() || text != scene.texts.len() {
+        return Err(GpuError::InvalidScene);
+    }
+    for rectangle in &scene.rectangles {
+        if physical_rect(rectangle.bounds, scale).is_none()
+            || [
+                rectangle.color.r,
+                rectangle.color.g,
+                rectangle.color.b,
+                rectangle.color.a,
+            ]
+            .into_iter()
+            .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(&channel))
+        {
+            return Err(GpuError::InvalidScene);
+        }
+    }
+    let mut text_bytes = 0usize;
+    for text in &scene.texts {
+        if !text.is_valid()
+            || physical_rect(text.bounds, scale).is_none()
+            || physical_rect(text.clip, scale).is_none()
+            || !((text.font_size * scale).is_finite())
+            || text.font_size * scale > 1024.0
+        {
+            return Err(GpuError::InvalidScene);
+        }
+        text_bytes = text_bytes
+            .checked_add(text.text.len())
+            .filter(|bytes| *bytes <= MAX_TEXT_BYTES)
+            .ok_or_else(|| GpuError::Text("frame text exceeds 1048576 UTF-8 bytes".into()))?;
+    }
+    Ok(())
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DrawBatch {
+    Rectangles(Range<u32>),
+    Text(Range<u32>),
+}
+
+// Only adjacent commands may merge: a popup background must stay after the
+// text underneath it and before its own caption.
+fn next_batch(
+    commands: &mut Peekable<impl Iterator<Item = DrawCommand>>,
+    text_range: impl Fn(usize) -> Option<Range<u32>>,
+) -> Result<Option<DrawBatch>, GpuError> {
+    let Some(command) = commands.next() else {
+        return Ok(None);
+    };
+    Ok(Some(match command {
+        DrawCommand::Rectangle(start) => {
+            let mut end = start.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            while commands.peek() == Some(&DrawCommand::Rectangle(end)) {
+                commands.next();
+                end = end.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            }
+            DrawBatch::Rectangles(
+                u32::try_from(start).map_err(|_| GpuError::InvalidScene)?
+                    ..u32::try_from(end).map_err(|_| GpuError::InvalidScene)?,
+            )
+        }
+        DrawCommand::Text(index) => {
+            let mut range = text_range(index).ok_or(GpuError::InvalidScene)?;
+            while let Some(DrawCommand::Text(next)) = commands.peek() {
+                let next_range = text_range(*next).ok_or(GpuError::InvalidScene)?;
+                if range.end != next_range.start {
+                    break;
+                }
+                range.end = next_range.end;
+                commands.next();
+            }
+            DrawBatch::Text(range)
+        }
+    }))
+}
+
 fn check_adapter(
     device_type: wgpu::DeviceType,
     backend: wgpu::Backend,
@@ -232,6 +347,18 @@ pub struct GpuRenderer {
     adapter_info: wgpu::AdapterInfo,
     state: SurfaceState,
     health: Arc<Mutex<DeviceHealth>>,
+    glyphs: GlyphRenderer,
+    stats: RendererStats,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RendererStats {
+    pub rectangles: usize,
+    pub glyphs: usize,
+    pub text_runs: usize,
+    pub cached_glyphs: usize,
+    pub missing_glyphs: usize,
+    pub draw_calls: usize,
 }
 
 impl GpuRenderer {
@@ -374,6 +501,7 @@ impl GpuRenderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let glyphs = GlyphRenderer::new(&device, config.format, &viewport_layout);
         let renderer = Self {
             window,
             surface,
@@ -387,6 +515,8 @@ impl GpuRenderer {
             adapter_info: gpu_info,
             state,
             health,
+            glyphs,
+            stats: RendererStats::default(),
         };
         renderer.check_device()?;
         Ok(renderer)
@@ -394,6 +524,10 @@ impl GpuRenderer {
 
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
+    }
+
+    pub fn stats(&self) -> RendererStats {
+        self.stats
     }
 
     /// Records the latest size. The next render configures a nonzero surface.
@@ -450,7 +584,15 @@ impl GpuRenderer {
             Preparation::Configure => self.configure()?,
             Preparation::Acquire => {}
         }
-        check_frame_inputs(scene.rectangles.len(), scale_factor)?;
+        check_scene(scene, scale_factor)?;
+        let viewport = Rect::new(
+            0.0,
+            0.0,
+            self.config.width as f32,
+            self.config.height as f32,
+        );
+        self.glyphs
+            .prepare(&scene.texts, scale_factor, viewport, &self.queue)?;
         let (frame, suboptimal) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
@@ -476,14 +618,16 @@ impl GpuRenderer {
         let instances: Vec<RectInstance> = scene
             .rectangles
             .iter()
-            .map(|r| RectInstance {
-                position_size: [
-                    r.bounds.x * scale_factor,
-                    r.bounds.y * scale_factor,
-                    r.bounds.width * scale_factor,
-                    r.bounds.height * scale_factor,
-                ],
-                rgba: [r.color.r, r.color.g, r.color.b, r.color.a],
+            .map(|r| {
+                // Clamp before the shader's pixel-to-NDC arithmetic. Finite,
+                // off-screen f32 coordinates can otherwise overflow there.
+                let bounds = physical_rect(r.bounds, scale_factor)
+                    .and_then(|bounds| bounds.intersection(viewport))
+                    .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+                RectInstance {
+                    position_size: [bounds.x, bounds.y, bounds.width, bounds.height],
+                    rgba: [r.color.r, r.color.g, r.color.b, r.color.a],
+                }
             })
             .collect();
         let dimensions = ViewportUniform {
@@ -521,10 +665,33 @@ impl GpuRenderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.viewport_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.rectangles_buffer.slice(..));
-            pass.draw(0..6, 0..instances.len() as u32);
+            let mut commands = scene.commands().iter().copied().peekable();
+            let mut draw_calls = 0;
+            while let Some(batch) = next_batch(&mut commands, |index| self.glyphs.range(index))? {
+                match batch {
+                    DrawBatch::Rectangles(range) => {
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_vertex_buffer(0, self.rectangles_buffer.slice(..));
+                        pass.draw(0..6, range);
+                        draw_calls += 1;
+                    }
+                    DrawBatch::Text(range) => {
+                        if !range.is_empty() {
+                            self.glyphs.draw(&mut pass, range);
+                            draw_calls += 1;
+                        }
+                    }
+                }
+            }
+            self.stats = RendererStats {
+                rectangles: instances.len(),
+                glyphs: self.glyphs.len(),
+                text_runs: scene.texts.len(),
+                cached_glyphs: self.glyphs.cached(),
+                missing_glyphs: self.glyphs.missing_glyphs,
+                draw_calls,
+            };
         }
         self.queue.submit([encoder.finish()]);
         self.check_device()?;
@@ -542,6 +709,110 @@ impl GpuRenderer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rust_desktop_ui_core::{Color, TextRun};
+
+    fn mixed_scene() -> Scene {
+        let mut scene = Scene::default();
+        scene.fill(Rect::new(0.0, 0.0, 200.0, 100.0), Color::rgb(255, 255, 255));
+        scene.text(TextRun::new(
+            "Caption",
+            Rect::new(5.0, 5.0, 180.0, 30.0),
+            Color::rgb(0, 0, 0),
+            14.0,
+        ));
+        scene
+    }
+
+    #[test]
+    fn corrupted_public_scene_arrays_are_rejected_before_upload() {
+        let original = mixed_scene();
+        assert!(check_scene(&original, 1.5).is_ok());
+        let mut scene = original.clone();
+        scene.rectangles.clear();
+        assert!(matches!(
+            check_scene(&scene, 1.0),
+            Err(GpuError::InvalidScene)
+        ));
+        // Same total length is insufficient: Rectangle(0) no longer exists.
+        scene.texts.push(scene.texts[0].clone());
+        assert!(matches!(
+            check_scene(&scene, 1.0),
+            Err(GpuError::InvalidScene)
+        ));
+        let mut scene = original.clone();
+        scene.rectangles.push(scene.rectangles[0]);
+        assert!(matches!(
+            check_scene(&scene, 1.0),
+            Err(GpuError::InvalidScene)
+        ));
+        for coordinate in [f32::NAN, f32::INFINITY] {
+            let mut scene = original.clone();
+            scene.rectangles[0].bounds.x = coordinate;
+            assert!(matches!(
+                check_scene(&scene, 1.0),
+                Err(GpuError::InvalidScene)
+            ));
+        }
+        let mut scene = original.clone();
+        scene.rectangles[0].bounds.width = -1.0;
+        assert!(check_scene(&scene, 1.0).is_err());
+        scene.rectangles[0].bounds = Rect::new(0.0, 0.0, f32::MAX, 10.0);
+        assert!(check_scene(&scene, 2.0).is_err());
+        let mut scene = original.clone();
+        scene.rectangles[0].color.a = f32::NAN;
+        assert!(check_scene(&scene, 1.0).is_err());
+        let mut scene = original;
+        scene.texts[0].clip.x = f32::NAN;
+        assert!(check_scene(&scene, 1.0).is_err());
+    }
+
+    #[test]
+    fn aggregate_text_work_is_bounded_before_shaping() {
+        let mut scene = mixed_scene();
+        scene.texts[0].text = "x".repeat(MAX_TEXT_BYTES + 1);
+        assert!(matches!(check_scene(&scene, 1.0), Err(GpuError::Text(_))));
+        let mut scene = Scene::default();
+        let run = mixed_scene().texts.remove(0);
+        for _ in 0..=MAX_TEXT_RUNS {
+            scene.text(run.clone());
+        }
+        assert!(matches!(check_scene(&scene, 1.0), Err(GpuError::Text(_))));
+    }
+
+    #[test]
+    fn mixed_batches_preserve_popup_painter_order_and_empty_text() {
+        let mut commands = [
+            DrawCommand::Rectangle(0),
+            DrawCommand::Rectangle(1),
+            DrawCommand::Text(0),
+            DrawCommand::Text(1),
+            DrawCommand::Rectangle(2),
+            DrawCommand::Text(2),
+            DrawCommand::Text(3),
+            DrawCommand::Rectangle(3),
+        ]
+        .into_iter()
+        .peekable();
+        let ranges = [0..3, 3..5, 5..5, 5..8];
+        let mut batches = Vec::new();
+        while let Some(batch) =
+            next_batch(&mut commands, |index| ranges.get(index).cloned()).unwrap()
+        {
+            batches.push(batch);
+        }
+        assert_eq!(
+            batches,
+            [
+                DrawBatch::Rectangles(0..2),
+                DrawBatch::Text(0..5),
+                DrawBatch::Rectangles(2..3),
+                DrawBatch::Text(5..8),
+                DrawBatch::Rectangles(3..4)
+            ]
+        );
+        let mut broken = [DrawCommand::Text(4)].into_iter().peekable();
+        assert!(next_batch(&mut broken, |index| ranges.get(index).cloned()).is_err());
+    }
 
     #[test]
     fn zero_sized_window_stays_parked_until_restored() {

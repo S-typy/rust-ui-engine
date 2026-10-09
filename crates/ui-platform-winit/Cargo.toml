@@ -1,0 +1,17 @@
+[package]
+name = "rust-desktop-ui-platform-winit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Native window, input, IME, clipboard and accessibility host"
+
+[dependencies]
+rust-desktop-ui-core = { path = "../ui-core", version = "0.1.0" }
+rust-desktop-ui-render-wgpu = { path = "../ui-render-wgpu", version = "0.1.0" }
+winit.workspace = true
+pollster.workspace = true
+accesskit.workspace = true
+accesskit_winit.workspace = true
+arboard.workspace = true

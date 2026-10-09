@@ -1,19 +1,25 @@
-# Retained UI: контракт M1
+# Retained UI: дерево, события и сцена
 
-M1 реализует дерево узлов, события, focus, pointer capture, invalidation,
-вычисление layout и построение сцены прямоугольников. `NodeProps` описывает
-примитив интерфейса; он ещё не является готовым Button, Ribbon или TreeGrid.
-Результаты проверок окна и GPU учитываются отдельно в [отчёте](M1_TEST_REPORT.md).
-Архитектурное решение — [ADR-003](adr/ADR-003-retained-runtime.md).
+Runtime реализует дерево узлов, события, focus, pointer capture, invalidation
+и построение примитивной сцены. `NodeProps` описывает узел; поведение Button,
+TextBox и других компонентов находится в [controls](controls.md), а
+[TreeGrid](treegrid.md) строит виртуализированную часть Scene отдельно.
+Исторические проверки M1 сохранены в [отчёте](M1_TEST_REPORT.md); актуальные
+платформенные проверки — в [матрице](runtime-matrix.md).
+Базовое решение — [ADR-003](adr/ADR-003-retained-runtime.md), расширение текста
+и компонентов — [ADR-004](adr/ADR-004-text-controls-platform-treegrid.md).
 
 ## Пакеты и владение
 
 | Пакет | Ответственность |
 |---|---|
 | `rust-desktop-ui-core` | `WidgetId`, `UiTree`, `UiRuntime`, события, собственные layout-типы и `Scene`; внешних зависимостей нет |
-| `rust-desktop-ui-layout` | `TaffyLayout`, действующий адаптер Stack, Overlay и Flex; Taffy-типы остаются внутри пакета |
+| `rust-desktop-ui-layout` | `TaffyLayout`, адаптер Stack, Overlay, Flex и Grid; Taffy-типы остаются внутри пакета |
 | `rust-desktop-ui-render-wgpu` | Читает `Scene` в логических пикселях и рисует через GPU |
 | `gpu-shell` | Нативное окно, нормализация ввода и состояние демонстрации |
+
+Новый `rust-desktop-ui-platform-winit` используется `controls-gallery` и
+предоставляет общий host для текста, IME, clipboard и accessibility.
 
 `UiRuntime` владеет деревом, handlers, focus/capture, последним layout и
 кэшированной сценой. После передачи `UiTree` в runtime изменения выполняются
@@ -139,6 +145,7 @@ Renderer применяет scale factor только на границе GPU. �
 | `Stack(Axis)` | Одна линия, padding и gap, без grow/shrink распределения основного размера детей |
 | `Flex(Axis)` | Одна линия Taffy Flex с grow/shrink, min/max, align и justify |
 | `Overlay` | Дети независимо размещаются в общей внутренней области; `offset` применяется к каждому ребёнку после arrangement |
+| `Grid` | Auto/Px/Percent/Fr tracks, row-major размещение, явные one-based start и spans |
 
 `Length::Percent(0.5)` означает 50% доступного внутреннего размера родителя.
 `Auto` в Overlay заполняет доступную область с учётом min/max. Overlay требует
@@ -148,10 +155,14 @@ Renderer применяет scale factor только на границе GPU. �
 для неограниченного `max_size`. Ограничения и цвета валидируются при изменении
 свойств. Нулевой viewport разрешён.
 
+`margin` задаёт конечные внешние отступы, включая отрицательные. Border box
+не включает margin. Корневой margin игнорируется; его bounds равны viewport.
+Подробности Grid и ограничений tracks — в [layout](layout.md).
+
 `TaffyLayout` пересоздаёт внутреннее дерево при каждом layout pass и поддерживает
 глубину до 128 рёбер от корня. Более глубокое дерево возвращает ошибку перед
 запуском рекурсивного backend. Само retained tree обходит и удаляет узлы
-итеративно. Grid, flex-wrap, текстовые измерения и собственные intrinsic callbacks
+итеративно. Flex-wrap, автоматические текстовые измерения и собственные intrinsic callbacks
 в этот контракт пока не входят.
 
 Глобальная позиция ребёнка равна глобальному origin родителя, минус `scroll`
@@ -162,7 +173,7 @@ Translation не меняет layout. Scroll также не меняет layout
 Корень всегда ограничивает вывод viewport. `clip = true` дополнительно обрезает
 детей по border box узла. Все прямоугольники физически пересекаются с накопленным
 clip перед включением в Scene. Только translation и прямоугольные clips
-поддерживаются в M1; rotations, scale transforms и rounded clips отсутствуют.
+поддерживаются runtime; rotations, scale transforms и rounded clips отсутствуют.
 
 Видимые siblings рисуются по возрастанию `z_index`; при равенстве сохраняется
 порядок детей. Потомки остаются внутри порядка своего поддерева. Hit test идёт
@@ -199,7 +210,8 @@ default behavior. `prevent_default()` отменяет стандартные mo
 Primary pointer down фокусирует ближайший пригодный `focusable` узел среди target
 и его предков. Tab/Shift+Tab циклически обходят пригодные узлы в логическом
 preorder, независимо от `z_index`. Ctrl/Alt/Super+Tab не запускают стандартный
-обход. В M1 нет отдельных focus scopes или пространственной навигации.
+обход. В core нет отдельных focus scopes или пространственной навигации;
+keyboard-поведение меню и компонентов реализуется выше этого уровня.
 
 Pointer capture включается явно через `Mutation::CapturePointer(Some(id))`.
 Он направляет pointer/wheel события захватившему узлу вне его hit bounds. Hover
@@ -253,7 +265,9 @@ Scene остаётся доступной, pending изменения не по�
 кадр. Приложение должно обработать ошибку и исправить состояние или остановить
 операцию. Неконечные координаты входного события отвергаются без routing.
 
-M1 не реализует text shaping, GPU glyph rendering, IME, accessibility backend,
-полноценные controls или виртуализацию больших наборов данных. Scene по-прежнему
-содержит только rectangle batch; производительность будущих компонентов требует
-отдельных измерений.
+Scene поддерживает упорядоченные rectangles и `TextRun`: методы `fill`, `text`
+и `append` сохраняют их общий порядок. Сам UiRuntime рисует backgrounds/borders;
+Controls и TreeGrid дополняют сцену текстом и содержимым. Текстовая подготовка и
+GPU glyph atlas находятся в отдельных пакетах. Поля `FrameStats` runtime не
+считают работу shaping, glyph uploads и пользовательского view — для них нужны
+собственные счётчики. IME и AccessKit остаются обязанностью платформенного host.

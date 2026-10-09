@@ -104,7 +104,38 @@ pub enum LayoutKind {
     /// The panel needs an explicit or parent-assigned size, not child intrinsic sizing.
     Overlay,
     Flex(Axis),
+    /// Row-major auto placement with explicit tracks and optional child placement.
+    Grid,
 }
+
+/// Grid track size; percentages are fractions (1.0 = 100%).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum GridTrack {
+    #[default]
+    Auto,
+    Px(f32),
+    Percent(f32),
+    Fr(f32),
+}
+
+/// A one-based start line, or automatic placement, spanning at least one track.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GridPlacement {
+    pub start: Option<u16>,
+    pub span: u16,
+}
+
+impl Default for GridPlacement {
+    fn default() -> Self {
+        Self {
+            start: None,
+            span: 1,
+        }
+    }
+}
+
+/// Maximum explicit grid tracks, span and addressed track on either axis.
+pub const MAX_GRID_TRACKS: usize = 1024;
 
 /// Small owned style API; no layout-backend types cross this boundary.
 #[derive(Clone, Debug, PartialEq)]
@@ -116,12 +147,18 @@ pub struct LayoutStyle {
     /// Positive infinity means unbounded maximum for that axis.
     pub max_size: Size,
     pub padding: Edges,
+    /// Finite logical-pixel outer spacing; negative margins are supported.
+    pub margin: Edges,
     pub gap: f32,
     pub flex_grow: f32,
     pub flex_shrink: f32,
     pub align: Align,
     pub justify: Justify,
-    /// Used for a child of Overlay; ignored by Stack/Flex containers.
+    pub grid_columns: Vec<GridTrack>,
+    pub grid_rows: Vec<GridTrack>,
+    pub grid_column: GridPlacement,
+    pub grid_row: GridPlacement,
+    /// Used for a child of Overlay; ignored by Stack/Flex/Grid containers.
     pub offset: Point,
 }
 
@@ -134,11 +171,16 @@ impl Default for LayoutStyle {
             min_size: Size::ZERO,
             max_size: Size::new(f32::INFINITY, f32::INFINITY),
             padding: Edges::default(),
+            margin: Edges::default(),
             gap: 0.0,
             flex_grow: 0.0,
             flex_shrink: 1.0,
             align: Align::Stretch,
             justify: Justify::Start,
+            grid_columns: Vec::new(),
+            grid_rows: Vec::new(),
+            grid_column: GridPlacement::default(),
+            grid_row: GridPlacement::default(),
             offset: Point::ZERO,
         }
     }
@@ -182,6 +224,38 @@ impl LayoutStyle {
         }
         if !self.offset.is_finite() {
             return Err("Overlay offset must be finite");
+        }
+        if [
+            self.margin.left,
+            self.margin.right,
+            self.margin.top,
+            self.margin.bottom,
+            self.margin.horizontal(),
+            self.margin.vertical(),
+        ]
+        .into_iter()
+        .any(|x| !x.is_finite())
+        {
+            return Err("Margins and their axis sums must be finite");
+        }
+        for tracks in [&self.grid_columns, &self.grid_rows] {
+            if tracks.len() > MAX_GRID_TRACKS {
+                return Err("Too many explicit grid tracks");
+            }
+            for track in tracks {
+                if let GridTrack::Px(x) | GridTrack::Percent(x) | GridTrack::Fr(x) = *track
+                    && !nonnegative(x)
+                {
+                    return Err("Grid track sizes must be finite and nonnegative");
+                }
+            }
+        }
+        for placement in [self.grid_column, self.grid_row] {
+            let start = usize::from(placement.start.unwrap_or(1));
+            let span = usize::from(placement.span);
+            if start == 0 || span == 0 || start + span - 1 > MAX_GRID_TRACKS {
+                return Err("Grid placement must address 1..=1024 with a positive span");
+            }
         }
         Ok(())
     }
@@ -316,4 +390,67 @@ impl std::error::Error for LayoutError {}
 pub trait LayoutEngine {
     /// Compute all border boxes. Root geometry is always (0, 0, viewport.width, viewport.height).
     fn compute(&mut self, tree: &UiTree, viewport: Size) -> Result<LayoutSnapshot, LayoutError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn invalid_grid_and_margin_styles_are_rejected_atomically() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        let original = tree.node(root).unwrap().props.style.clone();
+        let invalid = [
+            LayoutStyle {
+                grid_columns: vec![GridTrack::Fr(f32::NAN)],
+                ..LayoutStyle::default()
+            },
+            LayoutStyle {
+                grid_rows: vec![GridTrack::Px(-1.0)],
+                ..LayoutStyle::default()
+            },
+            LayoutStyle {
+                grid_column: GridPlacement {
+                    start: Some(0),
+                    span: 1,
+                },
+                ..LayoutStyle::default()
+            },
+            LayoutStyle {
+                grid_row: GridPlacement {
+                    start: None,
+                    span: 0,
+                },
+                ..LayoutStyle::default()
+            },
+            LayoutStyle {
+                grid_row: GridPlacement {
+                    start: Some(1024),
+                    span: 2,
+                },
+                ..LayoutStyle::default()
+            },
+            LayoutStyle {
+                grid_rows: vec![GridTrack::Auto; MAX_GRID_TRACKS + 1],
+                ..LayoutStyle::default()
+            },
+            LayoutStyle {
+                margin: Edges::all(f32::MAX),
+                ..LayoutStyle::default()
+            },
+        ];
+        for style in invalid {
+            assert!(tree.set_style(root, style).is_err());
+            assert_eq!(tree.node(root).unwrap().props.style, original);
+        }
+        assert!(
+            LayoutStyle {
+                margin: Edges::all(-3.0),
+                ..LayoutStyle::default()
+            }
+            .validate()
+            .is_ok()
+        );
+    }
 }

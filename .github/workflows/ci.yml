@@ -36,11 +36,11 @@ jobs:
 
       - name: Install Linux platform libraries
         if: runner.os == 'Linux'
-        # X11, Wayland and Vulkan use dynamic loading; no fontconfig dependency.
+        # System font discovery uses fontconfig; GPU/window libraries are native.
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends \
-            build-essential pkg-config \
+            build-essential pkg-config libfontconfig1-dev fonts-dejavu-core fonts-noto-core \
             libx11-6 libx11-xcb1 libxcb1 libxcursor1 libxi6 libxrandr2 \
             libxkbcommon0 libxkbcommon-x11-0 \
             libwayland-client0 libwayland-cursor0 libvulkan1
