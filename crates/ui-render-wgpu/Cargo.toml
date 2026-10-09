@@ -2,10 +2,12 @@
 name = "rust-desktop-ui-render-wgpu"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 
 [dependencies]
-wgpu = "=30.0.1"
-bytemuck = { version = "1.23", features = ["derive"] }
-rust-desktop-ui-core = { path = "../ui-core" }
-winit = "=0.30.13"
+wgpu.workspace = true
+bytemuck.workspace = true
+rust-desktop-ui-core = { version = "0.1.0", path = "../ui-core" }
+winit.workspace = true

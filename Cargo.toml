@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "crates/ui-core",
     "crates/ui-render-wgpu",
@@ -9,8 +9,15 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.96"
 license = "Apache-2.0"
 repository = "https://github.com/S-typy/rust-ui-engine"
+
+[workspace.dependencies]
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "metal", "vulkan", "wgsl"] }
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
+bytemuck = { version = "1.23", features = ["derive"] }
+pollster = "0.4"
 
 [profile.release]
 lto = "thin"

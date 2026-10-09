@@ -1,0 +1,37 @@
+# Audit the complete resolved graph, including target-specific dependencies.
+[graph]
+all-features = false
+
+[advisories]
+unmaintained = "all"
+unsound = "all"
+
+[licenses]
+confidence-threshold = 0.95
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    { name = "skia-safe" },
+    { name = "skia-bindings" },
+    { name = "gtk" },
+    { name = "gtk4" },
+    { name = "qt_core" },
+    { name = "cxx-qt" },
+    { name = "sctk-adwaita" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

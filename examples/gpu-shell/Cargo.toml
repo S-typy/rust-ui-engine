@@ -2,12 +2,13 @@
 name = "gpu-shell"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = false
 
 [dependencies]
-rust-desktop-ui-core = { path = "../../crates/ui-core" }
-rust-desktop-ui-render-wgpu = { path = "../../crates/ui-render-wgpu" }
-wgpu = "=30.0.1"
-winit = "=0.30.13"
-pollster = "0.4"
+rust-desktop-ui-core = { version = "0.1.0", path = "../../crates/ui-core" }
+rust-desktop-ui-render-wgpu = { version = "0.1.0", path = "../../crates/ui-render-wgpu" }
+winit.workspace = true
+pollster.workspace = true

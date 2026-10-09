@@ -1,0 +1,74 @@
+name: Rust CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
+  RUST_BACKTRACE: "1"
+  RUSTDOCFLAGS: -D warnings
+
+jobs:
+  workspace:
+    name: Workspace (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Linux platform libraries
+        if: runner.os == 'Linux'
+        # X11, Wayland and Vulkan use dynamic loading; no fontconfig dependency.
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            build-essential pkg-config \
+            libx11-6 libx11-xcb1 libxcb1 libxcursor1 libxi6 libxrandr2 \
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libwayland-client0 libwayland-cursor0 libvulkan1
+
+      - name: Install Rust 1.96.0
+        uses: dtolnay/rust-toolchain@686976e191b89faba57d3206551f0f330d8cb249 # stable snapshot, 2026-10-09
+        with:
+          toolchain: 1.96.0
+          components: rustfmt, clippy
+
+      - name: Toolchain versions
+        run: |
+          rustc --version --verbose
+          cargo --version
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Unit and documentation tests
+        run: cargo test --workspace --locked
+
+      - name: Release build
+        run: cargo build --workspace --release --locked
+
+      - name: API documentation
+        run: cargo doc --workspace --no-deps --locked
+
+      # GPU window tests require a separate desktop session and hardware adapter.
