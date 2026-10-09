@@ -63,8 +63,19 @@ fixtures passed separately.
 
 ## Cross-platform CI
 
-The existing Windows Server 2025, Ubuntu 24.04 and macOS 15 workflow includes
-the new workspace member. M1 execution results are pending publication.
+The public [M1 CI run](https://github.com/S-typy/rust-ui-engine/actions/runs/37936243724)
+completed successfully on source snapshot
+`7059808b3993a94cf2f8980e565f9d1786827d16`:
+
+| Runner | Formatting, Clippy, unit/doc tests, release build, rustdoc |
+|---|---|
+| Windows Server 2025 | PASS |
+| Ubuntu 24.04 | PASS |
+| macOS 15 | PASS |
+
+All jobs include the new layout crate and all 61 unit tests. These are build
+and CPU test results; the workflow does not run a native GPU window. Subsequent
+report-only updates do not change the Rust source tested by this run.
 
 ## Limits
 
