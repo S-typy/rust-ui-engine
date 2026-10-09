@@ -88,7 +88,9 @@ minimize/restore, сохранение tab=1/selected=2/first_row=3, отсут�
 
 ## CI и границы подтверждения
 
-Матрица CI на 2026-10-09 завершилась успешно:
+Матрица CI на 2026-10-09 завершилась успешно для снимка
+[`e5002ce`](https://github.com/S-typy/rust-ui-engine/commit/e5002cebc4634562f8f76bc9569401e6fd5c8aee):
+[GitHub Actions run 37929355178](https://github.com/S-typy/rust-ui-engine/actions/runs/37929355178).
 
 | Runner | fmt / clippy / tests / release / rustdoc | GPU окно |
 |---|---|---|
