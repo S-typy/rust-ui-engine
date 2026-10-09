@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "review_date": "2026-10-09",
-  "cargo_lock_sha256": "bf3ed73a851a5532e32e30c960938bd01f47e7316f759ac8a010c730266e228a",
+  "cargo_lock_sha256": "340fb0e7e00e38902b775e606e68837938bc76a3d419f410e6916683fab456db",
   "scope": "All resolved registry packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
-  "features_scope": "Feature union for all targets; actual compilation depends on target cfg and Cargo resolver.",
+  "features_scope": "Resolution features reported by cargo metadata for all targets; verify actual compilation features with cargo tree for the selected package and target.",
   "license_scope": "Manifest SPDX declarations, package license/notice file hashes and selected exact-revision upstream evidence. Not a line-by-line copyright or binary redistribution clearance.",
-  "registry_package_count": 237,
+  "registry_package_count": 239,
   "packages": [
     {
       "name": "ahash",
@@ -7606,6 +7606,7 @@
       "license_spdx": "MIT OR Apache-2.0",
       "rust_version_declared": "1.56",
       "features_all_targets": [
+        "serde_derive",
         "std"
       ],
       "links": null,
@@ -7629,6 +7630,15 @@
       "dependencies": [
         {
           "package": "serde_core@1.0.229",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "serde_derive@1.0.229",
           "kinds": [
             {
               "kind": null,
@@ -7877,6 +7887,44 @@
       "source_revision": "a1e4346070a48c936d808de75191dee5d01e433c",
       "path_in_source_repository": "",
       "dependencies": []
+    },
+    {
+      "name": "slotmap",
+      "version": "1.1.1",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "bdd58c3c93c3d278ca835519292445cb4b0d4dc59ccfdf7ceadaab3f8aeb4038",
+      "repository": "https://github.com/orlp/slotmap",
+      "license_declared": "Zlib",
+      "license_spdx": "Zlib",
+      "rust_version_declared": "1.58.0",
+      "features_all_targets": [
+        "std"
+      ],
+      "links": null,
+      "build_scripts": [
+        "build.rs"
+      ],
+      "license_files": [
+        {
+          "path": "LICENSE",
+          "sha256": "6cec81441b2ab2b5090954c1fb5d0bcca81b86487b5849061fa8952d20ef67d4"
+        }
+      ],
+      "upstream_license_evidence": [],
+      "native_source_or_archive_files": [],
+      "source_revision": "2d56154b9b628f7d7a506f24ebc4f55a13ec8fed",
+      "path_in_source_repository": "",
+      "dependencies": [
+        {
+          "package": "version_check@0.9.5",
+          "kinds": [
+            {
+              "kind": "build",
+              "target": null
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "smallvec",
@@ -8321,6 +8369,63 @@
         },
         {
           "package": "unicode-ident@1.0.26",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "taffy",
+      "version": "0.14.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "639627c87f43b9181c811f40a6296409e093a17bc761214cba3c15df74f86b99",
+      "repository": "https://github.com/DioxusLabs/taffy",
+      "license_declared": "MIT",
+      "license_spdx": "MIT",
+      "rust_version_declared": "1.71",
+      "features_all_targets": [
+        "flexbox",
+        "std",
+        "taffy_tree"
+      ],
+      "links": null,
+      "build_scripts": [],
+      "license_files": [],
+      "upstream_license_evidence": [
+        {
+          "path": "LICENSE",
+          "url": "https://raw.githubusercontent.com/DioxusLabs/taffy/77f385683c1d698c91a23a259f87fdddf26925fb/LICENSE",
+          "sha256": "f97daf1a0124413dccf399a4e6626b4b74acd05282f80b6d64ac82225650b77a"
+        }
+      ],
+      "native_source_or_archive_files": [],
+      "source_revision": "77f385683c1d698c91a23a259f87fdddf26925fb",
+      "path_in_source_repository": "",
+      "dependencies": [
+        {
+          "package": "arrayvec@0.7.8",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "serde@1.0.229",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "slotmap@1.1.1",
           "kinds": [
             {
               "kind": null,

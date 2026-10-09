@@ -11,12 +11,14 @@
 | winit | `=0.30.13` | Нативное окно и события ОС | Apache-2.0 |
 | bytemuck | `^1.23`, `derive` | Проверяемое представление данных для GPU buffers | Zlib OR Apache-2.0 OR MIT |
 | pollster | `^0.4` | Ожидание инициализации GPU в примере | Apache-2.0 OR MIT |
+| taffy | `=0.14.0` | Расчёт layout за независимым API | MIT |
 
 Версии и лицензии сверены с опубликованными пакетами:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/source/Cargo.toml),
 [winit](https://docs.rs/crate/winit/0.30.13/source/Cargo.toml),
 [bytemuck](https://docs.rs/crate/bytemuck/1.25.2/source/Cargo.toml),
-[pollster](https://docs.rs/crate/pollster/0.4.0/source/Cargo.toml).
+[pollster](https://docs.rs/crate/pollster/0.4.0/source/Cargo.toml),
+[taffy](https://docs.rs/crate/taffy/0.14.0/source/Cargo.toml).
 `pollster` использует старую запись `Apache-2.0/MIT`, эквивалентную выбору одной
 из двух лицензий. Это преобразование отмечено отдельно в inventory.
 
@@ -37,8 +39,21 @@ Adwaita. Описание feature flags:
 [winit](https://docs.rs/crate/winit/0.30.13/source/Cargo.toml),
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/features).
 
-`ui-core` не имеет внешних зависимостей. wgpu/winit принадлежат renderer и
-примеру; GPU-типы не входят в независимую модель сцены.
+`ui-core` не имеет внешних зависимостей. `ui-layout` зависит от него и Taffy:
+включены только `std`, `taffy_tree`, `flexbox`, default features отключены.
+Grid, Block, float layout, parser, serde и дополнительные алгоритмы Taffy не
+включены. Активная ветка layout содержит `arrayvec`, `slotmap` и build dependency
+`version_check`; wgpu/winit принадлежат renderer и примеру. Ни GPU-типы, ни
+типы Taffy не входят в независимые API core.
+
+Taffy и slotmap написаны на Rust. Taffy не имеет build script; `slotmap 1.1.1`
+использует build.rs только для определения версии Rust и вывода Cargo cfg.
+Native source/archive files в этих двух пакетах не обнаружены. Taffy не включает
+готовые controls или визуальные ресурсы. Его crate-архив не содержит отдельного
+LICENSE; текст MIT проверен по
+[точной исходной ревизии](https://raw.githubusercontent.com/DioxusLabs/taffy/77f385683c1d698c91a23a259f87fdddf26925fb/LICENSE).
+Slotmap декларирует Zlib и содержит
+[LICENSE](https://docs.rs/crate/slotmap/1.1.1/source/LICENSE) в архиве.
 
 ## Native code и системные библиотеки
 
@@ -76,27 +91,32 @@ Android GameActivity; feature `game-activity` не включён, а Android н
 ```text
 cargo metadata --locked --format-version 1
 cargo tree --locked --workspace --target all -e features
+cargo tree --locked --target all -p rust-desktop-ui-layout -e features
 cargo deny --locked check licenses sources bans advisories
 ```
 
-Полный список crates, исходные SPDX-декларации, SHA-256 лицензий и выбранные
-features содержатся в [dependency-inventory.json](dependency-inventory.json).
+Полный список crates, исходные SPDX-декларации, SHA-256 лицензий и features из
+`cargo metadata` содержатся в [dependency-inventory.json](dependency-inventory.json).
+Metadata описывает разрешённый граф всех платформ. Активные features конкретной
+сборки проверяются отдельно через `cargo tree`: наличие опционального ребра в
+metadata не доказывает компиляцию этой зависимости в выбранном пакете.
 Проверка по `deny.toml` выявляет запрещённые лицензии, registries, известные
 уязвимости и отдельные запрещённые зависимости. Список запрещённых имён не
 заменяет проверку назначения новой библиотеки; успешная автоматическая проверка
 не равна проверке всех исходников и условий бинарной поставки.
 
 На 2026-10-09 `cargo-deny 0.19.9` завершил проверки licenses, sources, bans и
-advisories без ошибок: 237 сторонних crates, 15 предупреждений о нескольких
+advisories без ошибок: 239 сторонних crates, 15 предупреждений о нескольких
 версиях транзитивных зависимостей. Проверена актуализированная RustSec database
 на revision `7eebec69c352c7191b1f13eb95dd510eeca5d1de`. `cargo-audit` отдельно
-не запускался. Из 237 пакетов у 203 найдены license/notice files в архиве,
-у 33 дополнительные материалы сверены с точным upstream revision. Для
+не запускался. Из 239 пакетов у 204 найдены license/notice files в архиве,
+для ещё 34 материалы сверены с точным upstream revision. Для
 `dispatch 0.2.0` доступна только декларация MIT; отсутствие отдельного текста
 отмечено в notices. Также остаются условия Apple SDK, перечисленные upstream
 objc2: эти вопросы должны быть закрыты перед распространением macOS binaries.
 
-Upstream wgpu 30.0.1 декларирует Rust 1.87, winit 0.30.13 — Rust 1.70. Это
+Upstream wgpu 30.0.1 декларирует Rust 1.87, winit 0.30.13 — Rust 1.70,
+taffy 0.14.0 — Rust 1.71, slotmap 1.1.1 — Rust 1.58. Это
 не MSRV всего workspace: например, resolved `ordered-float 5.5.0` требует
 Rust 1.90. Workspace устанавливает `rust-version = "1.96"`, toolchain закреплён
 на 1.96.0 в `rust-toolchain.toml`. Более низкий MSRV не заявляется.

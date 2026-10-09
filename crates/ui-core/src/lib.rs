@@ -1,5 +1,19 @@
-//! Render-backend-independent model for the first UI prototype.
+//! Platform-independent retained UI foundation and rectangle scene.
 //! All coordinates are logical pixels. The native shell applies DPI scaling.
+
+mod arena;
+mod dirty;
+mod input;
+mod model;
+mod runtime;
+mod tree;
+
+pub use arena::WidgetId;
+pub use dirty::DirtyFlags;
+pub use input::*;
+pub use model::*;
+pub use runtime::*;
+pub use tree::{Node, TreeError, UiTree};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {
@@ -22,6 +36,32 @@ impl Rect {
     pub fn contains(self, x: f32, y: f32) -> bool {
         x >= self.x && y >= self.y && x < self.x + self.width && y < self.y + self.height
     }
+
+    pub fn is_valid(self) -> bool {
+        [
+            self.x,
+            self.y,
+            self.width,
+            self.height,
+            self.x + self.width,
+            self.y + self.height,
+        ]
+        .into_iter()
+        .all(f32::is_finite)
+            && self.width >= 0.0
+            && self.height >= 0.0
+    }
+
+    pub fn intersection(self, other: Self) -> Option<Self> {
+        if !self.is_valid() || !other.is_valid() {
+            return None;
+        }
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let right = (self.x + self.width).min(other.x + other.width);
+        let bottom = (self.y + self.height).min(other.y + other.height);
+        (right > x && bottom > y).then(|| Self::new(x, y, right - x, bottom - y))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -43,20 +83,20 @@ impl Color {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SolidRect {
     pub bounds: Rect,
     pub color: Color,
 }
 
-#[derive(Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
     pub rectangles: Vec<SolidRect>,
 }
 
 impl Scene {
     pub fn fill(&mut self, bounds: Rect, color: Color) {
-        if bounds.width > 0.0 && bounds.height > 0.0 {
+        if bounds.is_valid() && bounds.width > 0.0 && bounds.height > 0.0 {
             self.rectangles.push(SolidRect { bounds, color });
         }
     }

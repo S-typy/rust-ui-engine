@@ -1,8 +1,11 @@
 //! Native GPU shell and a shape-only demonstration, before text or controls exist.
 
 mod demo;
+mod retained;
 
 use demo::DemoState;
+use retained::RetainedDemo;
+use rust_desktop_ui_core::{InputEvent, Key as UiKey, Modifiers, Point, PointerButton, Size};
 use rust_desktop_ui_render_wgpu::{GpuRenderer, RenderOutcome, SkipReason};
 use std::{
     process::ExitCode,
@@ -65,6 +68,8 @@ struct App {
     renderer: Option<GpuRenderer>,
     window: Option<Arc<Window>>,
     ui: DemoState,
+    retained: Option<RetainedDemo>,
+    modifiers: Modifiers,
     wheel: WheelAccumulator,
     cursor_physical: (f64, f64),
     frames: u64,
@@ -76,11 +81,17 @@ struct App {
 }
 
 impl App {
-    fn new(smoke: bool) -> Self {
-        Self {
+    fn new(smoke: bool, rectangles: bool) -> Result<Self, String> {
+        Ok(Self {
             renderer: None,
             window: None,
             ui: DemoState::default(),
+            retained: if rectangles {
+                None
+            } else {
+                Some(RetainedDemo::new().map_err(|error| error.to_string())?)
+            },
+            modifiers: Modifiers::default(),
             wheel: WheelAccumulator::default(),
             cursor_physical: (0.0, 0.0),
             frames: 0,
@@ -94,7 +105,7 @@ impl App {
                 resized: false,
                 resize_target: None,
             }),
-        }
+        })
     }
 
     fn fail(&mut self, event_loop: &ActiveEventLoop, message: impl ToString) {
@@ -114,6 +125,36 @@ impl App {
             let size = window.inner_size().to_logical::<f32>(window.scale_factor());
             (size.width, size.height)
         })
+    }
+
+    fn pointer(&self) -> Point {
+        let scale = self
+            .window
+            .as_ref()
+            .map_or(1.0, |window| window.scale_factor());
+        Point::new(
+            (self.cursor_physical.0 / scale) as f32,
+            (self.cursor_physical.1 / scale) as f32,
+        )
+    }
+
+    fn input(&mut self, event_loop: &ActiveEventLoop, input: InputEvent) {
+        let (width, height) = self.dimensions();
+        if let Some(demo) = &mut self.retained {
+            let before = demo.runtime.stats();
+            if let Err(error) = demo
+                .prepare(Size::new(width, height))
+                .and_then(|_| demo.input(input))
+            {
+                self.fail(event_loop, error);
+                return;
+            }
+            let changed = demo.runtime.needs_update() || demo.runtime.stats() != before;
+            self.title();
+            if changed {
+                self.request_redraw();
+            }
+        }
     }
 
     fn initialize_renderer(&mut self, event_loop: &ActiveEventLoop) {
@@ -142,7 +183,9 @@ impl App {
             self.fail(event_loop, error);
             return;
         }
-        self.ui.scroll(0, self.dimensions().1);
+        if self.retained.is_none() {
+            self.ui.scroll(0, self.dimensions().1);
+        }
         if let Some(smoke) = &mut self.smoke
             && smoke.stage == SmokeStage::ResizeRequested
             && smoke.resize_target == Some(size)
@@ -181,6 +224,17 @@ impl App {
     fn title(&self) {
         if let Some(window) = &self.window {
             let size = window.inner_size();
+            if let Some(demo) = &self.retained {
+                let stats = demo.runtime.stats();
+                window.set_title(&format!(
+                    "Rust UI Engine | mode=retained | frame={} | layout={} | paint={} | focus={} | hover={} | capture={} | activated={} | removed={} | nodes={} | scroll={:.0} | size={}x{}",
+                    self.frames, stats.layout_passes, stats.paint_passes,
+                    demo.name(demo.runtime.focused()), demo.name(demo.runtime.hovered()),
+                    demo.name(demo.runtime.captured()), demo.activated, demo.removed,
+                    demo.runtime.tree().len(), demo.scroll_y, size.width, size.height
+                ));
+                return;
+            }
             let selected = self
                 .ui
                 .selected_row
@@ -222,11 +276,85 @@ impl App {
             }
             SmokeStage::ResizeRequested if smoke.resized => {
                 self.smoke_stage(SmokeStage::InputApplied);
-                self.click(150.0, 20.0, "synthetic");
-                self.click(400.0, 242.0, "synthetic");
-                self.scroll(MouseScrollDelta::LineDelta(0.0, -4.0), "synthetic");
+                if self.retained.is_some() {
+                    let modifiers = Modifiers::default();
+                    for input in [
+                        // Smoke input is synthetic and may run in a background window.
+                        InputEvent::WindowFocused(true),
+                        InputEvent::PointerMoved {
+                            position: Point::new(50.0, 40.0),
+                        },
+                        InputEvent::PointerDown {
+                            position: Point::new(50.0, 40.0),
+                            button: PointerButton::Primary,
+                            modifiers,
+                        },
+                        InputEvent::PointerUp {
+                            position: Point::new(600.0, 300.0),
+                            button: PointerButton::Primary,
+                            modifiers,
+                        },
+                        InputEvent::KeyDown {
+                            key: UiKey::Tab,
+                            modifiers,
+                            repeat: false,
+                        },
+                        InputEvent::KeyDown {
+                            key: UiKey::Enter,
+                            modifiers,
+                            repeat: false,
+                        },
+                        InputEvent::KeyDown {
+                            key: UiKey::Tab,
+                            modifiers,
+                            repeat: false,
+                        },
+                        InputEvent::KeyDown {
+                            key: UiKey::Delete,
+                            modifiers,
+                            repeat: false,
+                        },
+                        InputEvent::Wheel {
+                            position: Point::new(400.0, 200.0),
+                            delta: Point::new(0.0, -84.0),
+                            modifiers,
+                        },
+                    ] {
+                        self.input(event_loop, input);
+                        if self.failure.is_some() {
+                            return;
+                        }
+                    }
+                } else {
+                    self.click(150.0, 20.0, "synthetic");
+                    self.click(400.0, 242.0, "synthetic");
+                    self.scroll(MouseScrollDelta::LineDelta(0.0, -4.0), "synthetic");
+                }
             }
             SmokeStage::InputApplied => {
+                if let Some(demo) = &self.retained {
+                    if demo.activated != 2
+                        || demo.removed != 1
+                        || demo.scroll_y != 84.0
+                        || demo.runtime.focused().is_some()
+                        || demo.runtime.captured().is_some()
+                    {
+                        self.fail(
+                            event_loop,
+                            "Retained smoke focus/capture/activation/removal/scroll mismatch",
+                        );
+                        return;
+                    }
+                    eprintln!(
+                        "SMOKE PASS mode=retained frames={} resize=native input=synthetic activated=2 removed=1 scroll=84 layout={} paint={}",
+                        self.frames,
+                        demo.runtime.stats().layout_passes,
+                        demo.runtime.stats().paint_passes
+                    );
+                    self.smoke_stage(SmokeStage::Complete);
+                    event_loop.exit();
+                    return;
+                }
                 if self.ui.active_tab != 1
                     || self.ui.selected_row != Some(2)
                     || self.ui.first_row != 12
@@ -257,11 +385,21 @@ impl App {
         };
         let scale = window.scale_factor() as f32;
         let (width, height) = self.dimensions();
-        let scene = self.ui.build_scene(width, height);
+        let legacy_scene;
+        let scene = if let Some(demo) = &mut self.retained {
+            if let Err(error) = demo.prepare(Size::new(width, height)) {
+                self.fail(event_loop, error);
+                return;
+            }
+            demo.scene()
+        } else {
+            legacy_scene = self.ui.build_scene(width, height);
+            &legacy_scene
+        };
         let Some(renderer) = self.renderer.as_mut() else {
             return;
         };
-        match renderer.render(&scene, scale) {
+        match renderer.render(scene, scale) {
             Ok(RenderOutcome::Presented { rectangles }) => {
                 self.frames += 1;
                 self.recovery_attempts = 0;
@@ -318,9 +456,16 @@ impl ApplicationHandler for App {
         if self.renderer.is_none() {
             self.initialize_renderer(event_loop);
         }
+        if let Some(window) = &self.window {
+            self.input(event_loop, InputEvent::WindowFocused(window.has_focus()));
+        }
     }
 
-    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        // A platform suspension need not be preceded by a focus-loss event.
+        self.input(event_loop, InputEvent::WindowFocused(false));
+        self.modifiers = Modifiers::default();
+        self.cursor_physical = (0.0, 0.0);
         self.renderer = None;
         self.window = None;
         self.retry_at = None;
@@ -357,26 +502,101 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor_physical = (position.x, position.y)
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                button: MouseButton::Left,
-                ..
-            } => {
-                let scale = window.scale_factor();
-                self.click(
-                    (self.cursor_physical.0 / scale) as f32,
-                    (self.cursor_physical.1 / scale) as f32,
-                    "window-event",
+                self.cursor_physical = (position.x, position.y);
+                self.input(
+                    event_loop,
+                    InputEvent::PointerMoved {
+                        position: self.pointer(),
+                    },
                 );
             }
-            WindowEvent::MouseWheel { delta, .. } => self.scroll(delta, "window-event"),
-            WindowEvent::KeyboardInput { event, .. }
+            WindowEvent::CursorLeft { .. } => self.input(event_loop, InputEvent::PointerLeft),
+            WindowEvent::MouseInput { state, button, .. } => {
+                if self.retained.is_some() {
+                    let button = match button {
+                        MouseButton::Left => PointerButton::Primary,
+                        MouseButton::Right => PointerButton::Secondary,
+                        MouseButton::Middle => PointerButton::Middle,
+                        MouseButton::Back => PointerButton::Other(4),
+                        MouseButton::Forward => PointerButton::Other(5),
+                        MouseButton::Other(value) => PointerButton::Other(value),
+                    };
+                    let position = self.pointer();
+                    let modifiers = self.modifiers;
+                    let input = if state == ElementState::Pressed {
+                        InputEvent::PointerDown {
+                            position,
+                            button,
+                            modifiers,
+                        }
+                    } else {
+                        InputEvent::PointerUp {
+                            position,
+                            button,
+                            modifiers,
+                        }
+                    };
+                    self.input(event_loop, input);
+                } else if state == ElementState::Pressed && button == MouseButton::Left {
+                    let position = self.pointer();
+                    self.click(position.x, position.y, "window-event");
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                if self.retained.is_some() {
+                    let delta = match delta {
+                        MouseScrollDelta::LineDelta(x, y) => Point::new(x * 84.0, y * 84.0),
+                        MouseScrollDelta::PixelDelta(delta) => Point::new(
+                            (delta.x / window.scale_factor()) as f32,
+                            (delta.y / window.scale_factor()) as f32,
+                        ),
+                    };
+                    self.input(
+                        event_loop,
+                        InputEvent::Wheel {
+                            position: self.pointer(),
+                            delta,
+                            modifiers: self.modifiers,
+                        },
+                    );
+                } else {
+                    self.scroll(delta, "window-event");
+                }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                let state = modifiers.state();
+                self.modifiers = Modifiers {
+                    shift: state.shift_key(),
+                    control: state.control_key(),
+                    alt: state.alt_key(),
+                    super_key: state.super_key(),
+                };
+            }
+            WindowEvent::Focused(focused) => {
+                if !focused {
+                    self.modifiers = Modifiers::default();
+                }
+                self.input(event_loop, InputEvent::WindowFocused(focused));
+            }
+            WindowEvent::KeyboardInput { event, .. } => {
                 if event.state == ElementState::Pressed
-                    && event.logical_key == Key::Named(NamedKey::Escape) =>
-            {
-                event_loop.exit()
+                    && event.logical_key == Key::Named(NamedKey::Escape)
+                {
+                    event_loop.exit();
+                } else {
+                    let key = normalize_key(event.logical_key);
+                    let modifiers = self.modifiers;
+                    let input = if event.state == ElementState::Pressed {
+                        InputEvent::KeyDown {
+                            key,
+                            modifiers,
+                            repeat: event.repeat,
+                        }
+                    } else {
+                        InputEvent::KeyUp { key, modifiers }
+                    };
+                    self.input(event_loop, input);
+                }
             }
             WindowEvent::RedrawRequested => self.render(event_loop),
             _ => {}
@@ -414,14 +634,34 @@ impl ApplicationHandler for App {
     }
 }
 
+fn normalize_key(key: Key) -> UiKey {
+    match key {
+        Key::Named(NamedKey::Tab) => UiKey::Tab,
+        Key::Named(NamedKey::Enter) => UiKey::Enter,
+        Key::Named(NamedKey::Space) => UiKey::Space,
+        Key::Named(NamedKey::Escape) => UiKey::Escape,
+        Key::Named(NamedKey::Delete) => UiKey::Delete,
+        Key::Named(NamedKey::ArrowUp) => UiKey::ArrowUp,
+        Key::Named(NamedKey::ArrowDown) => UiKey::ArrowDown,
+        Key::Named(NamedKey::ArrowLeft) => UiKey::ArrowLeft,
+        Key::Named(NamedKey::ArrowRight) => UiKey::ArrowRight,
+        Key::Named(NamedKey::Home) => UiKey::Home,
+        Key::Named(NamedKey::End) => UiKey::End,
+        Key::Character(text) => UiKey::Character(text.to_string()),
+        _ => UiKey::Other,
+    }
+}
+
 fn run() -> Result<(), String> {
     let mut smoke = false;
+    let mut rectangles = false;
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
             "--smoke-test" => smoke = true,
+            "--rectangles" => rectangles = true,
             "--help" | "-h" => {
                 println!(
-                    "gpu-shell [--smoke-test]\nNative GPU demo. Smoke mode tests presented frames, a native resize and synthetic demo input.\nSet WGPU_BACKEND=dx12, vulkan or metal to select a compiled native backend."
+                    "gpu-shell [--rectangles] [--smoke-test]\nNative retained UI demo; --rectangles selects the original rectangle scene.\nSmoke mode tests presented frames, a native resize and synthetic input.\nSet WGPU_BACKEND=dx12, vulkan or metal to select a compiled native backend."
                 );
                 return Ok(());
             }
@@ -430,7 +670,7 @@ fn run() -> Result<(), String> {
     }
     let event_loop =
         EventLoop::new().map_err(|error| format!("Cannot create event loop: {error}"))?;
-    let mut app = App::new(smoke);
+    let mut app = App::new(smoke, rectangles)?;
     event_loop
         .run_app(&mut app)
         .map_err(|error| format!("Event loop failed: {error}"))?;

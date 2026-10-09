@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/ui-core",
+    "crates/ui-layout",
     "crates/ui-render-wgpu",
     "examples/gpu-shell",
 ]
@@ -18,6 +19,7 @@ wgpu = { version = "=30.0.1", default-features = false, features = ["std", "park
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen"] }
 bytemuck = { version = "1.23", features = ["derive"] }
 pollster = "0.4"
+taffy = { version = "=0.14.0", default-features = false, features = ["std", "taffy_tree", "flexbox"] }
 
 [profile.release]
 lto = "thin"

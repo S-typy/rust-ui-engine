@@ -1,7 +1,11 @@
 # Windows runtime smoke test
 
-`tests/windows_smoke.py` запускает собранный `gpu-shell.exe` на интерактивном
-Windows desktop. Требуется Python 3.10+; сторонние Python-зависимости не обязательны.
+`tests/windows_smoke.py` запускает собранный `gpu-shell.exe --rectangles` на
+интерактивном Windows desktop и проверяет исходную прямоугольную демонстрацию.
+Аргумент `--rectangles` передаётся самим скриптом. Для retained demo, который
+теперь запускается по умолчанию, используйте отдельный
+[retained smoke test](retained-smoke.md). Требуется Python 3.10+; сторонние
+Python-зависимости не обязательны.
 
 ```powershell
 cargo build --workspace --release --locked

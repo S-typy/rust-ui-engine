@@ -1,7 +1,7 @@
 # Third-party notices
 
 Snapshot: 2026-10-09. The project code is licensed under Apache-2.0. Dependencies
-retain the licenses declared below. The table covers all 237 registry packages in
+retain the licenses declared below. The table covers all 239 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
 
@@ -22,7 +22,9 @@ not constitute a complete binary redistribution review.
 
 ## Evidence and open items
 
-- Direct dependency license texts were inspected in their published packages.
+- Direct dependency license texts were inspected in their published packages or
+  exact source revisions. Taffy omits LICENSE from its crate archive; its MIT
+  text is linked below at the revision recorded in `.cargo_vcs_info.json`.
 - Exact-revision upstream evidence is linked for packages whose crate archives
   omit separate license texts. `r-efi` carries its licensing and attribution in
   `AUTHORS`. The inventory records these files and their hashes.
@@ -193,6 +195,7 @@ not constitute a complete binary redistribution review.
 | simd_cesu8 | 1.2.0 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/simd_cesu8/1.2.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/simd_cesu8/1.2.0/source/LICENSE-MIT) |
 | simdutf8 | 0.1.5 | MIT OR Apache-2.0 | [LICENSE-Apache](https://docs.rs/crate/simdutf8/0.1.5/source/LICENSE-Apache), [LICENSE-MIT](https://docs.rs/crate/simdutf8/0.1.5/source/LICENSE-MIT) |
 | slab | 0.4.12 | MIT | [LICENSE](https://docs.rs/crate/slab/0.4.12/source/LICENSE) |
+| slotmap | 1.1.1 | Zlib | [LICENSE](https://docs.rs/crate/slotmap/1.1.1/source/LICENSE) |
 | smallvec | 1.16.2 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/smallvec/1.16.2/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/smallvec/1.16.2/source/LICENSE-MIT) |
 | smithay-client-toolkit | 0.19.2 | MIT | [LICENSE.txt](https://docs.rs/crate/smithay-client-toolkit/0.19.2/source/LICENSE.txt) |
 | smol_str | 0.2.2 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/smol_str/0.2.2/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/smol_str/0.2.2/source/LICENSE-MIT) |
@@ -200,6 +203,7 @@ not constitute a complete binary redistribution review.
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/static_assertions/1.1.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/static_assertions/1.1.0/source/LICENSE-MIT) |
 | syn | 2.0.119 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/syn/2.0.119/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/syn/2.0.119/source/LICENSE-MIT) |
 | syn | 3.0.6 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/syn/3.0.6/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/syn/3.0.6/source/LICENSE-MIT) |
+| taffy | 0.14.0 | MIT | [upstream LICENSE](https://raw.githubusercontent.com/DioxusLabs/taffy/77f385683c1d698c91a23a259f87fdddf26925fb/LICENSE) |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/thiserror/1.0.69/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/thiserror/1.0.69/source/LICENSE-MIT) |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/thiserror/2.0.21/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/thiserror/2.0.21/source/LICENSE-MIT) |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/thiserror-impl/1.0.69/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/thiserror-impl/1.0.69/source/LICENSE-MIT) |

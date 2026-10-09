@@ -8,6 +8,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+rust-desktop-ui-layout = { version = "0.1.0", path = "../../crates/ui-layout" }
 rust-desktop-ui-core = { version = "0.1.0", path = "../../crates/ui-core" }
 rust-desktop-ui-render-wgpu = { version = "0.1.0", path = "../../crates/ui-render-wgpu" }
 winit.workspace = true

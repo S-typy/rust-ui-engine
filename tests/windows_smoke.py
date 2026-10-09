@@ -437,7 +437,7 @@ def main() -> int:
     try:
         windows = Windows()
         with (output / "stdout.log").open("wb") as stdout, (output / "stderr.log").open("wb") as stderr:
-            process = subprocess.Popen([str(executable)], stdout=stdout, stderr=stderr,
+            process = subprocess.Popen([str(executable), "--rectangles"], stdout=stdout, stderr=stderr,
                                        creationflags=subprocess.CREATE_NO_WINDOW)
             report["process_id"] = process.pid
             session = Session(windows, process, report, args.timeout)
