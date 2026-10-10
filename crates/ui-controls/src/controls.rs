@@ -1708,11 +1708,8 @@ impl Controls {
                     };
                     let caret = layout.caret_geometry(active);
                     if self.runtime.focused() == Some(id) {
-                        control.text_scroll_x = control
-                            .text_scroll_x
-                            .max(caret.x + caret.width - text_bounds.x - text_bounds.width)
-                            .min((caret.x - text_bounds.x).max(0.0))
-                            .max(0.0);
+                        control.text_scroll_x =
+                            horizontal_caret_scroll(control.text_scroll_x, caret, text_bounds);
                     } else if run.text.is_empty() {
                         control.text_scroll_x = 0.0;
                     }
@@ -1945,6 +1942,15 @@ fn filter_single_line(text: &str) -> String {
         .filter(|c| !matches!(c, '\r' | '\n' | '\t'))
         .collect()
 }
+
+fn horizontal_caret_scroll(previous: f32, caret: Rect, viewport: Rect) -> f32 {
+    // RTL trailing whitespace can hang left of the line's intrinsic width.
+    // The offset must therefore be signed: a negative value scrolls it right.
+    previous
+        .max(caret.x + caret.width - viewport.x - viewport.width)
+        .min(caret.x - viewport.x)
+}
+
 fn fill_clipped(scene: &mut Scene, bounds: Rect, clip: Rect, color: Color) {
     if let Some(bounds) = bounds.intersection(clip) {
         scene.fill(bounds, color);
@@ -1999,5 +2005,27 @@ fn draw_border(scene: &mut Scene, bounds: Rect, clip: Rect, border: Border) {
         ),
     ] {
         fill_clipped(scene, rect, clip, border.color);
+    }
+}
+
+#[cfg(test)]
+mod scrolling_tests {
+    use super::*;
+
+    #[test]
+    fn hanging_rtl_caret_scrolls_into_view_without_font_dependent_metrics() {
+        let viewport = Rect::new(20.0, 13.0, 176.0, 26.0);
+        let mut offset = 0.0;
+        // Includes macOS and Linux trailing-space geometry, followed by
+        // navigation right and back to the hanging space.
+        for x in [16.110_352, 16.359_985, 1220.0, 1200.0, 16.110_352] {
+            let caret = Rect::new(x, 16.5, 1.0, 17.0);
+            offset = horizontal_caret_scroll(offset, caret, viewport);
+            let visible_x = caret.x - offset;
+            assert!(visible_x >= viewport.x);
+            assert!(visible_x + caret.width <= viewport.x + viewport.width);
+            assert_eq!(horizontal_caret_scroll(offset, caret, viewport), offset);
+        }
+        assert!(offset < 0.0);
     }
 }
