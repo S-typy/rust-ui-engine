@@ -17,6 +17,8 @@ layout, текст, компоненты, Ribbon, TreeGrid и платформе
 | `rust-desktop-ui-treegrid` | Источник данных, разреженный индекс, view state и viewport rendering; зависит только от core |
 | `rust-desktop-ui-render-wgpu` | GPU rectangle/glyph pipelines, atlas, surface/device lifecycle |
 | `rust-desktop-ui-platform-winit` | Native event loop, ввод, IME, clipboard и AccessKit adapter |
+| `rust-desktop-ui-xaml` | Независимый от UI compiler профиля Window/TextBox, типизированное описание формы |
+| `xaml-form` | Native форма, однострочный EditBox, Fluent Light/Dark и адаптер скомпилированной разметки |
 | `controls-gallery` | Книжный источник, фоновые операции, связывание компонентов и платформенной семантики |
 | `gpu-shell` | Ранние retained/rectangle диагностические сценарии |
 
@@ -39,6 +41,9 @@ flowchart TD
 TreeGrid не принимают wgpu/winit types. Платформенный host реализован отдельно;
 renderer сохраняет адаптер surface к winit, как описано в [ADR-002](adr/ADR-002-scene-wgpu.md).
 Новые границы уточняет [ADR-004](adr/ADR-004-text-controls-platform-treegrid.md).
+Компиляцию собственного профиля XAML при сборке описывает
+[ADR-005](adr/ADR-005-compiled-xaml.md). Первое подмножество и запуск формы —
+[XAML](xaml.md).
 
 ## Retained tree и layout
 
@@ -66,22 +71,27 @@ flex-wrap, baseline alignment и произвольные intrinsic callbacks н
 
 ## Scene и GPU
 
-Scene хранит отдельные массивы `SolidRect` и `TextRun` с единым списком
-`DrawCommand`. `fill`, `text` и `append` сохраняют последовательность рисования.
+Scene хранит отдельные массивы `SolidRect`, `RoundedRect` и `TextRun` с единым списком
+`DrawCommand`. `fill`, `rounded_fill`, `text` и `append` сохраняют последовательность рисования.
 Смешение прямоугольников и текста не перегруппировывается поверх пользовательского
 порядка: это важно для выделения, текста, caret и перекрывающих popup.
 
 Runtime вычисляет translation, scroll и ancestor clips. Прямоугольники обрезаются
 геометрически. Controls формируют текстовые runs с собственными clip bounds.
+Rounded fill сохраняет исходную геометрию углов при прямоугольном clipping;
+uniform radius сглаживается GPU shader. Скругление не создаёт clip для потомков.
 Renderer переводит логические координаты в физические, запрашивает подготовленные
 глифы и рисует instanced quads с RGBA atlas. Swash выполняет CPU rasterization
 глифов; конечная композиция UI выполняется GPU, скрытого software renderer нет.
 
 Outline-маски используют белый RGB и coverage alpha с text tint; цветные глифы
-сохраняют свой цвет. Atlas имеет размер 2048×2048 и padding между glyph slots.
+сохраняют свой цвет. `Color` задаёт straight-alpha sRGB; renderer переводит RGB
+в linear перед смешением. Glyph premultiplication выполняется в linear space,
+atlas и surface используют sRGB-форматы. Альфа остаётся линейным coverage.
+Atlas имеет размер 2048×2048 и padding между glyph slots.
 При заполнении atlas очищается до построения UV текущего кадра; набор видимых
 глифов, который не помещается после повторной загрузки, возвращает явную ошибку.
-Текущие лимиты кадра — 16 384 rectangles, 16 384 text runs, суммарно 1 MiB
+Текущие лимиты кадра — 16 384 solid/rounded rectangles вместе, 16 384 text runs, суммарно 1 MiB
 входного UTF-8 и 65 536 glyph instances. Удерживаемые bitmap allocations
 кадра ограничены 64 MiB с учётом общих Arc. Paths,
 произвольные изображения, сложные clip masks, rotations и opacity layers не входят

@@ -1,0 +1,10 @@
+<Window xmlns="urn:rust-ui-engine:ui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Форма · Rust UI"
+        Width="640" Height="280"
+        Padding="32" Theme="Light">
+    <TextBox x:Name="Message"
+             Height="36"
+             AutomationName="Текст"
+             PlaceholderText="Введите текст…" />
+</Window>

@@ -145,6 +145,9 @@ struct Control {
     checked: bool,
     role: Option<Role>,
     tooltip: Option<String>,
+    placeholder: String,
+    single_line: bool,
+    text_scroll_x: f32,
     text_scroll: f32,
     default_height: bool,
     caret: TextCaret,
@@ -350,6 +353,21 @@ impl Controls {
             control.tooltip = Some(text.into());
         }
     }
+    /// Placeholder is presentation only; it never changes the document or its accessible name.
+    pub fn set_placeholder(
+        &mut self,
+        id: WidgetId,
+        text: impl Into<String>,
+    ) -> Result<(), ControlError> {
+        let control = self
+            .controls
+            .get_mut(&id)
+            .filter(|c| matches!(c.kind, Kind::TextBox(_)))
+            .ok_or_else(|| ControlError::Invalid("Control is not a TextBox".into()))?;
+        control.placeholder = text.into();
+        self.scene_dirty = true;
+        Ok(())
+    }
     pub fn set_theme(&mut self, theme: Theme) -> Result<(), ControlError> {
         if self.theme == theme {
             return Ok(());
@@ -414,6 +432,9 @@ impl Controls {
                 checked: false,
                 role: None,
                 tooltip: None,
+                placeholder: String::new(),
+                single_line: false,
+                text_scroll_x: 0.0,
                 text_scroll: 0.0,
                 default_height,
                 caret: TextCaret::default(),
@@ -523,6 +544,22 @@ impl Controls {
             None,
             style,
         )
+    }
+    /// A single-line editor. CR, LF and tab are removed from initial, pasted,
+    /// programmatic and committed text; Enter leaves the document unchanged.
+    pub fn edit_box(
+        &mut self,
+        parent: WidgetId,
+        label: impl Into<String>,
+        value: impl Into<String>,
+        style: LayoutStyle,
+    ) -> Result<WidgetId, ControlError> {
+        let value = value.into();
+        let id = self.text_box(parent, label, filter_single_line(&value), style)?;
+        if let Some(control) = self.controls.get_mut(&id) {
+            control.single_line = true;
+        }
+        Ok(id)
     }
     pub fn scroll_view(
         &mut self,
@@ -1239,6 +1276,7 @@ impl Controls {
         let Some(Control {
             kind: Kind::TextBox(document),
             caret,
+            single_line,
             ..
         }) = self.controls.get_mut(&id)
         else {
@@ -1326,7 +1364,7 @@ impl Controls {
             Key::Delete => {
                 document.delete_forward();
             }
-            Key::Enter => {
+            Key::Enter if !*single_line => {
                 document.insert("\n");
             }
             Key::Character(value) if shortcut => match value.to_lowercase().as_str() {
@@ -1365,10 +1403,19 @@ impl Controls {
         if let Some(id) = self.runtime.focused().filter(|&id| self.is_enabled(id))
             && let Some(Control {
                 kind: Kind::TextBox(document),
+                single_line,
                 ..
             }) = self.controls.get_mut(&id)
         {
-            document.insert(text);
+            if *single_line {
+                let text = filter_single_line(text);
+                // A rejected Enter/tab event must not erase the current selection.
+                if !text.is_empty() {
+                    document.insert(&text);
+                }
+            } else {
+                document.insert(text);
+            }
             self.scene_dirty = true;
         }
         Ok(())
@@ -1382,9 +1429,15 @@ impl Controls {
         if let Some(id) = self.runtime.focused().filter(|&id| self.is_enabled(id))
             && let Some(Control {
                 kind: Kind::TextBox(document),
+                single_line,
                 ..
             }) = self.controls.get_mut(&id)
         {
+            if *single_line && text.contains(['\r', '\n', '\t']) {
+                return Err(ControlError::Invalid(
+                    "Single-line IME preedit cannot contain CR, LF or tab".into(),
+                ));
+            }
             document
                 .set_preedit(text, cursor)
                 .map_err(|e| ControlError::Text(e.to_string()))?;
@@ -1397,10 +1450,15 @@ impl Controls {
         if let Some(id) = self.runtime.focused().filter(|&id| self.is_enabled(id))
             && let Some(Control {
                 kind: Kind::TextBox(document),
+                single_line,
                 ..
             }) = self.controls.get_mut(&id)
         {
-            document.commit(text);
+            if *single_line {
+                document.commit(&filter_single_line(text));
+            } else {
+                document.commit(text);
+            }
             self.scene_dirty = true;
         }
         Ok(())
@@ -1442,13 +1500,18 @@ impl Controls {
     pub fn set_text(&mut self, id: WidgetId, text: &str) -> Result<(), ControlError> {
         let Some(Control {
             kind: Kind::TextBox(document),
+            single_line,
             ..
         }) = self.controls.get_mut(&id)
         else {
             return Err(ControlError::Invalid("Control is not a TextBox".into()));
         };
         document.select_all();
-        document.insert(text);
+        if *single_line {
+            document.insert(&filter_single_line(text));
+        } else {
+            document.insert(text);
+        }
         self.scene_dirty = true;
         Ok(())
     }
@@ -1479,21 +1542,56 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            let fluent_editor = self.theme.is_fluent()
+                && self
+                    .controls
+                    .get(&id)
+                    .is_some_and(|c| matches!(c.kind, Kind::TextBox(_)));
             let color = if self.runtime.hovered() == Some(id) {
                 paint.hover_background.or(paint.background)
             } else {
                 paint.background
             };
-            if let Some(color) = color {
-                fill_clipped(&mut self.scene, bounds, clip, color);
-            }
-            if let Some(border) = paint.border {
-                draw_border(&mut self.scene, bounds, clip, border);
-            }
-            if self.runtime.focused() == Some(id)
-                && let Some(border) = paint.focus_border
-            {
-                draw_border(&mut self.scene, bounds, clip, border);
+            if fluent_editor {
+                self.scene.rounded_fill(bounds, clip, 4.0, tokens.border);
+                let inset = 1.0_f32.min(bounds.width * 0.5).min(bounds.height * 0.5);
+                let inner = Rect::new(
+                    bounds.x + inset,
+                    bounds.y + inset,
+                    (bounds.width - inset * 2.0).max(0.0),
+                    (bounds.height - inset * 2.0).max(0.0),
+                );
+                self.scene.rounded_fill(
+                    inner,
+                    clip,
+                    (4.0 - inset).max(0.0),
+                    color.unwrap_or(tokens.surface),
+                );
+                if self.runtime.focused() == Some(id) {
+                    fill_clipped(
+                        &mut self.scene,
+                        Rect::new(
+                            bounds.x + 4.0,
+                            bounds.y + bounds.height - 2.0,
+                            (bounds.width - 8.0).max(0.0),
+                            2.0,
+                        ),
+                        clip,
+                        tokens.focus,
+                    );
+                }
+            } else {
+                if let Some(color) = color {
+                    fill_clipped(&mut self.scene, bounds, clip, color);
+                }
+                if let Some(border) = paint.border {
+                    draw_border(&mut self.scene, bounds, clip, border);
+                }
+                if self.runtime.focused() == Some(id)
+                    && let Some(border) = paint.focus_border
+                {
+                    draw_border(&mut self.scene, bounds, clip, border);
+                }
             }
             if let Some(custom) = self.custom_scenes.get(&id) {
                 append_clipped(&mut self.scene, custom, clip);
@@ -1511,10 +1609,11 @@ impl Controls {
                 Kind::TextBox(_) => 5.0,
                 _ => ((bounds.height - tokens.font_size * 1.4) * 0.5).clamp(0.0, 5.0),
             };
+            let horizontal_padding = if fluent_editor { 12.0 } else { 8.0 };
             let mut text_bounds = Rect::new(
-                bounds.x + 8.0,
+                bounds.x + horizontal_padding,
                 bounds.y + vertical_padding,
-                (bounds.width - 16.0).max(0.0),
+                (bounds.width - horizontal_padding * 2.0).max(0.0),
                 (bounds.height - vertical_padding * 2.0).max(0.0),
             );
             let mut label = control.label.clone();
@@ -1573,7 +1672,7 @@ impl Controls {
                     400
                 },
                 align,
-                wrap: !control.kind.clickable(),
+                wrap: !control.kind.clickable() && !control.single_line,
             };
             if editable {
                 if text_bounds.width <= 0.0 || text_bounds.height <= 0.0 {
@@ -1586,6 +1685,43 @@ impl Controls {
                     .engine
                     .prepare(&run, 1.0)
                     .map_err(|e| ControlError::Text(e.to_string()))?;
+                if control.single_line {
+                    // Center against actual document metrics, never placeholder glyphs.
+                    let padding = ((text_bounds.height - layout.height.ceil()) * 0.5).max(0.0);
+                    run.bounds.y = text_bounds.y + padding;
+                    run.bounds.height = (text_bounds.height - padding).max(0.0);
+                    // Give an unwrapped RTL line its full intrinsic width before
+                    // scrolling. Changing this width with the scroll offset would
+                    // move Start alignment and cancel the horizontal translation.
+                    run.bounds.width = layout.width.max(text_bounds.width);
+                    layout = self
+                        .engine
+                        .prepare(&run, 1.0)
+                        .map_err(|e| ControlError::Text(e.to_string()))?;
+                    control.text_scroll = 0.0;
+                    let active = TextCaret {
+                        index: match &control.kind {
+                            Kind::TextBox(document) => document.display_selection().focus,
+                            _ => 0,
+                        },
+                        ..control.caret
+                    };
+                    let caret = layout.caret_geometry(active);
+                    if self.runtime.focused() == Some(id) {
+                        control.text_scroll_x = control
+                            .text_scroll_x
+                            .max(caret.x + caret.width - text_bounds.x - text_bounds.width)
+                            .min((caret.x - text_bounds.x).max(0.0))
+                            .max(0.0);
+                    } else if run.text.is_empty() {
+                        control.text_scroll_x = 0.0;
+                    }
+                    run.bounds.x -= control.text_scroll_x;
+                    layout = self
+                        .engine
+                        .prepare(&run, 1.0)
+                        .map_err(|e| ControlError::Text(e.to_string()))?;
+                }
                 if let Kind::TextBox(document) = &control.kind {
                     let focused = self.runtime.focused() == Some(id);
                     let selection = document.display_selection();
@@ -1597,6 +1733,7 @@ impl Controls {
                     }
                     let caret = layout.caret_geometry(control.caret);
                     if focused
+                        && !control.single_line
                         && (caret.y < text_bounds.y
                             || caret.y + caret.height > text_bounds.y + text_bounds.height)
                     {
@@ -1626,7 +1763,18 @@ impl Controls {
                             );
                         }
                     }
-                    self.scene.text(run.clone());
+                    if document.text().is_empty()
+                        && document.composition().is_none()
+                        && !control.placeholder.is_empty()
+                    {
+                        let mut placeholder = run.clone();
+                        placeholder.text = control.placeholder.clone();
+                        placeholder.color = tokens.muted;
+                        placeholder.wrap = false;
+                        self.scene.text(placeholder);
+                    } else {
+                        self.scene.text(run.clone());
+                    }
                     if focused
                         && self.caret_visible
                         && document.composition().is_none_or(|c| c.cursor.is_some())
@@ -1791,6 +1939,12 @@ fn add_stats(target: &mut FrameStats, value: FrameStats) {
     target.painted_nodes += value.painted_nodes;
     target.semantics_nodes += value.semantics_nodes;
 }
+
+fn filter_single_line(text: &str) -> String {
+    text.chars()
+        .filter(|c| !matches!(c, '\r' | '\n' | '\t'))
+        .collect()
+}
 fn fill_clipped(scene: &mut Scene, bounds: Rect, clip: Rect, color: Color) {
     if let Some(bounds) = bounds.intersection(clip) {
         scene.fill(bounds, color);
@@ -1811,6 +1965,13 @@ fn append_clipped(target: &mut Scene, source: &Scene, clip: Rect) {
                     let mut run = run.clone();
                     run.clip = effective;
                     target.text(run);
+                }
+            }
+            rust_desktop_ui_core::DrawCommand::RoundedRectangle(index) => {
+                if let Some(rounded) = source.rounded_rectangles.get(index)
+                    && let Some(effective) = rounded.clip.intersection(clip)
+                {
+                    target.rounded_fill(rounded.bounds, effective, rounded.radius, rounded.color);
                 }
             }
         }

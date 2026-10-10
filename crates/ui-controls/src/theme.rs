@@ -6,6 +6,8 @@ pub enum Theme {
     Light,
     Dark,
     Compact,
+    FluentLight,
+    FluentDark,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -25,7 +27,63 @@ pub struct ThemeTokens {
 }
 
 impl Theme {
+    pub fn is_fluent(self) -> bool {
+        matches!(self, Self::FluentLight | Self::FluentDark)
+    }
     pub fn tokens(self) -> ThemeTokens {
+        if self.is_fluent() {
+            let dark = self == Self::FluentDark;
+            return ThemeTokens {
+                canvas: if dark {
+                    Color::rgb(32, 32, 32)
+                } else {
+                    Color::rgb(243, 243, 243)
+                },
+                surface: if dark {
+                    Color::rgb(45, 45, 45)
+                } else {
+                    Color::rgb(255, 255, 255)
+                },
+                text: if dark {
+                    Color::rgb(245, 245, 245)
+                } else {
+                    Color::rgb(27, 27, 27)
+                },
+                muted: if dark {
+                    Color::rgb(170, 170, 170)
+                } else {
+                    Color::rgb(105, 105, 105)
+                },
+                border: if dark {
+                    Color::rgb(85, 85, 85)
+                } else {
+                    Color::rgb(205, 205, 205)
+                },
+                hover: if dark {
+                    Color::rgb(50, 50, 50)
+                } else {
+                    Color::rgb(250, 250, 250)
+                },
+                pressed: if dark {
+                    Color::rgb(40, 40, 40)
+                } else {
+                    Color::rgb(235, 235, 235)
+                },
+                selected: if dark {
+                    Color::rgb(35, 75, 105)
+                } else {
+                    Color::rgb(196, 225, 245)
+                },
+                focus: if dark {
+                    Color::rgb(96, 205, 255)
+                } else {
+                    Color::rgb(0, 95, 184)
+                },
+                control_height: 36.0,
+                font_size: 14.0,
+                spacing: 8.0,
+            };
+        }
         let compact = self == Self::Compact;
         if self == Self::Dark {
             ThemeTokens {

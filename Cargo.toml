@@ -8,8 +8,10 @@ members = [
     "crates/ui-treegrid",
     "crates/ui-render-wgpu",
     "crates/ui-platform-winit",
+    "crates/ui-xaml",
     "examples/gpu-shell",
     "examples/controls-gallery",
+    "examples/xaml-form",
 ]
 
 [workspace.package]

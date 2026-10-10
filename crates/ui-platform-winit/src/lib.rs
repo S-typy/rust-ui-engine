@@ -88,6 +88,10 @@ pub trait DesktopApp {
 pub struct RunOptions {
     pub width: f64,
     pub height: f64,
+    /// Optional minimum client size in logical pixels. `None` leaves limits to the OS.
+    pub min_size: Option<Size>,
+    /// Append renderer counters to the native title for diagnostics.
+    pub show_render_stats: bool,
     /// Developer smoke: render, resize, render again, then exit with diagnostics.
     pub smoke_test: bool,
 }
@@ -97,6 +101,8 @@ impl Default for RunOptions {
         Self {
             width: 1200.0,
             height: 800.0,
+            min_size: Some(Size::new(480.0, 320.0)),
+            show_render_stats: true,
             smoke_test: false,
         }
     }

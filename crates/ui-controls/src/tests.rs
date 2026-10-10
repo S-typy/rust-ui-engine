@@ -692,3 +692,248 @@ fn themed_text_measurement_matches_paint_metrics_and_rejects_invalid_widths() {
     assert_eq!(prepared.height, measured.height);
     assert!(prepared.height <= run.clip.height);
 }
+
+#[test]
+fn editbox_placeholder_is_presentation_and_keeps_empty_caret_mapping() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(
+            ui.root(),
+            "Имя",
+            "",
+            LayoutStyle {
+                width: Length::Px(260.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    ui.set_placeholder(id, "Введите имя").unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.document(id).unwrap().text(), "");
+    let semantics = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert_eq!(semantics.label, "Имя");
+    assert_eq!(semantics.value, Some(String::new()));
+    assert!(ui.scene().texts.iter().any(|run| run.text == "Введите имя"));
+    focus(&mut ui, id);
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let caret = ui.caret_bounds().unwrap();
+    assert_eq!(bounds.height, 36.0);
+    assert_eq!(caret.x, bounds.x + 12.0);
+    assert!(caret.y >= bounds.y + 5.0 && caret.y + caret.height <= bounds.y + bounds.height - 5.0);
+    let position = Point::new(bounds.x + 180.0, caret.y + caret.height * 0.5);
+    pointer(&mut ui, position, true);
+    pointer(&mut ui, position, false);
+    assert_eq!(ui.document(id).unwrap().selection().focus, 0);
+    ui.ime_preedit("日本", Some((6, 6))).unwrap();
+    frame(&mut ui);
+    assert!(!ui.scene().texts.iter().any(|run| run.text == "Введите имя"));
+    assert_eq!(ui.document(id).unwrap().text(), "");
+    ui.cancel_preedit();
+    frame(&mut ui);
+    assert!(ui.scene().texts.iter().any(|run| run.text == "Введите имя"));
+    ui.text_input("Анна").unwrap();
+    frame(&mut ui);
+    assert!(!ui.scene().texts.iter().any(|run| run.text == "Введите имя"));
+    assert_eq!(ui.document(id).unwrap().text(), "Анна");
+}
+
+#[test]
+fn editbox_filters_single_line_inputs_without_changing_multiline_textbox() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Name", "a\r\nb\tc", style(260.0, 36.0))
+        .unwrap();
+    let multiline = ui
+        .text_box(ui.root(), "Notes", "a\nb", style(260.0, 90.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    assert_eq!(ui.document(id).unwrap().text(), "abc");
+    key(&mut ui, Key::Enter, Modifiers::default());
+    ui.text_input("\tD\r\nE").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "abcDE");
+    ui.set_text(id, "x\ny\tz\r").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "xyz");
+    key(
+        &mut ui,
+        Key::Character("a".into()),
+        Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    );
+    ui.text_input("\r\n\t").unwrap();
+    assert_eq!(ui.document(id).unwrap().selected_text(), "xyz");
+    assert!(ui.ime_preedit("a\nb", Some((3, 3))).is_err());
+    assert!(ui.document(id).unwrap().composition().is_none());
+    ui.set_text(id, "").unwrap();
+    ui.ime_commit("Я\n🙂\t").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "Я🙂");
+    focus(&mut ui, multiline);
+    key(&mut ui, Key::Enter, Modifiers::default());
+    ui.text_input("c\td").unwrap();
+    assert_eq!(ui.document(multiline).unwrap().text(), "a\nb\nc\td");
+}
+
+#[test]
+fn fluent_editbox_uses_rounded_skin_and_bottom_focus_without_changing_identity() {
+    let mut ui = Controls::new(Theme::Light).unwrap();
+    let id = ui
+        .edit_box(
+            ui.root(),
+            "Name",
+            "Ada",
+            LayoutStyle {
+                width: Length::Px(240.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    frame(&mut ui);
+    assert!(ui.scene().rounded_rectangles.is_empty());
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        focus(&mut ui, id);
+        frame(&mut ui);
+        let bounds = ui.runtime.bounds(id).unwrap();
+        assert_eq!(bounds.height, 36.0);
+        assert_eq!(ui.document(id).unwrap().text(), "Ada");
+        let rounded = &ui.scene().rounded_rectangles;
+        assert_eq!(rounded.len(), 2);
+        assert_eq!(rounded[0].bounds, bounds);
+        assert_eq!(rounded[0].radius, 4.0);
+        assert_eq!(rounded[1].radius, 3.0);
+        assert!(ui.scene().rectangles.iter().any(|r| r.bounds
+            == Rect::new(bounds.x + 4.0, bounds.y + 34.0, bounds.width - 8.0, 2.0)
+            && r.color == theme.tokens().focus));
+        let run = ui
+            .scene()
+            .texts
+            .iter()
+            .find(|run| run.text == "Ada")
+            .unwrap();
+        assert_eq!(run.font_size, 14.0);
+        assert!(!run.wrap);
+    }
+    ui.set_theme(Theme::Light).unwrap();
+    frame(&mut ui);
+    assert!(ui.scene().rounded_rectangles.is_empty());
+    assert_eq!(ui.runtime.bounds(id).unwrap().height, 34.0);
+}
+
+#[test]
+fn editbox_horizontal_scroll_preserves_caret_hit_testing_and_clip() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let text = "0123456789 ".repeat(20);
+    let id = ui
+        .edit_box(ui.root(), "Long value", &text, style(200.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let caret = ui.caret_bounds().unwrap();
+    assert!(caret.x + caret.width <= bounds.x + bounds.width - 12.0 + 0.01);
+    assert!(caret.x >= bounds.x + 12.0);
+    let run = ui
+        .scene()
+        .texts
+        .iter()
+        .find(|run| run.text == text)
+        .unwrap();
+    assert!(run.bounds.x < bounds.x);
+    assert_eq!(run.clip.x, bounds.x + 12.0);
+    key(&mut ui, Key::Home, Modifiers::default());
+    frame(&mut ui);
+    assert_eq!(ui.caret_bounds().unwrap().x, bounds.x + 12.0);
+    key(&mut ui, Key::End, Modifiers::default());
+    frame(&mut ui);
+    let caret = ui.caret_bounds().unwrap();
+    let position = Point::new(bounds.x + 13.0, caret.y + caret.height * 0.5);
+    pointer(&mut ui, position, true);
+    pointer(&mut ui, position, false);
+    assert!(ui.document(id).unwrap().selection().focus < text.len());
+    key(
+        &mut ui,
+        Key::Character("a".into()),
+        Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    );
+    frame(&mut ui);
+    for rect in ui
+        .scene()
+        .rectangles
+        .iter()
+        .filter(|r| r.color == Theme::FluentLight.tokens().selected)
+    {
+        assert!(rect.bounds.x >= bounds.x + 12.0);
+        assert!(rect.bounds.x + rect.bounds.width <= bounds.x + bounds.width - 12.0);
+    }
+}
+
+#[test]
+fn editbox_disable_and_hide_revoke_caret_and_cancel_composition() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Name", "Ada", style(200.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.ime_preedit("日本", Some((6, 6))).unwrap();
+    frame(&mut ui);
+    assert!(ui.caret_bounds().is_some());
+    ui.set_enabled(id, false).unwrap();
+    assert!(ui.caret_bounds().is_none());
+    ui.text_input("ignored").unwrap();
+    ui.ime_commit("ignored").unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.document(id).unwrap().text(), "Ada");
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert!(!ui.blink_caret());
+
+    ui.set_enabled(id, true).unwrap();
+    focus(&mut ui, id);
+    ui.ime_preedit("日本", Some((6, 6))).unwrap();
+    frame(&mut ui);
+    let mut props = ui.runtime.tree().node(id).unwrap().props.clone();
+    props.visible = false;
+    ui.runtime
+        .apply(Mutation::SetProps { node: id, props })
+        .unwrap();
+    assert!(ui.caret_bounds().is_none());
+    ui.ime_commit("ignored").unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.document(id).unwrap().text(), "Ada");
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert!(ui.scene().rounded_rectangles.is_empty());
+    assert!(!ui.blink_caret());
+}
+
+#[test]
+fn editbox_rtl_horizontal_scroll_keeps_both_document_ends_visible() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let text = "שלום עולם ".repeat(20);
+    let id = ui
+        .edit_box(ui.root(), "RTL", &text, style(200.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    for key_value in [Key::Home, Key::End, Key::Home] {
+        key(&mut ui, key_value, Modifiers::default());
+        frame(&mut ui);
+        let bounds = ui.runtime.bounds(id).unwrap();
+        let caret = ui.caret_bounds().unwrap();
+        assert!(
+            caret.x >= bounds.x + 12.0
+                && caret.x + caret.width <= bounds.x + bounds.width - 12.0 + 0.01,
+            "RTL caret {caret:?} must stay inside the padded editor {bounds:?}"
+        );
+    }
+}

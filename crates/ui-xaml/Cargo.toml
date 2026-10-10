@@ -1,0 +1,11 @@
+[package]
+name = "rust-desktop-ui-xaml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Strict build-time XAML profile for Rust desktop forms"
+
+[dependencies]
+roxmltree = "=0.21.1"

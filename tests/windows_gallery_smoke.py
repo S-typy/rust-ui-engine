@@ -93,6 +93,12 @@ visual inspection. Direct and sRGB swapchain channel encodings are accepted.
 
 
 class GalleryWindows(RetainedWindows):
+    def capture_state(self, hwnd: int) -> dict | None:
+        return parse_state(self.title(hwnd))
+
+    def verify_capture(self, pixels: bytes, width: int, height: int, scale: float, state: dict) -> dict:
+        return capture_checkpoints(pixels, width, height, scale, state["theme"])
+
     def find_window(self, pid: int) -> int | None:
         found = []
 
@@ -107,7 +113,7 @@ class GalleryWindows(RetainedWindows):
         return found[0] if found else None
 
     def screenshot(self, hwnd: int, pid: int, destination: Path) -> dict:
-        state = parse_state(self.title(hwnd))
+        state = self.capture_state(hwnd)
         if not self.owns(hwnd, pid) or state is None:
             raise SmokeFailure("Capture target is not the gallery child window")
         width, height = self.client_size(hwnd)
@@ -131,13 +137,13 @@ class GalleryWindows(RetainedWindows):
             self.require(self.user.PrintWindow(hwnd, memory, 0x0001 | 0x0002), "PrintWindow(client)")
             self.require(self.gdi.GdiFlush(), "GdiFlush")
             pixels = ctypes.string_at(bits, info.header.image_size)
-            after = parse_state(self.title(hwnd))
+            after = self.capture_state(hwnd)
             if (not self.owns(hwnd, pid) or after is None
                     or after["page"] != state["page"] or after["theme"] != state["theme"]
                     or after["frames"] < state["frames"]):
                 raise SmokeFailure("Gallery window changed during capture")
-            checkpoints = capture_checkpoints(pixels, width, height,
-                self.user.GetDpiForWindow(hwnd) / 96.0, state["theme"])
+            checkpoints = self.verify_capture(pixels, width, height,
+                self.user.GetDpiForWindow(hwnd) / 96.0, state)
             header = struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54)
             destination.write_bytes(header + bytes(info.header) + pixels)
         finally:
@@ -169,10 +175,12 @@ def capture_worker(hwnd: int, pid: int, destination: Path, result_queue) -> None
         result_queue.put({"status": "unavailable", "reason": str(error)})
 
 
-def capture_client(hwnd: int, pid: int, destination: Path, timeout: float) -> dict:
+def capture_client(hwnd: int, pid: int, destination: Path, timeout: float, *,
+                   worker_target=capture_worker, worker_args=()) -> dict:
     context = multiprocessing.get_context("spawn")
     results = context.Queue()
-    worker = context.Process(target=capture_worker, args=(hwnd, pid, destination, results))
+    worker = context.Process(target=worker_target,
+                             args=(hwnd, pid, destination, results, *worker_args))
     try:
         worker.start()
         worker.join(timeout=min(timeout, 5.0))

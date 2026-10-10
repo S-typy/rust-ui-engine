@@ -11,6 +11,22 @@ all platforms. Native IME, screen-reader interaction, monitor DPI transitions an
 Linux/macOS GPU execution still need the checks recorded in the
 [runtime matrix](docs/public/runtime-matrix.md). No binary release is announced.
 
+## Run the XAML form
+
+The first compiled XAML profile provides a native window and one single-line
+edit box, with light/dark Fluent styling, placeholder text and Unicode editing.
+Edit [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) and rebuild:
+
+```sh
+cargo run --release --locked -p xaml-form
+cargo run --release --locked -p xaml-form -- --dark
+```
+
+The build validates the markup and generates a Rust window definition. No .NET
+runtime is required. This is an explicit two-element profile, with no bindings,
+hot reload or general WPF XAML compatibility yet. See the
+[supported syntax and example](docs/public/xaml.md).
+
 ## Run the gallery
 
 Install Rust 1.96.0 and the native build tools: MSVC with Windows SDK, Xcode
@@ -72,14 +88,20 @@ protocols; client-side window decorations are not implemented.
 | `crates/ui-treegrid` | Indexed data-source contract, hierarchy/selection/edit state and viewport Scene generation |
 | `crates/ui-render-wgpu` | Rectangle batches, glyph atlas, ordered GPU drawing and surface lifecycle |
 | `crates/ui-platform-winit` | Window/input normalization, IME, clipboard and AccessKit host |
+| `crates/ui-xaml` | Independent compiler for the Window/TextBox XAML profile |
+| `examples/xaml-form` | Native Fluent form built from MainWindow.xaml |
 | `examples/controls-gallery` | Integrated controls and book-library demonstration |
 | `examples/gpu-shell` | Earlier retained and rectangle rendering diagnostics |
 
-`Scene` carries ordered rectangles and logical-pixel text runs. The renderer
+`Scene` carries ordered rectangles, rounded fills and logical-pixel text runs. The renderer
 prepares real glyphs, uploads an RGBA atlas and applies DPI at its boundary.
 Supported backends are D3D12, Vulkan and Metal. Set `WGPU_BACKEND=dx12`, `vulkan`
 or `metal` where supported. CPU/Noop adapters are rejected; there is no software
 UI rendering fallback. Inspect the reported adapter for virtual GPU environments.
+
+Colors are straight-alpha sRGB at the scene boundary, decoded for linear GPU
+blending and encoded once by the sRGB surface. Rounded fills have a uniform
+corner radius and a rectangular ancestor clip; they do not clip descendants.
 
 The retained runtime skips layout for paint/focus/scroll changes and reuses its
 scene at idle. TreeGrid generates only viewport rows/columns with overscan; it

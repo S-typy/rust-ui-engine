@@ -1,5 +1,5 @@
 //! A bounded GPU atlas and instanced glyph renderer. CPU shaping is in ui-text.
-use crate::GpuError;
+use crate::{GpuError, linear_rgba, linear_to_srgb, srgb_to_linear};
 use bytemuck::{Pod, Zeroable};
 use rust_desktop_ui_core::{Rect, TextRun};
 use rust_desktop_ui_text::{GlyphBitmap, GlyphKey, TextEngine};
@@ -164,8 +164,10 @@ fn clipped_instance(
     })
 }
 
-// Premultiply before linear filtering, including transparent atlas padding.
-// This avoids dark fringes and squared coverage at fractional glyph edges.
+// Decode source sRGB, premultiply in linear space, then encode for the sRGB
+// atlas. Hardware decodes before filtering; transparent padding is all zero.
+// Alpha is linear coverage and is never gamma-encoded. Monochrome masks have
+// white RGB, so this also preserves their antialiased coverage.
 fn padded_pixels(bitmap: &GlyphBitmap, slot: Slot) -> Result<Vec<u8>, GpuError> {
     if slot.width > ATLAS_SIZE - 2
         || slot.height > ATLAS_SIZE - 2
@@ -185,9 +187,10 @@ fn padded_pixels(bitmap: &GlyphBitmap, slot: Slot) -> Result<Vec<u8>, GpuError> 
             .chunks_exact(4)
             .zip(pixels[destination..destination + slot.width as usize * 4].chunks_exact_mut(4))
         {
-            let alpha = u16::from(input[3]);
+            let alpha = f32::from(input[3]) / 255.0;
             for channel in 0..3 {
-                output[channel] = ((u16::from(input[channel]) * alpha + 127) / 255) as u8;
+                let linear = srgb_to_linear(f32::from(input[channel]) / 255.0) * alpha;
+                output[channel] = (linear_to_srgb(linear) * 255.0).round() as u8;
             }
             output[3] = input[3];
         }
@@ -258,7 +261,7 @@ impl GlyphRenderer {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
@@ -419,13 +422,9 @@ impl GlyphRenderer {
                     slot.width as f32,
                     slot.height as f32,
                 );
-                if let Some(instance) = clipped_instance(
-                    bounds,
-                    glyph.clip,
-                    viewport,
-                    slot,
-                    [glyph.tint.r, glyph.tint.g, glyph.tint.b, glyph.tint.a],
-                ) {
+                if let Some(instance) =
+                    clipped_instance(bounds, glyph.clip, viewport, slot, linear_rgba(glyph.tint))
+                {
                     self.instances.push(instance);
                 }
             }
@@ -503,16 +502,17 @@ mod tests {
         let pixels = padded_pixels(&bitmap, slot).unwrap();
         assert_eq!(pixels.len(), 4 * 3 * 4);
         assert!(pixels[..20].iter().all(|byte| *byte == 0));
-        assert_eq!(pixels[20..24], [128, 64, 32, 128]);
+        assert_eq!(pixels[20..24], [188, 93, 45, 128]);
         assert!(pixels[24..].iter().all(|byte| *byte == 0));
         // Half a texel between the colored edge and transparent padding:
         // filtering halves RGB and alpha together, then premultiplied blending
         // adds RGB directly. Applying source alpha again would darken it.
-        let sampled_red = f32::from(pixels[20]) / 255.0 * 0.5;
+        let sampled_red = srgb_to_linear(f32::from(pixels[20]) / 255.0) * 0.5;
         let sampled_alpha = f32::from(pixels[23]) / 255.0 * 0.5;
         let opacity = 0.4;
         let on_white = sampled_red * opacity + (1.0 - sampled_alpha * opacity);
-        assert!((on_white - 1.0).abs() < 1e-6);
+        // The sRGB atlas quantizes to 8-bit, within one encoded output step.
+        assert!((on_white - 1.0).abs() < 1.0 / 255.0);
         assert!(
             padded_pixels(
                 &GlyphBitmap {

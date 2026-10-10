@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "review_date": "2026-10-09",
-  "cargo_lock_sha256": "5c327067e187f0d6fdf06b18d08fcc5f0f96a9e801f3d03e69f302768ef2e56d",
+  "review_date": "2026-10-10",
+  "cargo_lock_sha256": "a1de8e9bc5980064a1ea98b09608293bcf300592b7fd62c82fbe26254e9763cf",
   "scope": "All resolved registry packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
   "features_scope": "Resolution features reported by cargo metadata for all targets; verify actual compilation features with cargo tree for the selected package and target.",
   "license_scope": "Manifest SPDX declarations, package license/notice file hashes and selected exact-revision upstream evidence. Not a line-by-line copyright or binary redistribution clearance.",

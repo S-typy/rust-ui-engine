@@ -29,6 +29,9 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
     {
         return Err("Window dimensions must be finite and positive".into());
     }
+    if options.min_size.is_some_and(|size| !size.is_valid()) {
+        return Err("Minimum window dimensions must be finite and nonnegative".into());
+    }
     let event_loop = EventLoop::<AccessibilityEvent>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
@@ -237,13 +240,18 @@ impl<A: DesktopApp> Host<A> {
                 self.recoveries = 0;
                 self.retry_at = None;
                 let stats = renderer.stats();
-                window.set_title(&format!(
-                    "{} | frames={} glyphs={} missing={}",
-                    self.app.title(),
-                    self.frames,
-                    stats.glyphs,
-                    stats.missing_glyphs
-                ));
+                let title = if self.options.show_render_stats {
+                    format!(
+                        "{} | frames={} glyphs={} missing={}",
+                        self.app.title(),
+                        self.frames,
+                        stats.glyphs,
+                        stats.missing_glyphs
+                    )
+                } else {
+                    self.app.title()
+                };
+                window.set_title(&title);
                 if self.options.smoke_test {
                     eprintln!(
                         "FRAME {} scale={} rectangles={} text_runs={} glyphs={} missing={} draw_calls={}",
@@ -333,11 +341,13 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
         if self.window.is_some() {
             return;
         }
-        let attributes = Window::default_attributes()
+        let mut attributes = Window::default_attributes()
             .with_title(self.app.title())
             .with_inner_size(LogicalSize::new(self.options.width, self.options.height))
-            .with_min_inner_size(LogicalSize::new(480.0, 320.0))
             .with_visible(false);
+        if let Some(size) = self.options.min_size {
+            attributes = attributes.with_min_inner_size(LogicalSize::new(size.width, size.height));
+        }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
             Err(error) => {

@@ -54,5 +54,6 @@ impl TextRun {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawCommand {
     Rectangle(usize),
+    RoundedRectangle(usize),
     Text(usize),
 }

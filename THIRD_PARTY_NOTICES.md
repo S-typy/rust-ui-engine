@@ -1,6 +1,6 @@
 # Third-party notices
 
-Snapshot: 2026-10-09. The project code is licensed under Apache-2.0. Dependencies
+Snapshot: 2026-10-10. The project code is licensed under Apache-2.0. Dependencies
 retain the licenses declared below. The table covers all 349 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
