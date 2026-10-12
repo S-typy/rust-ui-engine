@@ -3,7 +3,9 @@ use crate::{
     view::{MountedView, edges},
 };
 use rust_desktop_ui_controls::{CommitOutcome, Controls, EditEvent, Role, Theme};
-use rust_desktop_ui_core::{Axis, LayoutKind, LayoutStyle, Mutation, Rect, Scene, Size, WidgetId};
+use rust_desktop_ui_core::{
+    Axis, LayoutKind, LayoutStyle, Length, Mutation, Rect, Scene, Size, WidgetId,
+};
 use rust_desktop_ui_platform_winit::{
     ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, accesskit,
 };
@@ -37,6 +39,10 @@ impl Form {
                 node: ui.root(),
                 style: LayoutStyle {
                     kind: LayoutKind::Stack(Axis::Vertical),
+                    // The form is the viewport host. Wide rows may clip inside
+                    // it, but must not enlarge their Overlay parent.
+                    width: Length::Percent(1.0),
+                    height: Length::Percent(1.0),
                     padding: edges(definition.padding),
                     ..Default::default()
                 },
@@ -79,6 +85,7 @@ impl Form {
         let checked = view
             .checks
             .iter()
+            .chain(&view.toggles)
             .filter_map(|id| ui.checked(*id).map(|checked| (*id, checked)))
             .collect();
         ui.drain_text_changes();
@@ -191,7 +198,7 @@ impl Form {
                 }
             }
         }
-        for id in &self.view.checks {
+        for id in self.view.checks.iter().chain(&self.view.toggles) {
             let Some(checked) = self.ui.checked(*id) else {
                 continue;
             };
@@ -205,7 +212,12 @@ impl Form {
                 .find_map(|(name, widget)| (*widget == *id).then_some(name.as_str()))
                 .unwrap_or("");
             if self.diagnostics {
-                println!("checkbox-state={name} checked={checked}");
+                let prefix = if self.view.roles.get(id) == Some(&Role::ToggleButton) {
+                    "toggle-state"
+                } else {
+                    "checkbox-state"
+                };
+                println!("{prefix}={name} checked={checked}");
             }
             if name == "Option"
                 && let Some(editor) = self.message()

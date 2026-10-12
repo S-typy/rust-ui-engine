@@ -118,12 +118,19 @@ fn disabled_container_paints_descendants_without_latching_their_enabled_state() 
             assert_eq!(node.props.paint.hover_background, None);
             assert!(ui.semantics().iter().find(|n| n.id == id).unwrap().disabled);
             let bounds = ui.runtime.bounds(id).unwrap();
-            assert!(
-                ui.scene()
-                    .rectangles
-                    .iter()
-                    .any(|r| { r.bounds == bounds && r.color == tokens.canvas })
-            );
+            let shape = if id == checkbox {
+                Rect::new(
+                    bounds.x + 8.0,
+                    bounds.y + (bounds.height - 18.0) * 0.5,
+                    18.0,
+                    18.0,
+                )
+            } else {
+                bounds
+            };
+            assert!(ui.scene().rounded_rectangles.iter().any(|r| {
+                r.bounds == shape && r.stroke_width.is_none() && r.color == tokens.canvas
+            }));
         }
         ui.set_enabled(parent, true).unwrap();
         frame(&mut ui);

@@ -1,9 +1,10 @@
 //! Mount compiled elements without attaching application-specific behavior.
 use rust_desktop_ui_controls::{
-    Controls, EditBoxAppearance, EditBoxStyle, EditorSettings, EditorValidation, Role,
+    ButtonAppearance, ButtonStyle, Controls, EditBoxAppearance, EditBoxStyle, EditorSettings,
+    EditorValidation, Role,
 };
 use rust_desktop_ui_core::{Axis, Color, Edges, LayoutKind, LayoutStyle, Length, WidgetId};
-use rust_desktop_ui_xaml::{ElementDefinition, ElementKind, Orientation};
+use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind, Orientation};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
@@ -12,6 +13,7 @@ pub(crate) struct MountedView {
     pub(crate) automation_names: HashMap<WidgetId, String>,
     pub(crate) editors: Vec<WidgetId>,
     pub(crate) checks: Vec<WidgetId>,
+    pub(crate) toggles: Vec<WidgetId>,
     pub(crate) commands: Vec<String>,
     pub(crate) roles: HashMap<WidgetId, Role>,
 }
@@ -48,7 +50,9 @@ impl MountedView {
         let height = common.height.map_or_else(
             || match &element.kind {
                 ElementKind::StackPanel(_) => Length::Auto,
-                ElementKind::TextBox(_) | ElementKind::Button(_) => Length::Px(36.0),
+                ElementKind::TextBox(_) | ElementKind::Button(_) | ElementKind::ToggleButton(_) => {
+                    Length::Px(36.0)
+                }
                 ElementKind::CheckBox(_) => Length::Px(32.0),
                 ElementKind::TextBlock(_) => Length::Px(24.0),
             },
@@ -91,12 +95,42 @@ impl MountedView {
                 if let Some(command) = &button.command {
                     self.commands.push(command.clone());
                 }
-                ui.button(parent, &button.content, command, style)
-                    .map_err(err)?
+                let id = ui
+                    .button(parent, &button.content, command, style)
+                    .map_err(err)?;
+                ui.set_button_style(id, button_style(&button.style))
+                    .map_err(err)?;
+                id
+            }
+            ElementKind::ToggleButton(button) => {
+                let command = button.command.as_ref().map(|name| name.as_str().into());
+                // Registration owns shared state; markup only initializes a standalone toggle.
+                let checked = if let Some(command) = &command {
+                    ui.commands().checked(command).ok_or_else(|| {
+                        format!(
+                            "ToggleButton command '{}' requires a registered checked state",
+                            command.0
+                        )
+                    })?
+                } else {
+                    button.is_checked
+                };
+                if let Some(command) = &button.command {
+                    self.commands.push(command.clone());
+                }
+                let id = ui
+                    .toggle(parent, &button.content, command, checked, style)
+                    .map_err(err)?;
+                ui.set_button_style(id, button_style(&button.style))
+                    .map_err(err)?;
+                self.toggles.push(id);
+                id
             }
             ElementKind::CheckBox(check) => {
                 let id = ui
                     .checkbox(parent, &check.content, check.is_checked, style)
+                    .map_err(err)?;
+                ui.set_button_style(id, button_style(&check.style))
                     .map_err(err)?;
                 self.checks.push(id);
                 id
@@ -164,6 +198,7 @@ impl MountedView {
                 ElementKind::TextBox(_) => Role::TextBox,
                 ElementKind::TextBlock(_) => Role::Label,
                 ElementKind::Button(_) => Role::Button,
+                ElementKind::ToggleButton(_) => Role::ToggleButton,
                 ElementKind::CheckBox(_) => Role::CheckBox,
             },
         );
@@ -192,18 +227,11 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             .map_err(err)?
             .width
             + 16.0),
-        ElementKind::Button(button) => Ok((ui
-            .measure_text(&button.content, 16384.0, false)
-            .map_err(err)?
-            .width
-            + 24.0)
-            .max(80.0)),
-        ElementKind::CheckBox(check) => Ok((ui
-            .measure_text(&check.content, 16384.0, false)
-            .map_err(err)?
-            .width
-            + 40.0)
-            .max(40.0)),
+        ElementKind::Button(button) => button_width(ui, &button.content, &button.style, false),
+        ElementKind::ToggleButton(button) => {
+            button_width(ui, &button.content, &button.style, false)
+        }
+        ElementKind::CheckBox(check) => button_width(ui, &check.content, &check.style, true),
         ElementKind::StackPanel(panel) => {
             let mut widths = Vec::with_capacity(panel.children.len());
             for child in &panel.children {
@@ -253,10 +281,55 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
                     return Err(format!("Unregistered XAML command '{command}'"));
                 }
             }
+            ElementKind::ToggleButton(button) => {
+                if let Some(command) = &button.command {
+                    let id = command.as_str().into();
+                    if !ui.commands().contains(&id) {
+                        return Err(format!("Unregistered XAML command '{command}'"));
+                    }
+                    if ui.commands().checked(&id).is_none() {
+                        return Err(format!(
+                            "ToggleButton command '{command}' requires a registered checked state"
+                        ));
+                    }
+                }
+            }
             _ => {}
         }
     }
     Ok(())
+}
+
+fn button_width(
+    ui: &mut Controls,
+    content: &str,
+    style: &ButtonStyleDefinition,
+    checkbox: bool,
+) -> Result<f32, String> {
+    let font_size = style.font_size.unwrap_or(ui.theme().tokens().font_size);
+    let padding = style.padding.unwrap_or([8.0, 5.0, 8.0, 5.0]);
+    let text = ui
+        .measure_text_with_font_size(content, 16384.0, false, font_size)
+        .map_err(err)?;
+    let extra = if checkbox { 26.0 } else { 0.0 };
+    Ok((text.width + padding[0] + padding[2] + extra).max(if checkbox { extra } else { 80.0 }))
+}
+
+fn button_style(style: &ButtonStyleDefinition) -> ButtonStyle {
+    ButtonStyle {
+        font_size: style.font_size,
+        padding: style.padding.map(edges),
+        corner_radius: style.corner_radius,
+        border_width: style.border_thickness,
+        normal: ButtonAppearance {
+            background: style.background.map(color),
+            foreground: style.foreground.map(color),
+            border: style.border_brush.map(color),
+            accent: style.focus_brush.map(color),
+            ..Default::default()
+        },
+        ..Default::default()
+    }
 }
 
 fn axis(orientation: Orientation) -> Axis {

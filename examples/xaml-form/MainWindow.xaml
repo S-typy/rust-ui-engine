@@ -14,9 +14,13 @@
                  ValidationMessage="Введите текст перед подтверждением."
                  AutomationName="Текст"
                  PlaceholderText="Введите текст…" />
-        <CheckBox x:Name="Option" Content="Только чтение" />
+        <CheckBox x:Name="Option" Content="Только чтение" FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
         <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
-            <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Width="160" />
+            <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Width="160"
+                    FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
+            <ToggleButton x:Name="Pin" Content="Закрепить" Width="120"
+                          FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
+            <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
         </StackPanel>
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />

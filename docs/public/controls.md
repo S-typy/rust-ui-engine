@@ -66,12 +66,55 @@ TextEngine. Явные размеры controls автоматически не �
 высотой 20 px может обрезать строку более высокого системного шрифта.
 Композиции могут использовать измерение для собственных размеров. Padding
 кнопок по вертикали занимает только место, оставшееся после измеренной строки.
+`measure_text_with_font_size(text, width, wrap, font_size)` позволяет измерить
+тот же текст с явно заданным размером шрифта в `(0, 512]` logical pixels.
 
 Pointer down у Button ещё не выполняет команду. Увод указателя и release снаружи
 отменяют активацию; blur также отменяет pressed/capture state. Enter активирует
 сфокусированный Button однократно на keydown. Space показывает pressed state и
 активирует на keyup, если focus остался на том же control. Disabled controls и
 disabled ancestors блокируют pointer, keyboard и semantic activation.
+
+### ButtonStyle и Fluent-состояния
+
+`Button`, `ToggleButton` и `CheckBox` используют общий `ButtonStyle`.
+`set_button_style(id, style)` проверяет все метрики и цвета до применения;
+ошибка сохраняет прежний стиль. Для других типов контролов метод возвращает
+ошибку. `button_style` читает overrides, `button_visual_state` — текущие
+`enabled`, `hovered`, `pressed`, `focused` и `checked`.
+
+Метрики: `font_size` в `(0, 512]`, `padding`, `corner_radius` и `border_width`
+в `[0, 16384]` logical pixels. Значения должны быть конечными; каналы цветов —
+в `[0, 1]`. `None` наследует текущую тему, явные overrides сохраняются при смене
+темы. Изменение стиля не заменяет текст, checked state или команду.
+
+`ButtonAppearance` задаёт необязательные `background`, `foreground`, `border`,
+`accent` и `checkmark`. Стиль содержит appearances `normal`, `checked`,
+`hovered`, `pressed` и `disabled`. Разрешение идёт от темы и `normal` к checked,
+затем к hover/press либо disabled; незаданные цвета остаются от предыдущего
+слоя, кроме подстановок самой темы. Focus рисуется отдельно и совмещается с
+checked/hover/press. Disabled подавляет hover, press и focus, сохраняя checked.
+Для pointer press активное оформление действует пока указатель находится
+внутри кнопки; release снаружи отменяет действие.
+
+Fluent-темы используют скруглённые кнопки и внутреннее кольцо фокуса.
+В Light/Dark/Compact прежнее оформление сохраняется до явного
+`set_button_style`, который включает общий renderer для этого контрола.
+У флажка строка прозрачна, а `background`/`border`/`corner_radius` задают отдельный
+индикатор. Отметка строится собственной геометрией, без зависимости от символа
+в шрифте. `foreground` относится к подписи, `checkmark` — к отметке.
+Текст кнопок выравнивается по центру, флажка — после индикатора; по вертикали
+учитываются метрики сформированной строки. Явные размеры автоматически не растут.
+
+У командного ToggleButton зарегистрированное `CommandRegistry.checked` имеет
+приоритет над начальным аргументом builder. Активация читает текущее общее
+состояние: две разные кнопки могут последовательно переключить одну команду
+даже до следующего `update`. Публикация новой сцены и семантического дерева
+по-прежнему требует `update`.
+
+Общий стиль не добавляет произвольные дочерние элементы, иконки или WPF templates.
+QAT и overflow существующего Ribbon пока имеют отдельные пути активации команд;
+унификация их toggle-поведения с обычными кнопками остаётся отдельной работой.
 
 Tab/Shift+Tab обходят доступные controls. У TabControl Left/Right переключают
 вкладку и focus. У ScrollViewer Up/Down, PageUp/PageDown и Home/End управляют

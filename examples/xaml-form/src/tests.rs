@@ -1105,3 +1105,221 @@ fn xaml_layout_panels_leave_the_canvas_visible_behind_rounded_editors_in_both_th
         }
     }
 }
+
+#[test]
+fn xaml_button_styles_mount_for_all_three_controls_and_keep_theme_overrides() {
+    for tag in ["Button", "ToggleButton", "CheckBox"] {
+        let mut form = markup(&format!(
+            r##"<{tag} x:Name="Styled" Content="Styled action" Width="240" Height="48" FontSize="20" Padding="7,3,11,4" CornerRadius="6" BorderThickness="2" Background="#112233" Foreground="#80445566" BorderBrush="#778899" FocusBrush="#AABBCC"/>"##
+        ));
+        let widget = form.find_name("Styled").unwrap();
+        let style = *form.ui.button_style(widget).unwrap();
+        assert_eq!(style.font_size, Some(20.0));
+        assert_eq!(
+            style.padding,
+            Some(Edges {
+                left: 7.0,
+                top: 3.0,
+                right: 11.0,
+                bottom: 4.0
+            })
+        );
+        assert_eq!(style.corner_radius, Some(6.0));
+        assert_eq!(style.border_width, Some(2.0));
+        assert_eq!(style.normal.background, Some(Color::rgb(17, 34, 51)));
+        assert_eq!(
+            style.normal.foreground,
+            Some(Color {
+                r: 68.0 / 255.0,
+                g: 85.0 / 255.0,
+                b: 102.0 / 255.0,
+                a: 128.0 / 255.0
+            })
+        );
+        assert_eq!(style.normal.border, Some(Color::rgb(119, 136, 153)));
+        assert_eq!(style.normal.accent, Some(Color::rgb(170, 187, 204)));
+        for theme in [Theme::FluentLight, Theme::FluentDark] {
+            form.ui.set_theme(theme).unwrap();
+            form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+            assert_eq!(form.ui.button_style(widget), Some(&style));
+            let run = form
+                .scene()
+                .texts
+                .iter()
+                .find(|run| run.text == "Styled action")
+                .unwrap();
+            assert_eq!(run.font_size, 20.0);
+            assert_eq!(Some(run.color), style.normal.foreground);
+        }
+    }
+}
+
+#[test]
+fn horizontal_auto_button_widths_measure_declared_font_and_padding() {
+    let mut form = markup(
+        r#"<StackPanel Orientation="Horizontal" Spacing="8">
+        <Button x:Name="AutoButton" Content="Wide caption" FontSize="24" Padding="20,6,30,6" Height="60"/>
+        <ToggleButton x:Name="AutoToggle" Content="Pin caption" FontSize="20" Padding="9,5,17,5" Height="60"/>
+        <CheckBox x:Name="AutoCheck" Content="Check caption" FontSize="18" Padding="4,5,10,5" Height="60"/>
+    </StackPanel>"#,
+    );
+    for (name, text, font, padding, extra) in [
+        ("AutoButton", "Wide caption", 24.0, 50.0, 0.0),
+        ("AutoToggle", "Pin caption", 20.0, 26.0, 0.0),
+        ("AutoCheck", "Check caption", 18.0, 14.0, 26.0),
+    ] {
+        let text_width = form
+            .ui
+            .measure_text_with_font_size(text, 16384.0, false, font)
+            .unwrap()
+            .width;
+        let bounds = form
+            .ui
+            .runtime
+            .bounds(form.find_name(name).unwrap())
+            .unwrap();
+        assert!(
+            (bounds.width - (text_width + padding + extra)).abs() < 0.01,
+            "{name}"
+        );
+        let run = form
+            .scene()
+            .texts
+            .iter()
+            .find(|run| run.text == text)
+            .unwrap();
+        assert_eq!(run.font_size, font);
+        assert!(
+            (run.bounds.width - text_width).abs() < 0.01,
+            "{name} content width"
+        );
+    }
+}
+
+#[test]
+fn toggle_button_keyboard_pointer_and_accessibility_share_checked_state() {
+    let mut form = markup(
+        r#"<StackPanel x:Name="Container"><ToggleButton x:Name="Toggle" Content="Pin" AutomationName="Keep pinned" IsChecked="True"/><Button Content="Disabled" IsEnabled="False"/></StackPanel>"#,
+    );
+    let toggle = form.find_name("Toggle").unwrap();
+    assert_eq!(form.ui.checked(toggle), Some(true));
+    tab(&mut form, false);
+    assert_eq!(form.ui.runtime.focused(), Some(toggle));
+    key(&mut form, Key::Space, false);
+    assert_eq!(form.ui.checked(toggle), Some(true));
+    form.event(PlatformEvent::Input(InputEvent::KeyUp {
+        key: Key::Space,
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+    assert_eq!(form.ui.checked(toggle), Some(false));
+    key(&mut form, Key::Enter, false);
+    assert_eq!(form.ui.checked(toggle), Some(true));
+    let tree = form.accessibility(1.0);
+    let node = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| Some(*id) == form.accessible.id(toggle))
+        .unwrap()
+        .1;
+    assert_eq!(node.role(), accesskit::Role::Button);
+    assert_eq!(node.label(), Some("Keep pinned"));
+    assert_eq!(node.toggled(), Some(accesskit::Toggled::True));
+    assert!(node.supports_action(accesskit::Action::Click));
+    accessible_action(&mut form, "Toggle", accesskit::Action::Click, None);
+    assert_eq!(form.ui.checked(toggle), Some(false));
+    click(&mut form, "Toggle");
+    assert_eq!(form.ui.checked(toggle), Some(true));
+    let container = form.find_name("Container").unwrap();
+    form.ui.set_enabled(container, false).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    accessible_action(&mut form, "Toggle", accesskit::Action::Click, None);
+    assert_eq!(form.ui.checked(toggle), Some(true));
+    let tree = form.accessibility(1.0);
+    let node = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| Some(*id) == form.accessible.id(toggle))
+        .unwrap()
+        .1;
+    assert!(node.is_disabled());
+    assert!(!node.supports_action(accesskit::Action::Click));
+}
+
+#[test]
+fn toggle_command_registration_owns_initial_state_and_rejects_missing_checked_contract() {
+    use crate::view::MountedView;
+    use rust_desktop_ui_controls::Controls;
+    let source = r#"<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><StackPanel><ToggleButton x:Name="One" Content="One" Command="Pin" IsChecked="True"/><ToggleButton x:Name="Two" Content="Two" Command="Pin" IsChecked="False"/></StackPanel></Window>"#;
+    let definition = rust_desktop_ui_xaml::parse(source).unwrap();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let before = ui.runtime.tree().len();
+    assert!(
+        matches!(MountedView::mount(&mut ui,root,&definition.content),Err(error) if error.contains("Unregistered XAML command"))
+    );
+    assert_eq!(ui.runtime.tree().len(), before);
+    ui.commands_mut().register("Pin", "Pin");
+    assert!(
+        matches!(MountedView::mount(&mut ui,root,&definition.content),Err(error) if error.contains("registered checked state"))
+    );
+    assert_eq!(ui.runtime.tree().len(), before);
+    ui.commands_mut().set_checked(&"Pin".into(), Some(false));
+    let view = MountedView::mount(&mut ui, root, &definition.content).unwrap();
+    let one = view.find_name("One").unwrap();
+    let two = view.find_name("Two").unwrap();
+    ui.update(Size::new(640.0, 400.0)).unwrap();
+    assert_eq!(ui.checked(one), Some(false));
+    assert_eq!(ui.checked(two), Some(false));
+    ui.activate(one).unwrap();
+    ui.update(Size::new(640.0, 400.0)).unwrap();
+    assert_eq!(ui.checked(one), Some(true));
+    assert_eq!(ui.checked(two), Some(true));
+    assert_eq!(ui.commands().checked(&"Pin".into()), Some(true));
+    let invocation = ui.commands_mut().drain_invocations();
+    assert_eq!(invocation.len(), 1);
+    assert_eq!(invocation[0].checked, Some(true));
+    ui.commands_mut().set_can_execute(&"Pin".into(), || false);
+    ui.activate(two).unwrap();
+    ui.update(Size::new(640.0, 400.0)).unwrap();
+    assert_eq!(ui.checked(two), Some(true));
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn sample_button_row_keeps_geometry_and_tab_order_skips_the_disabled_button() {
+    let mut form = form();
+    let pin = form.find_name("Pin").unwrap();
+    let disabled = form.find_name("Disabled").unwrap();
+    for (id, x, width) in [(pin, 200.0, 120.0), (disabled, 328.0, 112.0)] {
+        let bounds = form.ui.runtime.bounds(id).unwrap();
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (x, 188.0, width, 36.0)
+        );
+    }
+    for name in ["Message", "Option", "Confirm", "Pin", "Message"] {
+        tab(&mut form, false);
+        assert_eq!(form.ui.runtime.focused(), form.find_name(name));
+    }
+    tab(&mut form, true);
+    assert_eq!(form.ui.runtime.focused(), Some(pin));
+    form.update(Size::new(480.0, 360.0), 1.0).unwrap();
+    let bounds = form.ui.runtime.bounds(disabled).unwrap();
+    assert!(bounds.x + bounds.width <= 448.0);
+    click(&mut form, "Disabled");
+    assert!(form.ui.drain_activated().is_empty());
+    assert!(form.ui.commands_mut().drain_invocations().is_empty());
+    form.update(Size::new(320.0, 360.0), 1.0).unwrap();
+    assert_eq!(form.ui.runtime.bounds(form.ui.root()).unwrap().width, 320.0);
+    assert_eq!(form.ui.runtime.bounds(form.editor()).unwrap().width, 256.0);
+    let pin_bounds = form.ui.runtime.bounds(pin).unwrap();
+    assert_eq!(pin_bounds.width, 120.0);
+    let pin_fill = form
+        .scene()
+        .rounded_rectangles
+        .iter()
+        .find(|rect| rect.bounds == pin_bounds && rect.stroke_width.is_none())
+        .unwrap();
+    assert!(pin_fill.clip.x + pin_fill.clip.width <= 288.0);
+}

@@ -14,7 +14,9 @@ Linux/macOS GPU execution still need the checks recorded in the
 ## Run the XAML form
 
 The compiled XAML profile provides a native window with nested stack panels,
-labels, single-line edit boxes, buttons and checkboxes. Editors support light/dark
+labels, single-line edit boxes, buttons, toggle buttons and checkboxes. Buttons
+share theme-relative styling and Fluent hover, press, checked and focus states.
+Editors support light/dark
 Fluent styling, placeholder text, Unicode editing and value validation.
 Edit [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) and rebuild:
 

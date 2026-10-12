@@ -1,6 +1,6 @@
 use crate::{
-    CommandId, CommandRegistry, CommitOutcome, EditBoxStyle, EditBoxVisualState, EditEvent,
-    EditorSettings, EditorValidation, EditorValidator, Theme,
+    ButtonStyle, ButtonVisualState, CommandId, CommandRegistry, CommitOutcome, EditBoxStyle,
+    EditBoxVisualState, EditEvent, EditorSettings, EditorValidation, EditorValidator, Theme,
 };
 use rust_desktop_ui_core::{
     Axis, Border, Color, Edges, FrameStats, InputEvent, Key, LayoutKind, LayoutStyle, Length,
@@ -135,6 +135,9 @@ enum Kind {
     MenuItem { toggle: bool },
 }
 impl Kind {
+    fn button_style(&self) -> bool {
+        matches!(self, Self::Button | Self::Toggle | Self::CheckBox)
+    }
     fn clickable(&self) -> bool {
         matches!(
             self,
@@ -169,6 +172,8 @@ struct Control {
     validator: Option<EditorValidator>,
     validation_error: Option<String>,
     edit_box_style: EditBoxStyle,
+    button_style: ButtonStyle,
+    explicit_button_style: bool,
     single_line: bool,
     text_scroll_x: f32,
     text_scroll: f32,
@@ -188,6 +193,8 @@ struct Popup {
 }
 
 /// Owns control state while exposing the independent retained runtime for composition.
+/// For registered controls, enabled state belongs to `set_enabled` and the command
+/// registry; runtime node properties are refreshed from those sources on update.
 pub struct Controls {
     pub runtime: UiRuntime,
     layout: TaffyLayout,
@@ -526,8 +533,16 @@ impl Controls {
     pub fn checked(&self, id: WidgetId) -> Option<bool> {
         self.controls
             .get(&id)
-            .filter(|c| matches!(c.kind, Kind::Toggle | Kind::CheckBox))
-            .map(|c| c.checked)
+            .filter(|c| {
+                self.runtime.tree().node(id).is_some()
+                    && matches!(c.kind, Kind::Toggle | Kind::CheckBox)
+            })
+            .map(|c| {
+                c.command
+                    .as_ref()
+                    .and_then(|command| self.commands.checked(command))
+                    .unwrap_or(c.checked)
+            })
     }
     pub fn set_checked(&mut self, id: WidgetId, checked: bool) -> Result<(), ControlError> {
         let control = self
@@ -617,6 +632,54 @@ impl Controls {
             .get(&id)
             .filter(|c| matches!(c.kind, Kind::TextBox(_)))
             .map(|c| &c.edit_box_style)
+    }
+    /// Set shared Button/ToggleButton/CheckBox appearance atomically. Explicit
+    /// styling enables the shared renderer even with a legacy theme.
+    pub fn set_button_style(
+        &mut self,
+        id: WidgetId,
+        style: ButtonStyle,
+    ) -> Result<(), ControlError> {
+        if self.button_style(id).is_none() {
+            return Err(ControlError::Invalid(
+                "Control is not a Button, ToggleButton or CheckBox".into(),
+            ));
+        }
+        style.validate()?;
+        let control = self.controls.get_mut(&id).unwrap();
+        if control.button_style != style || !control.explicit_button_style {
+            control.button_style = style;
+            control.explicit_button_style = true;
+            self.scene_dirty = true;
+        }
+        Ok(())
+    }
+    pub fn button_style(&self, id: WidgetId) -> Option<&ButtonStyle> {
+        self.controls
+            .get(&id)
+            .filter(|control| control.kind.button_style() && self.runtime.tree().node(id).is_some())
+            .map(|control| &control.button_style)
+    }
+    /// Current command and inherited enabled state, independent of the last frame.
+    pub fn button_visual_state(&self, id: WidgetId) -> Option<ButtonVisualState> {
+        self.button_style(id)?;
+        let hovered = self.runtime.hovered() == Some(id);
+        let focused = self.runtime.focused() == Some(id);
+        Some(
+            ButtonVisualState {
+                enabled: self.is_enabled(id),
+                hovered,
+                pressed: self.pressed == Some(id)
+                    && if self.keyboard_pressed {
+                        focused
+                    } else {
+                        hovered
+                    },
+                focused,
+                checked: self.checked(id).unwrap_or(false),
+            }
+            .normalized(),
+        )
     }
     /// Resolves effective ancestor state as well as the editor's local input policy.
     pub fn edit_box_visual_state(&self, id: WidgetId) -> Option<EditBoxVisualState> {
@@ -773,6 +836,8 @@ impl Controls {
                 validator: None,
                 validation_error: None,
                 edit_box_style: EditBoxStyle::default(),
+                button_style: ButtonStyle::default(),
+                explicit_button_style: false,
                 single_line: false,
                 text_scroll_x: 0.0,
                 text_scroll: 0.0,
@@ -832,6 +897,21 @@ impl Controls {
         width: f32,
         wrap: bool,
     ) -> Result<Size, ControlError> {
+        self.measure_text_with_font_size(text, width, wrap, self.theme.tokens().font_size)
+    }
+    /// Measures with an explicit font size using the same shaping as controls.
+    pub fn measure_text_with_font_size(
+        &mut self,
+        text: &str,
+        width: f32,
+        wrap: bool,
+        font_size: f32,
+    ) -> Result<Size, ControlError> {
+        if !font_size.is_finite() || font_size <= 0.0 || font_size > 512.0 {
+            return Err(ControlError::Invalid(
+                "Font size must be finite and in (0, 512]".into(),
+            ));
+        }
         // Match TextEngine's one-MiB limit before cloning caller-owned input.
         if text.len() > 1024 * 1024 {
             return Err(ControlError::Text(TextError::TextTooLong.to_string()));
@@ -843,7 +923,7 @@ impl Controls {
                     bounds: Rect::new(0.0, 0.0, width, 0.0),
                     clip: Rect::new(0.0, 0.0, 0.0, 0.0),
                     text: text.to_owned(),
-                    font_size: self.theme.tokens().font_size,
+                    font_size,
                     color: self.theme.tokens().text,
                     weight: 400,
                     align: TextAlign::Start,
@@ -871,6 +951,10 @@ impl Controls {
         checked: bool,
         style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
+        let checked = command
+            .as_ref()
+            .and_then(|id| self.commands.checked(id))
+            .unwrap_or(checked);
         let id = self.add(parent, Kind::Toggle, label.into(), command, style)?;
         self.set_checked(id, checked)?;
         Ok(id)
@@ -1163,7 +1247,20 @@ impl Controls {
             let Some(node) = self.runtime.tree().node(id) else {
                 return false;
             };
-            if !node.props.enabled || !node.props.visible {
+            if !node.props.visible {
+                return false;
+            }
+            let enabled = self
+                .controls
+                .get(&id)
+                .map_or(node.props.enabled, |control| {
+                    control.enabled
+                        && control
+                            .command
+                            .as_ref()
+                            .is_none_or(|command| self.commands.enabled(command))
+                });
+            if !enabled {
                 return false;
             }
             let Some(parent) = self.runtime.tree().parent(id) else {
@@ -1267,7 +1364,9 @@ impl Controls {
         for (node, props) in updates {
             self.runtime.apply(Mutation::SetProps { node, props })?;
         }
-        if self.pressed.is_some_and(|id| !self.is_enabled(id)) {
+        if self.pressed.is_some_and(|id| {
+            !self.is_enabled(id) || (self.keyboard_pressed && self.runtime.focused() != Some(id))
+        }) {
             self.pressed = None;
             self.keyboard_pressed = false;
         }
@@ -1318,6 +1417,11 @@ impl Controls {
             if repeat || modifiers != rust_desktop_ui_core::Modifiers::default() {
                 return Ok(());
             }
+            if self.pressed.take().is_some() {
+                self.keyboard_pressed = false;
+                self.runtime.apply(Mutation::CapturePointer(None))?;
+                self.scene_dirty = true;
+            }
             if self.popup.is_some() {
                 self.close_popup()?;
             } else if let Some(id) = self
@@ -1358,6 +1462,11 @@ impl Controls {
         let report = self.runtime.dispatch(event.clone());
         if let Some(error) = report.errors.into_iter().next() {
             return Err(error.into());
+        }
+        if self.keyboard_pressed && self.pressed != self.runtime.focused() {
+            self.pressed = None;
+            self.keyboard_pressed = false;
+            self.scene_dirty = true;
         }
         self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
@@ -1501,7 +1610,13 @@ impl Controls {
             control.kind,
             Kind::Toggle | Kind::CheckBox | Kind::MenuItem { toggle: true }
         ) {
-            control.checked = !control.checked;
+            // Several placements can activate before the next repaint. The
+            // registry is the current value; each placement's cache may lag.
+            control.checked = !control
+                .command
+                .as_ref()
+                .and_then(|command| self.commands.checked(command))
+                .unwrap_or(control.checked);
             if let Some(command) = &control.command {
                 self.commands.set_checked(command, Some(control.checked));
             }
@@ -2094,6 +2209,55 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            if let Some(state) = self.button_visual_state(id)
+                && let Some(control) = self.controls.get(&id)
+                && (self.theme.is_fluent() || control.explicit_button_style)
+            {
+                let checkbox = matches!(control.kind, Kind::CheckBox);
+                let style = control.button_style.resolve(self.theme, state, checkbox);
+                let text_bounds = paint_button(
+                    &mut self.scene,
+                    bounds,
+                    clip,
+                    style,
+                    state.checked,
+                    checkbox,
+                );
+                if let Some(custom) = self.custom_scenes.get(&id) {
+                    append_clipped(&mut self.scene, custom, clip);
+                }
+                if !control.label.is_empty() && text_bounds.width > 0.0 && text_bounds.height > 0.0
+                {
+                    let mut run = TextRun {
+                        bounds: text_bounds,
+                        clip: text_bounds
+                            .intersection(clip)
+                            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
+                        text: control.label.clone(),
+                        font_size: style.font_size,
+                        color: style.foreground,
+                        weight: 400,
+                        align: if checkbox {
+                            TextAlign::Start
+                        } else {
+                            TextAlign::Center
+                        },
+                        wrap: false,
+                    };
+                    // Center using actual font metrics within the padded content,
+                    // while retaining its clip for oversized glyphs and labels.
+                    let height = self
+                        .engine
+                        .prepare(&run, 1.0)
+                        .map_err(|error| ControlError::Text(error.to_string()))?
+                        .height;
+                    let offset = ((text_bounds.height - height) * 0.5).max(0.0);
+                    run.bounds.y += offset;
+                    run.bounds.height = (text_bounds.height - offset).max(0.0);
+                    self.scene.text(run);
+                }
+                continue;
+            }
             let editor_style = self.edit_box_visual_state(id).map(|state| {
                 let control = &self.controls[&id];
                 let mut style = control.edit_box_style.resolve(self.theme, state);
@@ -2456,7 +2620,13 @@ impl Controls {
                     control.kind,
                     Kind::Toggle | Kind::CheckBox | Kind::MenuItem { toggle: true }
                 )
-                .then_some(control.checked);
+                .then(|| {
+                    control
+                        .command
+                        .as_ref()
+                        .and_then(|command| self.commands.checked(command))
+                        .unwrap_or(control.checked)
+                });
                 let selected = match control.kind {
                     Kind::Tab { group, index } => {
                         self.tabs.get(&group).is_some_and(|t| t.selected == index)
@@ -2550,6 +2720,133 @@ fn editor_fill(scene: &mut Scene, bounds: Rect, clip: Rect, radius: f32, color: 
         scene.rounded_fill(bounds, clip, radius, color);
     } else {
         fill_clipped(scene, bounds, clip, color);
+    }
+}
+
+fn paint_button(
+    scene: &mut Scene,
+    bounds: Rect,
+    ancestor_clip: Rect,
+    style: crate::button::ResolvedButtonStyle,
+    checked: bool,
+    checkbox: bool,
+) -> Rect {
+    let clip = bounds
+        .intersection(ancestor_clip)
+        .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+    let mut content = Rect::new(
+        bounds.x + style.padding.left.min(bounds.width),
+        bounds.y + style.padding.top.min(bounds.height),
+        (bounds.width - style.padding.horizontal()).max(0.0),
+        (bounds.height - style.padding.vertical()).max(0.0),
+    );
+    let shape = if checkbox {
+        let size = 18.0_f32.min(content.width).min(content.height);
+        Rect::new(
+            content.x,
+            content.y + (content.height - size) * 0.5,
+            size,
+            size,
+        )
+    } else {
+        bounds
+    };
+    let radius = style.corner_radius.min(shape.width.min(shape.height) * 0.5);
+    editor_fill(scene, shape, clip, radius, style.background);
+    shape_border(scene, shape, clip, radius, style.border_width, style.border);
+    if checkbox {
+        if checked {
+            paint_checkmark(scene, shape, clip, style.checkmark);
+        }
+        let offset = (shape.width + 8.0).min(content.width);
+        content.x += offset;
+        content.width -= offset;
+    }
+    if style.focus_visible {
+        let inset = 2.0_f32.min(bounds.width * 0.5).min(bounds.height * 0.5);
+        let focus = Rect::new(
+            bounds.x + inset,
+            bounds.y + inset,
+            (bounds.width - 2.0 * inset).max(0.0),
+            (bounds.height - 2.0 * inset).max(0.0),
+        );
+        shape_border(
+            scene,
+            focus,
+            clip,
+            (style.corner_radius - inset).max(0.0),
+            2.0,
+            style.accent,
+        );
+    }
+    content
+}
+
+fn shape_border(
+    scene: &mut Scene,
+    bounds: Rect,
+    clip: Rect,
+    radius: f32,
+    width: f32,
+    color: Color,
+) {
+    if width <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return;
+    }
+    if radius > 0.0 {
+        scene.rounded_stroke(bounds, clip, radius, width, color);
+    } else {
+        draw_border(scene, bounds, clip, Border { width, color });
+    }
+}
+
+/// A small, independently defined check shape; no font or image resource is
+/// required. Disjoint cells store supersampled coverage of two round segments,
+/// so translucent checkmark colors never compound at segment joins.
+fn paint_checkmark(scene: &mut Scene, bounds: Rect, clip: Rect, color: Color) {
+    if bounds.width <= 0.0 || bounds.height <= 0.0 || color.a == 0.0 {
+        return;
+    }
+    let scale = bounds.width / 18.0;
+    let distance = |x: f32, y: f32, from: (f32, f32), to: (f32, f32)| {
+        let dx = to.0 - from.0;
+        let dy = to.1 - from.1;
+        let position =
+            (((x - from.0) * dx + (y - from.1) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+        (x - from.0 - position * dx).powi(2) + (y - from.1 - position * dy).powi(2)
+    };
+    // Fixed work and shape budget, including when callers choose huge bounds.
+    for y in 4..14 {
+        for x in 3..16 {
+            let mut coverage = 0;
+            for sample_y in 0..4 {
+                for sample_x in 0..4 {
+                    let px = x as f32 + (sample_x as f32 + 0.5) / 4.0;
+                    let py = y as f32 + (sample_y as f32 + 0.5) / 4.0;
+                    if distance(px, py, (4.5, 9.0), (7.5, 12.0)) <= 1.21
+                        || distance(px, py, (7.5, 12.0), (14.0, 5.5)) <= 1.21
+                    {
+                        coverage += 1;
+                    }
+                }
+            }
+            if coverage > 0 {
+                fill_clipped(
+                    scene,
+                    Rect::new(
+                        bounds.x + x as f32 * scale,
+                        bounds.y + y as f32 * scale,
+                        scale,
+                        scale,
+                    ),
+                    clip,
+                    Color {
+                        a: color.a * coverage as f32 / 16.0,
+                        ..color
+                    },
+                );
+            }
+        }
     }
 }
 

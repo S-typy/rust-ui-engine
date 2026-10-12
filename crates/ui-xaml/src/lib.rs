@@ -33,7 +33,7 @@ pub const XAML_NAMESPACE: &str = "http://schemas.microsoft.com/winfx/2006/xaml";
 pub const MAX_SOURCE_BYTES: usize = 1_048_576;
 /// Largest supported size or spacing value, in logical pixels.
 pub const MAX_DIMENSION: f64 = 16_384.0;
-/// Largest supported editor font size, in logical pixels.
+/// Largest supported control font size, in logical pixels.
 pub const MAX_FONT_SIZE: f64 = 512.0;
 /// Largest `MaxLength` value accepted by this profile, in extended graphemes.
 pub const MAX_TEXT_LENGTH: usize = 1_048_576;
@@ -122,6 +122,7 @@ pub enum ElementKind {
     TextBox(EditBoxDefinition),
     TextBlock(TextBlockDefinition),
     Button(ButtonDefinition),
+    ToggleButton(ToggleButtonDefinition),
     CheckBox(CheckBoxDefinition),
 }
 
@@ -160,6 +161,17 @@ pub struct TextBlockDefinition {
 pub struct ButtonDefinition {
     pub content: String,
     pub command: Option<String>,
+    pub style: ButtonStyleDefinition,
+}
+
+/// A two-state button. A bound command's registered checked state takes
+/// precedence over `is_checked` when the example mounts the definition.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ToggleButtonDefinition {
+    pub content: String,
+    pub command: Option<String>,
+    pub is_checked: bool,
+    pub style: ButtonStyleDefinition,
 }
 
 /// A two-state check box with literal content.
@@ -167,6 +179,21 @@ pub struct ButtonDefinition {
 pub struct CheckBoxDefinition {
     pub content: String,
     pub is_checked: bool,
+    pub style: ButtonStyleDefinition,
+}
+
+/// Optional metrics and normal-state brushes shared by button-like controls.
+/// `None` keeps the live theme fallback; colors are red, green, blue, alpha.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ButtonStyleDefinition {
+    pub font_size: Option<f32>,
+    pub padding: Option<[f32; 4]>,
+    pub corner_radius: Option<f32>,
+    pub border_thickness: Option<f32>,
+    pub background: Option<[u8; 4]>,
+    pub foreground: Option<[u8; 4]>,
+    pub border_brush: Option<[u8; 4]>,
+    pub focus_brush: Option<[u8; 4]>,
 }
 
 /// Startup properties for a single-line text editor.
@@ -365,6 +392,7 @@ fn parse_element(
         "TextBox" => ElementKind::TextBox(EditBoxDefinition::default()),
         "TextBlock" => ElementKind::TextBlock(TextBlockDefinition::default()),
         "Button" => ElementKind::Button(ButtonDefinition::default()),
+        "ToggleButton" => ElementKind::ToggleButton(ToggleButtonDefinition::default()),
         "CheckBox" => ElementKind::CheckBox(CheckBoxDefinition::default()),
         name => {
             return Err(at_node(
@@ -448,7 +476,23 @@ fn parse_element(
                             button.command = Some(attribute.value().into());
                             true
                         }
-                        _ => false,
+                        _ => button_style_property(document, attribute, &mut button.style)?,
+                    },
+                    ElementKind::ToggleButton(button) => match property {
+                        "Content" => {
+                            button.content = attribute.value().into();
+                            true
+                        }
+                        "Command" => {
+                            identifier(document, attribute, "Command")?;
+                            button.command = Some(attribute.value().into());
+                            true
+                        }
+                        "IsChecked" => {
+                            button.is_checked = boolean(document, attribute)?;
+                            true
+                        }
+                        _ => button_style_property(document, attribute, &mut button.style)?,
                     },
                     ElementKind::CheckBox(check_box) => match property {
                         "Content" => {
@@ -459,7 +503,7 @@ fn parse_element(
                             check_box.is_checked = boolean(document, attribute)?;
                             true
                         }
-                        _ => false,
+                        _ => button_style_property(document, attribute, &mut check_box.style)?,
                     },
                     _ => false,
                 };
@@ -560,6 +604,33 @@ fn editor_property(
         }
         "SelectionBrush" => definition.selection_brush = Some(color(document, attribute)?),
         "ValidationBrush" => definition.validation_brush = Some(color(document, attribute)?),
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn button_style_property(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+    definition: &mut ButtonStyleDefinition,
+) -> Result<bool, Diagnostic> {
+    match attribute.name() {
+        "FontSize" => {
+            definition.font_size = Some(editor_metric(document, attribute, MAX_FONT_SIZE, false)?)
+        }
+        "Padding" => definition.padding = Some(thickness(document, attribute)?),
+        "CornerRadius" => {
+            definition.corner_radius =
+                Some(editor_metric(document, attribute, MAX_DIMENSION, true)?)
+        }
+        "BorderThickness" => {
+            definition.border_thickness =
+                Some(editor_metric(document, attribute, MAX_DIMENSION, true)?)
+        }
+        "Background" => definition.background = Some(color(document, attribute)?),
+        "Foreground" => definition.foreground = Some(color(document, attribute)?),
+        "BorderBrush" => definition.border_brush = Some(color(document, attribute)?),
+        "FocusBrush" => definition.focus_brush = Some(color(document, attribute)?),
         _ => return Ok(false),
     }
     Ok(true)

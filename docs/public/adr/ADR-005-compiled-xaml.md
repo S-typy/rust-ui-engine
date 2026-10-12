@@ -15,7 +15,7 @@
 
 Добавлен независимый `rust-desktop-ui-xaml`. Первый профиль содержал `Window`
 с одним `TextBox`; расширение добавляет вложенные `StackPanel`, `TextBlock`,
-`Button` и `CheckBox` в пространстве имён `urn:rust-ui-engine:ui`. Из стандартного
+`Button`, `ToggleButton` и `CheckBox` в пространстве имён `urn:rust-ui-engine:ui`. Из стандартного
 языкового пространства имён XAML используется только `x:Name`. Поддерживаемые
 свойства и их ограничения перечислены в [описании профиля](../xaml.md).
 

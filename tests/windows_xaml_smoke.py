@@ -101,7 +101,6 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
     foreground = (245, 245, 245) if dark else (27, 27, 27)
     muted = (170, 170, 170) if dark else (105, 105, 105)
     accent = (96, 205, 255) if dark else (0, 95, 184)
-    selected = (35, 75, 105) if dark else (196, 225, 245)
     error = (255, 153, 164) if dark else (196, 43, 28)
     control_border, check_mark = border, accent
     if invalid:
@@ -113,8 +112,9 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
         "top_border_rgb": (rgb(200, 104), border),
         "confirm_surface_rgb": (rgb(180, 210), surface),
         "confirm_border_rgb": (rgb(112, 188), control_border),
-        "checkbox_surface_rgb": (rgb(300, 164), selected if read_only else surface),
-        "checkbox_mark_rgb": (rgb(48, 164), check_mark if read_only else surface),
+        "checkbox_surface_rgb": (rgb(300, 164), canvas),
+        "checkbox_indicator_rgb": (rgb(42, 159), check_mark if read_only else surface),
+        "confirm_rounded_corner_rgb": (rgb(32, 188), canvas),
     }
     if focused:
         samples["focus_underline_rgb"] = (rgb(200, 138.5), accent)
@@ -174,14 +174,74 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
             "sha256_pixels": hashlib.sha256(pixels).hexdigest()}
 
 
+def button_capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
+                               dark: bool, checked: bool, phase: str, focused: bool,
+                               option_checked: bool = False) -> dict:
+    """Verify the fixed Fluent fixture, independently of input diagnostics."""
+    def pixel(x, y):
+        offset = ((height - 1 - y) * width + x) * 4
+        blue, green, red = pixels[offset:offset + 3]
+        return red, green, blue
+
+    def rgb(x, y):
+        return pixel(round(x * scale), round(y * scale))
+
+    def near(actual, expected):
+        return all(abs(a - b) <= 3 for a, b in zip(actual, expected, strict=True))
+
+    canvas = (32, 32, 32) if dark else (243, 243, 243)
+    surface = (45, 45, 45) if dark else (255, 255, 255)
+    hover = (50, 50, 50) if dark else (250, 250, 250)
+    pressed = (40, 40, 40) if dark else (235, 235, 235)
+    selected = (35, 75, 105) if dark else (196, 225, 245)
+    accent = (96, 205, 255) if dark else (0, 95, 184)
+    muted = (170, 170, 170) if dark else (105, 105, 105)
+    background = {"normal": selected if checked else surface,
+                  "hover": hover, "pressed": pressed}[phase]
+    samples = {
+        "pin_background": (rgb(308, 214), background),
+        "pin_corner": (rgb(200, 188), canvas),
+        "pin_focus": (rgb(203, 206), accent if focused else background),
+        "disabled_background": (rgb(432, 214), canvas),
+        "disabled_corner": (rgb(328, 188), canvas),
+    }
+    for name, (actual, expected) in samples.items():
+        if not near(actual, expected):
+            raise SmokeFailure(f"Unexpected {name}: {actual}, expected {expected}")
+    disabled_ink = sum(near(pixel(x, y), muted)
+                       for y in range(round(194 * scale), round(220 * scale))
+                       for x in range(round(338 * scale), round(431 * scale)))
+    if disabled_ink < 30:
+        raise SmokeFailure(f"Disabled caption lacks muted glyphs: {disabled_ink}")
+    foreground = (245, 245, 245) if dark else (27, 27, 27)
+    pin_ink = sum(near(pixel(x, y), foreground)
+                  for y in range(round(194 * scale), round(220 * scale))
+                  for x in range(round(214 * scale), round(300 * scale)))
+    if pin_ink < 30:
+        raise SmokeFailure(f"ToggleButton caption lacks glyphs: {pin_ink}")
+    mark_ink = 0
+    if option_checked:
+        mark = canvas if dark else (255, 255, 255)
+        mark_ink = sum(near(pixel(x, y), mark)
+                       for y in range(round(157 * scale), round(172 * scale))
+                       for x in range(round(42 * scale), round(56 * scale)))
+        if mark_ink < 4:
+            raise SmokeFailure(f"Checked indicator lacks a contrasting checkmark: {mark_ink}")
+    return {**{name: actual for name, (actual, _) in samples.items()},
+            "disabled_glyph_pixels": disabled_ink, "pin_glyph_pixels": pin_ink,
+            "checkmark_pixels": mark_ink,
+            "pin_checked": checked, "pin_phase": phase, "pin_focused": focused}
+
+
 class FormWindows(GalleryWindows):
     def __init__(self, dark: bool, focused: bool = False, invalid: bool = False,
-                 read_only: bool = False):
+                 read_only: bool = False, buttons: dict | None = None):
         super().__init__()
         self.dark = dark
         self.focused = focused
         self.invalid = invalid
         self.read_only = read_only
+        self.buttons = buttons
 
     def find_window(self, pid: int) -> int | None:
         found = []
@@ -205,14 +265,20 @@ class FormWindows(GalleryWindows):
     def verify_capture(self, pixels, width, height, scale, state):
         if state["missing"] != 0:
             raise SmokeFailure("Form reported missing glyphs")
-        return capture_checkpoints(pixels, width, height, scale, self.dark, self.focused,
-                                   self.invalid, self.read_only)
+        result = capture_checkpoints(pixels, width, height, scale, self.dark, self.focused,
+                                     self.invalid, self.read_only)
+        if self.buttons is not None:
+            result["buttons"] = button_capture_checkpoints(pixels, width, height, scale,
+                                                          self.dark, option_checked=self.read_only,
+                                                          **self.buttons)
+        return result
 
 
 def form_capture_worker(hwnd: int, pid: int, destination: Path, result_queue,
-                        dark: bool, focused: bool, invalid: bool, read_only: bool) -> None:
+                        dark: bool, focused: bool, invalid: bool, read_only: bool,
+                        buttons: dict | None = None) -> None:
     try:
-        result_queue.put(FormWindows(dark, focused, invalid, read_only).screenshot(hwnd, pid, destination))
+        result_queue.put(FormWindows(dark, focused, invalid, read_only, buttons).screenshot(hwnd, pid, destination))
     except Exception as error:
         result_queue.put({"status": "unavailable", "reason": str(error)})
 
@@ -284,17 +350,93 @@ class FormSession(RetainedSession):
         self.wait_focus("Message", "pointer focuses the nested Message editor")
 
     def capture(self, output: Path, name: str, focused: bool, invalid: bool = False,
-                read_only: bool = False) -> None:
+                read_only: bool = False, buttons: dict | None = None) -> None:
         # A focused field blinks every 500ms, so idle-frame equality is not a
         # valid settling condition. Require a live frame and allow queued input.
         self.wait_state("live frame before " + name, lambda s: s["frames"] > 0)
         time.sleep(0.15)
         result = capture_client(self.hwnd, self.process.pid, output / f"{name}.bmp",
                                 self.timeout, worker_target=form_capture_worker,
-                                worker_args=(self.windows.dark, focused, invalid, read_only))
+                                worker_args=(self.windows.dark, focused, invalid, read_only, buttons))
         self.report["captures"][name] = result
         if result["status"] != "available":
             raise SmokeFailure(f"Required {name} capture unavailable: {result.get('reason')}")
+
+    def wait_pin(self, checked: bool, after: int, description: str) -> None:
+        expected = str(checked).lower()
+        def matches():
+            values = re.findall(r"^toggle-state=Pin checked=(true|false)$", self.log(), re.MULTILINE)
+            return len(values) > after and values[-1] == expected
+        self.wait(description, matches)
+        self.report["checks"].append({"check": description, "pin_checked": checked})
+
+    def run_controls(self, output: Path, scale: float) -> None:
+        self.click_control(112, 206, scale)
+        self.wait("Confirm command", lambda: "command=Confirm" in self.log())
+        self.wait_edit_diagnostic("edit-invalid", REQUIRED_MESSAGE, "Confirm rejects required empty value")
+        self.wait_focus("Confirm", "pointer focuses Confirm")
+        self.key(VK_TAB)
+        self.wait_focus("Pin", "Tab reaches ToggleButton")
+        self.capture(output, "pin-focused", focused=False, invalid=True,
+                     buttons={"checked": False, "phase": "normal", "focused": True})
+
+        self.pointer(WM_MOUSEMOVE, 260, 206, scale)
+        self.capture(output, "pin-hover", focused=False, invalid=True,
+                     buttons={"checked": False, "phase": "hover", "focused": True})
+        self.pointer(WM_LBUTTONDOWN, 260, 206, scale, held=True)
+        self.capture(output, "pin-pressed", focused=False, invalid=True,
+                     buttons={"checked": False, "phase": "pressed", "focused": True})
+        toggles = self.log().count("toggle-state=Pin checked=")
+        self.pointer(WM_MOUSEMOVE, 20, 100, scale, held=True)
+        self.pointer(WM_LBUTTONUP, 20, 100, scale)
+        self.capture(output, "pin-canceled", focused=False, invalid=True,
+                     buttons={"checked": False, "phase": "normal", "focused": True})
+        if self.log().count("toggle-state=Pin checked=") != toggles:
+            raise SmokeFailure("Pointer release outside Pin changed checked state")
+        self.report["checks"].append({"check": "pointer release outside Pin cancels activation"})
+
+        self.key(VK_SPACE)
+        self.wait_pin(True, toggles, "Space checks Pin on key release")
+        self.capture(output, "pin-checked", focused=False, invalid=True,
+                     buttons={"checked": True, "phase": "normal", "focused": True})
+        toggles = self.log().count("toggle-state=Pin checked=")
+        self.key(VK_RETURN)
+        self.wait_pin(False, toggles, "Enter clears Pin")
+        self.key(VK_TAB)
+        self.wait_focus("Message", "Tab skips Disabled and wraps to Message")
+        self.click_control(380, 206, scale)
+        time.sleep(0.15)
+        if last_edit_diagnostic(self.log(), "focus-name") == "Disabled":
+            raise SmokeFailure("Disabled button accepted focus")
+        self.report["checks"].append({"check": "disabled button rejects pointer focus"})
+        self.click_editor(scale)
+        self.key(VK_TAB)
+        self.wait_focus("Option", "Tab reaches Option")
+        toggles = self.log().count("checkbox-state=Option checked=")
+        self.key(VK_SPACE)
+        self.wait_checkbox(True, "Space checks Option and makes editor read-only", toggles)
+        for name in ("Confirm", "Pin", "Message"):
+            self.key(VK_TAB)
+            self.wait_focus(name, "Tab reaches " + name)
+        self.capture(output, "check-checked", focused=True, invalid=True, read_only=True,
+                     buttons={"checked": False, "phase": "normal", "focused": False})
+
+        toggles = self.log().count("checkbox-state=Option checked=")
+        self.click_control(60, 164, scale)
+        self.wait_checkbox(False, "pointer clears Option", toggles)
+        self.click_editor(scale)
+        before = parse_state(self.windows.title(self.hwnd))["frames"]
+        target = (round(480 * scale), round(360 * scale))
+        self.windows.resize_client(self.hwnd, *target)
+        self.wait("client resize", lambda: self.windows.client_size(self.hwnd) == target)
+        self.wait_state("resize redraw", lambda state: state["frames"] > before)
+        self.capture(output, "resized-controls", focused=True, invalid=True,
+                     buttons={"checked": False, "phase": "normal", "focused": False})
+        self.windows.post(self.hwnd, WM_CLOSE)
+        code = self.process.wait(timeout=self.timeout)
+        if code != 0:
+            raise SmokeFailure(f"Unexpected close status {code}")
+        self.report["checks"].append({"check": "native close", "exit_code": code})
 
     def run(self, output: Path) -> None:
         self.stdout_path = output / "stdout.log"
@@ -306,11 +448,11 @@ class FormSession(RetainedSession):
         self.wait("compiled x:Name resolves", lambda:
                   "named-editor=Message resolved=true" in self.log())
         self.report["checks"].append({"check": "compiled x:Name Message resolves"})
-        for name in ("Message", "Option", "Confirm"):
+        for name in ("Message", "Option", "Confirm", "Pin", "Disabled"):
             self.wait("compiled nested x:Name " + name + " resolves", lambda name=name:
                       f"named-control={name} resolved=true" in self.log())
         self.report["checks"].append({"check": "compiled nested control names resolve",
-                                      "names": ["Message", "Option", "Confirm"]})
+                                      "names": ["Message", "Option", "Confirm", "Pin", "Disabled"]})
         dpi = self.windows.user.GetDpiForWindow(self.hwnd)
         if dpi <= 0:
             raise SmokeFailure("GetDpiForWindow returned zero")
@@ -327,6 +469,10 @@ class FormSession(RetainedSession):
         self.promoted = True
         self.pointer(WM_MOUSEMOVE, 20, 100, scale)
         self.capture(output, "empty", focused=False)
+
+        if self.report["mode"] == "xaml-controls":
+            self.run_controls(output, scale)
+            return
 
         self.click_editor(scale)
         self.key(VK_RETURN)
@@ -359,7 +505,7 @@ class FormSession(RetainedSession):
                                   "Enter accepts the valid Unicode draft")
         self.capture(output, "typed", focused=True)
 
-        # The visual tree order is Message, Option, Confirm. Structural panels
+        # The visual tree order is Message, Option, Confirm, Pin. Structural panels
         # and labels must not introduce tab stops; the final stop wraps.
         self.key(VK_TAB)
         self.wait_focus("Option", "Tab moves from Message to nested Option")
@@ -370,7 +516,9 @@ class FormSession(RetainedSession):
         self.key(VK_TAB)
         self.wait_focus("Confirm", "Tab moves from Option to nested Confirm")
         self.key(VK_TAB)
-        self.wait_focus("Message", "Tab wraps from Confirm to read-only Message")
+        self.wait_focus("Pin", "Tab moves from Confirm to Pin")
+        self.key(VK_TAB)
+        self.wait_focus("Message", "Tab skips Disabled and wraps to read-only Message")
         changes_before = self.log().count("edit-value=")
         text_before = self.log().count('edit-input=Text("READONLY")')
         self.type_text("READONLY")
@@ -532,8 +680,7 @@ def self_test() -> None:
         set_rgb(34, 104, (border + 2,) * 3)
         set_rgb(180, 210, (surface,) * 3)
         set_rgb(112, 188, (border,) * 3)
-        set_rgb(300, 164, (surface,) * 3)
-        set_rgb(48, 164, (surface,) * 3)
+        set_rgb(42, 159, (surface,) * 3)
         for y in range(112, 117):
             for x in range(45, 80):
                 set_rgb(x, y, (foreground - x % 6 if dark else foreground + x % 6,) * 3)
@@ -554,14 +701,12 @@ def self_test() -> None:
             raise AssertionError("Missing nested button glyphs must be rejected")
         pixels[:] = direct
         accent = (96, 205, 255) if dark else (0, 95, 184)
-        selected = (35, 75, 105) if dark else (196, 225, 245)
         set_rgb(280, 122, (canvas,) * 3)
-        set_rgb(300, 164, selected)
-        set_rgb(48, 164, accent)
+        set_rgb(42, 159, accent)
         set_rgb(200, 138, accent)
         assert capture_checkpoints(pixels, width, height, 1.0, dark, True,
-                                   read_only=True)["checkbox_mark_rgb"] == accent
-        set_rgb(48, 164, (surface,) * 3)
+                                   read_only=True)["checkbox_indicator_rgb"] == accent
+        set_rgb(42, 159, (surface,) * 3)
         try:
             capture_checkpoints(pixels, width, height, 1.0, dark, True, read_only=True)
         except SmokeFailure:
@@ -596,6 +741,30 @@ def self_test() -> None:
         else:
             raise AssertionError("Missing validation message glyphs must be rejected")
         pixels[:] = direct
+        # The button checker must reject a wrong state palette and missing
+        # focus ring independently of otherwise valid editor pixels.
+        selected = (35, 75, 105) if dark else (196, 225, 245)
+        muted = (170, 170, 170) if dark else (105, 105, 105)
+        for y in range(199, 205):
+            for x in range(350, 385):
+                set_rgb(x, y, muted)
+            for x in range(230, 270):
+                set_rgb(x, y, (foreground,) * 3)
+        set_rgb(308, 214, selected)
+        set_rgb(203, 206, accent)
+        assert button_capture_checkpoints(pixels, width, height, 1.0, dark, True,
+                                          "normal", True)["disabled_glyph_pixels"] > 30
+        for damaged in ((308, 214), (203, 206)):
+            set_rgb(*damaged, (surface,) * 3)
+            try:
+                button_capture_checkpoints(pixels, width, height, 1.0, dark, True,
+                                           "normal", True)
+            except SmokeFailure:
+                pass
+            else:
+                raise AssertionError("Wrong checked/focus palette must fail")
+            set_rgb(*damaged, selected if damaged[0] == 308 else accent)
+        pixels[:] = direct
         # Reproduce the previous accidental linear->sRGB palette encoding.
         for x, y in ((8, 8), (32, 104)):
             wrong = round(255 * (1.055 * (canvas / 255) ** (1 / 2.4) - 0.055))
@@ -622,6 +791,8 @@ def main() -> int:
     parser.add_argument("--dark", action="store_true")
     parser.add_argument("--timeout", type=float, default=20)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--controls-only", action="store_true",
+                        help="Test buttons/check box, focus and resize without Unicode text injection")
     args = parser.parse_args()
     if args.self_test:
         self_test()
@@ -639,12 +810,15 @@ def main() -> int:
     output.mkdir(parents=True, exist_ok=True)
     report = {"status": "failed", "started_utc": datetime.now(timezone.utc).isoformat(),
               "executable": str(executable), "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
-              "mode": "xaml-form", "theme": "dark" if args.dark else "light",
+              "mode": "xaml-controls" if args.controls_only else "xaml-form", "theme": "dark" if args.dark else "light",
               "checks": [], "captures": {}, "backend_environment": os.environ.get("WGPU_BACKEND"),
               "input_method": "Posted child-only Win32 pointer, KEYDOWN/CHAR/KEYUP messages; restored cursor alignment",
               "limits": ["No physical keyboard, native IME, screen reader or external clipboard test",
                          "No native Shift+Tab modifier verification; backward traversal requires separate form model verification",
                          "No multi-monitor DPI or frame-time benchmark", "Captures require separate visual review"]}
+    if args.controls_only:
+        report["input_method"] = "Posted child-only Win32 pointer and key messages; no CHAR injection; restored cursor alignment"
+        report["limits"].append("Controls-only mode does not test text entry, accepted values or Escape rollback")
     session = None
     try:
         windows = FormWindows(args.dark)

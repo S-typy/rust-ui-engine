@@ -2,7 +2,8 @@
 
 `rust-desktop-ui-xaml` компилирует собственный ограниченный профиль XAML в Rust.
 Профиль описывает нативное окно `Window`, вложенные `StackPanel`, подписи
-`TextBlock`, однострочные `TextBox`, кнопки `Button` и флажки `CheckBox`.
+`TextBlock`, однострочные `TextBox`, кнопки `Button`, переключатели `ToggleButton`
+и флажки `CheckBox`.
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -39,6 +40,8 @@ cargo run -p xaml-form --locked -- --light --smoke-test
         <CheckBox x:Name="Option" Content="Только чтение" />
         <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
             <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Width="160" />
+            <ToggleButton x:Name="Pin" Content="Закрепить" Width="120" />
+            <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
         </StackPanel>
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />
@@ -62,6 +65,7 @@ URI пространства имён. Пространство имён WPF pre
 | StackPanel | `Orientation="Vertical"`, `Spacing="0"`, `Padding="0"` | Последовательная компоновка; также доступна `Horizontal` |
 | TextBlock | `Text=""` | Видимая подпись |
 | Button | `Content=""`, необязательный `Command` | Кнопка, которую приложение связывает с командой Rust |
+| ToggleButton | `Content=""`, `IsChecked="False"`, необязательный `Command` | Кнопка с выбранным состоянием |
 | CheckBox | `Content=""`, `IsChecked="False"` | Двухсостоянийный флажок |
 
 Для каждого элемента содержимого доступны `x:Name`, `Width`, `Height`, `Margin`,
@@ -76,15 +80,34 @@ binding. Его регистрацией и обработчиком управ�
 Конструкция `Click="..."`, исполняемый код в разметке и markup extensions
 не поддерживаются. Подробности примера и команды приведены ниже.
 
+У `ToggleButton` без команды начальное состояние задаёт `IsChecked`.
+Для командного переключателя приложение заранее регистрирует команду и её
+`checked: Some(bool)`: это общее состояние имеет приоритет над `IsChecked`
+в разметке. Неизвестная команда или отсутствие её checked state отклоняются
+до монтажа дерева. `CheckBox` в этом профиле не принимает `Command`.
+
+У трёх кнопочных элементов доступны `FontSize`, `Padding`, `CornerRadius`,
+`BorderThickness`, `Background`, `Foreground`, `BorderBrush` и `FocusBrush`.
+Числа и цвета имеют тот же синтаксис и пределы, что у TextBox ниже.
+Они компилируются в `ButtonStyleDefinition`, а адаптер применяет `ButtonStyle`.
+Незаданные значения следуют Fluent-теме. У CheckBox фон, граница и скругление
+относятся к компактному индикатору; строка подписи остаётся прозрачной.
+Настройка отдельных состояний доступна в Rust через `ButtonStyle`;
+XAML styles, triggers и templates пока не поддерживаются.
+
 Если размер не задан, адаптер примера растягивает элемент по ширине вертикальной
 панели. В горизонтальной панели при монтаже он вычисляет желаемую ширину подписи и кнопки
 по тексту, флажка — по тексту и индикатору; поле получает ширину 240. Минимальная
-желаемая ширина кнопки — 80. Высота по умолчанию: TextBox и Button — 36,
+желаемая ширина кнопки — 80. Для кнопок и флажков измерение учитывает FontSize
+и горизонтальный Padding. Высота по умолчанию: TextBox, Button и ToggleButton — 36,
 CheckBox — 32, TextBlock — 24. Автоматический размер вложенной панели учитывает
 её детей, отступы и интервалы. Явные Width/Height задают фиксированный размер.
 Это ограниченная компоновка примера; полноценный WPF measure/arrange здесь не реализован.
 StackPanel монтируется как `Controls::transparent_panel`: контейнер задаёт
 компоновку и обрезку содержимого, сохраняя фон родителя.
+Корень формы ограничен размером viewport. Ряд фиксированных кнопок в узком
+окне обрезается; он не растягивает окно или соседнее поле и не переносится
+автоматически на следующую строку.
 
 | Элемент | Свойство | Значение по умолчанию и назначение |
 |---|---|---|
@@ -376,11 +399,18 @@ resize, minimize/restore и закрытие. Снимки проверяют ц
 ```text
 cargo build --release --locked -p xaml-form
 python tests/windows_xaml_smoke.py --exe target/release/xaml-form.exe --output-dir target/xaml-smoke
+python tests/windows_xaml_smoke.py --exe target/release/xaml-form.exe --controls-only --output-dir target/xaml-controls
 ```
 
 Для тёмной темы добавьте `--dark`; backend выбирается переменной `WGPU_BACKEND`
 (`dx12` или `vulkan`). Сценарий использует Win32-сообщения только своему окну;
 он не подтверждает работу настоящей IME, внешнего clipboard или screen reader.
+Режим `--controls-only` проверяет Button/ToggleButton/CheckBox, их палитры,
+нажатие и его отмену, Enter/Space, Tab с пропуском disabled, resize и закрытие.
+Этот режим не вводит текст и не проверяет accepted value или отмену редактора.
+2026-10-12 этот сценарий прошёл на NVIDIA RTX 3090 с DX12 и Vulkan в обеих
+темах при DPI 144: по 30 проверок и 8 снимков на сочетание. Проверены пиксельные
+палитры и контраст отметки, скругления, глифы, фокус и pointer/keyboard activation.
 Нативный сценарий проверяет обычный Tab и возврат к первому контролу. Shift+Tab
 проверяется на уровне модели ввода; posted Win32-сообщения не устанавливают
 реальное состояние Shift, которое читает host.

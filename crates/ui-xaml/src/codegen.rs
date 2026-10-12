@@ -1,4 +1,6 @@
-use crate::{EditBoxDefinition, ElementDefinition, ElementKind, WindowDefinition};
+use crate::{
+    ButtonStyleDefinition, EditBoxDefinition, ElementDefinition, ElementKind, WindowDefinition,
+};
 
 pub(super) fn window(window: &WindowDefinition) -> String {
     format!(
@@ -54,14 +56,23 @@ fn element(element: &ElementDefinition) -> String {
             text.text,
         ),
         ElementKind::Button(button) => format!(
-            "rust_desktop_ui_xaml::ElementKind::Button(rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {} }})",
+            "rust_desktop_ui_xaml::ElementKind::Button(rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {} }})",
             button.content,
             optional_string(&button.command),
+            button_style(&button.style),
+        ),
+        ElementKind::ToggleButton(button) => format!(
+            "rust_desktop_ui_xaml::ElementKind::ToggleButton(rust_desktop_ui_xaml::ToggleButtonDefinition {{ content: {:?}.into(), command: {}, is_checked: {}, style: {} }})",
+            button.content,
+            optional_string(&button.command),
+            button.is_checked,
+            button_style(&button.style),
         ),
         ElementKind::CheckBox(check_box) => format!(
-            "rust_desktop_ui_xaml::ElementKind::CheckBox(rust_desktop_ui_xaml::CheckBoxDefinition {{ content: {:?}.into(), is_checked: {} }})",
+            "rust_desktop_ui_xaml::ElementKind::CheckBox(rust_desktop_ui_xaml::CheckBoxDefinition {{ content: {:?}.into(), is_checked: {}, style: {} }})",
             check_box.content,
             check_box.is_checked,
+            button_style(&check_box.style),
         ),
     };
     format!(
@@ -82,6 +93,29 @@ fn element(element: &ElementDefinition) -> String {
         margin = common.margin,
         is_enabled = common.is_enabled,
         automation_name = optional_string(&common.automation_name),
+    )
+}
+
+fn button_style(style: &ButtonStyleDefinition) -> String {
+    format!(
+        "rust_desktop_ui_xaml::ButtonStyleDefinition {{
+            font_size: {font_size:?},
+            padding: {padding:?},
+            corner_radius: {corner_radius:?},
+            border_thickness: {border_thickness:?},
+            background: {background:?},
+            foreground: {foreground:?},
+            border_brush: {border_brush:?},
+            focus_brush: {focus_brush:?},
+        }}",
+        font_size = style.font_size,
+        padding = style.padding,
+        corner_radius = style.corner_radius,
+        border_thickness = style.border_thickness,
+        background = style.background,
+        foreground = style.foreground,
+        border_brush = style.border_brush,
+        focus_brush = style.focus_brush,
     )
 }
 

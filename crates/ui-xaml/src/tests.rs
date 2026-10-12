@@ -1,5 +1,14 @@
 use super::*;
 
+fn button_style(window: &WindowDefinition) -> &ButtonStyleDefinition {
+    match &window.content.kind {
+        ElementKind::Button(button) => &button.style,
+        ElementKind::ToggleButton(button) => &button.style,
+        ElementKind::CheckBox(button) => &button.style,
+        _ => panic!("expected a button-like element"),
+    }
+}
+
 fn form(window_attributes: &str, text_box: &str) -> String {
     format!(
         "<Window xmlns='{UI_NAMESPACE}' xmlns:x='{XAML_NAMESPACE}' {window_attributes}>\n{text_box}\n</Window>"
@@ -578,14 +587,16 @@ fn nested_tree_preserves_common_properties_content_and_child_order() {
         row.children[0].kind,
         ElementKind::CheckBox(CheckBoxDefinition {
             content: "Remember me".into(),
-            is_checked: true
+            is_checked: true,
+            ..Default::default()
         })
     );
     assert_eq!(
         row.children[1].kind,
         ElementKind::Button(ButtonDefinition {
             content: "Save".into(),
-            command: Some("SaveForm".into())
+            command: Some("SaveForm".into()),
+            ..Default::default()
         })
     );
     assert_eq!(
@@ -610,6 +621,10 @@ fn every_supported_element_can_be_the_single_root_with_default_common_properties
             ElementKind::TextBlock(TextBlockDefinition::default()),
         ),
         ("Button", ElementKind::Button(ButtonDefinition::default())),
+        (
+            "ToggleButton",
+            ElementKind::ToggleButton(ToggleButtonDefinition::default()),
+        ),
         (
             "CheckBox",
             ElementKind::CheckBox(CheckBoxDefinition::default()),
@@ -709,7 +724,8 @@ fn tree_rejects_events_cross_control_properties_and_nonliteral_commands() {
             parsed.content.kind,
             ElementKind::Button(ButtonDefinition {
                 content: String::new(),
-                command: Some(command.into())
+                command: Some(command.into()),
+                ..Default::default()
             })
         );
     }
@@ -717,7 +733,7 @@ fn tree_rejects_events_cross_control_properties_and_nonliteral_commands() {
 
 #[test]
 fn all_leaf_kinds_reject_children_and_text_while_panels_reject_mixed_text() {
-    for tag in ["TextBox", "TextBlock", "Button", "CheckBox"] {
+    for tag in ["TextBox", "TextBlock", "Button", "ToggleButton", "CheckBox"] {
         for content in ["<TextBox/>", "text", "<![CDATA[text]]>"] {
             assert!(
                 parse(&form("", &format!("<{tag}>{content}</{tag}>"))).is_err(),
@@ -738,7 +754,14 @@ fn all_leaf_kinds_reject_children_and_text_while_panels_reject_mixed_text() {
 
 #[test]
 fn common_geometry_and_state_are_validated_for_every_element_kind() {
-    for tag in ["StackPanel", "TextBox", "TextBlock", "Button", "CheckBox"] {
+    for tag in [
+        "StackPanel",
+        "TextBox",
+        "TextBlock",
+        "Button",
+        "ToggleButton",
+        "CheckBox",
+    ] {
         for attributes in [
             "Width='0'",
             "Height='NaN'",
@@ -866,4 +889,126 @@ fn recursive_codegen_emits_all_variants_and_escapes_every_new_string_field() {
     }
     let empty = compile(&form("", "<StackPanel/>")).unwrap();
     assert!(empty.contains("children: vec![],"));
+}
+
+#[test]
+fn button_toggle_and_checkbox_share_optional_metrics_and_argb_brushes() {
+    for tag in ["Button", "ToggleButton", "CheckBox"] {
+        let definition = parse(&form("", &format!("<{tag} Content='Action' FontSize='18.5' Padding='1,2,3,4' CornerRadius='6' BorderThickness='2' Background='#112233' Foreground='#80445566' BorderBrush='#00778899' FocusBrush='#ABCDEF'/>"))).unwrap();
+        assert_eq!(
+            button_style(&definition),
+            &ButtonStyleDefinition {
+                font_size: Some(18.5),
+                padding: Some([1.0, 2.0, 3.0, 4.0]),
+                corner_radius: Some(6.0),
+                border_thickness: Some(2.0),
+                background: Some([17, 34, 51, 255]),
+                foreground: Some([68, 85, 102, 128]),
+                border_brush: Some([119, 136, 153, 0]),
+                focus_brush: Some([171, 205, 239, 255]),
+            }
+        );
+        assert_eq!(
+            button_style(&parse(&form("", &format!("<{tag}/>"))).unwrap()),
+            &ButtonStyleDefinition::default()
+        );
+        assert_eq!(
+            button_style(&parse(&form("", &format!("<{tag} Padding='12,5'/>"))).unwrap()).padding,
+            Some([12.0, 5.0, 12.0, 5.0])
+        );
+    }
+}
+
+#[test]
+fn button_style_reports_invalid_properties_without_accepting_state_markup() {
+    for tag in ["Button", "ToggleButton", "CheckBox"] {
+        for attributes in [
+            "FontSize='0'",
+            "FontSize='513'",
+            "FontSize='NaN'",
+            "FontSize='1e-300'",
+            "Padding='-1'",
+            "Padding='1,2,3'",
+            "Padding='16385'",
+            "Padding='inf'",
+            "CornerRadius='-1'",
+            "CornerRadius='NaN'",
+            "BorderThickness='1,2'",
+            "BorderThickness='16385'",
+            "Background='Red'",
+            "Foreground='#123'",
+            "BorderBrush='#GG112233'",
+            "FocusBrush='#123456789'",
+            "HoverBackground='#FFFFFF'",
+            "CheckedBackground='#FFFFFF'",
+            "CheckmarkBrush='#000000'",
+            "SelectionBrush='#112233'",
+            "IsThreeState='True'",
+        ] {
+            let error = parse(&form("", &format!("<{tag}\n {attributes}/>"))).unwrap_err();
+            assert!(error.line > 0 && error.column > 0, "{tag} {attributes}");
+            let property = attributes.split('=').next().unwrap();
+            assert!(
+                error.message.contains(property),
+                "{tag} {attributes}: {error}"
+            );
+        }
+        assert!(
+            parse(&form(
+                "",
+                &format!(
+                    "<{tag} FontSize='512' Padding='0' CornerRadius='16384' BorderThickness='0'/>"
+                )
+            ))
+            .is_ok()
+        );
+    }
+    assert!(parse(&form("", "<TextBlock FontSize='18'/>")).is_err());
+    assert!(parse(&form("", "<StackPanel Background='#FFFFFF'/>")).is_err());
+}
+
+#[test]
+fn toggle_command_and_checked_are_literals_and_codegen_preserves_all_style_fields() {
+    let source = form(
+        "",
+        "<ToggleButton x:Name='Pin' Content='Pin &quot;\\&#10;🌍' Command='_Pin2' IsChecked='True' FontSize='19' Padding='7,3' CornerRadius='8' BorderThickness='2' Background='#101112' Foreground='#80131415' BorderBrush='#161718' FocusBrush='#191A1B'/>",
+    );
+    let definition = parse(&source).unwrap();
+    let ElementKind::ToggleButton(toggle) = definition.content.kind else {
+        panic!("expected ToggleButton");
+    };
+    assert!(toggle.is_checked);
+    assert_eq!(toggle.command.as_deref(), Some("_Pin2"));
+    assert_eq!(toggle.content, "Pin \"\\\n🌍");
+    let generated = compile(&source).unwrap();
+    for literal in [
+        "ElementKind::ToggleButton",
+        "ToggleButtonDefinition",
+        "command: Some(\"_Pin2\".into())",
+        "is_checked: true",
+        "font_size: Some(19.0)",
+        "padding: Some([7.0, 3.0, 7.0, 3.0])",
+        "corner_radius: Some(8.0)",
+        "border_thickness: Some(2.0)",
+        "background: Some([16, 17, 18, 255])",
+        "foreground: Some([19, 20, 21, 128])",
+        "border_brush: Some([22, 23, 24, 255])",
+        "focus_brush: Some([25, 26, 27, 255])",
+    ] {
+        assert!(generated.contains(literal), "missing {literal}");
+    }
+    assert!(generated.contains(&format!("content: {:?}.into()", toggle.content)));
+    for attributes in [
+        "Command='{Binding Pin}'",
+        "Command='Pin.Now'",
+        "IsChecked='null'",
+        "IsChecked='{Binding State}'",
+        "Click='Handler'",
+        "Text='wrong'",
+    ] {
+        assert!(
+            parse(&form("", &format!("<ToggleButton {attributes}/>"))).is_err(),
+            "{attributes}"
+        );
+    }
 }
