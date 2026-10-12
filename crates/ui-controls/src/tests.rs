@@ -1128,6 +1128,8 @@ fn lowering_maxlength_rejects_oversized_undo_without_losing_history() {
     frame(&mut ui);
     focus(&mut ui, id);
     ui.set_text(id, "x").unwrap();
+    // The cancellation baseline must also fit a newly tightened input limit.
+    ui.commit_edit(id).unwrap();
     ui.set_max_length(id, Some(1)).unwrap();
     ui.drain_text_changes();
     let selection = ui.document(id).unwrap().selection();
@@ -1452,11 +1454,13 @@ fn editor_settings_reject_as_one_transaction_without_losing_preedit_or_history()
             is_read_only: true,
             max_length: Some(1),
             placeholder: "Changed hint".into(),
+            ..Default::default()
         },
         EditorSettings {
             is_read_only: true,
             max_length: Some(8),
             placeholder: "x".repeat(1_048_577),
+            ..Default::default()
         },
     ] {
         assert!(ui.set_editor_settings(id, rejected).is_err());
@@ -1485,6 +1489,7 @@ fn editor_settings_and_legacy_setters_share_one_policy_without_spurious_changes(
         is_read_only: false,
         max_length: Some(12),
         placeholder: "Name here".into(),
+        ..Default::default()
     };
     ui.set_editor_settings(id, settings.clone()).unwrap();
     frame(&mut ui);
@@ -1502,6 +1507,7 @@ fn editor_settings_and_legacy_setters_share_one_policy_without_spurious_changes(
             is_read_only: true,
             max_length: Some(16),
             placeholder: "Updated hint".into(),
+            ..Default::default()
         })
     );
     assert!(ui.document(id).unwrap().composition().is_none());

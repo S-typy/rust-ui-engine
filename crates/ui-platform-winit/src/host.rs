@@ -21,6 +21,15 @@ use winit::{
 const RETRY: Duration = Duration::from_millis(16);
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Preserve the application's composition state until its focus-loss policy
+/// has run. The dispatcher may synchronize native IME after each event.
+fn dispatch_focus_transition(focused: bool, mut dispatch: impl FnMut(PlatformEvent)) {
+    dispatch(PlatformEvent::Input(InputEvent::WindowFocused(focused)));
+    if !focused {
+        dispatch(PlatformEvent::ImeCancel);
+    }
+}
+
 pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), String> {
     if !options.width.is_finite()
         || !options.height.is_finite()
@@ -368,11 +377,7 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        self.dispatch(
-            event_loop,
-            PlatformEvent::Input(InputEvent::WindowFocused(false)),
-        );
-        self.dispatch(event_loop, PlatformEvent::ImeCancel);
+        dispatch_focus_transition(false, |event| self.dispatch(event_loop, event));
         self.ime = crate::ime::ImeSession::default();
         self.wake_at = None;
         self.retry_at = None;
@@ -442,12 +447,8 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
                 if !value {
                     self.modifiers = Modifiers::default();
                     self.ime.disabled();
-                    self.dispatch(event_loop, PlatformEvent::ImeCancel);
                 }
-                self.dispatch(
-                    event_loop,
-                    PlatformEvent::Input(InputEvent::WindowFocused(value)),
-                );
+                dispatch_focus_transition(value, |event| self.dispatch(event_loop, event));
                 self.redraw();
             }
             WindowEvent::ModifiersChanged(modifiers) => {
@@ -579,5 +580,89 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
             .flatten()
             .min();
         event_loop.set_control_flow(next.map_or(ControlFlow::Wait, ControlFlow::WaitUntil));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A windowless application probe whose blur policy accepts only a draft
+    /// that has no active composition. This observes the production dispatcher
+    /// rather than reconstructing its event sequence in the test.
+    struct FocusProbe {
+        composing: bool,
+        focused: bool,
+        draft: &'static str,
+        accepted: &'static str,
+        composition_seen_on_blur: Option<bool>,
+        cancellations: usize,
+    }
+
+    impl FocusProbe {
+        fn new(composing: bool) -> Self {
+            Self {
+                composing,
+                focused: true,
+                draft: "edited value",
+                accepted: "initial value",
+                composition_seen_on_blur: None,
+                cancellations: 0,
+            }
+        }
+
+        fn dispatch(&mut self, event: PlatformEvent) {
+            match event {
+                PlatformEvent::Input(InputEvent::WindowFocused(focused)) => {
+                    self.focused = focused;
+                    if !focused {
+                        self.composition_seen_on_blur = Some(self.composing);
+                        if !self.composing {
+                            self.accepted = self.draft;
+                        }
+                    }
+                }
+                PlatformEvent::ImeCancel => {
+                    self.composing = false;
+                    self.cancellations += 1;
+                }
+                _ => panic!("unexpected event in focus transition"),
+            }
+        }
+    }
+
+    #[test]
+    fn focus_loss_exposes_composition_before_cancellation_and_preserves_accepted_value() {
+        let mut app = FocusProbe::new(true);
+        dispatch_focus_transition(false, |event| app.dispatch(event));
+        assert_eq!(app.composition_seen_on_blur, Some(true));
+        assert_eq!(app.accepted, "initial value");
+        assert_eq!(app.draft, "edited value");
+        assert!(!app.focused);
+        assert!(!app.composing);
+        assert_eq!(app.cancellations, 1);
+    }
+
+    #[test]
+    fn focus_loss_leaves_noncomposing_draft_acceptance_to_the_application() {
+        let mut app = FocusProbe::new(false);
+        dispatch_focus_transition(false, |event| app.dispatch(event));
+        assert_eq!(app.composition_seen_on_blur, Some(false));
+        assert_eq!(app.accepted, "edited value");
+        assert!(!app.focused);
+        assert!(!app.composing);
+        assert_eq!(app.cancellations, 1);
+    }
+
+    #[test]
+    fn focus_restore_does_not_cancel_composition_or_accept_the_draft() {
+        let mut app = FocusProbe::new(true);
+        app.focused = false;
+        dispatch_focus_transition(true, |event| app.dispatch(event));
+        assert!(app.focused);
+        assert!(app.composing);
+        assert_eq!(app.accepted, "initial value");
+        assert_eq!(app.composition_seen_on_blur, None);
+        assert_eq!(app.cancellations, 0);
     }
 }

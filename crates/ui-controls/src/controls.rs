@@ -1,4 +1,7 @@
-use crate::{CommandId, CommandRegistry, EditBoxStyle, EditBoxVisualState, EditorSettings, Theme};
+use crate::{
+    CommandId, CommandRegistry, CommitOutcome, EditBoxStyle, EditBoxVisualState, EditEvent,
+    EditorSettings, EditorValidation, EditorValidator, Theme,
+};
 use rust_desktop_ui_core::{
     Axis, Border, Color, Edges, FrameStats, InputEvent, Key, LayoutKind, LayoutStyle, Length,
     Mutation, NodeProps, Paint, Point, PointerButton, Rect, RuntimeError, Scene, Size, TextAlign,
@@ -67,13 +70,15 @@ pub struct SemanticNode {
     pub selected: bool,
     pub disabled: bool,
     pub read_only: bool,
+    /// Last failed business validation of the draft; not an IME error.
+    pub validation_error: Option<String>,
     pub focused: bool,
     pub bounds: Rect,
     pub actions: Vec<SemanticAction>,
     pub children: Vec<WidgetId>,
 }
 
-/// One committed string change. Drain after handling input or application updates.
+/// One draft string change (IME preedit excluded). Drain after input or updates.
 /// Initial values, selection, IME preedit and rejected/no-op edits emit no event.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TextChanged {
@@ -159,6 +164,10 @@ struct Control {
     role: Option<Role>,
     tooltip: Option<String>,
     editor: EditorSettings,
+    accepted_value: String,
+    validation: EditorValidation,
+    validator: Option<EditorValidator>,
+    validation_error: Option<String>,
     edit_box_style: EditBoxStyle,
     single_line: bool,
     text_scroll_x: f32,
@@ -195,6 +204,8 @@ pub struct Controls {
     clipboard: Vec<ClipboardRequest>,
     activated: Vec<WidgetId>,
     text_changes: Vec<TextChanged>,
+    edit_events: Vec<EditEvent>,
+    observed_editor_focus: Option<WidgetId>,
     viewport: Size,
     scene: Scene,
     text_layouts: HashMap<WidgetId, PreparedText>,
@@ -251,6 +262,8 @@ impl Controls {
             clipboard: Vec::new(),
             activated: Vec::new(),
             text_changes: Vec::new(),
+            edit_events: Vec::new(),
+            observed_editor_focus: None,
             viewport: Size::ZERO,
             scene: Scene::default(),
             text_layouts: HashMap::new(),
@@ -325,6 +338,182 @@ impl Controls {
                 id,
                 text: document.text().to_owned(),
             });
+            self.controls.get_mut(&id).unwrap().validation_error = None;
+        }
+    }
+    /// Business editing events, independent of the draft's `TextChanged` queue.
+    pub fn drain_edit_events(&mut self) -> Vec<EditEvent> {
+        std::mem::take(&mut self.edit_events)
+            .into_iter()
+            .filter(|event| {
+                let id = match event {
+                    EditEvent::Committed { id, .. }
+                    | EditEvent::Canceled { id }
+                    | EditEvent::ValidationFailed { id, .. } => *id,
+                };
+                self.runtime.tree().node(id).is_some()
+            })
+            .collect()
+    }
+    /// Initial or most recently accepted string, excluding the current draft.
+    pub fn accepted_value(&self, id: WidgetId) -> Option<&str> {
+        self.editor_control(id)
+            .ok()
+            .map(|c| c.accepted_value.as_str())
+    }
+    /// Whether the draft differs from its accepted baseline. IME is separate.
+    pub fn is_edit_dirty(&self, id: WidgetId) -> Option<bool> {
+        Some(self.document(id)?.text() != self.accepted_value(id)?)
+    }
+    pub fn validation_error(&self, id: WidgetId) -> Option<&str> {
+        self.editor_control(id).ok()?.validation_error.as_deref()
+    }
+    pub fn editor_validation(&self, id: WidgetId) -> Option<&EditorValidation> {
+        self.editor_control(id).ok().map(|c| &c.validation)
+    }
+    fn editor_control(&self, id: WidgetId) -> Result<&Control, ControlError> {
+        self.controls
+            .get(&id)
+            .filter(|c| {
+                self.runtime.tree().node(id).is_some() && matches!(c.kind, Kind::TextBox(_))
+            })
+            .ok_or_else(|| ControlError::Invalid("Control is not a TextBox".into()))
+    }
+    /// Install built-in validation without validating or changing the baseline.
+    /// Rules run on a confirmation attempt, not on every keystroke.
+    pub fn set_editor_validation(
+        &mut self,
+        id: WidgetId,
+        validation: EditorValidation,
+    ) -> Result<(), ControlError> {
+        self.editor_control(id)?;
+        validation.validate()?;
+        let control = self.controls.get_mut(&id).unwrap();
+        if control.validation != validation {
+            control.validation = validation;
+            control.validation_error = None;
+            self.scene_dirty = true;
+        }
+        Ok(())
+    }
+    /// Install synchronous application validation after the built-in rules.
+    /// Replacing it clears the previous diagnostic, without accepting the draft.
+    pub fn set_editor_validator(
+        &mut self,
+        id: WidgetId,
+        validator: Option<EditorValidator>,
+    ) -> Result<(), ControlError> {
+        self.editor_control(id)?;
+        let control = self.controls.get_mut(&id).unwrap();
+        control.validator = validator;
+        control.validation_error = None;
+        self.scene_dirty = true;
+        Ok(())
+    }
+    fn validate_editor_value(&self, id: WidgetId, value: &str) -> Result<(), String> {
+        let control = &self.controls[&id];
+        control.validation.check(value)?;
+        if let Some(validator) = &control.validator {
+            validator.check(value)?;
+        }
+        Ok(())
+    }
+    /// Validate and accept the draft. Invalid input is an ordinary outcome,
+    /// preserving the document, selection, history and accepted value.
+    /// Application calls are permitted for read-only/disabled editors; user
+    /// keyboard and focus routes are gated by editability.
+    pub fn commit_edit(&mut self, id: WidgetId) -> Result<CommitOutcome, ControlError> {
+        self.editor_control(id)?;
+        let document = self.document(id).unwrap();
+        if document.composition().is_some() {
+            return Ok(CommitOutcome::CompositionActive);
+        }
+        let value = document.text().to_owned();
+        if let Err(message) = self.validate_editor_value(id, &value) {
+            self.controls.get_mut(&id).unwrap().validation_error = Some(message.clone());
+            self.edit_events.push(EditEvent::ValidationFailed {
+                id,
+                message: message.clone(),
+            });
+            self.scene_dirty = true;
+            return Ok(CommitOutcome::Invalid(message));
+        }
+        let control = self.controls.get_mut(&id).unwrap();
+        if control.validation_error.take().is_some() {
+            self.scene_dirty = true;
+        }
+        if control.accepted_value == value {
+            return Ok(CommitOutcome::Unchanged);
+        }
+        control.accepted_value.clone_from(&value);
+        self.edit_events.push(EditEvent::Committed { id, value });
+        Ok(CommitOutcome::Committed)
+    }
+    /// Restore the baseline without validating it. Cancelling clears the whole
+    /// undo/redo history, preventing Undo from resurrecting a discarded draft.
+    /// The caret moves to the end. This is also an application-owned operation.
+    pub fn cancel_edit(&mut self, id: WidgetId) -> Result<bool, ControlError> {
+        self.editor_control(id)?;
+        let control = self.controls.get_mut(&id).unwrap();
+        let Kind::TextBox(document) = &mut control.kind else {
+            unreachable!()
+        };
+        if document.text() == control.accepted_value
+            && document.composition().is_none()
+            && !document.can_undo()
+            && !document.can_redo()
+            && control.validation_error.is_none()
+        {
+            return Ok(false);
+        }
+        let before = document.text().to_owned();
+        *document = TextDocument::new(control.accepted_value.clone());
+        control.caret = TextCaret {
+            index: document.selection().focus,
+            ..Default::default()
+        };
+        control.validation_error = None;
+        self.caret_visible = true;
+        self.scene_dirty = true;
+        self.record_text_change(id, &before);
+        self.edit_events.push(EditEvent::Canceled { id });
+        Ok(true)
+    }
+    /// Atomically load and accept an application value after normalization,
+    /// input limits and business validation. Invalid leaves every state and
+    /// event queue unchanged. Success clears composition and undo/redo history.
+    pub fn set_editor_value(
+        &mut self,
+        id: WidgetId,
+        text: &str,
+    ) -> Result<CommitOutcome, ControlError> {
+        let control = self.editor_control(id)?;
+        let value = normalize_editor_text(text, control.single_line).map_err(edit_error)?;
+        editor_limits(control.editor.max_length)
+            .validate(&value)
+            .map_err(edit_error)?;
+        if let Err(message) = self.validate_editor_value(id, &value) {
+            return Ok(CommitOutcome::Invalid(message));
+        }
+        let value = value.into_owned();
+        let before = self.document(id).unwrap().text().to_owned();
+        let control = self.controls.get_mut(&id).unwrap();
+        let changed = control.accepted_value != value;
+        control.kind = Kind::TextBox(TextDocument::new(value.clone()));
+        control.caret = TextCaret {
+            index: value.len(),
+            ..Default::default()
+        };
+        control.accepted_value.clone_from(&value);
+        control.validation_error = None;
+        self.caret_visible = true;
+        self.scene_dirty = true;
+        self.record_text_change(id, &before);
+        if changed {
+            self.edit_events.push(EditEvent::Committed { id, value });
+            Ok(CommitOutcome::Committed)
+        } else {
+            Ok(CommitOutcome::Unchanged)
         }
     }
     pub fn document(&self, id: WidgetId) -> Option<&TextDocument> {
@@ -358,6 +547,7 @@ impl Controls {
             .enabled = enabled;
         self.scene_dirty = true;
         self.refresh_paints()?;
+        self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
         Ok(())
     }
@@ -371,6 +561,7 @@ impl Controls {
         let Some(Control {
             kind: Kind::TextBox(document),
             editor,
+            accepted_value,
             ..
         }) = self.controls.get_mut(&id)
         else {
@@ -378,6 +569,9 @@ impl Controls {
         };
         editor_limits(settings.max_length)
             .validate(document.text())
+            .map_err(edit_error)?;
+        editor_limits(settings.max_length)
+            .validate(accepted_value)
             .map_err(edit_error)?;
         TextLimits::default()
             .validate(&settings.placeholder)
@@ -558,6 +752,10 @@ impl Controls {
                 ..Default::default()
             },
         )?;
+        let accepted_value = match &kind {
+            Kind::TextBox(document) => document.text().to_owned(),
+            _ => String::new(),
+        };
         self.controls.insert(
             id,
             Control {
@@ -569,6 +767,10 @@ impl Controls {
                 role: None,
                 tooltip: None,
                 editor: EditorSettings::default(),
+                accepted_value,
+                validation: EditorValidation::default(),
+                validator: None,
+                validation_error: None,
                 edit_box_style: EditBoxStyle::default(),
                 single_line: false,
                 text_scroll_x: 0.0,
@@ -686,7 +888,7 @@ impl Controls {
     }
     /// A single-line editor. CR, LF, tab, NEL and Unicode line/paragraph separators
     /// are removed from initial, pasted,
-    /// programmatic and committed text; Enter leaves the document unchanged.
+    /// programmatic and committed text; Enter confirms without inserting a newline.
     pub fn edit_box(
         &mut self,
         parent: WidgetId,
@@ -833,6 +1035,14 @@ impl Controls {
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.text_changes
             .retain(|event| self.runtime.tree().node(event.id).is_some());
+        self.edit_events.retain(|event| {
+            let id = match event {
+                EditEvent::Committed { id, .. }
+                | EditEvent::Canceled { id }
+                | EditEvent::ValidationFailed { id, .. } => *id,
+            };
+            self.runtime.tree().node(id).is_some()
+        });
         self.scene_dirty = true;
         Ok(())
     }
@@ -1018,6 +1228,7 @@ impl Controls {
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
         self.refresh_paints()?;
+        self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
         let mut delta = self.runtime.update(&mut self.layout, viewport)?;
         self.viewport = viewport;
@@ -1052,11 +1263,30 @@ impl Controls {
         self.update(self.viewport)?;
         self.caret_visible = true;
         if let InputEvent::KeyDown {
-            key: Key::Escape, ..
+            key: Key::Escape,
+            modifiers,
+            repeat,
         } = event
         {
-            self.close_popup()?;
-            self.cancel_preedit();
+            if repeat || modifiers != rust_desktop_ui_core::Modifiers::default() {
+                return Ok(());
+            }
+            if self.popup.is_some() {
+                self.close_popup()?;
+            } else if let Some(id) = self
+                .runtime
+                .focused()
+                .filter(|&id| self.is_text_editable(id))
+            {
+                if self
+                    .document(id)
+                    .is_some_and(|document| document.composition().is_some())
+                {
+                    self.cancel_preedit();
+                } else {
+                    self.cancel_edit(id)?;
+                }
+            }
             return Ok(());
         }
         if self.popup.is_some() && self.popup_key(&event)? {
@@ -1082,6 +1312,7 @@ impl Controls {
         if let Some(error) = report.errors.into_iter().next() {
             return Err(error.into());
         }
+        self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
         match event {
             InputEvent::PointerDown {
@@ -1415,6 +1646,22 @@ impl Controls {
         modifiers: rust_desktop_ui_core::Modifiers,
         repeat: bool,
     ) -> Result<(), ControlError> {
+        let shortcut = (modifiers.control && !modifiers.alt) || modifiers.super_key;
+        let confirm_key = *key == Key::Enter
+            && !repeat
+            && !modifiers.shift
+            && !modifiers.alt
+            && self.controls.get(&id).is_some_and(|control| {
+                if control.single_line {
+                    !modifiers.control && !modifiers.super_key
+                } else {
+                    shortcut
+                }
+            });
+        if confirm_key && self.is_text_editable(id) {
+            self.commit_edit(id)?;
+            return Ok(());
+        }
         let Some(Control {
             kind: Kind::TextBox(document),
             caret,
@@ -1434,7 +1681,6 @@ impl Controls {
             return Ok(());
         }
         // Ctrl+Alt is commonly AltGr, whose printable text arrives separately.
-        let shortcut = (modifiers.control && !modifiers.alt) || modifiers.super_key;
         if matches!(
             key,
             Key::ArrowUp | Key::ArrowDown | Key::PageUp | Key::PageDown
@@ -1515,7 +1761,13 @@ impl Controls {
             Key::Delete if !*read_only => {
                 document.delete_forward();
             }
-            Key::Enter if !*single_line && !*read_only => {
+            Key::Enter
+                if !*single_line
+                    && !*read_only
+                    && !modifiers.control
+                    && !modifiers.super_key
+                    && !modifiers.alt =>
+            {
                 if let Err(error) = document.try_insert("\n", limits) {
                     return user_edit(Err(error));
                 }
@@ -1562,6 +1814,7 @@ impl Controls {
     }
     /// Insert user text or paste. Over-limit input is rejected as a whole.
     pub fn text_input(&mut self, text: &str) -> Result<(), ControlError> {
+        self.synchronize_editor_focus()?;
         self.caret_visible = true;
         if let Some(id) = self
             .runtime
@@ -1601,6 +1854,7 @@ impl Controls {
         text: &str,
         cursor: Option<(usize, usize)>,
     ) -> Result<(), ControlError> {
+        self.synchronize_editor_focus()?;
         self.caret_visible = true;
         if let Some(id) = self
             .runtime
@@ -1625,6 +1879,7 @@ impl Controls {
         Ok(())
     }
     pub fn ime_commit(&mut self, text: &str) -> Result<(), ControlError> {
+        self.synchronize_editor_focus()?;
         self.caret_visible = true;
         if let Some(id) = self
             .runtime
@@ -1656,12 +1911,7 @@ impl Controls {
                 index: document.selection().focus,
                 ..Default::default()
             };
-            if document.text() != before {
-                self.text_changes.push(TextChanged {
-                    id,
-                    text: document.text().to_owned(),
-                });
-            }
+            self.record_text_change(id, &before);
             self.scene_dirty = true;
         }
         Ok(())
@@ -1673,6 +1923,40 @@ impl Controls {
             }
         }
         self.scene_dirty = true;
+    }
+    // Also observes public runtime focus mutations at the next Controls boundary.
+    // A disappearing, hidden or disabled editor is never implicitly accepted.
+    fn synchronize_editor_focus(&mut self) -> Result<(), ControlError> {
+        let current = self
+            .runtime
+            .focused()
+            .filter(|&id| self.document(id).is_some());
+        let previous = self.observed_editor_focus;
+        self.observed_editor_focus = current;
+        if current != previous
+            && let Some(id) = previous
+        {
+            let composing = self
+                .document(id)
+                .is_some_and(|document| document.composition().is_some());
+            if composing {
+                if let Some(Control {
+                    kind: Kind::TextBox(document),
+                    ..
+                }) = self.controls.get_mut(&id)
+                {
+                    document.cancel_preedit();
+                    self.scene_dirty = true;
+                }
+            } else if self.is_text_editable(id)
+                && self
+                    .editor_settings(id)
+                    .is_some_and(|settings| settings.commit_on_focus_lost)
+            {
+                self.commit_edit(id)?;
+            }
+        }
+        Ok(())
     }
     fn cancel_inactive_preedit(&mut self) {
         let focused = self
@@ -1706,8 +1990,9 @@ impl Controls {
             .get(&id)
             .map(|layout| layout.caret_geometry(caret))
     }
-    /// Application-owned update, allowed for disabled/read-only editors.
-    /// Normalizes single-line input and rejects limits atomically with an error.
+    /// Application-owned, undoable draft update, allowed for disabled/read-only
+    /// editors. Does not accept the business value; use `set_editor_value` to load
+    /// a value or `commit_edit` to confirm. Input limit failures are atomic.
     pub fn set_text(&mut self, id: WidgetId, text: &str) -> Result<(), ControlError> {
         let Some(Control {
             kind: Kind::TextBox(document),
@@ -1762,9 +2047,14 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
-            let editor_style = self
-                .edit_box_visual_state(id)
-                .map(|state| self.controls[&id].edit_box_style.resolve(self.theme, state));
+            let editor_style = self.edit_box_visual_state(id).map(|state| {
+                let control = &self.controls[&id];
+                let mut style = control.edit_box_style.resolve(self.theme, state);
+                if state != EditBoxVisualState::Disabled && control.validation_error.is_some() {
+                    style.apply_invalid(self.theme, control.edit_box_style.invalid);
+                }
+                style
+            });
             let color = if self.runtime.hovered() == Some(id) {
                 paint.hover_background.or(paint.background)
             } else {
@@ -2102,6 +2392,7 @@ impl Controls {
                         selected: false,
                         disabled: !self.effective_enabled(id),
                         read_only: false,
+                        validation_error: None,
                         focused: self.runtime.focused() == Some(id),
                         bounds,
                         actions: Vec::new(),
@@ -2154,6 +2445,7 @@ impl Controls {
                     selected,
                     disabled: !enabled,
                     read_only: control.editor.is_read_only,
+                    validation_error: control.validation_error.clone(),
                     focused: self.runtime.focused() == Some(id),
                     bounds,
                     actions,
@@ -2168,6 +2460,7 @@ impl Controls {
         action: SemanticAction,
         value: Option<&str>,
     ) -> Result<(), ControlError> {
+        self.synchronize_editor_focus()?;
         if !self.is_enabled(id) {
             return Ok(());
         }
@@ -2191,6 +2484,7 @@ impl Controls {
                     .map_err(|_| ControlError::Invalid("Invalid accessible scroll value".into()))?,
             )?,
         }
+        self.synchronize_editor_focus()?;
         Ok(())
     }
 }

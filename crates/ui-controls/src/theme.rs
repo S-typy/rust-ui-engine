@@ -21,6 +21,8 @@ pub struct ThemeTokens {
     pub pressed: Color,
     pub selected: Color,
     pub focus: Color,
+    /// Validation border and accent, adapted for the theme's surfaces.
+    pub error: Color,
     pub control_height: f32,
     pub font_size: f32,
     pub spacing: f32,
@@ -79,6 +81,11 @@ impl Theme {
                 } else {
                     Color::rgb(0, 95, 184)
                 },
+                error: if dark {
+                    Color::rgb(255, 153, 164)
+                } else {
+                    Color::rgb(196, 43, 28)
+                },
                 control_height: 36.0,
                 font_size: 14.0,
                 spacing: 8.0,
@@ -96,6 +103,7 @@ impl Theme {
                 pressed: Color::rgb(34, 86, 134),
                 selected: Color::rgb(37, 72, 109),
                 focus: Color::rgb(116, 189, 246),
+                error: Color::rgb(255, 153, 164),
                 control_height: 34.0,
                 font_size: 15.0,
                 spacing: 8.0,
@@ -111,6 +119,7 @@ impl Theme {
                 pressed: Color::rgb(166, 202, 239),
                 selected: Color::rgb(199, 222, 246),
                 focus: Color::rgb(27, 108, 191),
+                error: Color::rgb(196, 43, 28),
                 control_height: if compact { 26.0 } else { 34.0 },
                 font_size: if compact { 13.0 } else { 15.0 },
                 spacing: if compact { 4.0 } else { 8.0 },

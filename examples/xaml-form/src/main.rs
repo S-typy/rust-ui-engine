@@ -33,7 +33,9 @@ fn start() -> Result<(), String> {
             "--diagnostics" => diagnostics = true,
             "--help" | "-h" => {
                 println!("xaml-form [--light | --dark] [--smoke-test] [--diagnostics]");
-                println!("--diagnostics logs editor values for automated input tests.");
+                println!(
+                    "--diagnostics logs input, values and validation for automated input tests."
+                );
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {argument}")),

@@ -13,4 +13,6 @@ pub use ribbon::*;
 pub use theme::*;
 
 #[cfg(test)]
+mod edit_session_tests;
+#[cfg(test)]
 mod tests;

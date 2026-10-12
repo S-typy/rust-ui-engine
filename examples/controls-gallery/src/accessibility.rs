@@ -78,6 +78,10 @@ impl Gallery {
             if item.read_only {
                 node.set_read_only();
             }
+            if let Some(error) = item.validation_error {
+                node.set_invalid(Invalid::True);
+                node.set_description(error);
+            }
             for action in item.actions {
                 match action {
                     SemanticAction::Focus => node.add_action(Action::Focus),

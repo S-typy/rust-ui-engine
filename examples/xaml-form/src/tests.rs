@@ -1,5 +1,7 @@
 use crate::{form::Form, generated};
-use rust_desktop_ui_controls::{EditBoxStyle, EditorSettings, Theme};
+use rust_desktop_ui_controls::{
+    CommitOutcome, EditBoxStyle, EditorSettings, EditorValidation, Theme,
+};
 use rust_desktop_ui_core::{Color, Edges, InputEvent, Key, Modifiers, Mutation, Size};
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent, accesskit};
 
@@ -132,6 +134,7 @@ fn omitted_style_uses_live_theme_and_accessibility_uses_current_editor_settings(
                 placeholder: "Updated hint".into(),
                 is_read_only: true,
                 max_length: Some(8),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -350,4 +353,190 @@ fn form_rejects_overlimit_input_and_consumes_change_events() {
     .unwrap();
     assert_eq!(form.text(), "ab");
     assert!(form.ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn required_form_reports_error_then_accepts_and_cancels_with_visible_status() {
+    let mut definition = generated::window_definition();
+    definition.edit_box.validation_brush = Some([180, 30, 60, 255]);
+    let mut form = Form::new(definition, false).unwrap();
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    assert_eq!(form.ui.validation_error(form.editor), None);
+    assert_eq!(
+        form.ui.edit_box_style(form.editor).unwrap().invalid.border,
+        Some(Color::rgb(180, 30, 60))
+    );
+    key(&mut form, Key::Tab, false);
+    key(&mut form, Key::Enter, false);
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    let message = "Введите текст перед подтверждением.";
+    assert_eq!(form.ui.validation_error(form.editor), Some(message));
+    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    assert!(form.scene().texts.iter().any(|run| run.text == message));
+    let tree = form.accessibility(1.0);
+    let edit = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .unwrap()
+        .1;
+    assert_eq!(edit.invalid(), Some(accesskit::Invalid::True));
+    assert!(edit.is_required());
+    let status_id = edit.error_message().unwrap();
+    let status = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == status_id)
+        .unwrap()
+        .1;
+    assert_eq!(status.label(), Some(message));
+    assert_eq!(status.live(), Some(accesskit::Live::Polite));
+    form.event(PlatformEvent::Text("Готово".into())).unwrap();
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    assert_eq!(form.ui.validation_error(form.editor), None);
+    assert_eq!(form.ui.is_edit_dirty(form.editor), Some(true));
+    assert!(
+        form.scene()
+            .texts
+            .iter()
+            .any(|run| run.text == "Есть неподтверждённые изменения.")
+    );
+    key(&mut form, Key::Enter, false);
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor), Some("Готово"));
+    assert_eq!(form.ui.is_edit_dirty(form.editor), Some(false));
+    assert!(
+        form.scene()
+            .texts
+            .iter()
+            .any(|run| run.text == "Значение подтверждено.")
+    );
+    form.event(PlatformEvent::Text("!".into())).unwrap();
+    key(&mut form, Key::Escape, false);
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    assert_eq!(form.text(), "Готово");
+    assert_eq!(form.ui.is_edit_dirty(form.editor), Some(false));
+    assert!(!form.ui.document(form.editor).unwrap().can_undo());
+    assert!(
+        form.scene()
+            .texts
+            .iter()
+            .any(|run| run.text == "Изменения отменены.")
+    );
+    let tree = form.accessibility(1.0);
+    let edit = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .unwrap()
+        .1;
+    assert_eq!(edit.invalid(), None);
+    assert_eq!(edit.error_message(), None);
+    assert!(form.ui.drain_edit_events().is_empty());
+}
+
+#[test]
+fn lost_focus_acceptance_can_be_disabled_and_invalid_value_does_not_trap_focus() {
+    for automatic in [false, true] {
+        let mut definition = generated::window_definition();
+        definition.edit_box.commit_on_lost_focus = automatic;
+        let mut form = Form::new(definition, false).unwrap();
+        form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+        key(&mut form, Key::Tab, false);
+        form.event(PlatformEvent::Text("value".into())).unwrap();
+        form.event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+            .unwrap();
+        form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+        assert_eq!(
+            form.ui.accepted_value(form.editor),
+            Some(if automatic { "value" } else { "" })
+        );
+        assert_eq!(form.ui.is_edit_dirty(form.editor), Some(!automatic));
+        assert_eq!(form.ime_target(), None);
+    }
+    let mut form = form();
+    key(&mut form, Key::Tab, false);
+    form.event(PlatformEvent::Text(" ".into())).unwrap();
+    form.event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+        .unwrap();
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    assert_eq!(form.text(), " ");
+    assert!(form.ui.validation_error(form.editor).is_some());
+    assert_eq!(form.ime_target(), None);
+}
+
+#[test]
+fn validation_status_wraps_and_clips_long_message_and_tracks_live_required_rules() {
+    let mut definition = generated::window_definition();
+    let message = "Ошибка ".repeat(200);
+    definition.edit_box.validation_message = message.clone();
+    let mut form = Form::new(definition, false).unwrap();
+    form.update(Size::new(320.0, 180.0), 1.0).unwrap();
+    assert!(matches!(
+        form.ui.commit_edit(form.editor).unwrap(),
+        CommitOutcome::Invalid(_)
+    ));
+    form.update(Size::new(320.0, 180.0), 1.0).unwrap();
+    let run = form
+        .scene()
+        .texts
+        .iter()
+        .find(|run| run.text == message)
+        .unwrap();
+    assert!(run.wrap);
+    assert!(run.clip.width <= 256.0 && run.clip.height <= 56.0);
+    assert!(run.is_valid());
+    let tree = form.accessibility(1.0);
+    let edit = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .unwrap()
+        .1;
+    let error_id = edit.error_message().unwrap();
+    assert_eq!(
+        tree.nodes
+            .iter()
+            .find(|(id, _)| *id == error_id)
+            .unwrap()
+            .1
+            .label(),
+        Some(message.as_str())
+    );
+    form.ui
+        .set_editor_validation(form.editor, EditorValidation::default())
+        .unwrap();
+    let tree = form.accessibility(1.0);
+    let edit = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .unwrap()
+        .1;
+    assert!(!edit.is_required());
+    assert_eq!(edit.invalid(), None);
+    assert_eq!(edit.error_message(), None);
+}
+
+#[test]
+fn composition_stays_separate_from_acceptance_and_form_drains_transaction_events() {
+    let mut form = form();
+    key(&mut form, Key::Tab, false);
+    form.event(PlatformEvent::Text("draft".into())).unwrap();
+    form.event(PlatformEvent::ImePreedit("語".into(), Some((3, 3))))
+        .unwrap();
+    assert_eq!(
+        form.ui.commit_edit(form.editor).unwrap(),
+        CommitOutcome::CompositionActive
+    );
+    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    assert_eq!(form.ui.validation_error(form.editor), None);
+    assert!(form.ui.drain_edit_events().is_empty());
+    form.event(PlatformEvent::ImeCommit("語".into())).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    key(&mut form, Key::Enter, false);
+    assert_eq!(form.ui.accepted_value(form.editor), Some("draft語"));
+    assert!(form.ui.drain_edit_events().is_empty());
 }

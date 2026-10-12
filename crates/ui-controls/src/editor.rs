@@ -1,9 +1,13 @@
 use crate::{ControlError, Theme};
-use rust_desktop_ui_core::{Color, Edges};
+use rust_desktop_ui_core::{Color, Edges, WidgetId};
+use std::{fmt, rc::Rc};
+
+/// Maximum UTF-8 bytes retained in a validation diagnostic.
+pub const MAX_VALIDATION_MESSAGE_BYTES: usize = 4096;
 
 /// Reusable editor behavior and placeholder. Applying settings does not replace
 /// the document, its selection, or its edit history.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EditorSettings {
     /// Allow selection and copy while preventing user text changes.
     pub is_read_only: bool,
@@ -12,6 +16,117 @@ pub struct EditorSettings {
     pub max_length: Option<usize>,
     /// Presentation only; this is neither the value nor the accessible name.
     pub placeholder: String,
+    /// Attempt to accept the draft when keyboard focus leaves this editor.
+    /// On by default; applications may opt into explicit acceptance only.
+    pub commit_on_focus_lost: bool,
+}
+
+impl Default for EditorSettings {
+    fn default() -> Self {
+        Self {
+            is_read_only: false,
+            max_length: None,
+            placeholder: String::new(),
+            commit_on_focus_lost: true,
+        }
+    }
+}
+
+/// Built-in validation, applied to the editable text when accepting a value.
+/// Input is not trimmed or otherwise changed by validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EditorValidation {
+    /// Require at least one character that Rust's Unicode `trim` retains.
+    pub is_required: bool,
+    /// Required-value diagnostic. Empty or whitespace-only uses the default.
+    pub message: String,
+}
+
+impl Default for EditorValidation {
+    fn default() -> Self {
+        Self {
+            is_required: false,
+            message: "A value is required.".into(),
+        }
+    }
+}
+
+impl EditorValidation {
+    /// Reject oversized diagnostics before applying a validation policy.
+    pub fn validate(&self) -> Result<(), ControlError> {
+        if self.message.len() > MAX_VALIDATION_MESSAGE_BYTES {
+            return Err(ControlError::Invalid(format!(
+                "Validation message exceeds {MAX_VALIDATION_MESSAGE_BYTES} UTF-8 bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check(&self, text: &str) -> Result<(), String> {
+        if self.is_required && text.trim().is_empty() {
+            let message = if self.message.trim().is_empty() {
+                "A value is required."
+            } else {
+                &self.message
+            };
+            Err(message[..message.floor_char_boundary(MAX_VALIDATION_MESSAGE_BYTES)].to_owned())
+        } else {
+            Ok(())
+        }
+    }
+}
+
+type ValidatorCallback = dyn Fn(&str) -> Result<(), String>;
+
+/// A reusable synchronous value validator. Runs only when requested by the
+/// editor's validation/acceptance API, not for transient IME composition.
+///
+/// The callback should be short and free of side effects. Clones share the
+/// callback; this UI-thread value does not require `Send` or `Sync`.
+#[derive(Clone)]
+pub struct EditorValidator(Rc<ValidatorCallback>);
+
+impl EditorValidator {
+    pub fn new(validator: impl Fn(&str) -> Result<(), String> + 'static) -> Self {
+        Self(Rc::new(validator))
+    }
+
+    pub(crate) fn check(&self, text: &str) -> Result<(), String> {
+        (self.0)(text).map_err(|mut message| {
+            let oversized = message.len() > MAX_VALIDATION_MESSAGE_BYTES;
+            message.truncate(message.floor_char_boundary(MAX_VALIDATION_MESSAGE_BYTES));
+            if message.trim().is_empty() {
+                return "The value is invalid.".to_owned();
+            }
+            if oversized {
+                message.shrink_to_fit();
+            }
+            message
+        })
+    }
+}
+
+impl fmt::Debug for EditorValidator {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("EditorValidator(..)")
+    }
+}
+
+/// Acceptance is distinct from changing the draft or completing IME input.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommitOutcome {
+    Committed,
+    Unchanged,
+    Invalid(String),
+    CompositionActive,
+}
+
+/// Value-transaction events. `TextChanged` separately reports draft mutations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EditEvent {
+    Committed { id: WidgetId, value: String },
+    Canceled { id: WidgetId },
+    ValidationFailed { id: WidgetId, message: String },
 }
 
 /// Optional colors for an editor state. Unspecified colors inherit the normal
@@ -50,6 +165,9 @@ pub struct EditBoxStyle {
     pub focused: EditBoxAppearance,
     pub read_only: EditBoxAppearance,
     pub disabled: EditBoxAppearance,
+    /// Applied over the resolved enabled state when validation fails. The
+    /// default changes border and accent to the theme's error color.
+    pub invalid: EditBoxAppearance,
 }
 
 /// Resolved interaction state. Disabled takes precedence over focus and hover;
@@ -124,6 +242,7 @@ impl EditBoxStyle {
             self.focused,
             self.read_only,
             self.disabled,
+            self.invalid,
         ] {
             for color in [
                 appearance.background,
@@ -200,6 +319,12 @@ impl EditBoxStyle {
 }
 
 impl ResolvedEditBoxStyle {
+    pub(crate) fn apply_invalid(&mut self, theme: Theme, appearance: EditBoxAppearance) {
+        self.border = theme.tokens().error;
+        self.accent = theme.tokens().error;
+        self.apply(appearance);
+    }
+
     fn apply(&mut self, appearance: EditBoxAppearance) {
         self.background = appearance.background.unwrap_or(self.background);
         self.foreground = appearance.foreground.unwrap_or(self.foreground);
@@ -213,6 +338,134 @@ impl ResolvedEditBoxStyle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn required_validation_checks_unicode_whitespace_without_altering_values() {
+        assert!(EditorSettings::default().commit_on_focus_lost);
+        assert!(EditorValidation::default().check("").is_ok());
+        let validation = EditorValidation {
+            is_required: true,
+            message: "Введите имя".into(),
+        };
+        for text in ["", " \t\n", "\u{00a0}\u{2003}\u{3000}"] {
+            assert_eq!(validation.check(text), Err("Введите имя".into()));
+        }
+        for text in ["  Ada  ", "\u{00a0}Ж\u{3000}", "👩‍💻", "\u{200b}"] {
+            assert!(validation.check(text).is_ok());
+        }
+        let validation = EditorValidation {
+            is_required: true,
+            message: String::new(),
+        };
+        validation.validate().unwrap();
+        assert_eq!(validation.check(""), Err("A value is required.".into()));
+        let validation = EditorValidation {
+            message: " \t\u{3000}".into(),
+            ..validation
+        };
+        assert_eq!(validation.check(""), Err("A value is required.".into()));
+    }
+
+    #[test]
+    fn validation_configuration_uses_a_byte_cap_and_rejects_oversized_messages() {
+        let mut validation = EditorValidation {
+            is_required: true,
+            message: "😀".repeat(MAX_VALIDATION_MESSAGE_BYTES / 4),
+        };
+        validation.validate().unwrap();
+        assert_eq!(
+            validation.check("").unwrap_err().len(),
+            MAX_VALIDATION_MESSAGE_BYTES
+        );
+        validation.message.push('a');
+        assert!(validation.validate().is_err());
+        // The internal check is also defensive against an unvalidated policy.
+        assert_eq!(
+            validation.check("").unwrap_err().len(),
+            MAX_VALIDATION_MESSAGE_BYTES
+        );
+    }
+
+    #[test]
+    fn callbacks_share_configuration_and_bound_errors_at_utf8_boundaries() {
+        let expected_prefix = "a".repeat(MAX_VALIDATION_MESSAGE_BYTES - 1);
+        let callback_message = format!("{expected_prefix}😀suffix");
+        let validator = EditorValidator::new(move |text| match text {
+            "valid" => Ok(()),
+            "empty" => Err(String::new()),
+            "whitespace" => Err(" \u{2003}\n".into()),
+            _ => Err(callback_message.clone()),
+        });
+        let cloned = validator.clone();
+        assert!(cloned.check("valid").is_ok());
+        assert_eq!(cloned.check("empty"), Err("The value is invalid.".into()));
+        assert_eq!(
+            cloned.check("whitespace"),
+            Err("The value is invalid.".into())
+        );
+        assert_eq!(cloned.check("other"), Err(expected_prefix.clone()));
+        assert_eq!(validator.check("other"), Err(expected_prefix));
+        // Equality with the cap is retained without truncating the final scalar.
+        let validator = EditorValidator::new(|_| Err("😀".repeat(1024)));
+        assert_eq!(
+            validator.check("").unwrap_err().len(),
+            MAX_VALIDATION_MESSAGE_BYTES
+        );
+        let validator = EditorValidator::new(|_| {
+            Err(format!(
+                "{}late diagnostic",
+                " ".repeat(MAX_VALIDATION_MESSAGE_BYTES)
+            ))
+        });
+        assert_eq!(validator.check(""), Err("The value is invalid.".into()));
+    }
+
+    #[test]
+    fn invalid_overlay_preserves_focus_metrics_and_accepts_explicit_colors() {
+        for theme in [
+            Theme::Light,
+            Theme::Dark,
+            Theme::Compact,
+            Theme::FluentLight,
+            Theme::FluentDark,
+        ] {
+            for state in [
+                EditBoxVisualState::Normal,
+                EditBoxVisualState::Focused,
+                EditBoxVisualState::ReadOnlyFocused,
+            ] {
+                let style = EditBoxStyle {
+                    font_size: Some(18.0),
+                    padding: Some(Edges::all(7.0)),
+                    ..Default::default()
+                };
+                let before = style.resolve(theme, state);
+                let mut invalid = before;
+                invalid.apply_invalid(theme, style.invalid);
+                assert_eq!(invalid.border, theme.tokens().error);
+                assert_eq!(invalid.accent, theme.tokens().error);
+                assert_eq!(invalid.background, before.background);
+                assert_eq!(invalid.foreground, before.foreground);
+                assert_eq!(invalid.focus_visible, before.focus_visible);
+                assert_eq!(invalid.font_size, before.font_size);
+                assert_eq!(invalid.padding, before.padding);
+                let color = Color::rgb(80, 40, 120);
+                invalid.apply_invalid(
+                    theme,
+                    EditBoxAppearance {
+                        background: Some(color),
+                        border: Some(color),
+                        accent: Some(color),
+                        ..Default::default()
+                    },
+                );
+                assert_eq!(invalid.background, color);
+                assert_eq!(invalid.border, color);
+                assert_eq!(invalid.accent, color);
+                assert_eq!(invalid.foreground, before.foreground);
+            }
+        }
+    }
 
     #[test]
     fn visual_state_prioritizes_disabled_and_keeps_readonly_focus() {
@@ -443,14 +696,15 @@ mod tests {
                         4 => &mut appearance.accent,
                         _ => &mut appearance.selection,
                     } = Some(color);
-                    for state in 0..5 {
+                    for state in 0..6 {
                         let mut style = EditBoxStyle::default();
                         *match state {
                             0 => &mut style.normal,
                             1 => &mut style.hovered,
                             2 => &mut style.focused,
                             3 => &mut style.read_only,
-                            _ => &mut style.disabled,
+                            4 => &mut style.disabled,
+                            _ => &mut style.invalid,
                         } = appearance;
                         assert!(style.validate().is_err());
                     }

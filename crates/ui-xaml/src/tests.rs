@@ -318,6 +318,7 @@ fn brush_colors_require_strict_hex_and_report_the_attribute() {
         "FocusBrush",
         "PlaceholderForeground",
         "SelectionBrush",
+        "ValidationBrush",
     ] {
         for value in [
             "Red",
@@ -346,6 +347,61 @@ fn brush_colors_require_strict_hex_and_report_the_attribute() {
             .message
             .contains("markup extensions")
     );
+}
+
+#[test]
+fn validation_properties_parse_and_compile_without_rejecting_initial_empty_text() {
+    let source = form(
+        "",
+        "<TextBox IsRequired='True' CommitOnLostFocus='False' ValidationMessage='Введите &quot;текст&quot; &#10; здесь' ValidationBrush='#80402010'/>",
+    );
+    let parsed = parse(&source).unwrap().edit_box;
+    assert!(parsed.is_required);
+    assert!(!parsed.commit_on_lost_focus);
+    assert_eq!(parsed.validation_message, "Введите \"текст\" \n здесь");
+    assert_eq!(parsed.validation_brush, Some([64, 32, 16, 128]));
+    let generated = compile(&source).unwrap();
+    assert!(generated.contains("is_required: true,"));
+    assert!(generated.contains("commit_on_lost_focus: false,"));
+    assert!(generated.contains("validation_message: \"Введите \\\"текст\\\" \\n здесь\".into(),"));
+    assert!(generated.contains("validation_brush: Some([64, 32, 16, 128]),"));
+    let defaults = parse(&form("", "<TextBox/>")).unwrap().edit_box;
+    assert!(!defaults.is_required);
+    assert!(defaults.commit_on_lost_focus);
+    assert_eq!(defaults.validation_message, "A value is required.");
+    assert_eq!(defaults.validation_brush, None);
+    for property in ["IsRequired", "CommitOnLostFocus"] {
+        for value in ["", "yes", "1", "TRUE", " true "] {
+            let error =
+                parse(&form("", &format!("<TextBox\n    {property}='{value}'/>"))).unwrap_err();
+            assert_eq!((error.line, error.column), (3, 5));
+            assert!(error.message.contains(property));
+        }
+        for value in ["true", "false", "True", "False"] {
+            assert!(parse(&form("", &format!("<TextBox {property}='{value}'/>"))).is_ok());
+        }
+    }
+}
+
+#[test]
+fn validation_message_limit_counts_decoded_utf8_bytes_and_allows_runtime_fallback() {
+    for message in [String::new(), "   ".to_owned(), "Я".repeat(2048)] {
+        let source = form("", &format!("<TextBox ValidationMessage='{message}'/>"));
+        assert_eq!(parse(&source).unwrap().edit_box.validation_message, message);
+    }
+    for message in [
+        "Я".repeat(2049),
+        "x".repeat(MAX_VALIDATION_MESSAGE_BYTES + 1),
+        "&#x1F44B;".repeat(1025),
+    ] {
+        let source = form(
+            "",
+            &format!("<TextBox\n    ValidationMessage='{message}'/>"),
+        );
+        let error = parse(&source).unwrap_err();
+        assert_eq!((error.line, error.column), (3, 5));
+        assert!(error.message.contains("4096-byte UTF-8 limit"));
+    }
 }
 
 #[test]

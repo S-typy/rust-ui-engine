@@ -31,6 +31,8 @@ pub const MAX_DIMENSION: f64 = 16_384.0;
 pub const MAX_FONT_SIZE: f64 = 512.0;
 /// Largest `MaxLength` value accepted by this profile, in extended graphemes.
 pub const MAX_TEXT_LENGTH: usize = 1_048_576;
+/// Maximum UTF-8 length of an editor's validation message.
+pub const MAX_VALIDATION_MESSAGE_BYTES: usize = 4_096;
 
 /// Initial form appearance, independent of the platform and control renderer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -83,6 +85,12 @@ pub struct EditBoxDefinition {
     pub is_read_only: bool,
     /// Maximum extended graphemes. `None` means no grapheme limit (`MaxLength="0"`).
     pub max_length: Option<usize>,
+    /// Require a non-whitespace value when the draft is accepted.
+    pub is_required: bool,
+    /// Message shown after a failed required-value check.
+    pub validation_message: String,
+    /// Attempt to accept the draft when keyboard/window focus is lost.
+    pub commit_on_lost_focus: bool,
     /// `None` uses the current control theme's metric.
     pub font_size: Option<f32>,
     /// Optional left, top, right, bottom content padding in logical pixels.
@@ -98,6 +106,8 @@ pub struct EditBoxDefinition {
     pub focus_brush: Option<[u8; 4]>,
     pub placeholder_foreground: Option<[u8; 4]>,
     pub selection_brush: Option<[u8; 4]>,
+    /// Validation border and focus-accent color; `None` follows the theme.
+    pub validation_brush: Option<[u8; 4]>,
 }
 
 impl Default for EditBoxDefinition {
@@ -113,6 +123,9 @@ impl Default for EditBoxDefinition {
             is_enabled: true,
             is_read_only: false,
             max_length: None,
+            is_required: false,
+            validation_message: "A value is required.".into(),
+            commit_on_lost_focus: true,
             font_size: None,
             padding: None,
             corner_radius: None,
@@ -123,6 +136,7 @@ impl Default for EditBoxDefinition {
             focus_brush: None,
             placeholder_foreground: None,
             selection_brush: None,
+            validation_brush: None,
         }
     }
 }
@@ -274,6 +288,20 @@ fn parse_editor(node: Node<'_, '_>) -> Result<EditBoxDefinition, Diagnostic> {
             "IsEnabled" => definition.is_enabled = boolean(document, attribute)?,
             "IsReadOnly" => definition.is_read_only = boolean(document, attribute)?,
             "MaxLength" => definition.max_length = max_length(document, attribute)?,
+            "IsRequired" => definition.is_required = boolean(document, attribute)?,
+            "CommitOnLostFocus" => definition.commit_on_lost_focus = boolean(document, attribute)?,
+            "ValidationMessage" => {
+                if attribute.value().len() > MAX_VALIDATION_MESSAGE_BYTES {
+                    return Err(at_attribute(
+                        document,
+                        attribute,
+                        format!(
+                            "ValidationMessage exceeds the {MAX_VALIDATION_MESSAGE_BYTES}-byte UTF-8 limit"
+                        ),
+                    ));
+                }
+                definition.validation_message = attribute.value().into();
+            }
             "FontSize" => {
                 definition.font_size =
                     Some(editor_metric(document, attribute, MAX_FONT_SIZE, false)?);
@@ -295,6 +323,7 @@ fn parse_editor(node: Node<'_, '_>) -> Result<EditBoxDefinition, Diagnostic> {
                 definition.placeholder_foreground = Some(color(document, attribute)?)
             }
             "SelectionBrush" => definition.selection_brush = Some(color(document, attribute)?),
+            "ValidationBrush" => definition.validation_brush = Some(color(document, attribute)?),
             property => {
                 return Err(at_attribute(
                     document,
@@ -569,6 +598,9 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
             is_enabled: {enabled},
             is_read_only: {read_only},
             max_length: {max_length:?},
+            is_required: {is_required},
+            validation_message: {validation_message:?}.into(),
+            commit_on_lost_focus: {commit_on_lost_focus},
             font_size: {font_size:?},
             padding: {editor_padding:?},
             corner_radius: {corner_radius:?},
@@ -579,6 +611,7 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
             focus_brush: {focus_brush:?},
             placeholder_foreground: {placeholder_foreground:?},
             selection_brush: {selection_brush:?},
+            validation_brush: {validation_brush:?},
         }},
     }}
 }}
@@ -596,6 +629,9 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         enabled = edit.is_enabled,
         read_only = edit.is_read_only,
         max_length = edit.max_length,
+        is_required = edit.is_required,
+        validation_message = &edit.validation_message,
+        commit_on_lost_focus = edit.commit_on_lost_focus,
         font_size = edit.font_size,
         editor_padding = edit.padding,
         corner_radius = edit.corner_radius,
@@ -606,6 +642,7 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         focus_brush = edit.focus_brush,
         placeholder_foreground = edit.placeholder_foreground,
         selection_brush = edit.selection_brush,
+        validation_brush = edit.validation_brush,
     ))
 }
 

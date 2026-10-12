@@ -29,9 +29,12 @@ from windows_smoke import SmokeFailure, WM_CLOSE
 TITLE = re.compile(r"^Форма · Rust UI \| frames=(\d+) glyphs=(\d+) missing=(\d+)$")
 WM_CHAR = 0x0102
 VK_BACK = 0x08
+VK_RETURN = 0x0D
+VK_ESCAPE = 0x1B
 VK_END = 0x23
 VK_F24 = 0x87
 TEXT = "Привет Rust"
+REQUIRED_MESSAGE = "Введите текст перед подтверждением."
 
 
 def parse_state(title: str) -> dict | None:
@@ -41,25 +44,29 @@ def parse_state(title: str) -> dict | None:
 
 
 def last_edit_value(log: str) -> str | None:
+    return last_edit_diagnostic(log, "edit-value")
+
+
+def last_edit_diagnostic(log: str, name: str) -> str | None:
     """Read printable fixture values without evaluating diagnostic source text.
 
     The fixture uses the JSON-compatible subset of Rust Debug string escaping.
     Unrecognized escapes are errors, rather than guessed editor contents.
     """
-    values = re.findall(r"^edit-value=(.*)$", log, re.MULTILINE)
+    values = re.findall(r"^" + re.escape(name) + r"=(.*)$", log, re.MULTILINE)
     if not values:
         return None
     try:
         value = json.loads(values[-1])
     except json.JSONDecodeError as error:
-        raise SmokeFailure("Invalid edit-value diagnostic for this fixture") from error
+        raise SmokeFailure(f"Invalid {name} diagnostic for this fixture") from error
     if not isinstance(value, str):
-        raise SmokeFailure("edit-value diagnostic is not a string")
+        raise SmokeFailure(f"{name} diagnostic is not a string")
     return value
 
 
 def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
-                        dark: bool, focused: bool) -> dict:
+                        dark: bool, focused: bool, invalid: bool = False) -> dict:
     """Check direct sRGB palette, actual glyph coverage and antialiased corners."""
     if (not math.isfinite(scale) or scale <= 0 or width < 320 * scale
             or height < 160 * scale or len(pixels) != width * height * 4):
@@ -82,6 +89,9 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
     foreground = (245, 245, 245) if dark else (27, 27, 27)
     muted = (170, 170, 170) if dark else (105, 105, 105)
     accent = (96, 205, 255) if dark else (0, 95, 184)
+    error = (255, 153, 164) if dark else (196, 43, 28)
+    if invalid:
+        border = accent = error
     samples = {
         "canvas_rgb": (rgb(8, 8), canvas),
         "surface_rgb": (rgb(280, 50), surface),
@@ -111,17 +121,31 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
                 corner_shades.add(color)
     if len(corner_shades) < 2:
         raise SmokeFailure("Rounded corner lacks antialiased coverage")
+    message_ink = 0
+    if invalid:
+        # The example places its validation status after the fixed-height help
+        # label. Check readable message glyphs separately from the field chrome.
+        # This is coverage, not OCR; the exact text is checked in diagnostics.
+        for y in range(round(124 * scale), round(150 * scale)):
+            for x in range(round(40 * scale), min(width, round(420 * scale))):
+                color = pixel(x, y)
+                if near(color, foreground, 10) or near(color, error, 10):
+                    message_ink += 1
+        if message_ink < 30:
+            raise SmokeFailure(f"Validation message has no credible glyph coverage: {message_ink}")
     return {**{name: actual for name, (actual, _) in samples.items()},
             "text_pixels": ink, "text_shades": len(shades),
             "corner_shades": len(corner_shades),
+            "validation_message_pixels": message_ink,
             "sha256_pixels": hashlib.sha256(pixels).hexdigest()}
 
 
 class FormWindows(GalleryWindows):
-    def __init__(self, dark: bool, focused: bool = False):
+    def __init__(self, dark: bool, focused: bool = False, invalid: bool = False):
         super().__init__()
         self.dark = dark
         self.focused = focused
+        self.invalid = invalid
 
     def find_window(self, pid: int) -> int | None:
         found = []
@@ -145,13 +169,14 @@ class FormWindows(GalleryWindows):
     def verify_capture(self, pixels, width, height, scale, state):
         if state["missing"] != 0:
             raise SmokeFailure("Form reported missing glyphs")
-        return capture_checkpoints(pixels, width, height, scale, self.dark, self.focused)
+        return capture_checkpoints(pixels, width, height, scale, self.dark, self.focused,
+                                   self.invalid)
 
 
 def form_capture_worker(hwnd: int, pid: int, destination: Path, result_queue,
-                        dark: bool, focused: bool) -> None:
+                        dark: bool, focused: bool, invalid: bool) -> None:
     try:
-        result_queue.put(FormWindows(dark, focused).screenshot(hwnd, pid, destination))
+        result_queue.put(FormWindows(dark, focused, invalid).screenshot(hwnd, pid, destination))
     except Exception as error:
         result_queue.put({"status": "unavailable", "reason": str(error)})
 
@@ -174,6 +199,15 @@ class FormSession(RetainedSession):
         self.wait(description, lambda: last_edit_value(self.log()) == value)
         self.report["checks"].append({"check": description, "edit_value": value})
 
+    def wait_edit_diagnostic(self, name: str, value: str, description: str,
+                             after: int = 0) -> None:
+        def matches():
+            log = self.log()
+            return (log.count(name + "=") > after
+                    and last_edit_diagnostic(log, name) == value)
+        self.wait(description, matches)
+        self.report["checks"].append({"check": description, "diagnostic": name, "value": value})
+
     def type_text(self, text: str) -> None:
         self.alive()
         # winit assembles a KeyEvent from KEYDOWN followed by CHAR messages.
@@ -195,14 +229,14 @@ class FormSession(RetainedSession):
         # Capture an unhovered editor so palette checks are deterministic.
         self.pointer(WM_MOUSEMOVE, 20, 100, scale)
 
-    def capture(self, output: Path, name: str, focused: bool) -> None:
+    def capture(self, output: Path, name: str, focused: bool, invalid: bool = False) -> None:
         # A focused field blinks every 500ms, so idle-frame equality is not a
         # valid settling condition. Require a live frame and allow queued input.
         self.wait_state("live frame before " + name, lambda s: s["frames"] > 0)
         time.sleep(0.15)
         result = capture_client(self.hwnd, self.process.pid, output / f"{name}.bmp",
                                 self.timeout, worker_target=form_capture_worker,
-                                worker_args=(self.windows.dark, focused))
+                                worker_args=(self.windows.dark, focused, invalid))
         self.report["captures"][name] = result
         if result["status"] != "available":
             raise SmokeFailure(f"Required {name} capture unavailable: {result.get('reason')}")
@@ -235,9 +269,33 @@ class FormSession(RetainedSession):
         self.capture(output, "empty", focused=False)
 
         self.click_editor(scale)
+        self.key(VK_RETURN)
+        self.wait_edit_diagnostic("edit-invalid", REQUIRED_MESSAGE,
+                                  "Enter validates the required empty editor")
+        self.capture(output, "invalid", focused=True, invalid=True)
+        failures_before = self.log().count("edit-invalid=")
+        self.focus_messages(False)
+        self.wait_edit_diagnostic("edit-invalid", REQUIRED_MESSAGE,
+                                  "invalid draft survives focus loss without closing the form",
+                                  after=failures_before)
+        if last_edit_value(self.log()) is not None or "edit-committed=" in self.log():
+            raise SmokeFailure("Invalid empty draft changed or was accepted on focus loss")
+        self.click_editor(scale)
         self.type_text(TEXT)
         self.wait_value(TEXT, "posted Unicode input reaches editor")
+        self.key(VK_RETURN)
+        self.wait_edit_diagnostic("edit-committed", TEXT,
+                                  "Enter accepts the valid Unicode draft")
         self.capture(output, "typed", focused=True)
+        self.key(VK_END)
+        self.type_text("!")
+        self.wait_value(TEXT + "!", "editing changes the draft after acceptance")
+        cancellations_before = self.log().count("edit-canceled=true")
+        self.key(VK_ESCAPE)
+        self.wait_value(TEXT, "Escape restores the accepted value")
+        self.wait("Escape reports cancellation", lambda:
+                  self.log().count("edit-canceled=true") > cancellations_before)
+        self.report["checks"].append({"check": "Escape reports canceled editing"})
         self.key(VK_BACK)
         self.wait_value(TEXT[:-1], "Backspace removes final grapheme")
 
@@ -250,7 +308,11 @@ class FormSession(RetainedSession):
             raise SmokeFailure("Resize changed editor contents")
         self.capture(output, "resized", focused=True)
 
+        commits_before = self.log().count("edit-committed=")
         self.focus_messages(False)
+        self.wait_edit_diagnostic("edit-committed", TEXT[:-1],
+                                  "focus loss accepts the valid draft",
+                                  after=commits_before)
         self.type_text("IGNORED")
         time.sleep(0.2)
         self.alive()
@@ -306,6 +368,10 @@ def self_test() -> None:
     assert parse_state(title.replace("Форма", "Other")) is None
     assert last_edit_value('named-editor=Message resolved=true\nedit-value="Привет Rust"\n') == TEXT
     assert last_edit_value('edit-value="one"\nedit-value="two"\n') == "two"
+    assert last_edit_diagnostic('edit-committed="old"\nedit-value="draft"\n',
+                                 "edit-committed") == "old"
+    assert last_edit_diagnostic('edit-invalid="Введите текст перед подтверждением."\n',
+                                 "edit-invalid") == REQUIRED_MESSAGE
     try:
         last_edit_value('edit-value=__import__("os")')
     except SmokeFailure:
@@ -333,6 +399,33 @@ def self_test() -> None:
                 set_rgb(x, y, (foreground - x % 6 if dark else foreground + x % 6,) * 3)
         assert capture_checkpoints(pixels, width, height, 1.0, dark, False)["text_pixels"] > 30
         direct = bytes(pixels)
+        error = (255, 153, 164) if dark else (196, 43, 28)
+        set_rgb(200, 32, error)
+        set_rgb(200, 66, error)
+        for y in range(128, 133):
+            for x in range(45, 80):
+                set_rgb(x, y, (foreground,) * 3)
+        invalid_fixture = bytes(pixels)
+        assert capture_checkpoints(pixels, width, height, 1.0, dark, True,
+                                   invalid=True)["validation_message_pixels"] >= 30
+        set_rgb(200, 32, (border,) * 3)
+        try:
+            capture_checkpoints(pixels, width, height, 1.0, dark, True, invalid=True)
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("A normal border must not pass as invalid appearance")
+        pixels[:] = invalid_fixture
+        for y in range(124, 150):
+            for x in range(40, 420):
+                set_rgb(x, y, (canvas,) * 3)
+        try:
+            capture_checkpoints(pixels, width, height, 1.0, dark, True, invalid=True)
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("Missing validation message glyphs must be rejected")
+        pixels[:] = direct
         # Reproduce the previous accidental linear->sRGB palette encoding.
         for x, y in ((8, 8), (32, 32)):
             wrong = round(255 * (1.055 * (canvas / 255) ** (1 / 2.4) - 0.055))
@@ -349,7 +442,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("Invalid scale must be rejected")
-    print("PASS: XAML title, diagnostic, direct-sRGB and corner/glyph capture fixtures")
+    print("PASS: XAML title, value/session diagnostics, direct-sRGB, invalid palette/message and corner/glyph fixtures")
 
 
 def main() -> int:
