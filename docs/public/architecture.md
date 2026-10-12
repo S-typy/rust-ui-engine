@@ -17,7 +17,7 @@ layout, текст, компоненты, Ribbon, TreeGrid и платформе
 | `rust-desktop-ui-treegrid` | Источник данных, разреженный индекс, view state и viewport rendering; зависит только от core |
 | `rust-desktop-ui-render-wgpu` | GPU rectangle/glyph pipelines, atlas, surface/device lifecycle |
 | `rust-desktop-ui-platform-winit` | Native event loop, ввод, IME, clipboard и AccessKit adapter |
-| `rust-desktop-ui-xaml` | Независимый от UI compiler профиля Window/TextBox, типизированное описание формы |
+| `rust-desktop-ui-xaml` | Независимый от UI compiler профиля Window/StackPanel/TextBlock/TextBox/Button/CheckBox, типизированное дерево формы |
 | `xaml-form` | Native форма, однострочный EditBox, Fluent Light/Dark и адаптер скомпилированной разметки |
 | `controls-gallery` | Книжный источник, фоновые операции, связывание компонентов и платформенной семантики |
 | `gpu-shell` | Ранние retained/rectangle диагностические сценарии |

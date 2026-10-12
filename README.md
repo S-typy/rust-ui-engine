@@ -13,8 +13,9 @@ Linux/macOS GPU execution still need the checks recorded in the
 
 ## Run the XAML form
 
-The first compiled XAML profile provides a native window and one single-line
-edit box, with light/dark Fluent styling, placeholder text and Unicode editing.
+The compiled XAML profile provides a native window with nested stack panels,
+labels, single-line edit boxes, buttons and checkboxes. Editors support light/dark
+Fluent styling, placeholder text, Unicode editing and value validation.
 Edit [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) and rebuild:
 
 ```sh
@@ -23,7 +24,7 @@ cargo run --release --locked -p xaml-form -- --dark
 ```
 
 The build validates the markup and generates a Rust window definition. No .NET
-runtime is required. This is an explicit two-element profile, with no bindings,
+runtime is required. This is a bounded, explicit control-tree profile, with no bindings,
 hot reload or general WPF XAML compatibility yet. See the
 [supported syntax and example](docs/public/xaml.md).
 
@@ -88,7 +89,7 @@ protocols; client-side window decorations are not implemented.
 | `crates/ui-treegrid` | Indexed data-source contract, hierarchy/selection/edit state and viewport Scene generation |
 | `crates/ui-render-wgpu` | Rectangle batches, glyph atlas, ordered GPU drawing and surface lifecycle |
 | `crates/ui-platform-winit` | Window/input normalization, IME, clipboard and AccessKit host |
-| `crates/ui-xaml` | Independent compiler for the Window/TextBox XAML profile |
+| `crates/ui-xaml` | Independent compiler for the Window and control-tree XAML profile |
 | `examples/xaml-form` | Native Fluent form built from MainWindow.xaml |
 | `examples/controls-gallery` | Integrated controls and book-library demonstration |
 | `examples/gpu-shell` | Earlier retained and rectangle rendering diagnostics |

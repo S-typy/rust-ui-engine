@@ -51,6 +51,104 @@ fn focus(ui: &mut Controls, id: WidgetId) {
 }
 
 #[test]
+fn transparent_panels_preserve_clipping_semantics_and_the_background_below_them() {
+    let mut ui = ui();
+    let surface = ui.panel(ui.root(), style(240.0, 160.0)).unwrap();
+    let panel = ui.transparent_panel(surface, style(200.0, 120.0)).unwrap();
+    let child = ui
+        .button(panel, "Action", None, style(100.0, 36.0))
+        .unwrap();
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        for enabled in [false, true] {
+            ui.set_enabled(panel, enabled).unwrap();
+            frame(&mut ui);
+            let bounds = ui.runtime.bounds(panel).unwrap();
+            assert!(
+                !ui.scene()
+                    .rectangles
+                    .iter()
+                    .any(|rect| rect.bounds == bounds)
+            );
+            let surface_bounds = ui.runtime.bounds(surface).unwrap();
+            assert!(ui.scene().rectangles.iter().any(|rect| {
+                rect.bounds == surface_bounds && rect.color == theme.tokens().surface
+            }));
+            assert!(ui.runtime.tree().node(panel).unwrap().props.clip);
+            let semantics = ui.semantics();
+            let node = semantics.iter().find(|node| node.id == panel).unwrap();
+            assert_eq!(node.role, Role::Panel);
+            assert_eq!(node.children, vec![child]);
+            assert_eq!(node.disabled, !enabled);
+            assert_eq!(
+                semantics
+                    .iter()
+                    .find(|node| node.id == child)
+                    .unwrap()
+                    .disabled,
+                !enabled
+            );
+        }
+    }
+}
+
+#[test]
+fn disabled_container_paints_descendants_without_latching_their_enabled_state() {
+    let mut ui = ui();
+    let parent = ui.panel(ui.root(), style(220.0, 180.0)).unwrap();
+    let inner = ui.panel(parent, style(200.0, 150.0)).unwrap();
+    let button = ui
+        .button(inner, "Action", None, style(140.0, 36.0))
+        .unwrap();
+    let toggle = ui
+        .toggle(inner, "Selected", None, true, style(140.0, 36.0))
+        .unwrap();
+    let checkbox = ui
+        .checkbox(inner, "Check", true, style(140.0, 32.0))
+        .unwrap();
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        ui.set_enabled(parent, false).unwrap();
+        frame(&mut ui);
+        let tokens = theme.tokens();
+        for id in [button, toggle, checkbox] {
+            let node = ui.runtime.tree().node(id).unwrap();
+            assert!(node.props.enabled, "inherited disabled is not local state");
+            assert_eq!(node.props.paint.background, Some(tokens.canvas));
+            assert_eq!(node.props.paint.hover_background, None);
+            assert!(ui.semantics().iter().find(|n| n.id == id).unwrap().disabled);
+            let bounds = ui.runtime.bounds(id).unwrap();
+            assert!(
+                ui.scene()
+                    .rectangles
+                    .iter()
+                    .any(|r| { r.bounds == bounds && r.color == tokens.canvas })
+            );
+        }
+        ui.set_enabled(parent, true).unwrap();
+        frame(&mut ui);
+        assert_eq!(
+            ui.runtime
+                .tree()
+                .node(button)
+                .unwrap()
+                .props
+                .paint
+                .background,
+            Some(tokens.surface)
+        );
+        for id in [toggle, checkbox] {
+            assert_eq!(
+                ui.runtime.tree().node(id).unwrap().props.paint.background,
+                Some(tokens.selected)
+            );
+            assert_eq!(ui.checked(id), Some(true));
+            assert!(!ui.semantics().iter().find(|n| n.id == id).unwrap().disabled);
+        }
+    }
+}
+
+#[test]
 fn button_activates_on_release_inside_and_keyboard_space_release() {
     let mut ui = ui();
     ui.commands_mut().register("save", "Save");

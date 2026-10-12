@@ -1,7 +1,9 @@
 //! A native form whose structure and initial properties are compiled from XAML.
+mod accessibility;
 mod form;
 #[cfg(test)]
 mod tests;
+mod view;
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/main_window.rs"));
@@ -48,13 +50,18 @@ fn start() -> Result<(), String> {
         show_render_stats: diagnostics,
         smoke_test,
     };
-    let editor_name = definition.edit_box.name.clone();
     let app = form::Form::new(definition, diagnostics)?;
-    if diagnostics && let Some(name) = editor_name {
+    if diagnostics {
         println!(
-            "named-editor={name} resolved={}",
-            app.find_name(&name).is_some()
+            "named-editor=Message resolved={}",
+            app.find_name("Message").is_some()
         );
+        for name in ["Message", "Option", "Confirm"] {
+            println!(
+                "named-control={name} resolved={}",
+                app.find_name(name).is_some()
+            );
+        }
     }
     run(app, options)
 }

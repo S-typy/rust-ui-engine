@@ -1,6 +1,7 @@
 //! A small, explicit XAML profile compiled to a Rust window definition.
 //!
-//! This profile supports one `Window` containing one `TextBox`. Elements use
+//! This profile supports a `Window` containing a tree of stack panels, text,
+//! editors, buttons and check boxes. Elements use
 //! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. It does not load WPF types,
 //! execute markup extensions, resolve external entities, or implement bindings.
 //! Unknown syntax is an error instead of being silently ignored.
@@ -11,13 +12,18 @@
 //!          <TextBox Text="Hello" PlaceholderText="Enter text" />
 //!        </Window>"#,
 //! ).unwrap();
-//! assert_eq!(window.edit_box.text, "Hello");
+//! let rust_desktop_ui_xaml::ElementKind::TextBox(editor) = window.content.kind else {
+//!     panic!("expected a text editor");
+//! };
+//! assert_eq!(editor.text, "Hello");
 //! ```
 
-use std::{fmt, fs, io::Read, path::Path};
+use std::{collections::HashSet, fmt, fs, io::Read, path::Path};
 
 use roxmltree::{Attribute, Document, Node, ParsingOptions};
 use unicode_segmentation::UnicodeSegmentation;
+
+mod codegen;
 
 /// Namespace for this library's controls; not the WPF presentation namespace.
 pub const UI_NAMESPACE: &str = "urn:rust-ui-engine:ui";
@@ -33,6 +39,12 @@ pub const MAX_FONT_SIZE: f64 = 512.0;
 pub const MAX_TEXT_LENGTH: usize = 1_048_576;
 /// Maximum UTF-8 length of an editor's validation message.
 pub const MAX_VALIDATION_MESSAGE_BYTES: usize = 4_096;
+/// Maximum content depth, counting the Window's direct child as depth one.
+pub const MAX_ELEMENT_DEPTH: usize = 32;
+/// Maximum number of content elements; the Window itself is not counted.
+pub const MAX_ELEMENTS: usize = 256;
+/// Maximum XML nodes, including comments and whitespace text nodes.
+pub const MAX_XML_NODES: u32 = 4_096;
 
 /// Initial form appearance, independent of the platform and control renderer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -51,7 +63,7 @@ pub struct WindowDefinition {
     /// Left, top, right, bottom padding in logical pixels.
     pub padding: [f32; 4],
     pub theme: Theme,
-    pub edit_box: EditBoxDefinition,
+    pub content: ElementDefinition,
 }
 
 impl Default for WindowDefinition {
@@ -62,25 +74,106 @@ impl Default for WindowDefinition {
             height: 360.0,
             padding: [32.0; 4],
             theme: Theme::Light,
-            edit_box: EditBoxDefinition::default(),
+            content: ElementDefinition::default(),
         }
     }
 }
 
-/// Startup properties for the form's single text editor.
+/// Properties shared by every content element in a Window.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EditBoxDefinition {
+pub struct CommonProperties {
+    /// Unique within the Window, supplied by `x:Name`.
     pub name: Option<String>,
-    pub text: String,
-    pub placeholder: String,
-    /// Accessible name, supplied by the `AutomationName` attribute.
-    pub label: String,
-    /// `None` stretches to the available form content width.
+    /// `None` uses automatic sizing defined by the container and form adapter.
     pub width: Option<f32>,
-    pub height: f32,
+    /// `None` uses the control's default height, or auto height for a panel.
+    pub height: Option<f32>,
     /// Left, top, right, bottom margin in logical pixels.
     pub margin: [f32; 4],
     pub is_enabled: bool,
+    /// Optional accessible name, supplied by `AutomationName`.
+    pub automation_name: Option<String>,
+}
+
+impl Default for CommonProperties {
+    fn default() -> Self {
+        Self {
+            name: None,
+            width: None,
+            height: None,
+            margin: [0.0; 4],
+            is_enabled: true,
+            automation_name: None,
+        }
+    }
+}
+
+/// A validated element and its properties in the form's content tree.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ElementDefinition {
+    pub common: CommonProperties,
+    pub kind: ElementKind,
+}
+
+/// Supported content elements. Only stack panels may contain children.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ElementKind {
+    StackPanel(StackPanelDefinition),
+    TextBox(EditBoxDefinition),
+    TextBlock(TextBlockDefinition),
+    Button(ButtonDefinition),
+    CheckBox(CheckBoxDefinition),
+}
+
+impl Default for ElementKind {
+    fn default() -> Self {
+        Self::TextBox(EditBoxDefinition::default())
+    }
+}
+
+/// Main axis of a stack panel.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum Orientation {
+    #[default]
+    Vertical,
+    Horizontal,
+}
+
+/// Sequential layout with spacing and content padding.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StackPanelDefinition {
+    pub orientation: Orientation,
+    pub spacing: f32,
+    /// Left, top, right, bottom padding in logical pixels.
+    pub padding: [f32; 4],
+    pub children: Vec<ElementDefinition>,
+}
+
+/// Non-editable text content.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TextBlockDefinition {
+    pub text: String,
+}
+
+/// A button with literal content and an optional application command name.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ButtonDefinition {
+    pub content: String,
+    pub command: Option<String>,
+}
+
+/// A two-state check box with literal content.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CheckBoxDefinition {
+    pub content: String,
+    pub is_checked: bool,
+}
+
+/// Startup properties for a single-line text editor.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EditBoxDefinition {
+    pub text: String,
+    pub placeholder: String,
     /// Allows focus, selection and copy while preventing user text mutations.
     pub is_read_only: bool,
     /// Maximum extended graphemes. `None` means no grapheme limit (`MaxLength="0"`).
@@ -113,14 +206,8 @@ pub struct EditBoxDefinition {
 impl Default for EditBoxDefinition {
     fn default() -> Self {
         Self {
-            name: None,
             text: String::new(),
             placeholder: String::new(),
-            label: "Text".into(),
-            width: None,
-            height: 36.0,
-            margin: [0.0; 4],
-            is_enabled: true,
             is_read_only: false,
             max_length: None,
             is_required: false,
@@ -175,7 +262,7 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
         source,
         ParsingOptions {
             allow_dtd: false,
-            nodes_limit: 128,
+            nodes_limit: MAX_XML_NODES,
             ..ParsingOptions::default()
         },
     )
@@ -226,113 +313,262 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
             }
         }
     }
-    let mut editor = None;
+    let mut content = None;
+    let mut names = HashSet::new();
+    let mut count = 0;
     for child in window.children() {
         if child.is_element() {
-            if editor.is_some() {
-                return Err(at_node(child, "Window must contain exactly one TextBox"));
+            if content.is_some() {
+                return Err(at_node(
+                    child,
+                    "Window must contain exactly one root element",
+                ));
             }
-            editor = Some(parse_editor(child)?);
+            content = Some(parse_element(child, 1, &mut count, &mut names)?);
         } else {
             require_empty_content(child)?;
         }
     }
-    definition.edit_box =
-        editor.ok_or_else(|| at_node(window, "Window must contain exactly one TextBox"))?;
+    definition.content =
+        content.ok_or_else(|| at_node(window, "Window must contain exactly one root element"))?;
     Ok(definition)
 }
 
-fn parse_editor(node: Node<'_, '_>) -> Result<EditBoxDefinition, Diagnostic> {
-    require_element(node, "TextBox")?;
-    for child in node.children() {
-        if child.is_element() {
-            return Err(at_node(child, "TextBox cannot contain child elements"));
-        }
-        require_empty_content(child)?;
+fn parse_element(
+    node: Node<'_, '_>,
+    depth: usize,
+    count: &mut usize,
+    names: &mut HashSet<String>,
+) -> Result<ElementDefinition, Diagnostic> {
+    if depth > MAX_ELEMENT_DEPTH {
+        return Err(at_node(
+            node,
+            format!("content exceeds the maximum element depth of {MAX_ELEMENT_DEPTH}"),
+        ));
     }
+    *count += 1;
+    if *count > MAX_ELEMENTS {
+        return Err(at_node(
+            node,
+            format!("content exceeds the {MAX_ELEMENTS}-element limit"),
+        ));
+    }
+    if node.tag_name().namespace() != Some(UI_NAMESPACE) {
+        return Err(at_node(
+            node,
+            format!("expected a content element in namespace '{UI_NAMESPACE}'"),
+        ));
+    }
+    let element_name = node.tag_name().name();
+    let mut kind = match element_name {
+        "StackPanel" => ElementKind::StackPanel(StackPanelDefinition::default()),
+        "TextBox" => ElementKind::TextBox(EditBoxDefinition::default()),
+        "TextBlock" => ElementKind::TextBlock(TextBlockDefinition::default()),
+        "Button" => ElementKind::Button(ButtonDefinition::default()),
+        "CheckBox" => ElementKind::CheckBox(CheckBoxDefinition::default()),
+        name => {
+            return Err(at_node(
+                node,
+                format!("unsupported content element '{name}'"),
+            ));
+        }
+    };
     let document = node.document();
-    let mut definition = EditBoxDefinition::default();
+    let mut common = CommonProperties::default();
     for attribute in node.attributes() {
         reject_extension(document, attribute)?;
         if attribute.namespace() == Some(XAML_NAMESPACE) && attribute.name() == "Name" {
             let name = attribute.value();
-            let mut chars = name.chars();
-            if !chars
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-            {
+            identifier(document, attribute, "x:Name")?;
+            if !names.insert(name.into()) {
                 return Err(at_attribute(
                     document,
                     attribute,
-                    "x:Name must match [A-Za-z_][A-Za-z0-9_]*",
+                    format!("duplicate x:Name '{name}' in this Window"),
                 ));
             }
-            definition.name = Some(name.into());
+            common.name = Some(name.into());
             continue;
         }
         if attribute.namespace().is_some() {
             return Err(at_attribute(
                 document,
                 attribute,
-                "unsupported TextBox namespace or directive; only x:Name is supported",
+                format!(
+                    "unsupported {element_name} namespace or directive; only x:Name is supported"
+                ),
             ));
         }
         match attribute.name() {
-            "Text" => definition.text = attribute.value().into(),
-            "PlaceholderText" => definition.placeholder = attribute.value().into(),
-            "AutomationName" => definition.label = attribute.value().into(),
-            "Width" => definition.width = Some(editor_dimension(document, attribute)?),
-            "Height" => definition.height = editor_dimension(document, attribute)?,
-            "Margin" => definition.margin = thickness(document, attribute)?,
-            "IsEnabled" => definition.is_enabled = boolean(document, attribute)?,
-            "IsReadOnly" => definition.is_read_only = boolean(document, attribute)?,
-            "MaxLength" => definition.max_length = max_length(document, attribute)?,
-            "IsRequired" => definition.is_required = boolean(document, attribute)?,
-            "CommitOnLostFocus" => definition.commit_on_lost_focus = boolean(document, attribute)?,
-            "ValidationMessage" => {
-                if attribute.value().len() > MAX_VALIDATION_MESSAGE_BYTES {
+            "AutomationName" => common.automation_name = Some(attribute.value().into()),
+            "Width" => common.width = Some(editor_dimension(document, attribute)?),
+            "Height" => common.height = Some(editor_dimension(document, attribute)?),
+            "Margin" => common.margin = thickness(document, attribute)?,
+            "IsEnabled" => common.is_enabled = boolean(document, attribute)?,
+            property => {
+                let supported = match &mut kind {
+                    ElementKind::TextBox(editor) => editor_property(document, attribute, editor)?,
+                    ElementKind::StackPanel(panel) => match property {
+                        "Orientation" => {
+                            panel.orientation = match attribute.value() {
+                                "Vertical" => Orientation::Vertical,
+                                "Horizontal" => Orientation::Horizontal,
+                                _ => {
+                                    return Err(at_attribute(
+                                        document,
+                                        attribute,
+                                        "Orientation must be Vertical or Horizontal",
+                                    ));
+                                }
+                            };
+                            true
+                        }
+                        "Spacing" => {
+                            panel.spacing =
+                                editor_metric(document, attribute, MAX_DIMENSION, true)?;
+                            true
+                        }
+                        "Padding" => {
+                            panel.padding = thickness(document, attribute)?;
+                            true
+                        }
+                        _ => false,
+                    },
+                    ElementKind::TextBlock(text) if property == "Text" => {
+                        text.text = attribute.value().into();
+                        true
+                    }
+                    ElementKind::Button(button) => match property {
+                        "Content" => {
+                            button.content = attribute.value().into();
+                            true
+                        }
+                        "Command" => {
+                            identifier(document, attribute, "Command")?;
+                            button.command = Some(attribute.value().into());
+                            true
+                        }
+                        _ => false,
+                    },
+                    ElementKind::CheckBox(check_box) => match property {
+                        "Content" => {
+                            check_box.content = attribute.value().into();
+                            true
+                        }
+                        "IsChecked" => {
+                            check_box.is_checked = boolean(document, attribute)?;
+                            true
+                        }
+                        _ => false,
+                    },
+                    _ => false,
+                };
+                if !supported {
                     return Err(at_attribute(
                         document,
                         attribute,
-                        format!(
-                            "ValidationMessage exceeds the {MAX_VALIDATION_MESSAGE_BYTES}-byte UTF-8 limit"
-                        ),
+                        format!("unsupported {element_name} property '{property}'"),
                     ));
                 }
-                definition.validation_message = attribute.value().into();
-            }
-            "FontSize" => {
-                definition.font_size =
-                    Some(editor_metric(document, attribute, MAX_FONT_SIZE, false)?);
-            }
-            "Padding" => definition.padding = Some(thickness(document, attribute)?),
-            "CornerRadius" => {
-                definition.corner_radius =
-                    Some(editor_metric(document, attribute, MAX_DIMENSION, true)?);
-            }
-            "BorderThickness" => {
-                definition.border_thickness =
-                    Some(editor_metric(document, attribute, MAX_DIMENSION, true)?);
-            }
-            "Background" => definition.background = Some(color(document, attribute)?),
-            "Foreground" => definition.foreground = Some(color(document, attribute)?),
-            "BorderBrush" => definition.border_brush = Some(color(document, attribute)?),
-            "FocusBrush" => definition.focus_brush = Some(color(document, attribute)?),
-            "PlaceholderForeground" => {
-                definition.placeholder_foreground = Some(color(document, attribute)?)
-            }
-            "SelectionBrush" => definition.selection_brush = Some(color(document, attribute)?),
-            "ValidationBrush" => definition.validation_brush = Some(color(document, attribute)?),
-            property => {
-                return Err(at_attribute(
-                    document,
-                    attribute,
-                    format!("unsupported TextBox property '{property}'"),
-                ));
             }
         }
     }
+    for child in node.children() {
+        if child.is_element() {
+            if let ElementKind::StackPanel(panel) = &mut kind {
+                panel
+                    .children
+                    .push(parse_element(child, depth + 1, count, names)?);
+            } else {
+                return Err(at_node(
+                    child,
+                    format!("{element_name} cannot contain child elements"),
+                ));
+            }
+        } else {
+            require_empty_content(child)?;
+        }
+    }
+    if let ElementKind::TextBox(editor) = &kind {
+        validate_initial_text(node, editor)?;
+    }
+    Ok(ElementDefinition { common, kind })
+}
+
+fn identifier(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+    property: &str,
+) -> Result<(), Diagnostic> {
+    let mut chars = attribute.value().chars();
+    if !chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err(at_attribute(
+            document,
+            attribute,
+            format!("{property} must match [A-Za-z_][A-Za-z0-9_]*"),
+        ));
+    }
+    Ok(())
+}
+
+fn editor_property(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+    definition: &mut EditBoxDefinition,
+) -> Result<bool, Diagnostic> {
+    match attribute.name() {
+        "Text" => definition.text = attribute.value().into(),
+        "PlaceholderText" => definition.placeholder = attribute.value().into(),
+        "IsReadOnly" => definition.is_read_only = boolean(document, attribute)?,
+        "MaxLength" => definition.max_length = max_length(document, attribute)?,
+        "IsRequired" => definition.is_required = boolean(document, attribute)?,
+        "CommitOnLostFocus" => definition.commit_on_lost_focus = boolean(document, attribute)?,
+        "ValidationMessage" => {
+            if attribute.value().len() > MAX_VALIDATION_MESSAGE_BYTES {
+                return Err(at_attribute(
+                    document,
+                    attribute,
+                    format!(
+                        "ValidationMessage exceeds the {MAX_VALIDATION_MESSAGE_BYTES}-byte UTF-8 limit"
+                    ),
+                ));
+            }
+            definition.validation_message = attribute.value().into();
+        }
+        "FontSize" => {
+            definition.font_size = Some(editor_metric(document, attribute, MAX_FONT_SIZE, false)?);
+        }
+        "Padding" => definition.padding = Some(thickness(document, attribute)?),
+        "CornerRadius" => {
+            definition.corner_radius =
+                Some(editor_metric(document, attribute, MAX_DIMENSION, true)?);
+        }
+        "BorderThickness" => {
+            definition.border_thickness =
+                Some(editor_metric(document, attribute, MAX_DIMENSION, true)?);
+        }
+        "Background" => definition.background = Some(color(document, attribute)?),
+        "Foreground" => definition.foreground = Some(color(document, attribute)?),
+        "BorderBrush" => definition.border_brush = Some(color(document, attribute)?),
+        "FocusBrush" => definition.focus_brush = Some(color(document, attribute)?),
+        "PlaceholderForeground" => {
+            definition.placeholder_foreground = Some(color(document, attribute)?)
+        }
+        "SelectionBrush" => definition.selection_brush = Some(color(document, attribute)?),
+        "ValidationBrush" => definition.validation_brush = Some(color(document, attribute)?),
+        _ => return Ok(false),
+    }
+    Ok(true)
+}
+
+fn validate_initial_text(
+    node: Node<'_, '_>,
+    definition: &EditBoxDefinition,
+) -> Result<(), Diagnostic> {
     // Match the single-line control's policy before checking the initial value.
     // Preserve the source text in the definition; mounting normalizes it too.
     if let Some(limit) = definition.max_length {
@@ -343,14 +579,14 @@ fn parse_editor(node: Node<'_, '_>) -> Result<EditBoxDefinition, Diagnostic> {
             .collect();
         if text.graphemes(true).count() > limit {
             return Err(at_attribute(
-                document,
+                node.document(),
                 node.attribute_node("Text")
                     .expect("nonempty Text has an attribute"),
                 "Text exceeds MaxLength after single-line normalization",
             ));
         }
     }
-    Ok(definition)
+    Ok(())
 }
 
 fn boolean(document: &Document<'_>, attribute: Attribute<'_, '_>) -> Result<bool, Diagnostic> {
@@ -568,82 +804,7 @@ fn at_offset(document: &Document<'_>, offset: usize, message: impl Into<String>)
 /// regular dependency of the consuming crate. All user strings are emitted as
 /// escaped Rust literals; XAML never supplies executable Rust expressions.
 pub fn compile(source: &str) -> Result<String, Diagnostic> {
-    let window = parse(source)?;
-    let edit = &window.edit_box;
-    let name = match &edit.name {
-        Some(name) => format!("Some({name:?}.into())"),
-        None => "None".into(),
-    };
-    let width = match edit.width {
-        Some(width) => format!("Some({width:?})"),
-        None => "None".into(),
-    };
-    Ok(format!(
-        "\
-pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
-    rust_desktop_ui_xaml::WindowDefinition {{
-        title: {title:?}.into(),
-        width: {window_width:?},
-        height: {window_height:?},
-        padding: {padding:?},
-        theme: rust_desktop_ui_xaml::Theme::{theme:?},
-        edit_box: rust_desktop_ui_xaml::EditBoxDefinition {{
-            name: {name},
-            text: {text:?}.into(),
-            placeholder: {placeholder:?}.into(),
-            label: {label:?}.into(),
-            width: {width},
-            height: {height:?},
-            margin: {margin:?},
-            is_enabled: {enabled},
-            is_read_only: {read_only},
-            max_length: {max_length:?},
-            is_required: {is_required},
-            validation_message: {validation_message:?}.into(),
-            commit_on_lost_focus: {commit_on_lost_focus},
-            font_size: {font_size:?},
-            padding: {editor_padding:?},
-            corner_radius: {corner_radius:?},
-            border_thickness: {border_thickness:?},
-            background: {background:?},
-            foreground: {foreground:?},
-            border_brush: {border_brush:?},
-            focus_brush: {focus_brush:?},
-            placeholder_foreground: {placeholder_foreground:?},
-            selection_brush: {selection_brush:?},
-            validation_brush: {validation_brush:?},
-        }},
-    }}
-}}
-",
-        title = window.title,
-        window_width = window.width,
-        window_height = window.height,
-        padding = window.padding,
-        theme = window.theme,
-        text = edit.text,
-        placeholder = edit.placeholder,
-        label = edit.label,
-        height = edit.height,
-        margin = edit.margin,
-        enabled = edit.is_enabled,
-        read_only = edit.is_read_only,
-        max_length = edit.max_length,
-        is_required = edit.is_required,
-        validation_message = &edit.validation_message,
-        commit_on_lost_focus = edit.commit_on_lost_focus,
-        font_size = edit.font_size,
-        editor_padding = edit.padding,
-        corner_radius = edit.corner_radius,
-        border_thickness = edit.border_thickness,
-        background = edit.background,
-        foreground = edit.foreground,
-        border_brush = edit.border_brush,
-        focus_brush = edit.focus_brush,
-        placeholder_foreground = edit.placeholder_foreground,
-        selection_brush = edit.selection_brush,
-        validation_brush = edit.validation_brush,
-    ))
+    Ok(codegen::window(&parse(source)?))
 }
 
 /// A file build error. Parse errors display `path:line:column: message`.

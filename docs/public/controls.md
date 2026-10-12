@@ -45,6 +45,7 @@ commit передаются отдельно: `text_input`, `ime_preedit`, `ime_
 | Builder | Поведение |
 |---|---|
 | `panel` | Контейнер с padding/layout/clip; default layout — вертикальный Stack |
+| `transparent_panel` | Такой же контейнер без фоновой заливки, в том числе при смене темы и отключении |
 | `label` | Текст, не получающий focus и pointer hit |
 | `button` | Primary press захватывает указатель; команда выполняется при release внутри того же control |
 | `toggle` | Button с переключаемым checked state, общим с CommandID |

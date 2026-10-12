@@ -29,8 +29,10 @@ from windows_smoke import SmokeFailure, WM_CLOSE
 TITLE = re.compile(r"^Форма · Rust UI \| frames=(\d+) glyphs=(\d+) missing=(\d+)$")
 WM_CHAR = 0x0102
 VK_BACK = 0x08
+VK_TAB = 0x09
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
+VK_SPACE = 0x20
 VK_END = 0x23
 VK_F24 = 0x87
 TEXT = "Привет Rust"
@@ -65,11 +67,21 @@ def last_edit_diagnostic(log: str, name: str) -> str | None:
     return value
 
 
+def last_checkbox_state(log: str) -> bool | None:
+    values = re.findall(r"^checkbox-state=Option checked=(.*)$", log, re.MULTILINE)
+    if not values:
+        return None
+    if values[-1] not in ("true", "false"):
+        raise SmokeFailure("Invalid Option checkbox diagnostic")
+    return values[-1] == "true"
+
+
 def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
-                        dark: bool, focused: bool, invalid: bool = False) -> dict:
+                        dark: bool, focused: bool, invalid: bool = False,
+                        read_only: bool = False) -> dict:
     """Check direct sRGB palette, actual glyph coverage and antialiased corners."""
     if (not math.isfinite(scale) or scale <= 0 or width < 320 * scale
-            or height < 160 * scale or len(pixels) != width * height * 4):
+            or height < 340 * scale or len(pixels) != width * height * 4):
         raise SmokeFailure("Invalid form capture dimensions or DPI")
 
     def pixel(x: int, y: int) -> tuple[int, int, int]:
@@ -89,23 +101,29 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
     foreground = (245, 245, 245) if dark else (27, 27, 27)
     muted = (170, 170, 170) if dark else (105, 105, 105)
     accent = (96, 205, 255) if dark else (0, 95, 184)
+    selected = (35, 75, 105) if dark else (196, 225, 245)
     error = (255, 153, 164) if dark else (196, 43, 28)
+    control_border, check_mark = border, accent
     if invalid:
         border = accent = error
     samples = {
         "canvas_rgb": (rgb(8, 8), canvas),
-        "surface_rgb": (rgb(280, 50), surface),
-        "rounded_corner_rgb": (rgb(32, 32), canvas),
-        "top_border_rgb": (rgb(200, 32), border),
+        "surface_rgb": (rgb(280, 122), canvas if read_only else surface),
+        "rounded_corner_rgb": (rgb(32, 104), canvas),
+        "top_border_rgb": (rgb(200, 104), border),
+        "confirm_surface_rgb": (rgb(180, 210), surface),
+        "confirm_border_rgb": (rgb(112, 188), control_border),
+        "checkbox_surface_rgb": (rgb(300, 164), selected if read_only else surface),
+        "checkbox_mark_rgb": (rgb(48, 164), check_mark if read_only else surface),
     }
     if focused:
-        samples["focus_underline_rgb"] = (rgb(200, 66.5), accent)
+        samples["focus_underline_rgb"] = (rgb(200, 138.5), accent)
     for name, (actual, expected) in samples.items():
         if not near(actual, expected):
             raise SmokeFailure(f"Unexpected {name}: {actual}, expected sRGB {expected}")
     ink = 0
     shades = set()
-    for y in range(round(37 * scale), round(63 * scale)):
+    for y in range(round(109 * scale), round(135 * scale)):
         for x in range(round(44 * scale), round(245 * scale)):
             color = pixel(x, y)
             if near(color, foreground, 10) or near(color, muted, 10):
@@ -114,19 +132,34 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
     if ink < 30 or len(shades) < 5:
         raise SmokeFailure(f"No credible form glyph coverage: ink={ink}, shades={len(shades)}")
     corner_shades = set()
-    for y in range(round(32 * scale), round(37 * scale)):
+    for y in range(round(104 * scale), round(109 * scale)):
         for x in range(round(32 * scale), round(37 * scale)):
             color = pixel(x, y)
             if color not in (canvas, surface, border):
                 corner_shades.add(color)
     if len(corner_shades) < 2:
         raise SmokeFailure("Rounded corner lacks antialiased coverage")
+    label_ink = {}
+    # Independent fixed fixture regions prove that the nested tree paints its
+    # TextBlocks, checkbox caption and button, beyond the editor's glyphs.
+    for name, (left, top, right, bottom) in {
+        "title": (40, 32, 300, 64),
+        "message_label": (40, 72, 300, 96),
+        "option": (64, 151, 270, 179),
+        "confirm": (40, 193, 184, 219),
+    }.items():
+        count = sum(near(pixel(x, y), foreground, 10)
+                    for y in range(round(top * scale), round(bottom * scale))
+                    for x in range(round(left * scale), round(right * scale)))
+        if count < 30:
+            raise SmokeFailure(f"Nested {name} has no credible glyph coverage: {count}")
+        label_ink[name] = count
     message_ink = 0
     if invalid:
         # The example places its validation status after the fixed-height help
         # label. Check readable message glyphs separately from the field chrome.
         # This is coverage, not OCR; the exact text is checked in diagnostics.
-        for y in range(round(124 * scale), round(150 * scale)):
+        for y in range(round(280 * scale), round(316 * scale)):
             for x in range(round(40 * scale), min(width, round(420 * scale))):
                 color = pixel(x, y)
                 if near(color, foreground, 10) or near(color, error, 10):
@@ -136,16 +169,19 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
     return {**{name: actual for name, (actual, _) in samples.items()},
             "text_pixels": ink, "text_shades": len(shades),
             "corner_shades": len(corner_shades),
+            "nested_label_pixels": label_ink,
             "validation_message_pixels": message_ink,
             "sha256_pixels": hashlib.sha256(pixels).hexdigest()}
 
 
 class FormWindows(GalleryWindows):
-    def __init__(self, dark: bool, focused: bool = False, invalid: bool = False):
+    def __init__(self, dark: bool, focused: bool = False, invalid: bool = False,
+                 read_only: bool = False):
         super().__init__()
         self.dark = dark
         self.focused = focused
         self.invalid = invalid
+        self.read_only = read_only
 
     def find_window(self, pid: int) -> int | None:
         found = []
@@ -170,13 +206,13 @@ class FormWindows(GalleryWindows):
         if state["missing"] != 0:
             raise SmokeFailure("Form reported missing glyphs")
         return capture_checkpoints(pixels, width, height, scale, self.dark, self.focused,
-                                   self.invalid)
+                                   self.invalid, self.read_only)
 
 
 def form_capture_worker(hwnd: int, pid: int, destination: Path, result_queue,
-                        dark: bool, focused: bool, invalid: bool) -> None:
+                        dark: bool, focused: bool, invalid: bool, read_only: bool) -> None:
     try:
-        result_queue.put(FormWindows(dark, focused, invalid).screenshot(hwnd, pid, destination))
+        result_queue.put(FormWindows(dark, focused, invalid, read_only).screenshot(hwnd, pid, destination))
     except Exception as error:
         result_queue.put({"status": "unavailable", "reason": str(error)})
 
@@ -208,6 +244,20 @@ class FormSession(RetainedSession):
         self.wait(description, matches)
         self.report["checks"].append({"check": description, "diagnostic": name, "value": value})
 
+    def wait_focus(self, name: str, description: str) -> None:
+        self.wait_edit_diagnostic("focus-name", name, description)
+
+    def wait_checkbox(self, checked: bool, description: str, after: int) -> None:
+        def matches():
+            log = self.log()
+            read_only = re.findall(r"^editor-read-only=(true|false)$", log, re.MULTILINE)
+            return (log.count("checkbox-state=Option checked=") > after
+                    and last_checkbox_state(log) == checked
+                    and bool(read_only) and read_only[-1] == str(checked).lower())
+        self.wait(description, matches)
+        self.report["checks"].append({"check": description, "checked": checked,
+                                      "editor_read_only": checked})
+
     def type_text(self, text: str) -> None:
         self.alive()
         # winit assembles a KeyEvent from KEYDOWN followed by CHAR messages.
@@ -221,22 +271,27 @@ class FormSession(RetainedSession):
                               key_message(scan, False))
         self.windows.post(self.hwnd, WM_KEYUP, VK_F24, key_message(scan, True))
 
-    def click_editor(self, scale: float) -> None:
+    def click_control(self, x: int, y: int, scale: float) -> None:
         self.focus_messages(True)
-        self.pointer(WM_MOUSEMOVE, 60, 50, scale)
-        self.pointer(WM_LBUTTONDOWN, 60, 50, scale, held=True)
-        self.pointer(WM_LBUTTONUP, 60, 50, scale)
+        self.pointer(WM_MOUSEMOVE, x, y, scale)
+        self.pointer(WM_LBUTTONDOWN, x, y, scale, held=True)
+        self.pointer(WM_LBUTTONUP, x, y, scale)
         # Capture an unhovered editor so palette checks are deterministic.
         self.pointer(WM_MOUSEMOVE, 20, 100, scale)
 
-    def capture(self, output: Path, name: str, focused: bool, invalid: bool = False) -> None:
+    def click_editor(self, scale: float) -> None:
+        self.click_control(60, 122, scale)
+        self.wait_focus("Message", "pointer focuses the nested Message editor")
+
+    def capture(self, output: Path, name: str, focused: bool, invalid: bool = False,
+                read_only: bool = False) -> None:
         # A focused field blinks every 500ms, so idle-frame equality is not a
         # valid settling condition. Require a live frame and allow queued input.
         self.wait_state("live frame before " + name, lambda s: s["frames"] > 0)
         time.sleep(0.15)
         result = capture_client(self.hwnd, self.process.pid, output / f"{name}.bmp",
                                 self.timeout, worker_target=form_capture_worker,
-                                worker_args=(self.windows.dark, focused, invalid))
+                                worker_args=(self.windows.dark, focused, invalid, read_only))
         self.report["captures"][name] = result
         if result["status"] != "available":
             raise SmokeFailure(f"Required {name} capture unavailable: {result.get('reason')}")
@@ -251,15 +306,20 @@ class FormSession(RetainedSession):
         self.wait("compiled x:Name resolves", lambda:
                   "named-editor=Message resolved=true" in self.log())
         self.report["checks"].append({"check": "compiled x:Name Message resolves"})
+        for name in ("Message", "Option", "Confirm"):
+            self.wait("compiled nested x:Name " + name + " resolves", lambda name=name:
+                      f"named-control={name} resolved=true" in self.log())
+        self.report["checks"].append({"check": "compiled nested control names resolve",
+                                      "names": ["Message", "Option", "Confirm"]})
         dpi = self.windows.user.GetDpiForWindow(self.hwnd)
         if dpi <= 0:
             raise SmokeFailure("GetDpiForWindow returned zero")
         scale = dpi / 96.0
         self.report["dpi"] = dpi
         actual = self.windows.client_size(self.hwnd)
-        expected = (round(640 * scale), round(280 * scale))
+        expected = (round(640 * scale), round(400 * scale))
         if any(abs(a - b) > 1 for a, b in zip(actual, expected, strict=True)):
-            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x280 at DPI {dpi}: {expected}")
+            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x400 at DPI {dpi}: {expected}")
         self.report["checks"].append({"check": "initial client dimensions match compiled XAML",
                                       "actual_physical": actual, "expected_physical": expected,
                                       "rounding_tolerance_pixels": 1})
@@ -274,6 +334,17 @@ class FormSession(RetainedSession):
                                   "Enter validates the required empty editor")
         self.capture(output, "invalid", focused=True, invalid=True)
         failures_before = self.log().count("edit-invalid=")
+        commands_before = self.log().count("command=Confirm")
+        self.click_control(112, 206, scale)
+        self.wait("Confirm command runs for an invalid draft", lambda:
+                  self.log().count("command=Confirm") > commands_before)
+        # Leaving Message validates once; the button's explicit commit must
+        # validate again. This distinguishes its action from blur alone.
+        self.wait_edit_diagnostic("edit-invalid", REQUIRED_MESSAGE,
+                                  "Confirm explicitly validates the invalid draft after blur",
+                                  after=failures_before + 1)
+        self.click_editor(scale)
+        failures_before = self.log().count("edit-invalid=")
         self.focus_messages(False)
         self.wait_edit_diagnostic("edit-invalid", REQUIRED_MESSAGE,
                                   "invalid draft survives focus loss without closing the form",
@@ -287,6 +358,59 @@ class FormSession(RetainedSession):
         self.wait_edit_diagnostic("edit-committed", TEXT,
                                   "Enter accepts the valid Unicode draft")
         self.capture(output, "typed", focused=True)
+
+        # The visual tree order is Message, Option, Confirm. Structural panels
+        # and labels must not introduce tab stops; the final stop wraps.
+        self.key(VK_TAB)
+        self.wait_focus("Option", "Tab moves from Message to nested Option")
+        toggles_before = self.log().count("checkbox-state=Option checked=")
+        self.key(VK_SPACE)
+        self.wait_checkbox(True, "Space checks Option and makes Message read-only",
+                           after=toggles_before)
+        self.key(VK_TAB)
+        self.wait_focus("Confirm", "Tab moves from Option to nested Confirm")
+        self.key(VK_TAB)
+        self.wait_focus("Message", "Tab wraps from Confirm to read-only Message")
+        changes_before = self.log().count("edit-value=")
+        text_before = self.log().count('edit-input=Text("READONLY")')
+        self.type_text("READONLY")
+        self.wait("posted read-only text reaches the form", lambda:
+                  self.log().count('edit-input=Text("READONLY")') > text_before)
+        backspace_before = self.log().count("edit-input=Input(KeyUp { key: Backspace,")
+        self.key(VK_BACK)
+        self.wait("posted read-only Backspace completes", lambda:
+                  self.log().count("edit-input=Input(KeyUp { key: Backspace,") > backspace_before)
+        if last_edit_value(self.log()) != TEXT or self.log().count("edit-value=") != changes_before:
+            raise SmokeFailure("Read-only Message accepted typing/deletion or emitted TextChanged")
+        self.report["checks"].append({"check": "read-only Message rejects posted text and Backspace without TextChanged"})
+        self.capture(output, "read-only", focused=True, read_only=True)
+        toggles_before = self.log().count("checkbox-state=Option checked=")
+        self.click_control(60, 164, scale)
+        self.wait_checkbox(False, "mouse unchecks Option and restores editing",
+                           after=toggles_before)
+        self.click_editor(scale)
+        self.key(VK_END)
+        self.type_text("#")
+        self.wait_value(TEXT + "#", "editable Message accepts a draft after Option is cleared")
+        commands_before = self.log().count("command=Confirm")
+        commits_before = self.log().count("edit-committed=")
+        self.click_control(112, 206, scale)
+        self.wait("mouse invokes the compiled Confirm button", lambda:
+                  self.log().count("command=Confirm") > commands_before)
+        self.wait_focus("Confirm", "mouse focuses the compiled Confirm button")
+        self.wait_edit_diagnostic("edit-committed", TEXT + "#",
+                                  "Confirm interaction accepts the valid draft with auto-commit enabled",
+                                  after=commits_before)
+        self.report["checks"].append({"check": "mouse invokes named Confirm command"})
+        self.click_editor(scale)
+        self.key(VK_END)
+        self.key(VK_BACK)
+        self.wait_value(TEXT, "Message keeps its editor session after button focus")
+        commits_before = self.log().count("edit-committed=")
+        self.key(VK_RETURN)
+        self.wait_edit_diagnostic("edit-committed", TEXT,
+                                  "Enter restores the accepted Unicode fixture after Confirm",
+                                  after=commits_before)
         self.key(VK_END)
         self.type_text("!")
         self.wait_value(TEXT + "!", "editing changes the draft after acceptance")
@@ -300,7 +424,7 @@ class FormSession(RetainedSession):
         self.wait_value(TEXT[:-1], "Backspace removes final grapheme")
 
         before = parse_state(self.windows.title(self.hwnd))["frames"]
-        target = (round(480 * scale), round(240 * scale))
+        target = (round(480 * scale), round(360 * scale))
         self.windows.resize_client(self.hwnd, *target)
         self.wait("native client resize", lambda: self.windows.client_size(self.hwnd) == target)
         self.wait_state("resized form redraw", lambda s: s["frames"] > before)
@@ -372,13 +496,25 @@ def self_test() -> None:
                                  "edit-committed") == "old"
     assert last_edit_diagnostic('edit-invalid="Введите текст перед подтверждением."\n',
                                  "edit-invalid") == REQUIRED_MESSAGE
+    assert last_edit_diagnostic('focus-name="Message"\nfocus-name="Option"\n',
+                                "focus-name") == "Option"
+    assert last_checkbox_state("checkbox-state=Option checked=true\n") is True
+    assert last_checkbox_state("checkbox-state=Other checked=true\n") is None
+    assert last_checkbox_state("checkbox-state=Option checked=true\n"
+                               "checkbox-state=Option checked=false\n") is False
+    try:
+        last_checkbox_state("checkbox-state=Option checked=1\n")
+    except SmokeFailure:
+        pass
+    else:
+        raise AssertionError("Invalid checkbox booleans must be rejected")
     try:
         last_edit_value('edit-value=__import__("os")')
     except SmokeFailure:
         pass
     else:
         raise AssertionError("Diagnostic expressions must be rejected")
-    width, height = 640, 280
+    width, height = 640, 400
     for dark in (False, True):
         canvas = 32 if dark else 243
         surface = 45 if dark else 255
@@ -390,25 +526,59 @@ def self_test() -> None:
             offset = ((height - 1 - y) * width + x) * 4
             pixels[offset:offset + 4] = bytes((*reversed(color), 255))
 
-        set_rgb(280, 50, (surface,) * 3)
-        set_rgb(200, 32, (border,) * 3)
-        set_rgb(33, 32, (border + 1,) * 3)
-        set_rgb(34, 32, (border + 2,) * 3)
-        for y in range(40, 45):
+        set_rgb(280, 122, (surface,) * 3)
+        set_rgb(200, 104, (border,) * 3)
+        set_rgb(33, 104, (border + 1,) * 3)
+        set_rgb(34, 104, (border + 2,) * 3)
+        set_rgb(180, 210, (surface,) * 3)
+        set_rgb(112, 188, (border,) * 3)
+        set_rgb(300, 164, (surface,) * 3)
+        set_rgb(48, 164, (surface,) * 3)
+        for y in range(112, 117):
             for x in range(45, 80):
                 set_rgb(x, y, (foreground - x % 6 if dark else foreground + x % 6,) * 3)
+        for left, top in ((45, 36), (45, 76), (68, 156), (90, 199)):
+            for y in range(top, top + 5):
+                for x in range(left, left + 35):
+                    set_rgb(x, y, (foreground,) * 3)
         assert capture_checkpoints(pixels, width, height, 1.0, dark, False)["text_pixels"] > 30
         direct = bytes(pixels)
+        for y in range(193, 219):
+            for x in range(40, 184):
+                set_rgb(x, y, (surface,) * 3)
+        try:
+            capture_checkpoints(pixels, width, height, 1.0, dark, False)
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("Missing nested button glyphs must be rejected")
+        pixels[:] = direct
+        accent = (96, 205, 255) if dark else (0, 95, 184)
+        selected = (35, 75, 105) if dark else (196, 225, 245)
+        set_rgb(280, 122, (canvas,) * 3)
+        set_rgb(300, 164, selected)
+        set_rgb(48, 164, accent)
+        set_rgb(200, 138, accent)
+        assert capture_checkpoints(pixels, width, height, 1.0, dark, True,
+                                   read_only=True)["checkbox_mark_rgb"] == accent
+        set_rgb(48, 164, (surface,) * 3)
+        try:
+            capture_checkpoints(pixels, width, height, 1.0, dark, True, read_only=True)
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("An unchecked Option must fail the read-only capture")
+        pixels[:] = direct
         error = (255, 153, 164) if dark else (196, 43, 28)
-        set_rgb(200, 32, error)
-        set_rgb(200, 66, error)
-        for y in range(128, 133):
+        set_rgb(200, 104, error)
+        set_rgb(200, 138, error)
+        for y in range(284, 289):
             for x in range(45, 80):
                 set_rgb(x, y, (foreground,) * 3)
         invalid_fixture = bytes(pixels)
         assert capture_checkpoints(pixels, width, height, 1.0, dark, True,
                                    invalid=True)["validation_message_pixels"] >= 30
-        set_rgb(200, 32, (border,) * 3)
+        set_rgb(200, 104, (border,) * 3)
         try:
             capture_checkpoints(pixels, width, height, 1.0, dark, True, invalid=True)
         except SmokeFailure:
@@ -416,7 +586,7 @@ def self_test() -> None:
         else:
             raise AssertionError("A normal border must not pass as invalid appearance")
         pixels[:] = invalid_fixture
-        for y in range(124, 150):
+        for y in range(280, 316):
             for x in range(40, 420):
                 set_rgb(x, y, (canvas,) * 3)
         try:
@@ -427,7 +597,7 @@ def self_test() -> None:
             raise AssertionError("Missing validation message glyphs must be rejected")
         pixels[:] = direct
         # Reproduce the previous accidental linear->sRGB palette encoding.
-        for x, y in ((8, 8), (32, 32)):
+        for x, y in ((8, 8), (32, 104)):
             wrong = round(255 * (1.055 * (canvas / 255) ** (1 / 2.4) - 0.055))
             set_rgb(x, y, (wrong,) * 3)
         try:
@@ -442,7 +612,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("Invalid scale must be rejected")
-    print("PASS: XAML title, value/session diagnostics, direct-sRGB, invalid palette/message and corner/glyph fixtures")
+    print("PASS: XAML tree names/focus/checkbox diagnostics, direct-sRGB, nested controls, read-only/invalid palettes and corner/glyph fixtures")
 
 
 def main() -> int:
@@ -473,6 +643,7 @@ def main() -> int:
               "checks": [], "captures": {}, "backend_environment": os.environ.get("WGPU_BACKEND"),
               "input_method": "Posted child-only Win32 pointer, KEYDOWN/CHAR/KEYUP messages; restored cursor alignment",
               "limits": ["No physical keyboard, native IME, screen reader or external clipboard test",
+                         "No native Shift+Tab modifier verification; backward traversal requires separate form model verification",
                          "No multi-monitor DPI or frame-time benchmark", "Captures require separate visual review"]}
     session = None
     try:

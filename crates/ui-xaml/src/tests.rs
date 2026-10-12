@@ -6,6 +6,13 @@ fn form(window_attributes: &str, text_box: &str) -> String {
     )
 }
 
+fn editor(window: &WindowDefinition) -> &EditBoxDefinition {
+    let ElementKind::TextBox(editor) = &window.content.kind else {
+        panic!("expected a TextBox root");
+    };
+    editor
+}
+
 #[test]
 fn minimal_form_has_documented_defaults() {
     assert_eq!(
@@ -25,14 +32,17 @@ fn parses_properties_unicode_entities_and_thickness_order() {
     assert_eq!((parsed.width, parsed.height), (800.5, 480.0));
     assert_eq!(parsed.padding, [1.0, 2.0, 3.0, 4.0]);
     assert_eq!(parsed.theme, Theme::Dark);
-    assert_eq!(parsed.edit_box.name.as_deref(), Some("_title2"));
-    assert_eq!(parsed.edit_box.text, "Привет 🌍 \"Rust\"");
-    assert_eq!(parsed.edit_box.placeholder, "Имя");
-    assert_eq!(parsed.edit_box.label, "Название");
-    assert_eq!(parsed.edit_box.width, Some(320.0));
-    assert_eq!(parsed.edit_box.height, 40.0);
-    assert_eq!(parsed.edit_box.margin, [8.0, 12.0, 8.0, 12.0]);
-    assert!(!parsed.edit_box.is_enabled);
+    assert_eq!(parsed.content.common.name.as_deref(), Some("_title2"));
+    assert_eq!(editor(&parsed).text, "Привет 🌍 \"Rust\"");
+    assert_eq!(editor(&parsed).placeholder, "Имя");
+    assert_eq!(
+        parsed.content.common.automation_name.as_deref(),
+        Some("Название")
+    );
+    assert_eq!(parsed.content.common.width, Some(320.0));
+    assert_eq!(parsed.content.common.height, Some(40.0));
+    assert_eq!(parsed.content.common.margin, [8.0, 12.0, 8.0, 12.0]);
+    assert!(!parsed.content.common.is_enabled);
 }
 
 #[test]
@@ -41,7 +51,7 @@ fn namespace_uris_determine_meaning_instead_of_prefix_spelling() {
         "<ui:Window xmlns:ui='{UI_NAMESPACE}' xmlns:lang='{XAML_NAMESPACE}'><ui:TextBox lang:Name='editor'/></ui:Window>"
     );
     assert_eq!(
-        parse(&source).unwrap().edit_box.name.as_deref(),
+        parse(&source).unwrap().content.common.name.as_deref(),
         Some("editor")
     );
     let impostor = form("xmlns:fake='urn:wrong'", "<TextBox fake:Name='editor'/>");
@@ -103,11 +113,11 @@ fn rejects_invalid_or_duplicate_names() {
 }
 
 #[test]
-fn requires_exactly_one_editor_and_no_nested_elements() {
+fn requires_exactly_one_root_and_no_children_inside_leaves() {
     for child in [
         "",
         "<TextBox/><TextBox/>",
-        "<Button/>",
+        "<Unknown/>",
         "<TextBox><TextBox/></TextBox>",
         "<Window.Content><TextBox/></Window.Content>",
     ] {
@@ -175,8 +185,8 @@ fn readonly_and_length_properties_have_strict_values_and_codegen() {
             &format!("<TextBox IsReadOnly='{value}' MaxLength='64'/>"),
         ))
         .unwrap();
-        assert_eq!(parsed.edit_box.is_read_only, expected);
-        assert_eq!(parsed.edit_box.max_length, Some(64));
+        assert_eq!(editor(&parsed).is_read_only, expected);
+        assert_eq!(editor(&parsed).max_length, Some(64));
     }
     for value in ["", "yes", "1", "TRUE", " true "] {
         let error = parse(&form("", &format!("<TextBox IsReadOnly='{value}'/>"))).unwrap_err();
@@ -198,17 +208,11 @@ fn readonly_and_length_properties_have_strict_values_and_codegen() {
         assert!(error.message.contains("MaxLength"), "{value}: {error}");
     }
     assert_eq!(
-        parse(&form("", "<TextBox MaxLength='1048576'/>"))
-            .unwrap()
-            .edit_box
-            .max_length,
+        editor(&parse(&form("", "<TextBox MaxLength='1048576'/>")).unwrap()).max_length,
         Some(MAX_TEXT_LENGTH)
     );
     assert_eq!(
-        parse(&form("", "<TextBox MaxLength='0'/>"))
-            .unwrap()
-            .edit_box
-            .max_length,
+        editor(&parse(&form("", "<TextBox MaxLength='0'/>")).unwrap()).max_length,
         None
     );
     let generated = compile(&form("", "<TextBox IsReadOnly='True' MaxLength='64'/>")).unwrap();
@@ -227,7 +231,8 @@ fn parses_style_metrics_and_argb_colors_without_theme_defaults() {
         "",
         "<TextBox FontSize='18.5' Padding='1,2,3,4' CornerRadius='8' BorderThickness='2' Background='#102030' Foreground='#80102030' BorderBrush='#00AAbBcC' FocusBrush='#abcdef' PlaceholderForeground='#FF334455' SelectionBrush='#40667788'/>",
     );
-    let style = parse(&source).unwrap().edit_box;
+    let parsed = parse(&source).unwrap();
+    let style = editor(&parsed);
     assert_eq!(style.font_size, Some(18.5));
     assert_eq!(style.padding, Some([1.0, 2.0, 3.0, 4.0]));
     assert_eq!(style.corner_radius, Some(8.0));
@@ -301,10 +306,7 @@ fn style_metrics_enforce_ranges_and_padding_arity() {
         assert!(parse(&form("", source)).is_ok());
     }
     assert_eq!(
-        parse(&form("", "<TextBox Padding='12,5'/>"))
-            .unwrap()
-            .edit_box
-            .padding,
+        editor(&parse(&form("", "<TextBox Padding='12,5'/>")).unwrap()).padding,
         Some([12.0, 5.0, 12.0, 5.0])
     );
 }
@@ -355,7 +357,8 @@ fn validation_properties_parse_and_compile_without_rejecting_initial_empty_text(
         "",
         "<TextBox IsRequired='True' CommitOnLostFocus='False' ValidationMessage='Введите &quot;текст&quot; &#10; здесь' ValidationBrush='#80402010'/>",
     );
-    let parsed = parse(&source).unwrap().edit_box;
+    let window = parse(&source).unwrap();
+    let parsed = editor(&window);
     assert!(parsed.is_required);
     assert!(!parsed.commit_on_lost_focus);
     assert_eq!(parsed.validation_message, "Введите \"текст\" \n здесь");
@@ -365,7 +368,8 @@ fn validation_properties_parse_and_compile_without_rejecting_initial_empty_text(
     assert!(generated.contains("commit_on_lost_focus: false,"));
     assert!(generated.contains("validation_message: \"Введите \\\"текст\\\" \\n здесь\".into(),"));
     assert!(generated.contains("validation_brush: Some([64, 32, 16, 128]),"));
-    let defaults = parse(&form("", "<TextBox/>")).unwrap().edit_box;
+    let window = parse(&form("", "<TextBox/>")).unwrap();
+    let defaults = editor(&window);
     assert!(!defaults.is_required);
     assert!(defaults.commit_on_lost_focus);
     assert_eq!(defaults.validation_message, "A value is required.");
@@ -387,7 +391,7 @@ fn validation_properties_parse_and_compile_without_rejecting_initial_empty_text(
 fn validation_message_limit_counts_decoded_utf8_bytes_and_allows_runtime_fallback() {
     for message in [String::new(), "   ".to_owned(), "Я".repeat(2048)] {
         let source = form("", &format!("<TextBox ValidationMessage='{message}'/>"));
-        assert_eq!(parse(&source).unwrap().edit_box.validation_message, message);
+        assert_eq!(editor(&parse(&source).unwrap()).validation_message, message);
     }
     for message in [
         "Я".repeat(2049),
@@ -413,7 +417,7 @@ fn initial_length_counts_normalized_extended_graphemes() {
         &format!("<TextBox Text='{text}' MaxLength='2'/>"),
     ))
     .unwrap();
-    assert_eq!(parsed.edit_box.text, text);
+    assert_eq!(editor(&parsed).text, text);
     let error = parse(&form(
         "",
         &format!("<TextBox MaxLength='1' Text='{text}'/>"),
@@ -466,7 +470,10 @@ fn diagnostic_points_to_invalid_attribute_with_one_based_location() {
 fn limits_source_and_xml_node_count() {
     let source = " ".repeat(MAX_SOURCE_BYTES + 1);
     assert!(parse(&source).unwrap_err().message.contains("byte limit"));
-    let nodes = format!("{}<TextBox/>", "<!-- comment -->".repeat(128));
+    let nodes = format!(
+        "{}<TextBox/>",
+        "<!-- comment -->".repeat(MAX_XML_NODES as usize)
+    );
     assert!(parse(&form("", &nodes)).is_err());
 }
 
@@ -505,4 +512,358 @@ fn file_compilation_reports_input_path_and_preserves_output_on_validation_failur
     fs::remove_file(input).unwrap();
     fs::remove_file(output).unwrap();
     fs::remove_dir(directory).unwrap();
+}
+
+#[test]
+fn nested_tree_preserves_common_properties_content_and_child_order() {
+    let source = form(
+        "",
+        "<StackPanel x:Name='layout' Spacing='12' Padding='1,2,3,4' Margin='5' IsEnabled='False' AutomationName='Form'>
+            <TextBlock x:Name='heading' Text='Name &amp; title' Height='28'/>
+            <TextBox x:Name='name' Text='Ada' Width='320' MaxLength='12' IsRequired='True'/>
+            <StackPanel Orientation='Horizontal' Spacing='8' Width='400' Height='48'>
+                <CheckBox x:Name='remember' Content='Remember me' IsChecked='True' Margin='4,6'/>
+                <Button x:Name='save' Content='Save' Command='SaveForm' AutomationName='Save form'/>
+            </StackPanel>
+        </StackPanel>",
+    );
+    let parsed = parse(&source).unwrap();
+    assert_eq!(
+        parsed.content.common,
+        CommonProperties {
+            name: Some("layout".into()),
+            margin: [5.0; 4],
+            is_enabled: false,
+            automation_name: Some("Form".into()),
+            ..CommonProperties::default()
+        }
+    );
+    let ElementKind::StackPanel(root) = parsed.content.kind else {
+        panic!("expected root panel")
+    };
+    assert_eq!(root.orientation, Orientation::Vertical);
+    assert_eq!(root.spacing, 12.0);
+    assert_eq!(root.padding, [1.0, 2.0, 3.0, 4.0]);
+    assert_eq!(root.children.len(), 3);
+    assert_eq!(root.children[0].common.name.as_deref(), Some("heading"));
+    assert_eq!(root.children[0].common.height, Some(28.0));
+    assert_eq!(
+        root.children[0].kind,
+        ElementKind::TextBlock(TextBlockDefinition {
+            text: "Name & title".into()
+        })
+    );
+    assert_eq!(root.children[1].common.width, Some(320.0));
+    assert_eq!(
+        root.children[1].kind,
+        ElementKind::TextBox(EditBoxDefinition {
+            text: "Ada".into(),
+            max_length: Some(12),
+            is_required: true,
+            ..EditBoxDefinition::default()
+        })
+    );
+    // Enabled state is local in the AST; the runtime applies ancestor state.
+    assert!(root.children[1].common.is_enabled);
+    let ElementKind::StackPanel(row) = &root.children[2].kind else {
+        panic!("expected row panel")
+    };
+    assert_eq!(row.orientation, Orientation::Horizontal);
+    assert_eq!(row.spacing, 8.0);
+    assert_eq!(root.children[2].common.width, Some(400.0));
+    assert_eq!(root.children[2].common.height, Some(48.0));
+    assert_eq!(row.children.len(), 2);
+    assert_eq!(row.children[0].common.margin, [4.0, 6.0, 4.0, 6.0]);
+    assert_eq!(
+        row.children[0].kind,
+        ElementKind::CheckBox(CheckBoxDefinition {
+            content: "Remember me".into(),
+            is_checked: true
+        })
+    );
+    assert_eq!(
+        row.children[1].kind,
+        ElementKind::Button(ButtonDefinition {
+            content: "Save".into(),
+            command: Some("SaveForm".into())
+        })
+    );
+    assert_eq!(
+        row.children[1].common.automation_name.as_deref(),
+        Some("Save form")
+    );
+}
+
+#[test]
+fn every_supported_element_can_be_the_single_root_with_default_common_properties() {
+    for (tag, kind) in [
+        (
+            "StackPanel",
+            ElementKind::StackPanel(StackPanelDefinition::default()),
+        ),
+        (
+            "TextBox",
+            ElementKind::TextBox(EditBoxDefinition::default()),
+        ),
+        (
+            "TextBlock",
+            ElementKind::TextBlock(TextBlockDefinition::default()),
+        ),
+        ("Button", ElementKind::Button(ButtonDefinition::default())),
+        (
+            "CheckBox",
+            ElementKind::CheckBox(CheckBoxDefinition::default()),
+        ),
+    ] {
+        let parsed = parse(&form("", &format!("<{tag}/>"))).unwrap();
+        assert_eq!(
+            parsed.content,
+            ElementDefinition {
+                common: CommonProperties::default(),
+                kind
+            }
+        );
+    }
+}
+
+#[test]
+fn names_are_unique_across_the_entire_window_including_parent_and_namespace_aliases() {
+    for tree in [
+        "<StackPanel x:Name='same'><Button x:Name='same'/></StackPanel>",
+        "<StackPanel><StackPanel><TextBox x:Name='same'/></StackPanel><CheckBox x:Name='same'/></StackPanel>",
+        "<StackPanel><Button x:Name='same'/><TextBlock other:Name='s&#97;me'/></StackPanel>",
+    ] {
+        let error = parse(&form(&format!("xmlns:other='{XAML_NAMESPACE}'"), tree)).unwrap_err();
+        assert!(error.message.contains("duplicate x:Name 'same'"), "{error}");
+    }
+    let error = parse(&form(
+        "",
+        "<StackPanel>\n  <Button x:Name='repeat'/>\n  <TextBox x:Name='repeat'/>\n</StackPanel>",
+    ))
+    .unwrap_err();
+    assert_eq!((error.line, error.column), (4, 12));
+    let source = form(
+        "",
+        "<StackPanel><Button x:Name='name'/><Button x:Name='Name'/><Button/><Button/></StackPanel>",
+    );
+    assert!(parse(&source).is_ok());
+    assert!(parse(&source).is_ok()); // Namescope belongs to each parse, not the process.
+}
+
+#[test]
+fn namespaced_tree_uses_namespace_uris_at_every_depth() {
+    let source = format!(
+        "<u:Window xmlns:u='{UI_NAMESPACE}' xmlns:n='{XAML_NAMESPACE}'>
+            <u:StackPanel n:Name='root'><u:Button n:Name='action' Content='Go'/></u:StackPanel>
+        </u:Window>"
+    );
+    assert!(parse(&source).is_ok());
+    for child in [
+        "<Button xmlns='urn:other'/>",
+        "<Button xmlns=''/>",
+        "<x:Button/>",
+    ] {
+        let error = parse(&form("", &format!("<StackPanel>{child}</StackPanel>"))).unwrap_err();
+        assert!(error.message.contains("namespace"), "{error}");
+    }
+}
+
+#[test]
+fn tree_rejects_events_cross_control_properties_and_nonliteral_commands() {
+    for content in [
+        "<StackPanel Text='oops'/>",
+        "<TextBlock Content='oops'/>",
+        "<TextBlock Text='{Binding Name}'/>",
+        "<Button Text='oops'/>",
+        "<Button Click='on_click'/>",
+        "<Button IsChecked='True'/>",
+        "<CheckBox Command='Save'/>",
+        "<CheckBox IsChecked='null'/>",
+        "<StackPanel Orientation='horizontal'/>",
+        "<StackPanel Orientation=' Vertical '/>",
+        "<StackPanel><Window/></StackPanel>",
+        "<StackPanel><StackPanel.Children/></StackPanel>",
+    ] {
+        assert!(parse(&form("", content)).is_err(), "{content}");
+    }
+    for command in [
+        "",
+        " Save",
+        "Save ",
+        "Save.Form",
+        "2Save",
+        "save-now",
+        "Сохранить",
+        "{Binding Save}",
+        "Save()",
+        "Save;quit",
+    ] {
+        assert!(
+            parse(&form("", &format!("<Button Command='{command}'/>"))).is_err(),
+            "{command}"
+        );
+    }
+    for command in ["Save", "_save2", "a", "A_B_9"] {
+        let parsed = parse(&form("", &format!("<Button Command='{command}'/>"))).unwrap();
+        assert_eq!(
+            parsed.content.kind,
+            ElementKind::Button(ButtonDefinition {
+                content: String::new(),
+                command: Some(command.into())
+            })
+        );
+    }
+}
+
+#[test]
+fn all_leaf_kinds_reject_children_and_text_while_panels_reject_mixed_text() {
+    for tag in ["TextBox", "TextBlock", "Button", "CheckBox"] {
+        for content in ["<TextBox/>", "text", "<![CDATA[text]]>"] {
+            assert!(
+                parse(&form("", &format!("<{tag}>{content}</{tag}>"))).is_err(),
+                "{tag}: {content}"
+            );
+        }
+        assert!(parse(&form("", &format!("<{tag}> \n<!-- allowed --></{tag}>"))).is_ok());
+    }
+    assert!(parse(&form("", "<StackPanel>text<Button/></StackPanel>")).is_err());
+    assert!(
+        parse(&form(
+            "",
+            "<StackPanel><StackPanel>text</StackPanel></StackPanel>"
+        ))
+        .is_err()
+    );
+}
+
+#[test]
+fn common_geometry_and_state_are_validated_for_every_element_kind() {
+    for tag in ["StackPanel", "TextBox", "TextBlock", "Button", "CheckBox"] {
+        for attributes in [
+            "Width='0'",
+            "Height='NaN'",
+            "Height='1e-300'",
+            "Margin='1,2,3'",
+            "IsEnabled='yes'",
+            "x:Name='2bad'",
+            "AutomationName='{Binding Label}'",
+        ] {
+            assert!(
+                parse(&form("", &format!("<{tag} {attributes}/>"))).is_err(),
+                "{tag}: {attributes}"
+            );
+        }
+        let parsed = parse(&form("", &format!("<{tag} Width='10' Height='20' Margin='1,2' IsEnabled='false' AutomationName='Accessible'/>"))).unwrap();
+        assert_eq!(
+            parsed.content.common,
+            CommonProperties {
+                width: Some(10.0),
+                height: Some(20.0),
+                margin: [1.0, 2.0, 1.0, 2.0],
+                is_enabled: false,
+                automation_name: Some("Accessible".into()),
+                ..CommonProperties::default()
+            }
+        );
+    }
+    for value in ["-1", "16385", "NaN", "inf", "", "1,2"] {
+        assert!(
+            parse(&form("", &format!("<StackPanel Spacing='{value}'/>"))).is_err(),
+            "{value}"
+        );
+    }
+    assert!(parse(&form("", "<StackPanel Spacing='0' Padding='16384'/>")).is_ok());
+    assert!(parse(&form("", "<StackPanel Spacing='16384'/>")).is_ok());
+}
+
+#[test]
+fn content_depth_and_count_limits_accept_boundaries_and_reject_one_more() {
+    let nested = |panels: usize| {
+        format!(
+            "{}<TextBox/>{}",
+            "<StackPanel>".repeat(panels),
+            "</StackPanel>".repeat(panels)
+        )
+    };
+    assert!(parse(&form("", &nested(MAX_ELEMENT_DEPTH - 1))).is_ok());
+    let error = parse(&form("", &nested(MAX_ELEMENT_DEPTH))).unwrap_err();
+    assert!(
+        error.message.contains("maximum element depth of 32"),
+        "{error}"
+    );
+    let wide =
+        |children: usize| format!("<StackPanel>{}</StackPanel>", "<Button/>".repeat(children));
+    assert!(parse(&form("", &wide(MAX_ELEMENTS - 1))).is_ok());
+    let error = parse(&form("", &wide(MAX_ELEMENTS))).unwrap_err();
+    assert!(error.message.contains("256-element limit"), "{error}");
+    // Comments consume XML nodes, but not the content element count.
+    assert!(
+        parse(&form(
+            "",
+            &format!(
+                "<StackPanel>{}<Button/></StackPanel>",
+                "<!-- note -->".repeat(300)
+            )
+        ))
+        .is_ok()
+    );
+}
+
+#[test]
+fn nested_editors_keep_normalization_length_and_validation_diagnostics() {
+    let error = parse(&form(
+        "",
+        "<StackPanel>\n<TextBox MaxLength='1' Text='ab'/>\n</StackPanel>",
+    ))
+    .unwrap_err();
+    assert_eq!((error.line, error.column), (3, 24));
+    assert!(error.message.contains("Text exceeds MaxLength"));
+    assert!(parse(&form("", "<StackPanel><TextBox Text='a&#13;&#10;&#x301;' MaxLength='1' IsRequired='True' ValidationMessage='Required' CommitOnLostFocus='False'/></StackPanel>")).is_ok());
+}
+
+#[test]
+fn recursive_codegen_emits_all_variants_and_escapes_every_new_string_field() {
+    let source = form(
+        "",
+        "<StackPanel x:Name='root' Orientation='Horizontal' Spacing='3.5' Padding='2,4'>
+        <TextBlock Text='Title &quot;\\&#10;🌍' AutomationName='Label &quot;\\&#10;'/>
+        <Button Content='Save &quot;); panic!(&quot;bad&quot;); //' Command='_Save2'/>
+        <CheckBox Content='Agree &quot;\\&#10;' IsChecked='True' Height='32'/>
+        <StackPanel><TextBox Text='Nested' IsReadOnly='True'/></StackPanel>
+    </StackPanel>",
+    );
+    let generated = compile(&source).unwrap();
+    assert_eq!(
+        generated
+            .matches("rust_desktop_ui_xaml::ElementDefinition {")
+            .count(),
+        6
+    );
+    for variant in ["StackPanel", "TextBox", "TextBlock", "Button", "CheckBox"] {
+        assert!(
+            generated.contains(&format!("rust_desktop_ui_xaml::ElementKind::{variant}(")),
+            "{variant}"
+        );
+    }
+    for expected in [
+        "orientation: rust_desktop_ui_xaml::Orientation::Horizontal,",
+        "spacing: 3.5,",
+        "padding: [2.0, 4.0, 2.0, 4.0],",
+        "text: \"Title \\\"\\\\\\n🌍\".into()",
+        "automation_name: Some(\"Label \\\"\\\\\\n\".into()),",
+        "content: \"Save \\\"); panic!(\\\"bad\\\"); //\".into()",
+        "command: Some(\"_Save2\".into())",
+        "content: \"Agree \\\"\\\\\\n\".into()",
+        "is_checked: true",
+        "height: Some(32.0),",
+        "text: \"Nested\".into(),",
+        "is_read_only: true,",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected}\n{generated}"
+        );
+    }
+    let empty = compile(&form("", "<StackPanel/>")).unwrap();
+    assert!(empty.contains("children: vec![],"));
 }

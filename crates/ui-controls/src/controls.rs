@@ -173,6 +173,7 @@ struct Control {
     text_scroll_x: f32,
     text_scroll: f32,
     default_height: bool,
+    transparent_panel: bool,
     caret: TextCaret,
 }
 struct Tabs {
@@ -776,6 +777,7 @@ impl Controls {
                 text_scroll_x: 0.0,
                 text_scroll: 0.0,
                 default_height,
+                transparent_panel: false,
                 caret: TextCaret::default(),
             },
         );
@@ -797,6 +799,21 @@ impl Controls {
             style
         };
         self.add(parent, Kind::Panel, String::new(), None, style)
+    }
+    /// Creates a layout container with clipping and semantics but no background.
+    /// Transparency is preserved across theme and enabled-state changes.
+    pub fn transparent_panel(
+        &mut self,
+        parent: WidgetId,
+        style: LayoutStyle,
+    ) -> Result<WidgetId, ControlError> {
+        let id = self.panel(parent, style)?;
+        self.controls
+            .get_mut(&id)
+            .expect("new panel")
+            .transparent_panel = true;
+        self.refresh_paints()?;
+        Ok(id)
     }
     pub fn label(
         &mut self,
@@ -1157,16 +1174,44 @@ impl Controls {
     }
     fn refresh_paints(&mut self) -> Result<(), ControlError> {
         let tokens = self.theme.tokens();
+        // Use the current control/command state for every ancestor, independent
+        // of HashMap iteration order. Store only local enabled state on nodes so
+        // re-enabling a container also restores its enabled descendants.
+        let local_enabled: HashMap<_, _> = self
+            .controls
+            .iter()
+            .map(|(&id, control)| {
+                (
+                    id,
+                    control.enabled
+                        && control
+                            .command
+                            .as_ref()
+                            .is_none_or(|command| self.commands.enabled(command)),
+                )
+            })
+            .collect();
         let mut updates = Vec::new();
         for (&id, control) in &mut self.controls {
             let Some(node) = self.runtime.tree().node(id) else {
                 continue;
             };
-            let enabled = control.enabled
-                && control
-                    .command
-                    .as_ref()
-                    .is_none_or(|id| self.commands.enabled(id));
+            let enabled = local_enabled[&id];
+            let mut paint_enabled = enabled;
+            let mut parent = self.runtime.tree().parent(id);
+            while let Some(ancestor) = parent {
+                let Some(ancestor_node) = self.runtime.tree().node(ancestor) else {
+                    break;
+                };
+                paint_enabled &= local_enabled
+                    .get(&ancestor)
+                    .copied()
+                    .unwrap_or(ancestor_node.props.enabled);
+                if !paint_enabled {
+                    break;
+                }
+                parent = self.runtime.tree().parent(ancestor);
+            }
             if let Some(checked) = control
                 .command
                 .as_ref()
@@ -1181,11 +1226,11 @@ impl Controls {
                 _ => control.checked,
             };
             let interactive = control.kind.clickable() || matches!(control.kind, Kind::TextBox(_));
-            let paint = if matches!(control.kind, Kind::Label) {
+            let paint = if matches!(control.kind, Kind::Label) || control.transparent_panel {
                 Paint::default()
             } else {
                 Paint {
-                    background: Some(if !enabled || control.editor.is_read_only {
+                    background: Some(if !paint_enabled || control.editor.is_read_only {
                         tokens.canvas
                     } else if self.pressed == Some(id) {
                         tokens.pressed
@@ -1198,7 +1243,9 @@ impl Controls {
                         width: 1.0,
                         color: tokens.border,
                     }),
-                    hover_background: (interactive && enabled && !control.editor.is_read_only)
+                    hover_background: (interactive
+                        && paint_enabled
+                        && !control.editor.is_read_only)
                         .then_some(if self.pressed == Some(id) {
                             tokens.pressed
                         } else {

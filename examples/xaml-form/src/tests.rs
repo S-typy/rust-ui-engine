@@ -5,9 +5,26 @@ use rust_desktop_ui_controls::{
 use rust_desktop_ui_core::{Color, Edges, InputEvent, Key, Modifiers, Mutation, Size};
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent, accesskit};
 
+fn editor_definition(
+    definition: &mut rust_desktop_ui_xaml::WindowDefinition,
+) -> &mut rust_desktop_ui_xaml::EditBoxDefinition {
+    fn find(
+        element: &mut rust_desktop_ui_xaml::ElementDefinition,
+    ) -> Option<&mut rust_desktop_ui_xaml::EditBoxDefinition> {
+        match &mut element.kind {
+            rust_desktop_ui_xaml::ElementKind::TextBox(editor) => Some(editor),
+            rust_desktop_ui_xaml::ElementKind::StackPanel(panel) => {
+                panel.children.iter_mut().find_map(find)
+            }
+            _ => None,
+        }
+    }
+    find(&mut definition.content).expect("test markup contains an editor")
+}
+
 fn form() -> Form {
     let mut form = Form::new(generated::window_definition(), false).unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     form
 }
 
@@ -21,6 +38,71 @@ fn key(form: &mut Form, key: Key, control: bool) {
         repeat: false,
     }))
     .unwrap();
+    form.accessibility(1.0);
+}
+
+fn markup(content: &str) -> Form {
+    let source = format!(
+        r#"<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">{content}</Window>"#
+    );
+    let mut form = Form::new(rust_desktop_ui_xaml::parse(&source).unwrap(), false).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    form
+}
+
+fn tab(form: &mut Form, shift: bool) {
+    form.event(PlatformEvent::Input(InputEvent::KeyDown {
+        key: Key::Tab,
+        modifiers: Modifiers {
+            shift,
+            ..Default::default()
+        },
+        repeat: false,
+    }))
+    .unwrap();
+}
+
+fn click(form: &mut Form, name: &str) {
+    let bounds = form
+        .ui
+        .runtime
+        .bounds(form.find_name(name).unwrap())
+        .unwrap();
+    let position = rust_desktop_ui_core::Point::new(
+        bounds.x + bounds.width / 2.0,
+        bounds.y + bounds.height / 2.0,
+    );
+    for input in [
+        InputEvent::PointerDown {
+            position,
+            button: rust_desktop_ui_core::PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        },
+        InputEvent::PointerUp {
+            position,
+            button: rust_desktop_ui_core::PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        },
+    ] {
+        form.event(PlatformEvent::Input(input)).unwrap();
+    }
+}
+
+fn accessible_action(
+    form: &mut Form,
+    name: &str,
+    action: accesskit::Action,
+    data: Option<accesskit::ActionData>,
+) {
+    form.accessibility(1.0);
+    let target_node = form.accessible.id(form.find_name(name).unwrap()).unwrap();
+    form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
+        action,
+        target_tree: accesskit::TreeId::ROOT,
+        target_node,
+        data,
+    }))
+    .unwrap();
 }
 
 #[test]
@@ -30,17 +112,17 @@ fn compiled_markup_matches_source_and_mounts_named_editbox() {
     assert_eq!(compiled, expected);
     let mut form = form();
     assert_eq!(form.title(), expected.title);
-    assert_eq!(form.find_name("Message"), Some(form.editor));
+    assert_eq!(form.find_name("Message"), Some(form.editor()));
     assert_eq!(form.find_name("Missing"), None);
-    let bounds = form.ui.runtime.bounds(form.editor).unwrap();
+    let bounds = form.ui.runtime.bounds(form.editor()).unwrap();
     assert_eq!(
         (bounds.x, bounds.y, bounds.width, bounds.height),
-        (32.0, 32.0, 576.0, 36.0)
+        (32.0, 104.0, 576.0, 36.0)
     );
     assert_eq!(form.text(), "");
-    assert_eq!(form.ui.is_read_only(form.editor), Some(false));
-    assert_eq!(form.ui.max_length(form.editor), Some(Some(64)));
-    let style = form.ui.edit_box_style(form.editor).unwrap();
+    assert_eq!(form.ui.is_read_only(form.editor()), Some(false));
+    assert_eq!(form.ui.max_length(form.editor()), Some(Some(64)));
+    let style = form.ui.edit_box_style(form.editor()).unwrap();
     assert_eq!(style.font_size, Some(14.0));
     assert_eq!(
         style.padding,
@@ -60,7 +142,7 @@ fn compiled_markup_matches_source_and_mounts_named_editbox() {
             .any(|text| text.text == "Введите текст…")
     );
     form.update(Size::new(360.0, 220.0), 2.0).unwrap();
-    assert_eq!(form.ui.runtime.bounds(form.editor).unwrap().width, 296.0);
+    assert_eq!(form.ui.runtime.bounds(form.editor()).unwrap().width, 296.0);
 }
 
 #[test]
@@ -73,8 +155,8 @@ fn xaml_style_mounts_metrics_and_rgba_colors_and_preserves_them_across_theme_cha
         </Window>"##,
     ).unwrap();
     let mut form = Form::new(definition, false).unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
-    let style = *form.ui.edit_box_style(form.editor).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    let style = *form.ui.edit_box_style(form.editor()).unwrap();
     assert_eq!(style.font_size, Some(20.0));
     assert_eq!(
         style.padding,
@@ -103,7 +185,7 @@ fn xaml_style_mounts_metrics_and_rgba_colors_and_preserves_them_across_theme_cha
     );
     for theme in [Theme::FluentLight, Theme::FluentDark] {
         form.ui.set_theme(theme).unwrap();
-        form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+        form.update(Size::new(640.0, 400.0), 1.0).unwrap();
         let text = form
             .scene()
             .texts
@@ -112,7 +194,7 @@ fn xaml_style_mounts_metrics_and_rgba_colors_and_preserves_them_across_theme_cha
             .unwrap();
         assert_eq!(text.font_size, 20.0);
         assert_eq!(text.color, Color::rgb(68, 85, 102));
-        assert_eq!(form.ui.edit_box_style(form.editor), Some(&style));
+        assert_eq!(form.ui.edit_box_style(form.editor()), Some(&style));
         assert_eq!(form.text(), "Styled");
     }
     assert!(form.ui.drain_text_changes().is_empty());
@@ -121,15 +203,15 @@ fn xaml_style_mounts_metrics_and_rgba_colors_and_preserves_them_across_theme_cha
 #[test]
 fn omitted_style_uses_live_theme_and_accessibility_uses_current_editor_settings() {
     let mut definition = rust_desktop_ui_xaml::WindowDefinition::default();
-    definition.edit_box.placeholder = "Initial hint".into();
+    editor_definition(&mut definition).placeholder = "Initial hint".into();
     let mut form = Form::new(definition, false).unwrap();
     assert_eq!(
-        form.ui.edit_box_style(form.editor),
+        form.ui.edit_box_style(form.editor()),
         Some(&EditBoxStyle::default())
     );
     form.ui
         .set_editor_settings(
-            form.editor,
+            form.editor(),
             EditorSettings {
                 placeholder: "Updated hint".into(),
                 is_read_only: true,
@@ -138,7 +220,7 @@ fn omitted_style_uses_live_theme_and_accessibility_uses_current_editor_settings(
             },
         )
         .unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     let light_color = form
         .scene()
         .texts
@@ -147,7 +229,7 @@ fn omitted_style_uses_live_theme_and_accessibility_uses_current_editor_settings(
         .unwrap()
         .color;
     form.ui.set_theme(Theme::FluentDark).unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     let dark_color = form
         .scene()
         .texts
@@ -160,12 +242,12 @@ fn omitted_style_uses_live_theme_and_accessibility_uses_current_editor_settings(
     let node = &tree
         .nodes
         .iter()
-        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .find(|(id, _)| *id == form.accessible.id(form.editor()).unwrap())
         .unwrap()
         .1;
     assert_eq!(node.description(), Some("Updated hint"));
     assert!(node.is_read_only());
-    assert_eq!(form.ui.max_length(form.editor), Some(Some(8)));
+    assert_eq!(form.ui.max_length(form.editor()), Some(Some(8)));
     assert!(form.ui.drain_text_changes().is_empty());
 }
 
@@ -173,7 +255,7 @@ fn omitted_style_uses_live_theme_and_accessibility_uses_current_editor_settings(
 fn tab_edit_selection_undo_and_resize_keep_document() {
     let mut form = form();
     key(&mut form, Key::Tab, false);
-    assert_eq!(form.ui.runtime.focused(), Some(form.editor));
+    assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
     form.event(PlatformEvent::Text("Привет 👋".into())).unwrap();
     assert_eq!(form.text(), "Привет 👋");
     key(&mut form, Key::Character("a".into()), true);
@@ -197,12 +279,12 @@ fn composition_is_display_only_until_commit_and_blur_cancels() {
     let mut form = form();
     form.ui
         .runtime
-        .apply(Mutation::Focus(Some(form.editor)))
+        .apply(Mutation::Focus(Some(form.editor())))
         .unwrap();
     form.event(PlatformEvent::ImePreedit("日本".into(), Some((6, 6))))
         .unwrap();
     assert_eq!(form.text(), "");
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     assert!(
         !form
             .scene()
@@ -218,7 +300,7 @@ fn composition_is_display_only_until_commit_and_blur_cancels() {
         .unwrap();
     assert!(
         form.ui
-            .document(form.editor)
+            .document(form.editor())
             .unwrap()
             .composition()
             .is_none()
@@ -233,7 +315,7 @@ fn accessibility_exposes_label_value_scaled_bounds_and_actions() {
     let node = &tree
         .nodes
         .iter()
-        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .find(|(id, _)| *id == form.accessible.id(form.editor()).unwrap())
         .unwrap()
         .1;
     assert_eq!(node.role(), accesskit::Role::TextInput);
@@ -243,16 +325,16 @@ fn accessibility_exposes_label_value_scaled_bounds_and_actions() {
     form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
         action: accesskit::Action::SetValue,
         target_tree: accesskit::TreeId::ROOT,
-        target_node: accesskit::NodeId(2),
+        target_node: form.accessible.id(form.editor()).unwrap(),
         data: Some(accesskit::ActionData::Value("Данные".into())),
     }))
     .unwrap();
     assert_eq!(form.text(), "Данные");
-    form.ui.set_enabled(form.editor, false).unwrap();
+    form.ui.set_enabled(form.editor(), false).unwrap();
     form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
         action: accesskit::Action::SetValue,
         target_tree: accesskit::TreeId::ROOT,
-        target_node: accesskit::NodeId(2),
+        target_node: form.accessible.id(form.editor()).unwrap(),
         data: Some(accesskit::ActionData::Value("Запрещено".into())),
     }))
     .unwrap();
@@ -262,14 +344,14 @@ fn accessibility_exposes_label_value_scaled_bounds_and_actions() {
 #[test]
 fn readonly_form_keeps_focus_copy_and_programmatic_updates_without_ime_or_setvalue() {
     let mut definition = generated::window_definition();
-    definition.edit_box.text = "Read".into();
-    definition.edit_box.is_read_only = true;
-    definition.edit_box.max_length = Some(4);
+    editor_definition(&mut definition).text = "Read".into();
+    editor_definition(&mut definition).is_read_only = true;
+    editor_definition(&mut definition).max_length = Some(4);
     let mut form = Form::new(definition, false).unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     key(&mut form, Key::Tab, false);
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
-    assert_eq!(form.ui.runtime.focused(), Some(form.editor));
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
     assert_eq!(form.ime_target(), None);
     assert!(form.ime_cursor().is_none());
     assert!(form.ui.caret_bounds().is_some());
@@ -294,7 +376,7 @@ fn readonly_form_keeps_focus_copy_and_programmatic_updates_without_ime_or_setval
     assert_eq!(form.text(), "Read");
     assert!(
         form.ui
-            .document(form.editor)
+            .document(form.editor())
             .unwrap()
             .composition()
             .is_none()
@@ -303,7 +385,7 @@ fn readonly_form_keeps_focus_copy_and_programmatic_updates_without_ime_or_setval
     let node = &tree
         .nodes
         .iter()
-        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .find(|(id, _)| *id == form.accessible.id(form.editor()).unwrap())
         .unwrap()
         .1;
     assert!(node.is_read_only());
@@ -313,13 +395,13 @@ fn readonly_form_keeps_focus_copy_and_programmatic_updates_without_ime_or_setval
     form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
         action: accesskit::Action::SetValue,
         target_tree: accesskit::TreeId::ROOT,
-        target_node: accesskit::NodeId(2),
+        target_node: form.accessible.id(form.editor()).unwrap(),
         data: Some(accesskit::ActionData::Value("edit".into())),
     }))
     .unwrap();
     assert_eq!(form.text(), "Read");
-    form.ui.set_text(form.editor, "Code").unwrap();
-    assert!(form.ui.set_text(form.editor, "Longer").is_err());
+    form.ui.set_text(form.editor(), "Code").unwrap();
+    assert!(form.ui.set_text(form.editor(), "Longer").is_err());
     assert_eq!(form.text(), "Code");
     form.event(PlatformEvent::Tick).unwrap();
     assert!(form.ui.drain_text_changes().is_empty());
@@ -328,9 +410,9 @@ fn readonly_form_keeps_focus_copy_and_programmatic_updates_without_ime_or_setval
 #[test]
 fn form_rejects_overlimit_input_and_consumes_change_events() {
     let mut definition = generated::window_definition();
-    definition.edit_box.max_length = Some(2);
+    editor_definition(&mut definition).max_length = Some(2);
     let mut form = Form::new(definition, true).unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     key(&mut form, Key::Tab, false);
     form.event(PlatformEvent::Text("e\u{301}👩‍💻".into()))
         .unwrap();
@@ -342,7 +424,7 @@ fn form_rejects_overlimit_input_and_consumes_change_events() {
     form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
         action: accesskit::Action::SetValue,
         target_tree: accesskit::TreeId::ROOT,
-        target_node: accesskit::NodeId(2),
+        target_node: form.accessible.id(form.editor()).unwrap(),
         data: Some(accesskit::ActionData::Value("abc".into())),
     }))
     .unwrap();
@@ -358,27 +440,31 @@ fn form_rejects_overlimit_input_and_consumes_change_events() {
 #[test]
 fn required_form_reports_error_then_accepts_and_cancels_with_visible_status() {
     let mut definition = generated::window_definition();
-    definition.edit_box.validation_brush = Some([180, 30, 60, 255]);
+    editor_definition(&mut definition).validation_brush = Some([180, 30, 60, 255]);
     let mut form = Form::new(definition, false).unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
-    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
-    assert_eq!(form.ui.validation_error(form.editor), None);
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
+    assert_eq!(form.ui.validation_error(form.editor()), None);
     assert_eq!(
-        form.ui.edit_box_style(form.editor).unwrap().invalid.border,
+        form.ui
+            .edit_box_style(form.editor())
+            .unwrap()
+            .invalid
+            .border,
         Some(Color::rgb(180, 30, 60))
     );
     key(&mut form, Key::Tab, false);
     key(&mut form, Key::Enter, false);
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     let message = "Введите текст перед подтверждением.";
-    assert_eq!(form.ui.validation_error(form.editor), Some(message));
-    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    assert_eq!(form.ui.validation_error(form.editor()), Some(message));
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
     assert!(form.scene().texts.iter().any(|run| run.text == message));
     let tree = form.accessibility(1.0);
     let edit = &tree
         .nodes
         .iter()
-        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .find(|(id, _)| *id == form.accessible.id(form.editor()).unwrap())
         .unwrap()
         .1;
     assert_eq!(edit.invalid(), Some(accesskit::Invalid::True));
@@ -393,9 +479,9 @@ fn required_form_reports_error_then_accepts_and_cancels_with_visible_status() {
     assert_eq!(status.label(), Some(message));
     assert_eq!(status.live(), Some(accesskit::Live::Polite));
     form.event(PlatformEvent::Text("Готово".into())).unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
-    assert_eq!(form.ui.validation_error(form.editor), None);
-    assert_eq!(form.ui.is_edit_dirty(form.editor), Some(true));
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    assert_eq!(form.ui.validation_error(form.editor()), None);
+    assert_eq!(form.ui.is_edit_dirty(form.editor()), Some(true));
     assert!(
         form.scene()
             .texts
@@ -403,9 +489,9 @@ fn required_form_reports_error_then_accepts_and_cancels_with_visible_status() {
             .any(|run| run.text == "Есть неподтверждённые изменения.")
     );
     key(&mut form, Key::Enter, false);
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
-    assert_eq!(form.ui.accepted_value(form.editor), Some("Готово"));
-    assert_eq!(form.ui.is_edit_dirty(form.editor), Some(false));
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor()), Some("Готово"));
+    assert_eq!(form.ui.is_edit_dirty(form.editor()), Some(false));
     assert!(
         form.scene()
             .texts
@@ -414,10 +500,10 @@ fn required_form_reports_error_then_accepts_and_cancels_with_visible_status() {
     );
     form.event(PlatformEvent::Text("!".into())).unwrap();
     key(&mut form, Key::Escape, false);
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
     assert_eq!(form.text(), "Готово");
-    assert_eq!(form.ui.is_edit_dirty(form.editor), Some(false));
-    assert!(!form.ui.document(form.editor).unwrap().can_undo());
+    assert_eq!(form.ui.is_edit_dirty(form.editor()), Some(false));
+    assert!(!form.ui.document(form.editor()).unwrap().can_undo());
     assert!(
         form.scene()
             .texts
@@ -428,7 +514,7 @@ fn required_form_reports_error_then_accepts_and_cancels_with_visible_status() {
     let edit = &tree
         .nodes
         .iter()
-        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .find(|(id, _)| *id == form.accessible.id(form.editor()).unwrap())
         .unwrap()
         .1;
     assert_eq!(edit.invalid(), None);
@@ -440,19 +526,19 @@ fn required_form_reports_error_then_accepts_and_cancels_with_visible_status() {
 fn lost_focus_acceptance_can_be_disabled_and_invalid_value_does_not_trap_focus() {
     for automatic in [false, true] {
         let mut definition = generated::window_definition();
-        definition.edit_box.commit_on_lost_focus = automatic;
+        editor_definition(&mut definition).commit_on_lost_focus = automatic;
         let mut form = Form::new(definition, false).unwrap();
-        form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+        form.update(Size::new(640.0, 400.0), 1.0).unwrap();
         key(&mut form, Key::Tab, false);
         form.event(PlatformEvent::Text("value".into())).unwrap();
         form.event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
             .unwrap();
-        form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+        form.update(Size::new(640.0, 400.0), 1.0).unwrap();
         assert_eq!(
-            form.ui.accepted_value(form.editor),
+            form.ui.accepted_value(form.editor()),
             Some(if automatic { "value" } else { "" })
         );
-        assert_eq!(form.ui.is_edit_dirty(form.editor), Some(!automatic));
+        assert_eq!(form.ui.is_edit_dirty(form.editor()), Some(!automatic));
         assert_eq!(form.ime_target(), None);
     }
     let mut form = form();
@@ -460,10 +546,10 @@ fn lost_focus_acceptance_can_be_disabled_and_invalid_value_does_not_trap_focus()
     form.event(PlatformEvent::Text(" ".into())).unwrap();
     form.event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
         .unwrap();
-    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
-    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
     assert_eq!(form.text(), " ");
-    assert!(form.ui.validation_error(form.editor).is_some());
+    assert!(form.ui.validation_error(form.editor()).is_some());
     assert_eq!(form.ime_target(), None);
 }
 
@@ -471,14 +557,14 @@ fn lost_focus_acceptance_can_be_disabled_and_invalid_value_does_not_trap_focus()
 fn validation_status_wraps_and_clips_long_message_and_tracks_live_required_rules() {
     let mut definition = generated::window_definition();
     let message = "Ошибка ".repeat(200);
-    definition.edit_box.validation_message = message.clone();
+    editor_definition(&mut definition).validation_message = message.clone();
     let mut form = Form::new(definition, false).unwrap();
-    form.update(Size::new(320.0, 180.0), 1.0).unwrap();
+    form.update(Size::new(320.0, 400.0), 1.0).unwrap();
     assert!(matches!(
-        form.ui.commit_edit(form.editor).unwrap(),
+        form.ui.commit_edit(form.editor()).unwrap(),
         CommitOutcome::Invalid(_)
     ));
-    form.update(Size::new(320.0, 180.0), 1.0).unwrap();
+    form.update(Size::new(320.0, 400.0), 1.0).unwrap();
     let run = form
         .scene()
         .texts
@@ -492,7 +578,7 @@ fn validation_status_wraps_and_clips_long_message_and_tracks_live_required_rules
     let edit = &tree
         .nodes
         .iter()
-        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .find(|(id, _)| *id == form.accessible.id(form.editor()).unwrap())
         .unwrap()
         .1;
     let error_id = edit.error_message().unwrap();
@@ -506,13 +592,13 @@ fn validation_status_wraps_and_clips_long_message_and_tracks_live_required_rules
         Some(message.as_str())
     );
     form.ui
-        .set_editor_validation(form.editor, EditorValidation::default())
+        .set_editor_validation(form.editor(), EditorValidation::default())
         .unwrap();
     let tree = form.accessibility(1.0);
     let edit = &tree
         .nodes
         .iter()
-        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .find(|(id, _)| *id == form.accessible.id(form.editor()).unwrap())
         .unwrap()
         .1;
     assert!(!edit.is_required());
@@ -528,15 +614,494 @@ fn composition_stays_separate_from_acceptance_and_form_drains_transaction_events
     form.event(PlatformEvent::ImePreedit("語".into(), Some((3, 3))))
         .unwrap();
     assert_eq!(
-        form.ui.commit_edit(form.editor).unwrap(),
+        form.ui.commit_edit(form.editor()).unwrap(),
         CommitOutcome::CompositionActive
     );
-    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
-    assert_eq!(form.ui.validation_error(form.editor), None);
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
+    assert_eq!(form.ui.validation_error(form.editor()), None);
     assert!(form.ui.drain_edit_events().is_empty());
     form.event(PlatformEvent::ImeCommit("語".into())).unwrap();
-    assert_eq!(form.ui.accepted_value(form.editor), Some(""));
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
     key(&mut form, Key::Enter, false);
-    assert_eq!(form.ui.accepted_value(form.editor), Some("draft語"));
+    assert_eq!(form.ui.accepted_value(form.editor()), Some("draft語"));
     assert!(form.ui.drain_edit_events().is_empty());
+}
+
+#[test]
+fn nested_tree_resizes_without_replacing_widgets_and_tab_skips_disabled_subtrees() {
+    let mut form = markup(
+        r#"<StackPanel x:Name="Outer" Spacing="8" Padding="4">
+        <TextBox x:Name="First" />
+        <StackPanel x:Name="Disabled" IsEnabled="False"><Button x:Name="Skip" Content="Skip" /></StackPanel>
+        <StackPanel x:Name="Row" Orientation="Horizontal" Spacing="12">
+            <CheckBox x:Name="Check" Content="Enabled option" />
+            <Button x:Name="Last" Content="A longer button caption" />
+        </StackPanel>
+    </StackPanel>"#,
+    );
+    let first = form.find_name("First").unwrap();
+    let check = form.find_name("Check").unwrap();
+    let last = form.find_name("Last").unwrap();
+    let row = form.find_name("Row").unwrap();
+    assert_eq!(form.ui.runtime.tree().parent(check), Some(row));
+    let check_bounds = form.ui.runtime.bounds(check).unwrap();
+    let last_bounds = form.ui.runtime.bounds(last).unwrap();
+    assert!(check_bounds.width > 40.0 && last_bounds.width > 80.0);
+    assert!((last_bounds.x - check_bounds.x - check_bounds.width - 12.0).abs() < 0.01);
+    for expected in [first, check, last, first] {
+        tab(&mut form, false);
+        assert_eq!(form.ui.runtime.focused(), Some(expected));
+    }
+    for expected in [last, check, first] {
+        tab(&mut form, true);
+        assert_eq!(form.ui.runtime.focused(), Some(expected));
+    }
+    form.event(PlatformEvent::Text("retained".into())).unwrap();
+    form.accessibility(1.0);
+    let accessible_first = form.accessible.id(first);
+    let original_width = form.ui.runtime.bounds(first).unwrap().width;
+    form.update(Size::new(480.0, 360.0), 1.5).unwrap();
+    form.accessibility(1.5);
+    assert_eq!(form.find_name("First"), Some(first));
+    assert_eq!(form.ui.runtime.focused(), Some(first));
+    assert_eq!(form.ui.document(first).unwrap().text(), "retained");
+    assert_eq!(form.accessible.id(first), accessible_first);
+    assert_eq!(
+        form.ui.runtime.bounds(first).unwrap().width,
+        original_width - 160.0
+    );
+    assert_eq!(
+        form.ui.runtime.bounds(last).unwrap().width,
+        last_bounds.width
+    );
+}
+
+#[test]
+fn confirm_command_and_checkbox_use_pointer_keyboard_and_accessible_routes() {
+    let mut form = form();
+    let message = form.editor();
+    let option = form.find_name("Option").unwrap();
+    click(&mut form, "Confirm");
+    assert!(form.ui.validation_error(message).is_some());
+    assert_eq!(form.ui.accepted_value(message), Some(""));
+    click(&mut form, "Message");
+    form.event(PlatformEvent::Text("First".into())).unwrap();
+    click(&mut form, "Confirm");
+    assert_eq!(form.ui.accepted_value(message), Some("First"));
+    assert_eq!(form.ui.validation_error(message), None);
+    assert!(form.ui.commands_mut().drain_invocations().is_empty());
+    click(&mut form, "Option");
+    assert_eq!(form.ui.checked(option), Some(true));
+    assert_eq!(form.ui.is_read_only(message), Some(true));
+    click(&mut form, "Message");
+    form.event(PlatformEvent::Text("blocked".into())).unwrap();
+    assert_eq!(form.text(), "First");
+    tab(&mut form, false);
+    assert_eq!(form.ui.runtime.focused(), Some(option));
+    key(&mut form, Key::Space, false);
+    assert_eq!(form.ui.checked(option), Some(true));
+    form.event(PlatformEvent::Input(InputEvent::KeyUp {
+        key: Key::Space,
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+    assert_eq!(form.ui.checked(option), Some(false));
+    assert_eq!(form.ui.is_read_only(message), Some(false));
+    accessible_action(
+        &mut form,
+        "Message",
+        accesskit::Action::SetValue,
+        Some(accesskit::ActionData::Value("Accessible".into())),
+    );
+    assert_eq!(form.ui.accepted_value(message), Some("First"));
+    accessible_action(&mut form, "Confirm", accesskit::Action::Click, None);
+    assert_eq!(form.ui.accepted_value(message), Some("Accessible"));
+    accessible_action(&mut form, "Option", accesskit::Action::Click, None);
+    assert_eq!(form.ui.checked(option), Some(true));
+}
+
+#[test]
+fn multiple_editors_keep_independent_values_errors_composition_and_accessible_identity() {
+    let mut form = markup(
+        r#"<StackPanel>
+        <TextBox x:Name="A" AutomationName="First editor" IsRequired="True" ValidationMessage="First required" CommitOnLostFocus="False" />
+        <TextBox x:Name="B" AutomationName="Second editor" IsRequired="True" ValidationMessage="Second required" CommitOnLostFocus="False" />
+    </StackPanel>"#,
+    );
+    let a = form.find_name("A").unwrap();
+    let b = form.find_name("B").unwrap();
+    assert_eq!(
+        form.ui.commit_edit(a).unwrap(),
+        CommitOutcome::Invalid("First required".into())
+    );
+    assert_eq!(
+        form.ui.commit_edit(b).unwrap(),
+        CommitOutcome::Invalid("Second required".into())
+    );
+    let tree = form.accessibility(1.0);
+    let a_id = form.accessible.id(a).unwrap();
+    let b_id = form.accessible.id(b).unwrap();
+    let a_node = &tree.nodes.iter().find(|(id, _)| *id == a_id).unwrap().1;
+    let b_node = &tree.nodes.iter().find(|(id, _)| *id == b_id).unwrap().1;
+    assert_ne!(a_node.error_message(), b_node.error_message());
+    for (node, message) in [(a_node, "First required"), (b_node, "Second required")] {
+        assert!(node.is_required());
+        assert_eq!(
+            tree.nodes
+                .iter()
+                .find(|(id, _)| Some(*id) == node.error_message())
+                .unwrap()
+                .1
+                .label(),
+            Some(message)
+        );
+    }
+    accessible_action(&mut form, "A", accesskit::Action::Focus, None);
+    form.event(PlatformEvent::Text("accepted".into())).unwrap();
+    key(&mut form, Key::Enter, false);
+    form.event(PlatformEvent::Text(" draft".into())).unwrap();
+    tab(&mut form, false);
+    assert_eq!(form.ime_target(), Some(b));
+    assert_eq!(form.ui.accepted_value(a), Some("accepted"));
+    assert_eq!(form.ui.document(a).unwrap().text(), "accepted draft");
+    form.event(PlatformEvent::ImePreedit("語".into(), Some((3, 3))))
+        .unwrap();
+    assert_eq!(form.ime_composition_active(), Some(true));
+    assert_eq!(form.ui.document(b).unwrap().text(), "");
+    form.update(Size::new(500.0, 360.0), 2.0).unwrap();
+    assert_eq!(form.ime_target(), Some(b));
+    assert_eq!(form.ime_composition_active(), Some(true));
+    form.event(PlatformEvent::ImeCommit("語".into())).unwrap();
+    key(&mut form, Key::Enter, false);
+    accessible_action(&mut form, "A", accesskit::Action::Focus, None);
+    key(&mut form, Key::Escape, false);
+    assert_eq!(form.ui.document(a).unwrap().text(), "accepted");
+    assert_eq!(form.ui.document(b).unwrap().text(), "語");
+    assert_eq!(form.ui.accepted_value(b), Some("語"));
+    assert!(!form.ui.document(a).unwrap().can_undo());
+    assert!(form.ui.document(b).unwrap().can_undo());
+    let tree = form.accessibility(2.0);
+    assert_eq!(form.accessible.id(a), Some(a_id));
+    assert_eq!(form.accessible.id(b), Some(b_id));
+    assert_eq!(tree.focus, a_id);
+    assert_eq!(form.ime_target(), Some(a));
+}
+
+#[test]
+fn accessibility_preserves_hierarchy_and_names_without_changing_visible_content() {
+    let mut form = markup(
+        r#"<StackPanel x:Name="Container" AutomationName="Form group">
+        <TextBlock x:Name="Caption" Text="Visible title" AutomationName="Spoken title" />
+        <StackPanel x:Name="Inactive" IsEnabled="False">
+            <Button x:Name="Button" Content="Visible button" AutomationName="Spoken button" />
+            <CheckBox x:Name="Check" Content="Visible check" AutomationName="Spoken check" IsChecked="True" />
+            <TextBox x:Name="Read" Text="Data" IsReadOnly="True" />
+        </StackPanel>
+    </StackPanel>"#,
+    );
+    let tree = form.accessibility(1.5);
+    let inactive = form.find_name("Inactive").unwrap();
+    let inactive_id = form.accessible.id(inactive).unwrap();
+    let parent = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == inactive_id)
+        .unwrap()
+        .1;
+    for name in ["Button", "Check", "Read"] {
+        let widget = form.find_name(name).unwrap();
+        let id = form.accessible.id(widget).unwrap();
+        assert!(parent.children().contains(&id));
+        let node = &tree
+            .nodes
+            .iter()
+            .find(|(node_id, _)| *node_id == id)
+            .unwrap()
+            .1;
+        assert!(node.is_disabled());
+        assert!(!node.supports_action(accesskit::Action::Focus));
+        assert!(!node.supports_action(accesskit::Action::Click));
+        assert!(!node.supports_action(accesskit::Action::SetValue));
+    }
+    let check = form.find_name("Check").unwrap();
+    let check_node = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| Some(*id) == form.accessible.id(check))
+        .unwrap()
+        .1;
+    assert_eq!(check_node.label(), Some("Spoken check"));
+    assert_eq!(check_node.toggled(), Some(accesskit::Toggled::True));
+    for visible in ["Visible title", "Visible button", "Visible check"] {
+        assert!(form.scene().texts.iter().any(|run| run.text == visible));
+    }
+    accessible_action(&mut form, "Check", accesskit::Action::Click, None);
+    assert_eq!(form.ui.checked(check), Some(true));
+    form.ui.set_enabled(inactive, true).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    accessible_action(&mut form, "Check", accesskit::Action::Click, None);
+    assert_eq!(form.ui.checked(check), Some(false));
+}
+
+#[test]
+fn legacy_single_editor_and_forms_without_editors_mount_without_injected_elements() {
+    let legacy = markup(r#"<TextBox x:Name="Legacy" Text="Original" />"#);
+    let editor = legacy.find_name("Legacy").unwrap();
+    let bounds = legacy.ui.runtime.bounds(editor).unwrap();
+    assert_eq!(
+        (bounds.x, bounds.y, bounds.width, bounds.height),
+        (32.0, 32.0, 576.0, 36.0)
+    );
+    assert_eq!(legacy.ui.document(editor).unwrap().text(), "Original");
+    assert_eq!(legacy.view.names.len(), 1);
+    let mut empty = markup(
+        r#"<StackPanel><TextBlock x:Name="Status" Text="Application text" /><Button x:Name="Plain" Content="Action" /></StackPanel>"#,
+    );
+    assert!(empty.view.editors.is_empty());
+    assert_eq!(empty.ime_target(), None);
+    assert_eq!(empty.wake_after(), None);
+    assert!(
+        empty
+            .scene()
+            .texts
+            .iter()
+            .any(|run| run.text == "Application text")
+    );
+    tab(&mut empty, false);
+    assert_eq!(empty.ui.runtime.focused(), empty.find_name("Plain"));
+    key(&mut empty, Key::Enter, false);
+    assert_eq!(empty.ime_target(), None);
+}
+
+#[test]
+fn command_registration_is_explicit_and_generic_view_preserves_registry_behavior() {
+    use crate::view::MountedView;
+    use rust_desktop_ui_controls::Controls;
+    let definition = rust_desktop_ui_xaml::parse(r#"<Window xmlns="urn:rust-ui-engine:ui"><Button Command="Save" Content="Save document" /></Window>"#).unwrap();
+    assert!(
+        matches!(Form::new(definition.clone(), false), Err(error) if error.contains("Unregistered XAML command 'Save'"))
+    );
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    ui.commands_mut().register("Save", "Registered label");
+    let view = MountedView::mount(&mut ui, root, &definition.content).unwrap();
+    assert!(view.editors.is_empty());
+    ui.update(Size::new(640.0, 400.0)).unwrap();
+    let button = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.role == rust_desktop_ui_controls::Role::Button)
+        .unwrap()
+        .id;
+    ui.activate(button).unwrap();
+    assert_eq!(ui.commands_mut().drain_invocations()[0].id.0, "Save");
+    ui.commands_mut().set_enabled(&"Save".into(), false);
+    ui.update(Size::new(640.0, 400.0)).unwrap();
+    ui.activate(button).unwrap();
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+    let definition = rust_desktop_ui_xaml::parse(
+        r#"<Window xmlns="urn:rust-ui-engine:ui"><Button Command="Confirm" /></Window>"#,
+    )
+    .unwrap();
+    assert!(
+        matches!(Form::new(definition, false), Err(error) if error.contains("requires a TextBox named Message"))
+    );
+}
+
+#[test]
+fn programmatic_tree_rejects_duplicate_names_and_excessive_depth_before_mount() {
+    use rust_desktop_ui_xaml::{
+        ElementDefinition, ElementKind, StackPanelDefinition, WindowDefinition,
+    };
+    let mut leaf = ElementDefinition::default();
+    leaf.common.name = Some("Duplicate".into());
+    let definition = WindowDefinition {
+        content: ElementDefinition {
+            kind: ElementKind::StackPanel(StackPanelDefinition {
+                children: vec![leaf.clone(), leaf],
+                ..Default::default()
+            }),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    assert!(
+        matches!(Form::new(definition, false), Err(error) if error.contains("Duplicate XAML name"))
+    );
+    let mut content = ElementDefinition::default();
+    for _ in 0..rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH {
+        content = ElementDefinition {
+            kind: ElementKind::StackPanel(StackPanelDefinition {
+                children: vec![content],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+    }
+    assert!(
+        matches!(Form::new(WindowDefinition { content, ..Default::default() }, false), Err(error) if error.contains("depth limit"))
+    );
+    let content = ElementDefinition {
+        kind: ElementKind::StackPanel(StackPanelDefinition {
+            children: vec![ElementDefinition::default(); rust_desktop_ui_xaml::MAX_ELEMENTS],
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    assert!(
+        matches!(Form::new(WindowDefinition { content, ..Default::default() }, false), Err(error) if error.contains("element count"))
+    );
+}
+
+#[test]
+fn initial_readonly_requests_are_reflected_in_both_controls_and_demo_names_are_typed() {
+    for (read_only, checked) in [(false, false), (true, false), (false, true), (true, true)] {
+        let mut form = markup(&format!(
+            r#"<StackPanel><TextBox x:Name="Message" IsReadOnly="{read_only}" /><CheckBox x:Name="Option" IsChecked="{checked}" /></StackPanel>"#
+        ));
+        assert_eq!(
+            form.ui.is_read_only(form.editor()),
+            Some(read_only || checked)
+        );
+        let option = form.find_name("Option").unwrap();
+        assert_eq!(form.ui.checked(option), Some(read_only || checked));
+        click(&mut form, "Option");
+        assert_eq!(
+            form.ui.is_read_only(form.editor()),
+            Some(!(read_only || checked))
+        );
+    }
+    for (name, element) in [
+        ("Status", "Button"),
+        ("Help", "TextBox"),
+        ("Option", "TextBlock"),
+        ("Message", "CheckBox"),
+        ("Confirm", "StackPanel"),
+    ] {
+        let definition = rust_desktop_ui_xaml::parse(&format!(r#"<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><{element} x:Name="{name}" /></Window>"#)).unwrap();
+        assert!(
+            matches!(Form::new(definition, false), Err(error) if error.contains("example name") && error.contains(name))
+        );
+    }
+}
+
+#[test]
+fn accessibility_ids_survive_hide_show_and_removed_targets_never_alias_replacements() {
+    fn visible(form: &mut Form, widget: rust_desktop_ui_core::WidgetId, visible: bool) {
+        let mut props = form.ui.runtime.tree().node(widget).unwrap().props.clone();
+        props.visible = visible;
+        form.ui
+            .runtime
+            .apply(Mutation::SetProps {
+                node: widget,
+                props,
+            })
+            .unwrap();
+        form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    }
+    let mut form = form();
+    let message = form.editor();
+    let help = form.find_name("Help").unwrap();
+    form.ui.commit_edit(message).unwrap();
+    let tree = form.accessibility(1.0);
+    let message_id = form.accessible.id(message).unwrap();
+    let help_id = form.accessible.id(help).unwrap();
+    let node = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == message_id)
+        .unwrap()
+        .1;
+    let error_id = node.error_message().unwrap();
+    assert_eq!(node.described_by(), &[help_id]);
+    visible(&mut form, message, false);
+    visible(&mut form, help, false);
+    let tree = form.accessibility(1.0);
+    assert!(
+        !tree
+            .nodes
+            .iter()
+            .any(|(id, _)| [message_id, help_id, error_id].contains(id))
+    );
+    assert_eq!(form.accessible.id(message), Some(message_id));
+    visible(&mut form, message, true);
+    let tree = form.accessibility(1.0);
+    let node = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == message_id)
+        .unwrap()
+        .1;
+    assert!(node.described_by().is_empty());
+    assert_eq!(node.error_message(), Some(error_id));
+    form.ui.remove(message).unwrap();
+    let replacement = form
+        .ui
+        .edit_box(
+            form.ui.root(),
+            "Replacement",
+            "safe",
+            rust_desktop_ui_core::LayoutStyle::default(),
+        )
+        .unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    let tree = form.accessibility(1.0);
+    assert_eq!(form.accessible.id(message), None);
+    assert_ne!(form.accessible.id(replacement), Some(message_id));
+    assert!(!tree.nodes.iter().any(|(id, _)| *id == error_id));
+    form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
+        action: accesskit::Action::SetValue,
+        target_tree: accesskit::TreeId::ROOT,
+        target_node: message_id,
+        data: Some(accesskit::ActionData::Value("stale".into())),
+    }))
+    .unwrap();
+    assert_eq!(form.ui.document(replacement).unwrap().text(), "safe");
+}
+
+#[test]
+fn xaml_layout_panels_leave_the_canvas_visible_behind_rounded_editors_in_both_themes() {
+    let mut form = form();
+    let editor = form.editor();
+    let container = form.find_name("Form").unwrap();
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        form.ui.set_theme(theme).unwrap();
+        for enabled in [true, false, true] {
+            form.ui.set_enabled(container, enabled).unwrap();
+            form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+            for (&widget, &role) in &form.view.roles {
+                if role == rust_desktop_ui_controls::Role::Panel {
+                    assert_eq!(
+                        form.ui.runtime.tree().node(widget).unwrap().props.paint,
+                        rust_desktop_ui_core::Paint::default()
+                    );
+                }
+            }
+            let bounds = form.ui.runtime.bounds(editor).unwrap();
+            let corner = rust_desktop_ui_core::Point::new(bounds.x + 0.25, bounds.y + 0.25);
+            let background = form
+                .scene()
+                .rectangles
+                .iter()
+                .rev()
+                .find(|rect| rect.bounds.contains(corner.x, corner.y))
+                .unwrap();
+            assert_eq!(background.color, theme.tokens().canvas);
+            let editor_fill = form
+                .scene()
+                .rounded_rectangles
+                .iter()
+                .find(|rect| rect.bounds == bounds && rect.stroke_width.is_none())
+                .unwrap();
+            assert!(editor_fill.radius >= 4.0);
+            assert_eq!(
+                editor_fill.color,
+                if enabled {
+                    theme.tokens().surface
+                } else {
+                    theme.tokens().canvas
+                }
+            );
+        }
+    }
 }
