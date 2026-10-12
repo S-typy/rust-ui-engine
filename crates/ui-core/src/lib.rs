@@ -93,14 +93,16 @@ pub struct SolidRect {
     pub color: Color,
 }
 
-/// A uniformly rounded fill with a rectangular ancestor clip, in logical pixels.
-/// The clip never changes the original corner geometry. This is not a rounded
-/// clip for descendants; compose nested fills to draw borders and focus states.
+/// A uniformly rounded fill or inset stroke with a rectangular ancestor clip,
+/// in logical pixels. The clip never changes the original corner geometry and
+/// does not provide a rounded clip for descendants.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoundedRect {
     pub bounds: Rect,
     pub clip: Rect,
     pub radius: f32,
+    /// `None` fills the shape; `Some(width)` draws only its inset border ring.
+    pub stroke_width: Option<f32>,
     pub color: Color,
 }
 
@@ -111,6 +113,11 @@ impl RoundedRect {
             && self.radius.is_finite()
             && self.radius >= 0.0
             && self.radius <= self.bounds.width.min(self.bounds.height) * 0.5
+            && self.stroke_width.is_none_or(|width| {
+                width.is_finite()
+                    && width >= 0.0
+                    && width <= self.bounds.width.min(self.bounds.height) * 0.5
+            })
             && [self.color.r, self.color.g, self.color.b, self.color.a]
                 .into_iter()
                 .all(|channel| channel.is_finite() && (0.0..=1.0).contains(&channel))
@@ -137,6 +144,37 @@ impl Scene {
             bounds,
             clip,
             radius: radius.min(bounds.width.min(bounds.height) * 0.5),
+            stroke_width: None,
+            color,
+        };
+        if rectangle.is_valid() && bounds.intersection(clip).is_some() {
+            self.commands
+                .push(DrawCommand::RoundedRectangle(self.rounded_rectangles.len()));
+            self.rounded_rectangles.push(rectangle);
+        }
+    }
+
+    /// Add an antialiased inset rounded border without painting its interior.
+    /// Radius and width are clamped to half the smaller dimension. Zero width,
+    /// negative/non-finite metrics, invalid colors/geometry and fully clipped
+    /// strokes are ignored. Backgrounds may be composed separately below it.
+    pub fn rounded_stroke(
+        &mut self,
+        bounds: Rect,
+        clip: Rect,
+        radius: f32,
+        width: f32,
+        color: Color,
+    ) {
+        if !radius.is_finite() || radius < 0.0 || !width.is_finite() || width <= 0.0 {
+            return;
+        }
+        let maximum = bounds.width.min(bounds.height) * 0.5;
+        let rectangle = RoundedRect {
+            bounds,
+            clip,
+            radius: radius.min(maximum),
+            stroke_width: Some(width.min(maximum)),
             color,
         };
         if rectangle.is_valid() && bounds.intersection(clip).is_some() {
@@ -310,5 +348,67 @@ mod tests {
         );
         assert!(scene.rounded_rectangles.is_empty());
         assert!(scene.commands().is_empty());
+    }
+
+    #[test]
+    fn rounded_strokes_keep_clip_order_and_clamp_to_shape() {
+        let bounds = Rect::new(4.0, 8.0, 100.0, 40.0);
+        let clip = Rect::new(10.0, 10.0, 40.0, 40.0);
+        let color = Color::rgb(80, 90, 100);
+        let mut scene = Scene::default();
+        scene.rounded_fill(bounds, clip, 8.0, color);
+        scene.rounded_stroke(bounds, clip, 8.0, 2.0, color);
+        scene.text(TextRun::new("Caption", bounds, color, 14.0));
+        let mut overlay = Scene::default();
+        overlay.rounded_stroke(bounds, bounds, 1000.0, 1000.0, color);
+        scene.append(&overlay);
+        assert_eq!(scene.rounded_rectangles[0].stroke_width, None);
+        assert_eq!(scene.rounded_rectangles[1].stroke_width, Some(2.0));
+        assert_eq!(scene.rounded_rectangles[1].bounds, bounds);
+        assert_eq!(scene.rounded_rectangles[1].clip, clip);
+        assert_eq!(scene.rounded_rectangles[2].stroke_width, Some(20.0));
+        assert_eq!(scene.rounded_rectangles[2].radius, 20.0);
+        assert_eq!(
+            scene.commands(),
+            [
+                DrawCommand::RoundedRectangle(0),
+                DrawCommand::RoundedRectangle(1),
+                DrawCommand::Text(0),
+                DrawCommand::RoundedRectangle(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn rounded_strokes_reject_invalid_or_empty_width_and_corrupted_metrics() {
+        let bounds = Rect::new(0.0, 0.0, 30.0, 20.0);
+        let mut scene = Scene::default();
+        for width in [0.0, -1.0, f32::NAN, f32::INFINITY] {
+            scene.rounded_stroke(bounds, bounds, 4.0, width, Color::rgb(0, 0, 0));
+        }
+        scene.rounded_stroke(bounds, bounds, f32::NAN, 1.0, Color::rgb(0, 0, 0));
+        scene.rounded_stroke(
+            bounds,
+            Rect::new(40.0, 0.0, 10.0, 10.0),
+            4.0,
+            1.0,
+            Color::rgb(0, 0, 0),
+        );
+        scene.rounded_stroke(
+            Rect::new(0.0, 0.0, 0.0, 10.0),
+            bounds,
+            4.0,
+            1.0,
+            Color::rgb(0, 0, 0),
+        );
+        assert!(scene.commands().is_empty());
+        scene.rounded_stroke(bounds, bounds, 4.0, 1.0, Color::rgb(0, 0, 0));
+        let mut rectangle = scene.rounded_rectangles[0];
+        for width in [-1.0, 11.0, f32::NAN, f32::INFINITY] {
+            rectangle.stroke_width = Some(width);
+            assert!(!rectangle.is_valid());
+        }
+        rectangle.stroke_width = Some(0.0);
+        assert!(rectangle.is_valid());
     }
 }

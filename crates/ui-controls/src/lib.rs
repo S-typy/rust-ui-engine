@@ -2,11 +2,13 @@
 
 mod commands;
 mod controls;
+mod editor;
 mod ribbon;
 mod theme;
 
 pub use commands::*;
 pub use controls::*;
+pub use editor::*;
 pub use ribbon::*;
 pub use theme::*;
 

@@ -1,5 +1,6 @@
 use crate::{form::Form, generated};
-use rust_desktop_ui_core::{InputEvent, Key, Modifiers, Mutation, Size};
+use rust_desktop_ui_controls::{EditBoxStyle, EditorSettings, Theme};
+use rust_desktop_ui_core::{Color, Edges, InputEvent, Key, Modifiers, Mutation, Size};
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent, accesskit};
 
 fn form() -> Form {
@@ -37,6 +38,19 @@ fn compiled_markup_matches_source_and_mounts_named_editbox() {
     assert_eq!(form.text(), "");
     assert_eq!(form.ui.is_read_only(form.editor), Some(false));
     assert_eq!(form.ui.max_length(form.editor), Some(Some(64)));
+    let style = form.ui.edit_box_style(form.editor).unwrap();
+    assert_eq!(style.font_size, Some(14.0));
+    assert_eq!(
+        style.padding,
+        Some(Edges {
+            left: 12.0,
+            top: 5.0,
+            right: 12.0,
+            bottom: 5.0
+        })
+    );
+    assert_eq!(style.corner_radius, Some(4.0));
+    assert_eq!(style.border_width, Some(1.0));
     assert!(
         form.scene()
             .texts
@@ -45,6 +59,111 @@ fn compiled_markup_matches_source_and_mounts_named_editbox() {
     );
     form.update(Size::new(360.0, 220.0), 2.0).unwrap();
     assert_eq!(form.ui.runtime.bounds(form.editor).unwrap().width, 296.0);
+}
+
+#[test]
+fn xaml_style_mounts_metrics_and_rgba_colors_and_preserves_them_across_theme_changes() {
+    let definition = rust_desktop_ui_xaml::parse(
+        r##"<Window xmlns="urn:rust-ui-engine:ui">
+            <TextBox Text="Styled" FontSize="20" Padding="7,3,11,4" CornerRadius="6" BorderThickness="2"
+                Background="#112233" Foreground="#445566" BorderBrush="#778899" FocusBrush="#AABBCC"
+                PlaceholderForeground="#FF123456" SelectionBrush="#80336699" />
+        </Window>"##,
+    ).unwrap();
+    let mut form = Form::new(definition, false).unwrap();
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    let style = *form.ui.edit_box_style(form.editor).unwrap();
+    assert_eq!(style.font_size, Some(20.0));
+    assert_eq!(
+        style.padding,
+        Some(Edges {
+            left: 7.0,
+            top: 3.0,
+            right: 11.0,
+            bottom: 4.0
+        })
+    );
+    assert_eq!(style.corner_radius, Some(6.0));
+    assert_eq!(style.border_width, Some(2.0));
+    assert_eq!(style.normal.background, Some(Color::rgb(17, 34, 51)));
+    assert_eq!(style.normal.foreground, Some(Color::rgb(68, 85, 102)));
+    assert_eq!(style.normal.border, Some(Color::rgb(119, 136, 153)));
+    assert_eq!(style.normal.accent, Some(Color::rgb(170, 187, 204)));
+    assert_eq!(style.normal.placeholder, Some(Color::rgb(18, 52, 86)));
+    assert_eq!(
+        style.normal.selection,
+        Some(Color {
+            r: 51.0 / 255.0,
+            g: 102.0 / 255.0,
+            b: 153.0 / 255.0,
+            a: 128.0 / 255.0
+        })
+    );
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        form.ui.set_theme(theme).unwrap();
+        form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+        let text = form
+            .scene()
+            .texts
+            .iter()
+            .find(|text| text.text == "Styled")
+            .unwrap();
+        assert_eq!(text.font_size, 20.0);
+        assert_eq!(text.color, Color::rgb(68, 85, 102));
+        assert_eq!(form.ui.edit_box_style(form.editor), Some(&style));
+        assert_eq!(form.text(), "Styled");
+    }
+    assert!(form.ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn omitted_style_uses_live_theme_and_accessibility_uses_current_editor_settings() {
+    let mut definition = rust_desktop_ui_xaml::WindowDefinition::default();
+    definition.edit_box.placeholder = "Initial hint".into();
+    let mut form = Form::new(definition, false).unwrap();
+    assert_eq!(
+        form.ui.edit_box_style(form.editor),
+        Some(&EditBoxStyle::default())
+    );
+    form.ui
+        .set_editor_settings(
+            form.editor,
+            EditorSettings {
+                placeholder: "Updated hint".into(),
+                is_read_only: true,
+                max_length: Some(8),
+            },
+        )
+        .unwrap();
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    let light_color = form
+        .scene()
+        .texts
+        .iter()
+        .find(|text| text.text == "Updated hint")
+        .unwrap()
+        .color;
+    form.ui.set_theme(Theme::FluentDark).unwrap();
+    form.update(Size::new(640.0, 280.0), 1.0).unwrap();
+    let dark_color = form
+        .scene()
+        .texts
+        .iter()
+        .find(|text| text.text == "Updated hint")
+        .unwrap()
+        .color;
+    assert_ne!(light_color, dark_color);
+    let tree = form.accessibility(1.0);
+    let node = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| *id == accesskit::NodeId(2))
+        .unwrap()
+        .1;
+    assert_eq!(node.description(), Some("Updated hint"));
+    assert!(node.is_read_only());
+    assert_eq!(form.ui.max_length(form.editor), Some(Some(8)));
+    assert!(form.ui.drain_text_changes().is_empty());
 }
 
 #[test]

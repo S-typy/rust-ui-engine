@@ -167,6 +167,53 @@ control и ancestor clips. Вертикальный offset удерживает 
 multiline редактора. Rich text, password masking, spellcheck и программируемые
 editing transactions не входят в текущий TextBox.
 
+## Настройки и оформление редактора
+
+`EditorSettings { is_read_only, max_length, placeholder }` можно повторно
+использовать для нескольких редакторов. `set_editor_settings(id, settings)`
+сначала проверяет текущий committed текст по новому лимиту и размер placeholder
+(не более 1 MiB UTF-8), затем применяет весь набор. При ошибке прежние настройки,
+текст, composition, selection и undo/redo остаются прежними. Успешный переход
+в read-only отменяет preedit. Настройки не создают `TextChanged`.
+`editor_settings(id)` возвращает текущий набор; прежние `set_read_only`,
+`set_max_length` и `set_placeholder` используют тот же путь применения.
+
+`set_edit_box_style(id, EditBoxStyle)` задаёт независимые от поведения overrides.
+`EditBoxStyle::default()` снимает их, возвращая актуальную тему. `font_size`
+принимает конечное значение `(0, 512]`; `padding`, `corner_radius` и `border_width`
+— конечные значения `[0, 16384]` в логических пикселях. Padding задаёт отступы
+от внешних границ контрола; чрезмерные отступы скрывают текст, не создавая
+отрицательной геометрии. Радиус и толщина рамки ограничиваются фактическим размером
+поля. Нулевые радиус, рамка и padding допустимы. На не-Fluent теме фокус выделяет
+рамку accent-цветом и толщиной не менее 2 px, сохраняя более толстую заданную рамку.
+
+`normal`, `hovered`, `focused`, `read_only`, `disabled` имеют тип
+`EditBoxAppearance`: необязательные background, foreground, placeholder, border,
+accent и selection. Цвета — straight-alpha sRGB RGBA, каждый канал конечный `[0, 1]`.
+Accent используется для индикации фокуса, каретки и IME underline. Скруглённая рамка
+рисуется отдельным кольцом поверх полного фона: её alpha смешивается с фоном,
+но цвет рамки не заполняет прозрачную центральную часть поля.
+
+Палитра вычисляется последовательно: обычная тема → `normal` overrides →
+подстановки темы для состояния → overrides этого состояния. Hover заменяет фон
+на theme hover; read-only — на canvas; disabled — фон на canvas, текст и placeholder
+на muted. Чтобы переопределить эти цвета, задайте соответствующий state appearance.
+Остальные явно заданные цвета сохраняются при переключении состояния и темы.
+
+`edit_box_visual_state(id)` возвращает Normal, Hovered, Focused, ReadOnly,
+ReadOnlyFocused или Disabled. Disabled имеет высший приоритет и учитывает ancestors.
+Readonly подавляет hover; ReadOnlyFocused использует палитру `read_only` с видимой
+индикацией фокуса, без применения `focused`. У редактируемого поля Focused имеет
+приоритет над Hovered. Отключённое поле не рисует каретку или выделение.
+
+Стиль не пересоздаёт control/document, не сбрасывает историю, selection или
+composition и не создаёт `TextChanged`. Шрифт и padding применяются к общему
+PreparedText для рисования, прокрутки, hit-testing и каретки. Изменение стиля
+обновляет сцену, не меняя внешние размеры LayoutStyle; высоту поля задаёт приложение.
+Размеры контента не гарантируют, что любой текст поместится в эту высоту.
+Общие renderer/text budgets остаются в силе. Маски, бизнес-валидация и
+editing transactions остаются отдельными возможностями.
+
 ## Темы и семантика
 
 Light, Dark, Compact, FluentLight и FluentDark задают собственные `ThemeTokens`:

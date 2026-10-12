@@ -30,6 +30,7 @@ struct VertexOut {
     @location(0) color: vec4<f32>,
     @location(1) @interpolate(flat) shape: vec4<f32>,
     @location(2) @interpolate(flat) radius: f32,
+    @location(3) @interpolate(flat) stroke_width: f32,
 };
 
 @vertex
@@ -39,6 +40,7 @@ fn vs_main(
     @location(1) color: vec4<f32>,
     @location(2) shape: vec4<f32>,
     @location(3) radius: f32,
+    @location(4) stroke_width: f32,
 ) -> VertexOut {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 0.0), vec2<f32>(0.0, 1.0),
@@ -55,24 +57,39 @@ fn vs_main(
     out.color = color;
     out.shape = shape;
     out.radius = radius;
+    out.stroke_width = stroke_width;
     return out;
+}
+
+fn rounded_coverage(position: vec2<f32>, shape: vec4<f32>, radius: f32) -> f32 {
+    let q = abs(position - shape.xy) - shape.zw + vec2(radius);
+    let positive = max(q, vec2(0.0));
+    // Scale before taking length and clamp before rescaling. This avoids both
+    // squared-distance and final-distance overflow for very large valid shapes.
+    let unit = max(max(positive.x, positive.y), max(radius, 1.0));
+    let normalized = length(positive / unit)
+        + min(max(q.x, q.y), 0.0) / unit - radius / unit;
+    let distance = clamp(normalized, -1.0 / unit, 1.0 / unit) * unit;
+    return clamp(0.5 - distance, 0.0, 1.0);
 }
 
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
-    // A negative radius marks an ordinary rectangle. Rounded fills retain
-    // their original center/half-size even when the raster quad is clipped.
+    // Negative radius marks an ordinary rectangle; negative stroke width is a
+    // rounded fill. Clipping the raster quad never changes the original shape.
     if input.radius < 0.0 {
         return input.color;
     }
-    let q = abs(input.position.xy - input.shape.xy) - input.shape.zw
-        + vec2(input.radius);
-    // Normalize length to avoid squared-distance overflow for finite but
-    // very large coordinates. One physical pixel provides corner coverage.
-    let unit = max(input.radius, 1.0);
-    let distance = length(max(q, vec2(0.0)) / unit) * unit
-        + min(max(q.x, q.y), 0.0) - input.radius;
-    let coverage = clamp(0.5 - distance, 0.0, 1.0);
+    var coverage = rounded_coverage(input.position.xy, input.shape, input.radius);
+    if input.stroke_width >= 0.0 {
+        let inner_half = max(input.shape.zw - vec2(input.stroke_width), vec2(0.0));
+        // A stroke consuming the smaller dimension has no interior hole.
+        if min(inner_half.x, inner_half.y) > 0.0 {
+            let inner = rounded_coverage(input.position.xy,
+                vec4(input.shape.xy, inner_half), max(input.radius - input.stroke_width, 0.0));
+            coverage = max(coverage - inner, 0.0);
+        }
+    }
     return vec4(input.color.rgb, input.color.a * coverage);
 }
 "#;
@@ -84,6 +101,80 @@ struct RectInstance {
     rgba: [f32; 4],
     shape: [f32; 4],
     radius: f32,
+    stroke_width: f32,
+}
+
+fn rectangle_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    viewport_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("ui-rectangles"),
+        source: wgpu::ShaderSource::Wgsl(RECT_SHADER.into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("ui-render-layout"),
+        bind_group_layouts: &[Some(viewport_layout)],
+        immediate_size: 0,
+    });
+    const RECT_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 0,
+            shader_location: 0,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 16,
+            shader_location: 1,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32x4,
+            offset: 32,
+            shader_location: 2,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32,
+            offset: 48,
+            shader_location: 3,
+        },
+        wgpu::VertexAttribute {
+            format: wgpu::VertexFormat::Float32,
+            offset: 52,
+            shader_location: 4,
+        },
+    ];
+    let rect_vertex_layout = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<RectInstance>() as u64,
+        step_mode: wgpu::VertexStepMode::Instance,
+        attributes: &RECT_ATTRIBUTES,
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("ui-rectangles-pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[Some(rect_vertex_layout)],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 fn srgb_to_linear(channel: f32) -> f32 {
@@ -311,6 +402,7 @@ fn rounded_instance(rectangle: &RoundedRect, scale: f32, viewport: Rect) -> Rect
             bounds.height * 0.5,
         ],
         radius: rectangle.radius * scale,
+        stroke_width: rectangle.stroke_width.map_or(-1.0, |width| width * scale),
     }
 }
 
@@ -365,6 +457,9 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
             || physical_rect(rectangle.bounds, scale).is_none()
             || physical_rect(rectangle.clip, scale).is_none()
             || !(rectangle.radius * scale).is_finite()
+            || rectangle
+                .stroke_width
+                .is_some_and(|width| !(width * scale).is_finite())
         {
             return Err(GpuError::InvalidScene);
         }
@@ -534,10 +629,6 @@ impl GpuRenderer {
         config.format = srgb_surface_format(&surface.get_capabilities(&adapter).formats)?;
         config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
         // Configuration is deferred until a nonzero frame; minimized windows stay parked.
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("ui-rectangles"),
-            source: wgpu::ShaderSource::Wgsl(RECT_SHADER.into()),
-        });
         let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ui-viewport"),
             contents: bytemuck::bytes_of(&ViewportUniform {
@@ -567,63 +658,7 @@ impl GpuRenderer {
                 resource: viewport_buffer.as_entire_binding(),
             }],
         });
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("ui-render-layout"),
-            bind_group_layouts: &[Some(&viewport_layout)],
-            immediate_size: 0,
-        });
-        const RECT_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: 0,
-                shader_location: 0,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: 16,
-                shader_location: 1,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32x4,
-                offset: 32,
-                shader_location: 2,
-            },
-            wgpu::VertexAttribute {
-                format: wgpu::VertexFormat::Float32,
-                offset: 48,
-                shader_location: 3,
-            },
-        ];
-        let rect_vertex_layout = wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<RectInstance>() as u64,
-            step_mode: wgpu::VertexStepMode::Instance,
-            attributes: &RECT_ATTRIBUTES,
-        };
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("ui-rectangles-pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_main"),
-                compilation_options: Default::default(),
-                buffers: &[Some(rect_vertex_layout)],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_main"),
-                compilation_options: Default::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let pipeline = rectangle_pipeline(&device, config.format, &viewport_layout);
         let rectangles_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("ui-batched-rectangles"),
             size: (MAX_RECTANGLES * std::mem::size_of::<RectInstance>()) as u64,
@@ -758,6 +793,7 @@ impl GpuRenderer {
                     rgba: linear_rgba(r.color),
                     shape: [0.0; 4],
                     radius: -1.0,
+                    stroke_width: -1.0,
                 }
             })
             .collect();
@@ -899,15 +935,330 @@ mod tests {
             bounds: Rect::new(10.0, 20.0, 100.0, 40.0),
             clip: Rect::new(30.0, 10.0, 100.0, 100.0),
             radius: 4.0,
+            stroke_width: None,
             color: Color::rgb(128, 64, 32),
         };
         let instance = rounded_instance(&rectangle, 1.5, Rect::new(0.0, 0.0, 120.0, 80.0));
         assert_eq!(instance.position_size, [45.0, 29.5, 75.0, 50.5]);
         assert_eq!(instance.shape, [90.0, 60.0, 75.0, 30.0]);
         assert_eq!(instance.radius, 6.0);
+        assert_eq!(instance.stroke_width, -1.0);
         assert_eq!(instance.rgba, linear_rgba(rectangle.color));
         let hidden = rounded_instance(&rectangle, 1.5, Rect::new(0.0, 0.0, 5.0, 5.0));
         assert_eq!(hidden.position_size, [0.0; 4]);
+    }
+
+    #[test]
+    fn rounded_stroke_scales_without_changing_clipped_shape() {
+        let bounds = Rect::new(10.0, 20.0, 100.0, 40.0);
+        let clip = Rect::new(30.0, 10.0, 100.0, 100.0);
+        let mut scene = Scene::default();
+        scene.rounded_stroke(bounds, clip, 8.0, 2.0, Color::rgb(80, 90, 100));
+        check_scene(&scene, 1.5).unwrap();
+        let instance = rounded_instance(
+            &scene.rounded_rectangles[0],
+            1.5,
+            Rect::new(0.0, 0.0, 120.0, 80.0),
+        );
+        assert_eq!(instance.position_size, [45.0, 29.5, 75.0, 50.5]);
+        assert_eq!(instance.shape, [90.0, 60.0, 75.0, 30.0]);
+        assert_eq!(instance.radius, 12.0);
+        assert_eq!(instance.stroke_width, 3.0);
+        for width in [-1.0, 21.0, f32::NAN, f32::INFINITY] {
+            let mut broken = scene.clone();
+            broken.rounded_rectangles[0].stroke_width = Some(width);
+            assert!(matches!(
+                check_scene(&broken, 1.5),
+                Err(GpuError::InvalidScene)
+            ));
+        }
+    }
+
+    /// Run with WGPU_BACKEND=dx12 or vulkan. This validates the production
+    /// shader, vertex attributes, alpha blend, clipping and GPU texture output.
+    #[test]
+    #[ignore = "requires a native hardware GPU"]
+    fn rounded_stroke_gpu_preserves_transparent_interiors_and_clipped_edges() {
+        fn block_on<F: std::future::Future>(future: F) -> F::Output {
+            struct WakeThread(std::thread::Thread);
+            impl std::task::Wake for WakeThread {
+                fn wake(self: Arc<Self>) {
+                    self.0.unpark();
+                }
+            }
+            let waker = std::task::Waker::from(Arc::new(WakeThread(std::thread::current())));
+            let mut context = std::task::Context::from_waker(&waker);
+            let mut future = std::pin::pin!(future);
+            let started = std::time::Instant::now();
+            loop {
+                if let std::task::Poll::Ready(result) = future.as_mut().poll(&mut context) {
+                    return result;
+                }
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(30),
+                    "GPU initialization timed out"
+                );
+                std::thread::park_timeout(std::time::Duration::from_millis(100));
+            }
+        }
+        let instance =
+            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            force_fallback_adapter: false,
+            ..Default::default()
+        }))
+        .expect("hardware adapter");
+        let info = adapter.get_info();
+        check_adapter(info.device_type, info.backend, &info.name).unwrap();
+        println!(
+            "rounded-stroke hardware: {} {:?} {:?}",
+            info.name, info.backend, info.device_type
+        );
+        let (device, queue) =
+            block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
+        let dimensions = [128_u32, 64_u32];
+        let viewport = Rect::new(0.0, 0.0, dimensions[0] as f32, dimensions[1] as f32);
+        let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("stroke-test-viewport"),
+            contents: bytemuck::bytes_of(&ViewportUniform {
+                dimensions: [128.0, 64.0],
+                padding: [0.0; 2],
+            }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let viewport_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("stroke-test-layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("stroke-test-bind-group"),
+            layout: &viewport_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: viewport_buffer.as_entire_binding(),
+            }],
+        });
+        let format = wgpu::TextureFormat::Rgba8UnormSrgb;
+        let pipeline = rectangle_pipeline(&device, format, &viewport_layout);
+        let mut scene = Scene::default();
+        let first = Rect::new(4.0, 4.0, 24.0, 24.0);
+        scene.rounded_fill(
+            first,
+            viewport,
+            6.0,
+            Color {
+                a: 0.0,
+                ..Color::rgb(255, 255, 255)
+            },
+        );
+        scene.rounded_stroke(
+            first,
+            viewport,
+            6.0,
+            4.0,
+            Color {
+                a: 0.5,
+                ..Color::rgb(255, 0, 0)
+            },
+        );
+        let second = Rect::new(36.0, 4.0, 24.0, 24.0);
+        scene.rounded_fill(
+            second,
+            viewport,
+            6.0,
+            Color {
+                a: 0.5,
+                ..Color::rgb(255, 255, 255)
+            },
+        );
+        scene.rounded_stroke(
+            second,
+            viewport,
+            6.0,
+            4.0,
+            Color {
+                a: 0.5,
+                ..Color::rgb(0, 0, 255)
+            },
+        );
+        scene.rounded_stroke(
+            Rect::new(68.0, 4.0, 24.0, 24.0),
+            Rect::new(80.0, 0.0, 48.0, 64.0),
+            6.0,
+            4.0,
+            Color::rgb(0, 255, 0),
+        );
+        scene.rounded_stroke(
+            Rect::new(100.0, 4.0, 24.0, 24.0),
+            viewport,
+            6.0,
+            12.0,
+            Color::rgb(255, 0, 0),
+        );
+        scene.rounded_stroke(
+            Rect::new(4.0, 36.0, 24.0, 24.0),
+            viewport,
+            6.0,
+            0.25,
+            Color::rgb(255, 255, 255),
+        );
+        scene.rounded_stroke(
+            Rect::new(36.0, 36.0, 24.0, 24.0),
+            viewport,
+            0.0,
+            2.0,
+            Color::rgb(255, 255, 255),
+        );
+        let huge = Rect::new(-1.0e20, -1.0e20, 2.0e20, 2.0e20);
+        scene.rounded_stroke(
+            huge,
+            Rect::new(68.0, 36.0, 24.0, 24.0),
+            1.0e20,
+            1.0e19,
+            Color::rgb(255, 255, 0),
+        );
+        scene.rounded_stroke(
+            huge,
+            Rect::new(100.0, 36.0, 24.0, 24.0),
+            1.0e20,
+            1.0e20,
+            Color::rgb(255, 255, 0),
+        );
+        check_scene(&scene, 1.0).unwrap();
+        let instances: Vec<_> = scene
+            .rounded_rectangles
+            .iter()
+            .map(|rectangle| rounded_instance(rectangle, 1.0, viewport))
+            .collect();
+        let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("stroke-test-instances"),
+            contents: bytemuck::cast_slice(&instances),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let size = wgpu::Extent3d {
+            width: dimensions[0],
+            height: dimensions[1],
+            depth_or_array_layers: 1,
+        };
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("stroke-test-target"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("stroke-test-readback"),
+            size: u64::from(dimensions[0] * dimensions[1] * 4),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor::default());
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("stroke-test-pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.set_vertex_buffer(0, vertices.slice(..));
+            pass.draw(0..6, 0..instances.len() as u32);
+        }
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(dimensions[0] * 4),
+                    rows_per_image: Some(dimensions[1]),
+                },
+            },
+            size,
+        );
+        let submission = queue.submit([encoder.finish()]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                sender.send(result).unwrap();
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        let data = readback.slice(..).get_mapped_range().unwrap();
+        for (label, x, y, expected) in [
+            ("transparent interior", 16, 16, [0, 0, 0, 255]),
+            ("half-alpha red border", 16, 6, [188, 0, 0, 255]),
+            (
+                "rounded corner excludes bounding-box corner",
+                4,
+                4,
+                [0, 0, 0, 255],
+            ),
+            ("half-alpha interior", 48, 16, [188, 188, 188, 255]),
+            (
+                "half-alpha border over background",
+                48,
+                6,
+                [137, 137, 225, 255],
+            ),
+            ("clipped border", 78, 6, [0, 0, 0, 255]),
+            ("visible border after clip", 82, 6, [0, 255, 0, 255]),
+            ("clipped shape retains hole", 82, 16, [0, 0, 0, 255]),
+            ("full-width stroke has no hole", 112, 16, [255, 0, 0, 255]),
+            ("quarter-pixel width coverage", 16, 36, [137, 137, 137, 255]),
+            ("thin stroke interior", 16, 37, [0, 0, 0, 255]),
+            ("square border", 36, 48, [255, 255, 255, 255]),
+            ("square interior", 48, 48, [0, 0, 0, 255]),
+            ("huge ring interior", 80, 48, [0, 0, 0, 255]),
+            ("huge full-width stroke", 112, 48, [255, 255, 0, 255]),
+        ] {
+            let offset = (y * dimensions[0] as usize + x) * 4;
+            let actual = &data[offset..offset + 4];
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!(
+                    i16::from(*actual).abs_diff(expected) <= 2,
+                    "{label}: pixel {x},{y} = {actual:?}, expected channel {expected}"
+                );
+            }
+            println!("PASS {label}: {actual:?}");
+        }
+        drop(data);
+        readback.unmap();
     }
 
     #[test]

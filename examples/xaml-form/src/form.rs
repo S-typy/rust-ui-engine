@@ -1,6 +1,8 @@
-use rust_desktop_ui_controls::{Controls, SemanticAction, Theme};
+use rust_desktop_ui_controls::{
+    Controls, EditBoxAppearance, EditBoxStyle, EditorSettings, SemanticAction, Theme,
+};
 use rust_desktop_ui_core::{
-    Axis, Edges, LayoutKind, LayoutStyle, Length, Mutation, Rect, Scene, Size, WidgetId,
+    Axis, Color, Edges, LayoutKind, LayoutStyle, Length, Mutation, Rect, Scene, Size, WidgetId,
 };
 use rust_desktop_ui_platform_winit::{
     ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, accesskit,
@@ -52,11 +54,35 @@ impl Form {
                 },
             )
             .map_err(err)?;
-        ui.set_placeholder(editor, &field.placeholder)
-            .map_err(err)?;
+        ui.set_editor_settings(
+            editor,
+            EditorSettings {
+                is_read_only: field.is_read_only,
+                max_length: field.max_length,
+                placeholder: field.placeholder.clone(),
+            },
+        )
+        .map_err(err)?;
+        ui.set_edit_box_style(
+            editor,
+            EditBoxStyle {
+                font_size: field.font_size,
+                padding: field.padding.map(edges),
+                corner_radius: field.corner_radius,
+                border_width: field.border_thickness,
+                normal: EditBoxAppearance {
+                    background: field.background.map(color),
+                    foreground: field.foreground.map(color),
+                    placeholder: field.placeholder_foreground.map(color),
+                    border: field.border_brush.map(color),
+                    accent: field.focus_brush.map(color),
+                    selection: field.selection_brush.map(color),
+                },
+                ..Default::default()
+            },
+        )
+        .map_err(err)?;
         ui.set_enabled(editor, field.is_enabled).map_err(err)?;
-        ui.set_read_only(editor, field.is_read_only).map_err(err)?;
-        ui.set_max_length(editor, field.max_length).map_err(err)?;
         // Mounting establishes the initial value; subsequent mutations are events.
         ui.drain_text_changes();
         Ok(Self {
@@ -186,7 +212,9 @@ impl DesktopApp for Form {
             let mut node = accesskit::Node::new(accesskit::Role::TextInput);
             node.set_label(semantic.label);
             node.set_value(semantic.value.unwrap_or_default());
-            node.set_description(&self.definition.edit_box.placeholder);
+            if let Some(settings) = self.ui.editor_settings(self.editor) {
+                node.set_description(&settings.placeholder);
+            }
             let bounds = semantic.bounds;
             node.set_bounds(accesskit::Rect {
                 x0: f64::from(bounds.x * scale),
@@ -228,6 +256,16 @@ fn edges([left, top, right, bottom]: [f32; 4]) -> Edges {
         bottom,
     }
 }
+
+fn color([red, green, blue, alpha]: [u8; 4]) -> Color {
+    Color {
+        r: f32::from(red) / 255.0,
+        g: f32::from(green) / 255.0,
+        b: f32::from(blue) / 255.0,
+        a: f32::from(alpha) / 255.0,
+    }
+}
+
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
 }

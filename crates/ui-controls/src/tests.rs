@@ -1,6 +1,6 @@
 use crate::*;
 use rust_desktop_ui_core::{
-    Axis, Color, DrawCommand, InputEvent, Key, LayoutKind, LayoutStyle, Length, Modifiers,
+    Axis, Color, DrawCommand, Edges, InputEvent, Key, LayoutKind, LayoutStyle, Length, Modifiers,
     Mutation, Point, PointerButton, Rect, Scene, Size, TextAlign, TextRun, WidgetId,
 };
 
@@ -807,7 +807,26 @@ fn fluent_editbox_uses_rounded_skin_and_bottom_focus_without_changing_identity()
         assert_eq!(rounded.len(), 2);
         assert_eq!(rounded[0].bounds, bounds);
         assert_eq!(rounded[0].radius, 4.0);
-        assert_eq!(rounded[1].radius, 3.0);
+        assert_eq!(rounded[0].color, theme.tokens().surface);
+        assert_eq!(rounded[0].stroke_width, None);
+        assert_eq!(rounded[1].bounds, bounds);
+        assert_eq!(rounded[1].radius, 4.0);
+        assert_eq!(rounded[1].color, theme.tokens().border);
+        assert_eq!(rounded[1].stroke_width, Some(1.0));
+        let rounded_commands: Vec<_> = ui
+            .scene()
+            .commands()
+            .iter()
+            .filter(|command| matches!(command, DrawCommand::RoundedRectangle(_)))
+            .copied()
+            .collect();
+        assert_eq!(
+            rounded_commands,
+            vec![
+                DrawCommand::RoundedRectangle(0),
+                DrawCommand::RoundedRectangle(1)
+            ]
+        );
         assert!(ui.scene().rectangles.iter().any(|r| r.bounds
             == Rect::new(bounds.x + 4.0, bounds.y + 34.0, bounds.width - 8.0, 2.0)
             && r.color == theme.tokens().focus));
@@ -1407,4 +1426,788 @@ fn disabling_editor_ancestor_cancels_preedit_and_blocks_all_user_value_routes() 
     let changes = ui.drain_text_changes();
     assert_eq!(changes.len(), 1);
     assert_eq!((changes[0].id, changes[0].text.as_str()), (id, "new"));
+}
+
+#[test]
+fn editor_settings_reject_as_one_transaction_without_losing_preedit_or_history() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Name", "Ada", style(260.0, 36.0))
+        .unwrap();
+    ui.set_placeholder(id, "Original hint").unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.text_input("!").unwrap();
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    frame(&mut ui);
+    ui.drain_text_changes();
+    let settings = ui.editor_settings(id).unwrap().clone();
+    let selection = ui.document(id).unwrap().selection();
+    let composition = ui.document(id).unwrap().composition().cloned();
+    let caret = ui.caret_bounds().unwrap();
+
+    for rejected in [
+        EditorSettings {
+            is_read_only: true,
+            max_length: Some(1),
+            placeholder: "Changed hint".into(),
+        },
+        EditorSettings {
+            is_read_only: true,
+            max_length: Some(8),
+            placeholder: "x".repeat(1_048_577),
+        },
+    ] {
+        assert!(ui.set_editor_settings(id, rejected).is_err());
+        frame(&mut ui);
+        assert_eq!(ui.editor_settings(id), Some(&settings));
+        assert_eq!(ui.document(id).unwrap().text(), "Ada!");
+        assert_eq!(ui.document(id).unwrap().selection(), selection);
+        assert_eq!(ui.document(id).unwrap().composition(), composition.as_ref());
+        assert_eq!(ui.caret_bounds().unwrap(), caret);
+        assert!(ui.document(id).unwrap().can_undo());
+        assert!(!ui.document(id).unwrap().can_redo());
+        assert!(ui.drain_text_changes().is_empty());
+    }
+    ui.cancel_preedit();
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "Ada");
+}
+
+#[test]
+fn editor_settings_and_legacy_setters_share_one_policy_without_spurious_changes() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Name", "Ada", style(260.0, 36.0))
+        .unwrap();
+    let settings = EditorSettings {
+        is_read_only: false,
+        max_length: Some(12),
+        placeholder: "Name here".into(),
+    };
+    ui.set_editor_settings(id, settings.clone()).unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    let composition = ui.document(id).unwrap().composition().cloned();
+    ui.set_editor_settings(id, settings).unwrap();
+    ui.set_max_length(id, Some(16)).unwrap();
+    ui.set_placeholder(id, "Updated hint").unwrap();
+    assert_eq!(ui.document(id).unwrap().composition(), composition.as_ref());
+    ui.set_read_only(id, true).unwrap();
+    assert_eq!(
+        ui.editor_settings(id),
+        Some(&EditorSettings {
+            is_read_only: true,
+            max_length: Some(16),
+            placeholder: "Updated hint".into(),
+        })
+    );
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert_eq!(ui.document(id).unwrap().text(), "Ada");
+    assert_eq!(ui.runtime.focused(), Some(id));
+    assert!(ui.drain_text_changes().is_empty());
+    ui.set_read_only(id, false).unwrap();
+    ui.text_input("!").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "Ada!");
+    assert_eq!(ui.drain_text_changes().len(), 1);
+}
+
+fn assert_editor_colors(
+    ui: &Controls,
+    id: WidgetId,
+    background: Color,
+    foreground: Color,
+    border: Color,
+) {
+    let bounds = ui.runtime.bounds(id).unwrap();
+    assert!(
+        ui.scene()
+            .rounded_rectangles
+            .iter()
+            .any(|r| r.bounds == bounds && r.color == border && r.stroke_width == Some(1.0))
+    );
+    assert!(
+        ui.scene()
+            .rounded_rectangles
+            .iter()
+            .any(|r| r.bounds == bounds && r.color == background && r.stroke_width.is_none())
+    );
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .find(|r| r.text == "Ada")
+            .unwrap()
+            .color,
+        foreground
+    );
+}
+
+#[test]
+fn editor_visual_states_resolve_focus_readonly_and_disabled_ancestors_in_scene() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let parent = ui.panel(ui.root(), style(300.0, 80.0)).unwrap();
+    let id = ui
+        .edit_box(parent, "Name", "Ada", style(260.0, 36.0))
+        .unwrap();
+    let normal = Color::rgb(11, 21, 31);
+    let hovered = Color::rgb(41, 51, 61);
+    let focused = Color::rgb(71, 81, 91);
+    let readonly = Color::rgb(101, 111, 121);
+    let disabled = Color::rgb(131, 141, 151);
+    let foreground = Color::rgb(12, 22, 32);
+    let border = Color::rgb(42, 52, 62);
+    let readonly_accent = Color::rgb(72, 82, 92);
+    let readonly_selection = Color::rgb(102, 112, 122);
+    ui.set_edit_box_style(
+        id,
+        EditBoxStyle {
+            normal: EditBoxAppearance {
+                background: Some(normal),
+                foreground: Some(foreground),
+                border: Some(border),
+                ..Default::default()
+            },
+            hovered: EditBoxAppearance {
+                background: Some(hovered),
+                ..Default::default()
+            },
+            focused: EditBoxAppearance {
+                background: Some(focused),
+                foreground: Some(focused),
+                accent: Some(focused),
+                ..Default::default()
+            },
+            read_only: EditBoxAppearance {
+                background: Some(readonly),
+                accent: Some(readonly_accent),
+                selection: Some(readonly_selection),
+                ..Default::default()
+            },
+            disabled: EditBoxAppearance {
+                background: Some(disabled),
+                foreground: Some(disabled),
+                accent: Some(disabled),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.edit_box_visual_state(id),
+        Some(EditBoxVisualState::Normal)
+    );
+    assert_editor_colors(&ui, id, normal, foreground, border);
+    let position = center(&ui, id);
+    ui.dispatch(InputEvent::PointerMoved { position }).unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.edit_box_visual_state(id),
+        Some(EditBoxVisualState::Hovered)
+    );
+    assert_editor_colors(&ui, id, hovered, foreground, border);
+    focus(&mut ui, id);
+    frame(&mut ui);
+    assert_eq!(
+        ui.edit_box_visual_state(id),
+        Some(EditBoxVisualState::Focused)
+    );
+    assert_editor_colors(&ui, id, focused, focused, border);
+    ui.set_read_only(id, true).unwrap();
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    frame(&mut ui);
+    assert_eq!(
+        ui.edit_box_visual_state(id),
+        Some(EditBoxVisualState::ReadOnlyFocused)
+    );
+    assert_editor_colors(&ui, id, readonly, foreground, border);
+    assert!(
+        ui.scene()
+            .rectangles
+            .iter()
+            .any(|r| r.color == readonly_selection)
+    );
+    let caret = ui.caret_bounds().unwrap();
+    assert!(
+        ui.scene()
+            .rectangles
+            .iter()
+            .any(|r| r.color == readonly_accent && r.bounds == caret)
+    );
+    let bounds = ui.runtime.bounds(id).unwrap();
+    assert!(
+        ui.scene()
+            .rectangles
+            .iter()
+            .any(|r| r.color == readonly_accent && r.bounds.y == bounds.y + bounds.height - 2.0)
+    );
+    assert!(!ui.scene().texts.iter().any(|r| r.color == focused));
+
+    ui.runtime.apply(Mutation::Focus(None)).unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.edit_box_visual_state(id),
+        Some(EditBoxVisualState::ReadOnly)
+    );
+    assert_editor_colors(&ui, id, readonly, foreground, border);
+    assert!(
+        !ui.scene()
+            .rectangles
+            .iter()
+            .any(|r| r.color == readonly_accent)
+    );
+    focus(&mut ui, id);
+    ui.set_enabled(parent, false).unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.edit_box_visual_state(id),
+        Some(EditBoxVisualState::Disabled)
+    );
+    assert_editor_colors(&ui, id, disabled, disabled, border);
+    assert!(ui.caret_bounds().is_none());
+    assert!(!ui.scene().rectangles.iter().any(|r| r.color == disabled
+        || r.color == readonly_accent
+        || r.color == readonly_selection));
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn editor_style_partial_overrides_follow_theme_and_reset_to_theme_defaults() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Name", "Ada", style(260.0, 48.0))
+        .unwrap();
+    let foreground = Color::rgb(153, 45, 61);
+    ui.set_edit_box_style(
+        id,
+        EditBoxStyle {
+            normal: EditBoxAppearance {
+                foreground: Some(foreground),
+                ..Default::default()
+            },
+            padding: Some(Edges::all(10.0)),
+            font_size: Some(20.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        frame(&mut ui);
+        assert_editor_colors(
+            &ui,
+            id,
+            theme.tokens().surface,
+            foreground,
+            theme.tokens().border,
+        );
+        let run = ui.scene().texts.iter().find(|r| r.text == "Ada").unwrap();
+        assert_eq!(run.font_size, 20.0);
+        assert_eq!(run.clip.x, ui.runtime.bounds(id).unwrap().x + 10.0);
+        ui.set_read_only(id, true).unwrap();
+        frame(&mut ui);
+        assert_editor_colors(
+            &ui,
+            id,
+            theme.tokens().canvas,
+            foreground,
+            theme.tokens().border,
+        );
+        ui.set_enabled(id, false).unwrap();
+        frame(&mut ui);
+        assert_editor_colors(
+            &ui,
+            id,
+            theme.tokens().canvas,
+            theme.tokens().muted,
+            theme.tokens().border,
+        );
+        ui.set_enabled(id, true).unwrap();
+        ui.set_read_only(id, false).unwrap();
+    }
+    ui.set_edit_box_style(id, EditBoxStyle::default()).unwrap();
+    frame(&mut ui);
+    let tokens = Theme::FluentDark.tokens();
+    assert_editor_colors(&ui, id, tokens.surface, tokens.text, tokens.border);
+    let run = ui.scene().texts.iter().find(|r| r.text == "Ada").unwrap();
+    assert_eq!(run.font_size, tokens.font_size);
+    assert_eq!(run.clip.x, ui.runtime.bounds(id).unwrap().x + 12.0);
+    assert_eq!(ui.edit_box_style(id), Some(&EditBoxStyle::default()));
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn editor_style_geometry_drives_text_caret_hit_testing_and_selection_clip() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let text = "0123456789 ".repeat(20);
+    let id = ui
+        .edit_box(ui.root(), "Code", &text, style(220.0, 64.0))
+        .unwrap();
+    let padding = Edges {
+        left: 30.0,
+        right: 18.0,
+        top: 8.0,
+        bottom: 12.0,
+    };
+    ui.set_edit_box_style(
+        id,
+        EditBoxStyle {
+            font_size: Some(20.0),
+            padding: Some(padding),
+            corner_radius: Some(10.0),
+            border_width: Some(3.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    key(&mut ui, Key::Home, Modifiers::default());
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let clip = Rect::new(
+        bounds.x + padding.left,
+        bounds.y + padding.top,
+        bounds.width - padding.horizontal(),
+        bounds.height - padding.vertical(),
+    );
+    let run = ui.scene().texts.iter().find(|r| r.text == text).unwrap();
+    assert_eq!(run.font_size, 20.0);
+    assert_eq!(run.clip, clip);
+    assert_eq!(ui.caret_bounds().unwrap().x, clip.x);
+    assert!(
+        ui.scene()
+            .rounded_rectangles
+            .iter()
+            .any(|r| r.bounds == bounds && r.radius == 10.0 && r.stroke_width.is_none())
+    );
+    assert!(
+        ui.scene()
+            .rounded_rectangles
+            .iter()
+            .any(|r| r.bounds == bounds && r.radius == 10.0 && r.stroke_width == Some(3.0))
+    );
+    let caret = ui.caret_bounds().unwrap();
+    let left = Point::new(clip.x, caret.y + caret.height * 0.5);
+    pointer(&mut ui, left, true);
+    pointer(&mut ui, left, false);
+    assert_eq!(ui.document(id).unwrap().selection().focus, 0);
+    key(&mut ui, Key::End, Modifiers::default());
+    frame(&mut ui);
+    let caret = ui.caret_bounds().unwrap();
+    assert!(caret.x >= clip.x && caret.x + caret.width <= clip.x + clip.width + 0.01);
+    assert!(caret.y >= clip.y && caret.y + caret.height <= clip.y + clip.height + 0.01);
+    let near_left = Point::new(clip.x + 1.0, caret.y + caret.height * 0.5);
+    pointer(&mut ui, near_left, true);
+    pointer(&mut ui, near_left, false);
+    let offset = ui.document(id).unwrap().selection().focus;
+    assert!(offset > 0 && offset < text.len());
+    assert!(
+        ui.document(id)
+            .unwrap()
+            .grapheme_boundaries()
+            .contains(&offset)
+    );
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    frame(&mut ui);
+    let selection: Vec<_> = ui
+        .scene()
+        .rectangles
+        .iter()
+        .filter(|r| r.color == Theme::FluentLight.tokens().selected)
+        .collect();
+    assert!(!selection.is_empty());
+    for rectangle in selection {
+        assert_eq!(rectangle.bounds.intersection(clip), Some(rectangle.bounds));
+    }
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn editor_color_style_preserves_document_preedit_history_caret_and_layout() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Mixed", "abc אבג", style(260.0, 48.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.text_input("!").unwrap();
+    ui.drain_text_changes();
+    let first_style = EditBoxStyle {
+        normal: EditBoxAppearance {
+            foreground: Some(Color::rgb(170, 40, 60)),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    for _ in 0..10 {
+        key(&mut ui, Key::ArrowLeft, Modifiers::default());
+        frame(&mut ui);
+        let caret = ui.caret_bounds().unwrap();
+        let selection = ui.document(id).unwrap().selection();
+        for appearance in [first_style, EditBoxStyle::default()] {
+            ui.set_edit_box_style(id, appearance).unwrap();
+            let delta = ui.update(Size::new(600.0, 480.0)).unwrap();
+            assert_eq!(delta.layout_passes, 0);
+            assert_eq!(ui.caret_bounds().unwrap(), caret);
+            assert_eq!(ui.document(id).unwrap().selection(), selection);
+            assert_eq!(ui.document(id).unwrap().text(), "abc אבג!");
+            assert_eq!(ui.runtime.focused(), Some(id));
+            ui.set_edit_box_style(id, appearance).unwrap();
+            let idle = ui.update(Size::new(600.0, 480.0)).unwrap();
+            assert_eq!(idle.layout_passes, 0);
+            assert_eq!(idle.paint_passes, 0);
+        }
+    }
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    frame(&mut ui);
+    let composition = ui.document(id).unwrap().composition().cloned();
+    let selection = ui.document(id).unwrap().selection();
+    ui.set_edit_box_style(
+        id,
+        EditBoxStyle {
+            font_size: Some(18.0),
+            padding: Some(Edges::all(8.0)),
+            ..first_style
+        },
+    )
+    .unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.document(id).unwrap().composition(), composition.as_ref());
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.drain_text_changes().is_empty());
+    ui.cancel_preedit();
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "abc אבג");
+}
+
+#[test]
+fn invalid_editor_style_rejection_preserves_active_style_and_composition() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Name", "Ada", style(260.0, 48.0))
+        .unwrap();
+    let accepted = EditBoxStyle {
+        font_size: Some(18.0),
+        corner_radius: Some(6.0),
+        ..Default::default()
+    };
+    ui.set_edit_box_style(id, accepted).unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    frame(&mut ui);
+    let composition = ui.document(id).unwrap().composition().cloned();
+    let caret = ui.caret_bounds().unwrap();
+    for rejected in [
+        EditBoxStyle {
+            font_size: Some(f32::NAN),
+            ..Default::default()
+        },
+        EditBoxStyle {
+            font_size: Some(0.0),
+            ..Default::default()
+        },
+        EditBoxStyle {
+            font_size: Some(513.0),
+            ..Default::default()
+        },
+        EditBoxStyle {
+            padding: Some(Edges {
+                bottom: -1.0,
+                ..Edges::default()
+            }),
+            ..Default::default()
+        },
+        EditBoxStyle {
+            corner_radius: Some(f32::INFINITY),
+            ..Default::default()
+        },
+        EditBoxStyle {
+            border_width: Some(16385.0),
+            ..Default::default()
+        },
+        EditBoxStyle {
+            focused: EditBoxAppearance {
+                accent: Some(Color {
+                    a: 1.1,
+                    ..Color::rgb(1, 2, 3)
+                }),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    ] {
+        assert!(ui.set_edit_box_style(id, rejected).is_err());
+        frame(&mut ui);
+        assert_eq!(ui.edit_box_style(id), Some(&accepted));
+        assert_eq!(ui.document(id).unwrap().composition(), composition.as_ref());
+        assert_eq!(ui.document(id).unwrap().text(), "Ada");
+        assert_eq!(ui.caret_bounds().unwrap(), caret);
+        assert!(!ui.document(id).unwrap().can_undo());
+        assert!(ui.drain_text_changes().is_empty());
+    }
+}
+
+#[test]
+fn editor_settings_and_style_reject_other_controls_and_removed_handles() {
+    let mut ui = ui();
+    let label = ui.label(ui.root(), "Label", style(260.0, 36.0)).unwrap();
+    let editor = ui
+        .edit_box(ui.root(), "Name", "Ada", style(260.0, 36.0))
+        .unwrap();
+    ui.remove(editor).unwrap();
+    for id in [label, editor] {
+        assert!(
+            ui.set_editor_settings(id, EditorSettings::default())
+                .is_err()
+        );
+        assert!(ui.set_edit_box_style(id, EditBoxStyle::default()).is_err());
+        assert!(ui.editor_settings(id).is_none());
+        assert!(ui.edit_box_style(id).is_none());
+        assert!(ui.edit_box_visual_state(id).is_none());
+    }
+    frame(&mut ui);
+    assert!(ui.scene().texts.iter().any(|r| r.text == "Label"));
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn editor_rounded_stroke_keeps_transparent_background_and_large_radius_focus() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Name", "Ada", style(260.0, 48.0))
+        .unwrap();
+    let background = Color {
+        a: 0.0,
+        ..Color::rgb(11, 22, 33)
+    };
+    let border = Color {
+        a: 0.5,
+        ..Color::rgb(44, 55, 66)
+    };
+    ui.set_edit_box_style(
+        id,
+        EditBoxStyle {
+            corner_radius: Some(16_384.0),
+            border_width: Some(3.0),
+            normal: EditBoxAppearance {
+                background: Some(background),
+                border: Some(border),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let outline = ui
+        .scene()
+        .rounded_rectangles
+        .iter()
+        .find(|r| r.color == border)
+        .unwrap();
+    assert_eq!(outline.bounds, bounds);
+    assert_eq!(outline.radius, bounds.height * 0.5);
+    assert_eq!(outline.stroke_width, Some(3.0));
+    assert!(!ui.scene().rectangles.iter().any(|r| r.color == border));
+    assert!(
+        ui.scene()
+            .rounded_rectangles
+            .iter()
+            .filter(|r| r.color == background)
+            .all(|r| r.stroke_width.is_none())
+    );
+    assert!(
+        ui.scene()
+            .rectangles
+            .iter()
+            .any(|r| r.color == Theme::FluentLight.tokens().focus
+                && r.bounds.y == bounds.y + bounds.height - 2.0
+                && r.bounds.width > 1.0)
+    );
+    assert!(ui.scene().rounded_rectangles.iter().all(|r| r.is_valid()));
+}
+
+#[test]
+fn editor_nonfluent_focus_does_not_reduce_explicit_border_width() {
+    let mut ui = Controls::new(Theme::Light).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Name", "Ada", style(260.0, 48.0))
+        .unwrap();
+    ui.set_edit_box_style(
+        id,
+        EditBoxStyle {
+            corner_radius: Some(12.0),
+            border_width: Some(8.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let outline = ui
+        .scene()
+        .rounded_rectangles
+        .iter()
+        .find(|r| r.bounds == bounds && r.stroke_width.is_some())
+        .unwrap();
+    assert_eq!(outline.stroke_width, Some(8.0));
+    assert_eq!(outline.color, Theme::Light.tokens().border);
+    focus(&mut ui, id);
+    frame(&mut ui);
+    let outline = ui
+        .scene()
+        .rounded_rectangles
+        .iter()
+        .find(|r| r.bounds == bounds && r.stroke_width.is_some())
+        .unwrap();
+    assert_eq!(outline.stroke_width, Some(8.0));
+    assert_eq!(outline.color, Theme::Light.tokens().focus);
+}
+
+#[test]
+fn editor_placeholder_and_composition_use_resolved_state_colors() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .edit_box(ui.root(), "Name", "", style(260.0, 48.0))
+        .unwrap();
+    ui.set_placeholder(id, "Hint").unwrap();
+    let normal = Color::rgb(12, 34, 56);
+    let focused = Color::rgb(78, 90, 12);
+    let readonly = Color::rgb(34, 56, 78);
+    let disabled = Color::rgb(90, 12, 34);
+    let accent = Color::rgb(56, 78, 90);
+    ui.set_edit_box_style(
+        id,
+        EditBoxStyle {
+            normal: EditBoxAppearance {
+                placeholder: Some(normal),
+                ..Default::default()
+            },
+            focused: EditBoxAppearance {
+                placeholder: Some(focused),
+                accent: Some(accent),
+                ..Default::default()
+            },
+            read_only: EditBoxAppearance {
+                placeholder: Some(readonly),
+                ..Default::default()
+            },
+            disabled: EditBoxAppearance {
+                placeholder: Some(disabled),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .find(|r| r.text == "Hint")
+            .unwrap()
+            .color,
+        normal
+    );
+    focus(&mut ui, id);
+    frame(&mut ui);
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .find(|r| r.text == "Hint")
+            .unwrap()
+            .color,
+        focused
+    );
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    frame(&mut ui);
+    assert!(!ui.scene().texts.iter().any(|r| r.text == "Hint"));
+    assert!(
+        ui.scene()
+            .rectangles
+            .iter()
+            .any(|r| r.color == accent && r.bounds.height == 1.0 && r.bounds.width > 1.0)
+    );
+    ui.set_read_only(id, true).unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .find(|r| r.text == "Hint")
+            .unwrap()
+            .color,
+        readonly
+    );
+    ui.set_enabled(id, false).unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .find(|r| r.text == "Hint")
+            .unwrap()
+            .color,
+        disabled
+    );
+    assert_eq!(ui.document(id).unwrap().text(), "");
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn custom_scene_clipping_preserves_rounded_stroke_and_painter_order() {
+    let mut ui = ui();
+    let panel = ui.panel(ui.root(), style(200.0, 100.0)).unwrap();
+    frame(&mut ui);
+    let bounds = Rect::new(-10.0, -10.0, 140.0, 70.0);
+    let source_clip = Rect::new(-5.0, -5.0, 160.0, 90.0);
+    let effective_clip = source_clip
+        .intersection(ui.runtime.clip(panel).unwrap())
+        .unwrap();
+    let fill = Color::rgb(12, 34, 56);
+    let border = Color {
+        a: 0.5,
+        ..Color::rgb(78, 90, 12)
+    };
+    let mut custom = Scene::default();
+    custom.rounded_fill(bounds, source_clip, 12.0, fill);
+    custom.rounded_stroke(bounds, source_clip, 12.0, 3.0, border);
+    ui.set_custom_scene(panel, custom).unwrap();
+    frame(&mut ui);
+    let rounded = &ui.scene().rounded_rectangles;
+    assert_eq!(rounded.len(), 2);
+    for rectangle in rounded {
+        assert_eq!(rectangle.bounds, bounds);
+        assert_eq!(rectangle.clip, effective_clip);
+        assert_eq!(rectangle.radius, 12.0);
+    }
+    assert_eq!(rounded[0].stroke_width, None);
+    assert_eq!(rounded[0].color, fill);
+    assert_eq!(rounded[1].stroke_width, Some(3.0));
+    assert_eq!(rounded[1].color, border);
+    let rounded_commands: Vec<_> = ui
+        .scene()
+        .commands()
+        .iter()
+        .filter(|command| matches!(command, DrawCommand::RoundedRectangle(_)))
+        .copied()
+        .collect();
+    assert_eq!(
+        rounded_commands,
+        vec![
+            DrawCommand::RoundedRectangle(0),
+            DrawCommand::RoundedRectangle(1)
+        ]
+    );
 }

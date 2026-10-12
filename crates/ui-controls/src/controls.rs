@@ -1,4 +1,4 @@
-use crate::{CommandId, CommandRegistry, Theme};
+use crate::{CommandId, CommandRegistry, EditBoxStyle, EditBoxVisualState, EditorSettings, Theme};
 use rust_desktop_ui_core::{
     Axis, Border, Color, Edges, FrameStats, InputEvent, Key, LayoutKind, LayoutStyle, Length,
     Mutation, NodeProps, Paint, Point, PointerButton, Rect, RuntimeError, Scene, Size, TextAlign,
@@ -158,10 +158,9 @@ struct Control {
     checked: bool,
     role: Option<Role>,
     tooltip: Option<String>,
-    placeholder: String,
+    editor: EditorSettings,
+    edit_box_style: EditBoxStyle,
     single_line: bool,
-    read_only: bool,
-    max_length: Option<usize>,
     text_scroll_x: f32,
     text_scroll: f32,
     default_height: bool,
@@ -362,29 +361,90 @@ impl Controls {
         self.cancel_inactive_preedit();
         Ok(())
     }
-    /// Prevent user changes while retaining focus, selection, navigation and copy.
-    /// Application `set_text` is still allowed and obeys the editor's limits.
-    pub fn set_read_only(&mut self, id: WidgetId, read_only: bool) -> Result<(), ControlError> {
+    /// Apply behavior and presentation text as one validated update. Rejection
+    /// preserves all settings, committed text, composition, selection and history.
+    pub fn set_editor_settings(
+        &mut self,
+        id: WidgetId,
+        settings: EditorSettings,
+    ) -> Result<(), ControlError> {
         let Some(Control {
             kind: Kind::TextBox(document),
-            read_only: current,
+            editor,
             ..
         }) = self.controls.get_mut(&id)
         else {
             return Err(ControlError::Invalid("Control is not a TextBox".into()));
         };
-        *current = read_only;
-        if read_only {
+        editor_limits(settings.max_length)
+            .validate(document.text())
+            .map_err(edit_error)?;
+        TextLimits::default()
+            .validate(&settings.placeholder)
+            .map_err(edit_error)?;
+        if *editor == settings {
+            return Ok(());
+        }
+        if settings.is_read_only {
             document.cancel_preedit();
         }
+        *editor = settings;
         self.scene_dirty = true;
         self.refresh_paints()
     }
-    pub fn is_read_only(&self, id: WidgetId) -> Option<bool> {
+    pub fn editor_settings(&self, id: WidgetId) -> Option<&EditorSettings> {
         self.controls
             .get(&id)
             .filter(|c| matches!(c.kind, Kind::TextBox(_)))
-            .map(|c| c.read_only)
+            .map(|c| &c.editor)
+    }
+    /// Theme-relative appearance overrides. Default resets every override.
+    /// Invalid metrics or colors are rejected without changing the current style.
+    pub fn set_edit_box_style(
+        &mut self,
+        id: WidgetId,
+        style: EditBoxStyle,
+    ) -> Result<(), ControlError> {
+        let control = self
+            .controls
+            .get_mut(&id)
+            .filter(|c| matches!(c.kind, Kind::TextBox(_)))
+            .ok_or_else(|| ControlError::Invalid("Control is not a TextBox".into()))?;
+        style.validate()?;
+        if control.edit_box_style != style {
+            control.edit_box_style = style;
+            self.scene_dirty = true;
+        }
+        Ok(())
+    }
+    pub fn edit_box_style(&self, id: WidgetId) -> Option<&EditBoxStyle> {
+        self.controls
+            .get(&id)
+            .filter(|c| matches!(c.kind, Kind::TextBox(_)))
+            .map(|c| &c.edit_box_style)
+    }
+    /// Resolves effective ancestor state as well as the editor's local input policy.
+    pub fn edit_box_visual_state(&self, id: WidgetId) -> Option<EditBoxVisualState> {
+        let settings = self.editor_settings(id)?;
+        Some(EditBoxVisualState::from_flags(
+            self.is_enabled(id),
+            settings.is_read_only,
+            self.runtime.focused() == Some(id),
+            self.runtime.hovered() == Some(id),
+        ))
+    }
+    /// Prevent user changes while retaining focus, selection, navigation and copy.
+    /// Application `set_text` is still allowed and obeys the editor's limits.
+    pub fn set_read_only(&mut self, id: WidgetId, read_only: bool) -> Result<(), ControlError> {
+        let mut settings = self
+            .editor_settings(id)
+            .cloned()
+            .ok_or_else(|| ControlError::Invalid("Control is not a TextBox".into()))?;
+        settings.is_read_only = read_only;
+        self.set_editor_settings(id, settings)
+    }
+    pub fn is_read_only(&self, id: WidgetId) -> Option<bool> {
+        self.editor_settings(id).map(|s| s.is_read_only)
     }
     /// Whether this editor can currently accept user text (including ancestor state).
     pub fn is_text_editable(&self, id: WidgetId) -> bool {
@@ -398,26 +458,16 @@ impl Controls {
         id: WidgetId,
         maximum: Option<usize>,
     ) -> Result<(), ControlError> {
-        let Some(Control {
-            kind: Kind::TextBox(document),
-            max_length,
-            ..
-        }) = self.controls.get_mut(&id)
-        else {
-            return Err(ControlError::Invalid("Control is not a TextBox".into()));
-        };
-        editor_limits(maximum)
-            .validate(document.text())
-            .map_err(edit_error)?;
-        *max_length = maximum;
-        Ok(())
+        let mut settings = self
+            .editor_settings(id)
+            .cloned()
+            .ok_or_else(|| ControlError::Invalid("Control is not a TextBox".into()))?;
+        settings.max_length = maximum;
+        self.set_editor_settings(id, settings)
     }
     /// Outer `None` means the ID is not a text editor; inner `None` means no grapheme limit.
     pub fn max_length(&self, id: WidgetId) -> Option<Option<usize>> {
-        self.controls
-            .get(&id)
-            .filter(|c| matches!(c.kind, Kind::TextBox(_)))
-            .map(|c| c.max_length)
+        self.editor_settings(id).map(|s| s.max_length)
     }
     pub fn set_label(
         &mut self,
@@ -447,14 +497,12 @@ impl Controls {
         id: WidgetId,
         text: impl Into<String>,
     ) -> Result<(), ControlError> {
-        let control = self
-            .controls
-            .get_mut(&id)
-            .filter(|c| matches!(c.kind, Kind::TextBox(_)))
+        let mut settings = self
+            .editor_settings(id)
+            .cloned()
             .ok_or_else(|| ControlError::Invalid("Control is not a TextBox".into()))?;
-        control.placeholder = text.into();
-        self.scene_dirty = true;
-        Ok(())
+        settings.placeholder = text.into();
+        self.set_editor_settings(id, settings)
     }
     pub fn set_theme(&mut self, theme: Theme) -> Result<(), ControlError> {
         if self.theme == theme {
@@ -520,10 +568,9 @@ impl Controls {
                 checked: false,
                 role: None,
                 tooltip: None,
-                placeholder: String::new(),
+                editor: EditorSettings::default(),
+                edit_box_style: EditBoxStyle::default(),
                 single_line: false,
-                read_only: false,
-                max_length: None,
                 text_scroll_x: 0.0,
                 text_scroll: 0.0,
                 default_height,
@@ -928,7 +975,7 @@ impl Controls {
                 Paint::default()
             } else {
                 Paint {
-                    background: Some(if !enabled || control.read_only {
+                    background: Some(if !enabled || control.editor.is_read_only {
                         tokens.canvas
                     } else if self.pressed == Some(id) {
                         tokens.pressed
@@ -941,13 +988,12 @@ impl Controls {
                         width: 1.0,
                         color: tokens.border,
                     }),
-                    hover_background: (interactive && enabled && !control.read_only).then_some(
-                        if self.pressed == Some(id) {
+                    hover_background: (interactive && enabled && !control.editor.is_read_only)
+                        .then_some(if self.pressed == Some(id) {
                             tokens.pressed
                         } else {
                             tokens.hover
-                        },
-                    ),
+                        }),
                     focus_border: interactive.then_some(Border {
                         width: 2.0,
                         color: tokens.focus,
@@ -1373,8 +1419,12 @@ impl Controls {
             kind: Kind::TextBox(document),
             caret,
             single_line,
-            read_only,
-            max_length,
+            editor:
+                EditorSettings {
+                    is_read_only: read_only,
+                    max_length,
+                    ..
+                },
             ..
         }) = self.controls.get_mut(&id)
         else {
@@ -1520,7 +1570,7 @@ impl Controls {
             && let Some(Control {
                 kind: Kind::TextBox(document),
                 single_line,
-                max_length,
+                editor: EditorSettings { max_length, .. },
                 caret,
                 ..
             }) = self.controls.get_mut(&id)
@@ -1559,7 +1609,7 @@ impl Controls {
             && let Some(Control {
                 kind: Kind::TextBox(document),
                 single_line,
-                max_length,
+                editor: EditorSettings { max_length, .. },
                 ..
             }) = self.controls.get_mut(&id)
         {
@@ -1583,7 +1633,7 @@ impl Controls {
             && let Some(Control {
                 kind: Kind::TextBox(document),
                 single_line,
-                max_length,
+                editor: EditorSettings { max_length, .. },
                 caret,
                 ..
             }) = self.controls.get_mut(&id)
@@ -1641,6 +1691,9 @@ impl Controls {
     }
     pub fn caret_bounds(&self) -> Option<Rect> {
         let id = self.runtime.focused()?;
+        if !self.is_enabled(id) {
+            return None;
+        }
         let document = self.document(id)?;
         let mut caret = self.controls.get(&id)?.caret;
         if caret.index != document.display_selection().focus {
@@ -1659,7 +1712,7 @@ impl Controls {
         let Some(Control {
             kind: Kind::TextBox(document),
             single_line,
-            max_length,
+            editor: EditorSettings { max_length, .. },
             caret,
             ..
         }) = self.controls.get_mut(&id)
@@ -1709,42 +1762,62 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
-            let fluent_editor = self.theme.is_fluent()
-                && self
-                    .controls
-                    .get(&id)
-                    .is_some_and(|c| matches!(c.kind, Kind::TextBox(_)));
+            let editor_style = self
+                .edit_box_visual_state(id)
+                .map(|state| self.controls[&id].edit_box_style.resolve(self.theme, state));
             let color = if self.runtime.hovered() == Some(id) {
                 paint.hover_background.or(paint.background)
             } else {
                 paint.background
             };
-            if fluent_editor {
-                self.scene.rounded_fill(bounds, clip, 4.0, tokens.border);
-                let inset = 1.0_f32.min(bounds.width * 0.5).min(bounds.height * 0.5);
-                let inner = Rect::new(
-                    bounds.x + inset,
-                    bounds.y + inset,
-                    (bounds.width - inset * 2.0).max(0.0),
-                    (bounds.height - inset * 2.0).max(0.0),
-                );
-                self.scene.rounded_fill(
-                    inner,
-                    clip,
-                    (4.0 - inset).max(0.0),
-                    color.unwrap_or(tokens.surface),
-                );
-                if self.runtime.focused() == Some(id) {
+            if let Some(style) = editor_style {
+                let underline = self.theme.is_fluent();
+                let width = if style.focus_visible && !underline {
+                    style.border_width.max(2.0)
+                } else {
+                    style.border_width
+                };
+                let border_color = if style.focus_visible && !underline {
+                    style.accent
+                } else {
+                    style.border
+                };
+                let inset = width.min(bounds.width * 0.5).min(bounds.height * 0.5);
+                let radius = style
+                    .corner_radius
+                    .min(bounds.width.min(bounds.height) * 0.5);
+                // Background covers the whole shape; the border is a separate
+                // ring so translucent colors blend without filling its center.
+                editor_fill(&mut self.scene, bounds, clip, radius, style.background);
+                if inset > 0.0 {
+                    if radius > 0.0 {
+                        self.scene
+                            .rounded_stroke(bounds, clip, radius, inset, border_color);
+                    } else {
+                        draw_border(
+                            &mut self.scene,
+                            bounds,
+                            clip,
+                            Border {
+                                width: inset,
+                                color: border_color,
+                            },
+                        );
+                    }
+                }
+                if style.focus_visible && underline {
+                    let indent = radius.max(2.0).min((bounds.width - 2.0).max(0.0) * 0.5);
+                    let thickness = 2.0_f32.min(bounds.height);
                     fill_clipped(
                         &mut self.scene,
                         Rect::new(
-                            bounds.x + 4.0,
-                            bounds.y + bounds.height - 2.0,
-                            (bounds.width - 8.0).max(0.0),
-                            2.0,
+                            bounds.x + indent,
+                            bounds.y + bounds.height - thickness,
+                            (bounds.width - indent * 2.0).max(0.0),
+                            thickness,
                         ),
                         clip,
-                        tokens.focus,
+                        style.accent,
                     );
                 }
             } else {
@@ -1776,12 +1849,20 @@ impl Controls {
                 Kind::TextBox(_) => 5.0,
                 _ => ((bounds.height - tokens.font_size * 1.4) * 0.5).clamp(0.0, 5.0),
             };
-            let horizontal_padding = if fluent_editor { 12.0 } else { 8.0 };
+            let padding = editor_style.map_or(
+                Edges {
+                    left: 8.0,
+                    right: 8.0,
+                    top: vertical_padding,
+                    bottom: vertical_padding,
+                },
+                |style| style.padding,
+            );
             let mut text_bounds = Rect::new(
-                bounds.x + horizontal_padding,
-                bounds.y + vertical_padding,
-                (bounds.width - horizontal_padding * 2.0).max(0.0),
-                (bounds.height - vertical_padding * 2.0).max(0.0),
+                bounds.x + padding.left.min(bounds.width),
+                bounds.y + padding.top.min(bounds.height),
+                (bounds.width - padding.horizontal()).max(0.0),
+                (bounds.height - padding.vertical()).max(0.0),
             );
             let mut label = control.label.clone();
             let editable = matches!(control.kind, Kind::TextBox(_));
@@ -1831,8 +1912,11 @@ impl Controls {
                     .intersection(clip)
                     .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
                 text: label,
-                font_size: tokens.font_size,
-                color: if enabled { tokens.text } else { tokens.muted },
+                font_size: editor_style.map_or(tokens.font_size, |style| style.font_size),
+                color: editor_style
+                    .map_or(if enabled { tokens.text } else { tokens.muted }, |style| {
+                        style.foreground
+                    }),
                 weight: if matches!(control.kind, Kind::Tab { .. }) {
                     600
                 } else {
@@ -1887,7 +1971,7 @@ impl Controls {
                         .map_err(|e| ControlError::Text(e.to_string()))?;
                 }
                 if let Kind::TextBox(document) = &control.kind {
-                    let focused = self.runtime.focused() == Some(id);
+                    let focused = enabled && self.runtime.focused() == Some(id);
                     let selection = document.display_selection();
                     if control.caret.index != selection.focus {
                         control.caret = TextCaret {
@@ -1923,17 +2007,18 @@ impl Controls {
                                 &mut self.scene,
                                 selection_rect,
                                 run.clip,
-                                tokens.selected,
+                                editor_style.map_or(tokens.selected, |style| style.selection),
                             );
                         }
                     }
                     if document.text().is_empty()
                         && document.composition().is_none()
-                        && !control.placeholder.is_empty()
+                        && !control.editor.placeholder.is_empty()
                     {
                         let mut placeholder = run.clone();
-                        placeholder.text = control.placeholder.clone();
-                        placeholder.color = tokens.muted;
+                        placeholder.text = control.editor.placeholder.clone();
+                        placeholder.color =
+                            editor_style.map_or(tokens.muted, |style| style.placeholder);
                         placeholder.wrap = false;
                         self.scene.text(placeholder);
                     } else {
@@ -1947,7 +2032,7 @@ impl Controls {
                             &mut self.scene,
                             layout.caret_geometry(control.caret),
                             run.clip,
-                            tokens.focus,
+                            editor_style.map_or(tokens.focus, |style| style.accent),
                         );
                     }
                     if let Some(composition) = document.composition() {
@@ -1955,7 +2040,12 @@ impl Controls {
                         for part in layout.selection_rects(start..start + composition.text.len()) {
                             let line =
                                 Rect::new(part.x, part.y + part.height - 1.0, part.width, 1.0);
-                            fill_clipped(&mut self.scene, line, run.clip, tokens.focus);
+                            fill_clipped(
+                                &mut self.scene,
+                                line,
+                                run.clip,
+                                editor_style.map_or(tokens.focus, |style| style.accent),
+                            );
                         }
                     }
                 }
@@ -2044,7 +2134,7 @@ impl Controls {
                     if control.kind.clickable() {
                         actions.push(SemanticAction::Activate);
                     }
-                    if value.is_some() && !control.read_only {
+                    if value.is_some() && !control.editor.is_read_only {
                         actions.push(SemanticAction::SetValue);
                     }
                     if checked.is_some() {
@@ -2063,7 +2153,7 @@ impl Controls {
                     checked,
                     selected,
                     disabled: !enabled,
-                    read_only: control.read_only,
+                    read_only: control.editor.is_read_only,
                     focused: self.runtime.focused() == Some(id),
                     bounds,
                     actions,
@@ -2112,6 +2202,14 @@ fn add_stats(target: &mut FrameStats, value: FrameStats) {
     target.paint_passes += value.paint_passes;
     target.painted_nodes += value.painted_nodes;
     target.semantics_nodes += value.semantics_nodes;
+}
+
+fn editor_fill(scene: &mut Scene, bounds: Rect, clip: Rect, radius: f32, color: Color) {
+    if radius > 0.0 {
+        scene.rounded_fill(bounds, clip, radius, color);
+    } else {
+        fill_clipped(scene, bounds, clip, color);
+    }
 }
 
 fn editor_limits(max_graphemes: Option<usize>) -> TextLimits {
@@ -2196,7 +2294,22 @@ fn append_clipped(target: &mut Scene, source: &Scene, clip: Rect) {
                 if let Some(rounded) = source.rounded_rectangles.get(index)
                     && let Some(effective) = rounded.clip.intersection(clip)
                 {
-                    target.rounded_fill(rounded.bounds, effective, rounded.radius, rounded.color);
+                    if let Some(width) = rounded.stroke_width {
+                        target.rounded_stroke(
+                            rounded.bounds,
+                            effective,
+                            rounded.radius,
+                            width,
+                            rounded.color,
+                        );
+                    } else {
+                        target.rounded_fill(
+                            rounded.bounds,
+                            effective,
+                            rounded.radius,
+                            rounded.color,
+                        );
+                    }
                 }
             }
         }

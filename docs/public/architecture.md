@@ -72,14 +72,18 @@ flex-wrap, baseline alignment и произвольные intrinsic callbacks н
 ## Scene и GPU
 
 Scene хранит отдельные массивы `SolidRect`, `RoundedRect` и `TextRun` с единым списком
-`DrawCommand`. `fill`, `rounded_fill`, `text` и `append` сохраняют последовательность рисования.
+`DrawCommand`. `fill`, `rounded_fill`, `rounded_stroke`, `text` и `append` сохраняют последовательность рисования.
 Смешение прямоугольников и текста не перегруппировывается поверх пользовательского
 порядка: это важно для выделения, текста, caret и перекрывающих popup.
 
 Runtime вычисляет translation, scroll и ancestor clips. Прямоугольники обрезаются
 геометрически. Controls формируют текстовые runs с собственными clip bounds.
-Rounded fill сохраняет исходную геометрию углов при прямоугольном clipping;
-uniform radius сглаживается GPU shader. Скругление не создаёт clip для потомков.
+Rounded fill и inset stroke сохраняют исходную геометрию углов при прямоугольном
+clipping; uniform radius сглаживается GPU shader. `RoundedRect.stroke_width=None`
+означает заливку, `Some(width)` — отдельное кольцо рамки без заполнения центра.
+`rounded_stroke` пропускает нулевую толщину и ограничивает радиус/толщину половиной
+меньшей стороны. Прозрачные фон и рамка могут компоноваться отдельными командами.
+Скругление не создаёт clip для потомков.
 Renderer переводит логические координаты в физические, запрашивает подготовленные
 глифы и рисует instanced quads с RGBA atlas. Swash выполняет CPU rasterization
 глифов; конечная композиция UI выполняется GPU, скрытого software renderer нет.

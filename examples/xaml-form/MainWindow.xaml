@@ -5,6 +5,7 @@
         Padding="32" Theme="Light">
     <TextBox x:Name="Message"
              Height="36"
+             FontSize="14" Padding="12,5" CornerRadius="4" BorderThickness="1"
              IsReadOnly="False" MaxLength="64"
              AutomationName="Текст"
              PlaceholderText="Введите текст…" />

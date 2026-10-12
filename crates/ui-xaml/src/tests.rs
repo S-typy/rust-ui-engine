@@ -222,6 +222,133 @@ fn readonly_and_length_properties_have_strict_values_and_codegen() {
 }
 
 #[test]
+fn parses_style_metrics_and_argb_colors_without_theme_defaults() {
+    let source = form(
+        "",
+        "<TextBox FontSize='18.5' Padding='1,2,3,4' CornerRadius='8' BorderThickness='2' Background='#102030' Foreground='#80102030' BorderBrush='#00AAbBcC' FocusBrush='#abcdef' PlaceholderForeground='#FF334455' SelectionBrush='#40667788'/>",
+    );
+    let style = parse(&source).unwrap().edit_box;
+    assert_eq!(style.font_size, Some(18.5));
+    assert_eq!(style.padding, Some([1.0, 2.0, 3.0, 4.0]));
+    assert_eq!(style.corner_radius, Some(8.0));
+    assert_eq!(style.border_thickness, Some(2.0));
+    assert_eq!(style.background, Some([16, 32, 48, 255]));
+    assert_eq!(style.foreground, Some([16, 32, 48, 128]));
+    assert_eq!(style.border_brush, Some([170, 187, 204, 0]));
+    assert_eq!(style.focus_brush, Some([171, 205, 239, 255]));
+    assert_eq!(style.placeholder_foreground, Some([51, 68, 85, 255]));
+    assert_eq!(style.selection_brush, Some([102, 119, 136, 64]));
+    let generated = compile(&source).unwrap();
+    for field in [
+        "font_size: Some(18.5),",
+        "padding: Some([1.0, 2.0, 3.0, 4.0]),",
+        "corner_radius: Some(8.0),",
+        "border_thickness: Some(2.0),",
+        "background: Some([16, 32, 48, 255]),",
+        "foreground: Some([16, 32, 48, 128]),",
+        "border_brush: Some([170, 187, 204, 0]),",
+        "focus_brush: Some([171, 205, 239, 255]),",
+        "placeholder_foreground: Some([51, 68, 85, 255]),",
+        "selection_brush: Some([102, 119, 136, 64]),",
+    ] {
+        assert!(generated.contains(field), "{field}");
+    }
+    let defaults = compile(&form("", "<TextBox/>")).unwrap();
+    for name in [
+        "font_size",
+        "padding",
+        "corner_radius",
+        "border_thickness",
+        "background",
+        "foreground",
+        "border_brush",
+        "focus_brush",
+        "placeholder_foreground",
+        "selection_brush",
+    ] {
+        assert!(defaults.contains(&format!("{name}: None,")), "{name}");
+    }
+}
+
+#[test]
+fn style_metrics_enforce_ranges_and_padding_arity() {
+    for (property, values) in [
+        (
+            "FontSize",
+            vec!["0", "-1", "513", "1e-300", "NaN", "inf", "", "12,14"],
+        ),
+        ("CornerRadius", vec!["-1", "16385", "NaN", "inf", "", "1,2"]),
+        (
+            "BorderThickness",
+            vec!["-1", "16385", "NaN", "inf", "", "1,2"],
+        ),
+        (
+            "Padding",
+            vec!["-1", "16385", "NaN", "inf", "", "1,2,3", "1,2,3,4,5"],
+        ),
+    ] {
+        for value in values {
+            let source = form("", &format!("<TextBox\n    {property}='{value}'/>"));
+            let error = parse(&source).unwrap_err();
+            assert!(error.message.contains(property), "{property}: {error}");
+            assert_eq!((error.line, error.column), (3, 5));
+        }
+    }
+    for source in [
+        "<TextBox FontSize='512' Padding='0' CornerRadius='16384' BorderThickness='16384'/>",
+        "<TextBox FontSize='0.5' Padding='16384' CornerRadius='0' BorderThickness='0'/>",
+    ] {
+        assert!(parse(&form("", source)).is_ok());
+    }
+    assert_eq!(
+        parse(&form("", "<TextBox Padding='12,5'/>"))
+            .unwrap()
+            .edit_box
+            .padding,
+        Some([12.0, 5.0, 12.0, 5.0])
+    );
+}
+
+#[test]
+fn brush_colors_require_strict_hex_and_report_the_attribute() {
+    for property in [
+        "Background",
+        "Foreground",
+        "BorderBrush",
+        "FocusBrush",
+        "PlaceholderForeground",
+        "SelectionBrush",
+    ] {
+        for value in [
+            "Red",
+            "Transparent",
+            "#fff",
+            "#12345",
+            "#1234567",
+            "#123456789",
+            "#GG1122",
+            "112233",
+            " #112233",
+            "#112233 ",
+            "#１２３４５６",
+            "",
+        ] {
+            let source = form("", &format!("<TextBox\n    {property}='{value}'/>"));
+            let error = parse(&source).unwrap_err();
+            assert!(error.message.contains(property), "{property}: {error}");
+            assert!(error.message.contains("#RRGGBB or #AARRGGBB"), "{error}");
+            assert_eq!((error.line, error.column), (3, 5));
+        }
+    }
+    assert!(
+        parse(&form("", "<TextBox Background='{StaticResource Brush}'/>"))
+            .unwrap_err()
+            .message
+            .contains("markup extensions")
+    );
+}
+
+#[test]
 fn initial_length_counts_normalized_extended_graphemes() {
     // Combining accents and ZWJ emoji each occupy one editing position.
     let text = "e\u{301}👩‍💻";

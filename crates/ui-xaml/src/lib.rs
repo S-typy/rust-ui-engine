@@ -27,6 +27,8 @@ pub const XAML_NAMESPACE: &str = "http://schemas.microsoft.com/winfx/2006/xaml";
 pub const MAX_SOURCE_BYTES: usize = 1_048_576;
 /// Largest supported size or spacing value, in logical pixels.
 pub const MAX_DIMENSION: f64 = 16_384.0;
+/// Largest supported editor font size, in logical pixels.
+pub const MAX_FONT_SIZE: f64 = 512.0;
 /// Largest `MaxLength` value accepted by this profile, in extended graphemes.
 pub const MAX_TEXT_LENGTH: usize = 1_048_576;
 
@@ -81,6 +83,21 @@ pub struct EditBoxDefinition {
     pub is_read_only: bool,
     /// Maximum extended graphemes. `None` means no grapheme limit (`MaxLength="0"`).
     pub max_length: Option<usize>,
+    /// `None` uses the current control theme's metric.
+    pub font_size: Option<f32>,
+    /// Optional left, top, right, bottom content padding in logical pixels.
+    pub padding: Option<[f32; 4]>,
+    /// Uniform corner radius in logical pixels, clamped to the rendered bounds.
+    pub corner_radius: Option<f32>,
+    /// Uniform border thickness in logical pixels.
+    pub border_thickness: Option<f32>,
+    /// Optional straight-alpha sRGB colors, in red/green/blue/alpha byte order.
+    pub background: Option<[u8; 4]>,
+    pub foreground: Option<[u8; 4]>,
+    pub border_brush: Option<[u8; 4]>,
+    pub focus_brush: Option<[u8; 4]>,
+    pub placeholder_foreground: Option<[u8; 4]>,
+    pub selection_brush: Option<[u8; 4]>,
 }
 
 impl Default for EditBoxDefinition {
@@ -96,6 +113,16 @@ impl Default for EditBoxDefinition {
             is_enabled: true,
             is_read_only: false,
             max_length: None,
+            font_size: None,
+            padding: None,
+            corner_radius: None,
+            border_thickness: None,
+            background: None,
+            foreground: None,
+            border_brush: None,
+            focus_brush: None,
+            placeholder_foreground: None,
+            selection_brush: None,
         }
     }
 }
@@ -247,6 +274,27 @@ fn parse_editor(node: Node<'_, '_>) -> Result<EditBoxDefinition, Diagnostic> {
             "IsEnabled" => definition.is_enabled = boolean(document, attribute)?,
             "IsReadOnly" => definition.is_read_only = boolean(document, attribute)?,
             "MaxLength" => definition.max_length = max_length(document, attribute)?,
+            "FontSize" => {
+                definition.font_size =
+                    Some(editor_metric(document, attribute, MAX_FONT_SIZE, false)?);
+            }
+            "Padding" => definition.padding = Some(thickness(document, attribute)?),
+            "CornerRadius" => {
+                definition.corner_radius =
+                    Some(editor_metric(document, attribute, MAX_DIMENSION, true)?);
+            }
+            "BorderThickness" => {
+                definition.border_thickness =
+                    Some(editor_metric(document, attribute, MAX_DIMENSION, true)?);
+            }
+            "Background" => definition.background = Some(color(document, attribute)?),
+            "Foreground" => definition.foreground = Some(color(document, attribute)?),
+            "BorderBrush" => definition.border_brush = Some(color(document, attribute)?),
+            "FocusBrush" => definition.focus_brush = Some(color(document, attribute)?),
+            "PlaceholderForeground" => {
+                definition.placeholder_foreground = Some(color(document, attribute)?)
+            }
+            "SelectionBrush" => definition.selection_brush = Some(color(document, attribute)?),
             property => {
                 return Err(at_attribute(
                     document,
@@ -378,6 +426,60 @@ fn editor_dimension(
     Ok(value)
 }
 
+fn editor_metric(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+    maximum: f64,
+    allow_zero: bool,
+) -> Result<f32, Diagnostic> {
+    attribute
+        .value()
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| {
+            value.is_finite()
+                && *value <= maximum
+                && if allow_zero { *value >= 0.0 } else { *value > 0.0 && (*value as f32) > 0.0 }
+        })
+        .map(|value| value as f32)
+        .ok_or_else(|| {
+            at_attribute(
+                document,
+                attribute,
+                format!(
+                    "{} must be a finite number in {}0, {maximum}] representable as an editor metric",
+                    attribute.name(),
+                    if allow_zero { "[" } else { "(" }
+                ),
+            )
+        })
+}
+
+fn color(document: &Document<'_>, attribute: Attribute<'_, '_>) -> Result<[u8; 4], Diagnostic> {
+    let value = attribute.value();
+    let digits = value
+        .strip_prefix('#')
+        .filter(|digits| {
+            matches!(digits.len(), 6 | 8) && digits.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+        .ok_or_else(|| {
+            at_attribute(
+                document,
+                attribute,
+                format!("{} must be #RRGGBB or #AARRGGBB", attribute.name()),
+            )
+        })?;
+    // ASCII-only validated hex makes each byte pair a valid UTF-8 slice.
+    let byte = |offset| u8::from_str_radix(&digits[offset..offset + 2], 16).expect("validated hex");
+    let (offset, alpha) = if digits.len() == 8 {
+        (2, byte(0))
+    } else {
+        (0, 255)
+    };
+    Ok([byte(offset), byte(offset + 2), byte(offset + 4), alpha])
+}
+
 fn thickness(
     document: &Document<'_>,
     attribute: Attribute<'_, '_>,
@@ -467,6 +569,16 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
             is_enabled: {enabled},
             is_read_only: {read_only},
             max_length: {max_length:?},
+            font_size: {font_size:?},
+            padding: {editor_padding:?},
+            corner_radius: {corner_radius:?},
+            border_thickness: {border_thickness:?},
+            background: {background:?},
+            foreground: {foreground:?},
+            border_brush: {border_brush:?},
+            focus_brush: {focus_brush:?},
+            placeholder_foreground: {placeholder_foreground:?},
+            selection_brush: {selection_brush:?},
         }},
     }}
 }}
@@ -484,6 +596,16 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         enabled = edit.is_enabled,
         read_only = edit.is_read_only,
         max_length = edit.max_length,
+        font_size = edit.font_size,
+        editor_padding = edit.padding,
+        corner_radius = edit.corner_radius,
+        border_thickness = edit.border_thickness,
+        background = edit.background,
+        foreground = edit.foreground,
+        border_brush = edit.border_brush,
+        focus_brush = edit.focus_brush,
+        placeholder_foreground = edit.placeholder_foreground,
+        selection_brush = edit.selection_brush,
     ))
 }
 
