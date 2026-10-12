@@ -55,6 +55,10 @@ impl Form {
         ui.set_placeholder(editor, &field.placeholder)
             .map_err(err)?;
         ui.set_enabled(editor, field.is_enabled).map_err(err)?;
+        ui.set_read_only(editor, field.is_read_only).map_err(err)?;
+        ui.set_max_length(editor, field.max_length).map_err(err)?;
+        // Mounting establishes the initial value; subsequent mutations are events.
+        ui.drain_text_changes();
         Ok(Self {
             ui,
             editor,
@@ -63,6 +67,7 @@ impl Form {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn text(&self) -> &str {
         self.ui
             .document(self.editor)
@@ -112,7 +117,6 @@ impl DesktopApp for Form {
     }
 
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
-        let before = self.diagnostics.then(|| self.text().to_owned());
         let mut redraw = true;
         match event {
             PlatformEvent::Input(input) => self.ui.dispatch(input).map_err(err)?,
@@ -127,8 +131,10 @@ impl DesktopApp for Form {
             PlatformEvent::Tick => redraw = self.ui.blink_caret(),
             PlatformEvent::Accessibility(request) => self.accessibility_action(request)?,
         }
-        if before.as_deref().is_some_and(|value| value != self.text()) {
-            println!("edit-value={:?}", self.text());
+        for change in self.ui.drain_text_changes() {
+            if self.diagnostics && change.id == self.editor {
+                println!("edit-value={:?}", change.text);
+            }
         }
         let clipboard = self
             .ui
@@ -145,11 +151,14 @@ impl DesktopApp for Form {
     }
 
     fn ime_cursor(&self) -> Option<Rect> {
-        self.ui.caret_bounds()
+        self.ime_target().and_then(|_| self.ui.caret_bounds())
     }
 
     fn ime_target(&self) -> Option<WidgetId> {
-        self.ui.runtime.focused().filter(|id| *id == self.editor)
+        self.ui
+            .runtime
+            .focused()
+            .filter(|id| *id == self.editor && self.ui.is_text_editable(*id))
     }
 
     fn ime_composition_active(&self) -> Option<bool> {
@@ -159,7 +168,7 @@ impl DesktopApp for Form {
     }
 
     fn wake_after(&self) -> Option<Duration> {
-        self.ime_cursor().map(|_| Duration::from_millis(500))
+        self.ui.caret_bounds().map(|_| Duration::from_millis(500))
     }
 
     fn accessibility(&mut self, scale: f32) -> accesskit::TreeUpdate {
@@ -189,7 +198,12 @@ impl DesktopApp for Form {
                 node.set_disabled();
             } else {
                 node.add_action(accesskit::Action::Focus);
-                node.add_action(accesskit::Action::SetValue);
+                if !semantic.read_only {
+                    node.add_action(accesskit::Action::SetValue);
+                }
+            }
+            if semantic.read_only {
+                node.set_read_only();
             }
             if semantic.focused {
                 focus = EDIT;

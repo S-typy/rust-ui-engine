@@ -91,6 +91,47 @@ committed text intact. Undo/redo stores up to 128 full document states. New edit
 after undo discard redo history. Clipboard integration is host-owned: use
 `selected_text`, `cut` and `paste` to exchange strings with a platform clipboard.
 
+## Bounded editing
+
+`TextLimits` checks committed text with independent UTF-8 byte and extended
+grapheme limits. Its default is `max_bytes: 1_048_576` and
+`max_graphemes: None`. `Some(0)` permits only empty committed text.
+`validate(&self, text)` checks a string without changing a document.
+
+```rust
+use rust_desktop_ui_text::{TextDocument, TextLimits};
+
+let limits = TextLimits {
+    max_graphemes: Some(1),
+    ..TextLimits::default()
+};
+let mut document = TextDocument::new("e");
+document.try_insert("\u{301}", limits)?; // still one grapheme: e + accent
+assert!(document.try_insert("x", limits).is_err());
+assert_eq!(document.text(), "e\u{301}");
+# Ok::<(), rust_desktop_ui_text::EditError>(())
+```
+
+Use `try_insert(text, limits)`, `try_set_text(text, limits)` and
+`try_commit(text, limits)` for checked mutations. They validate the final text,
+including the selected replacement range and grapheme merges with neighboring
+text. The byte cap is checked before allocating the candidate or undo snapshot.
+`try_undo(limits)` and `try_redo(limits)` return `Result<bool, EditError>` and check
+the restored text against the supplied limits. Rejection leaves text, selection,
+composition and both history stacks unchanged. `EditError::LimitExceeded` reports
+the `maximum` and `kind: TextLimit::Bytes` or `TextLimit::Graphemes`.
+
+`try_set_preedit(text, cursor, limits)` checks the final display text against the
+byte cap only. IME candidates can exceed the committed grapheme limit while being
+composed; they are never truncated. `try_commit` checks both limits and retains
+composition on rejection, allowing the caller to update or cancel it explicitly.
+
+Limits are supplied per operation, not stored in `TextDocument`. The existing
+constructor and methods such as `insert`, `set_text`, `commit`, `undo` and `redo`
+remain available without these checks. Applications using them must enforce their
+own size policy. Document limits also do not replace the shaping and renderer
+budgets, including the renderer's aggregate text budget for an entire frame.
+
 ## Fonts, dependencies and current limits
 
 Fonts are discovered from the operating system; no font files are bundled.

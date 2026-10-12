@@ -17,6 +17,7 @@
 use std::{fmt, fs, io::Read, path::Path};
 
 use roxmltree::{Attribute, Document, Node, ParsingOptions};
+use unicode_segmentation::UnicodeSegmentation;
 
 /// Namespace for this library's controls; not the WPF presentation namespace.
 pub const UI_NAMESPACE: &str = "urn:rust-ui-engine:ui";
@@ -26,6 +27,8 @@ pub const XAML_NAMESPACE: &str = "http://schemas.microsoft.com/winfx/2006/xaml";
 pub const MAX_SOURCE_BYTES: usize = 1_048_576;
 /// Largest supported size or spacing value, in logical pixels.
 pub const MAX_DIMENSION: f64 = 16_384.0;
+/// Largest `MaxLength` value accepted by this profile, in extended graphemes.
+pub const MAX_TEXT_LENGTH: usize = 1_048_576;
 
 /// Initial form appearance, independent of the platform and control renderer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -74,6 +77,10 @@ pub struct EditBoxDefinition {
     /// Left, top, right, bottom margin in logical pixels.
     pub margin: [f32; 4],
     pub is_enabled: bool,
+    /// Allows focus, selection and copy while preventing user text mutations.
+    pub is_read_only: bool,
+    /// Maximum extended graphemes. `None` means no grapheme limit (`MaxLength="0"`).
+    pub max_length: Option<usize>,
 }
 
 impl Default for EditBoxDefinition {
@@ -87,6 +94,8 @@ impl Default for EditBoxDefinition {
             height: 36.0,
             margin: [0.0; 4],
             is_enabled: true,
+            is_read_only: false,
+            max_length: None,
         }
     }
 }
@@ -235,19 +244,9 @@ fn parse_editor(node: Node<'_, '_>) -> Result<EditBoxDefinition, Diagnostic> {
             "Width" => definition.width = Some(editor_dimension(document, attribute)?),
             "Height" => definition.height = editor_dimension(document, attribute)?,
             "Margin" => definition.margin = thickness(document, attribute)?,
-            "IsEnabled" => {
-                definition.is_enabled = match attribute.value() {
-                    "True" | "true" => true,
-                    "False" | "false" => false,
-                    _ => {
-                        return Err(at_attribute(
-                            document,
-                            attribute,
-                            "IsEnabled must be True or False",
-                        ));
-                    }
-                };
-            }
+            "IsEnabled" => definition.is_enabled = boolean(document, attribute)?,
+            "IsReadOnly" => definition.is_read_only = boolean(document, attribute)?,
+            "MaxLength" => definition.max_length = max_length(document, attribute)?,
             property => {
                 return Err(at_attribute(
                     document,
@@ -257,7 +256,55 @@ fn parse_editor(node: Node<'_, '_>) -> Result<EditBoxDefinition, Diagnostic> {
             }
         }
     }
+    // Match the single-line control's policy before checking the initial value.
+    // Preserve the source text in the definition; mounting normalizes it too.
+    if let Some(limit) = definition.max_length {
+        let text: String = definition
+            .text
+            .chars()
+            .filter(|c| !matches!(c, '\r' | '\n' | '\t' | '\u{85}' | '\u{2028}' | '\u{2029}'))
+            .collect();
+        if text.graphemes(true).count() > limit {
+            return Err(at_attribute(
+                document,
+                node.attribute_node("Text")
+                    .expect("nonempty Text has an attribute"),
+                "Text exceeds MaxLength after single-line normalization",
+            ));
+        }
+    }
     Ok(definition)
+}
+
+fn boolean(document: &Document<'_>, attribute: Attribute<'_, '_>) -> Result<bool, Diagnostic> {
+    match attribute.value() {
+        "True" | "true" => Ok(true),
+        "False" | "false" => Ok(false),
+        _ => Err(at_attribute(
+            document,
+            attribute,
+            format!("{} must be True or False", attribute.name()),
+        )),
+    }
+}
+
+fn max_length(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+) -> Result<Option<usize>, Diagnostic> {
+    let value = attribute.value();
+    let parsed = (!value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .then(|| value.parse::<usize>().ok())
+        .flatten()
+        .filter(|length| *length <= MAX_TEXT_LENGTH)
+        .ok_or_else(|| {
+            at_attribute(
+                document,
+                attribute,
+                format!("MaxLength must be an integer in [0, {MAX_TEXT_LENGTH}]"),
+            )
+        })?;
+    Ok((parsed != 0).then_some(parsed))
 }
 
 fn require_element(node: Node<'_, '_>, name: &str) -> Result<(), Diagnostic> {
@@ -418,6 +465,8 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
             height: {height:?},
             margin: {margin:?},
             is_enabled: {enabled},
+            is_read_only: {read_only},
+            max_length: {max_length:?},
         }},
     }}
 }}
@@ -433,6 +482,8 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         height = edit.height,
         margin = edit.margin,
         enabled = edit.is_enabled,
+        read_only = edit.is_read_only,
+        max_length = edit.max_length,
     ))
 }
 

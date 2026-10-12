@@ -163,6 +163,93 @@ fn rejects_invalid_spacing_bools_and_theme() {
 }
 
 #[test]
+fn readonly_and_length_properties_have_strict_values_and_codegen() {
+    for (value, expected) in [
+        ("True", true),
+        ("true", true),
+        ("False", false),
+        ("false", false),
+    ] {
+        let parsed = parse(&form(
+            "",
+            &format!("<TextBox IsReadOnly='{value}' MaxLength='64'/>"),
+        ))
+        .unwrap();
+        assert_eq!(parsed.edit_box.is_read_only, expected);
+        assert_eq!(parsed.edit_box.max_length, Some(64));
+    }
+    for value in ["", "yes", "1", "TRUE", " true "] {
+        let error = parse(&form("", &format!("<TextBox IsReadOnly='{value}'/>"))).unwrap_err();
+        assert!(error.message.contains("IsReadOnly"));
+    }
+    for value in [
+        "",
+        "-1",
+        "+1",
+        "1.0",
+        "1e2",
+        " 1",
+        "1 ",
+        "١",
+        "1048577",
+        "18446744073709551616",
+    ] {
+        let error = parse(&form("", &format!("<TextBox MaxLength='{value}'/>"))).unwrap_err();
+        assert!(error.message.contains("MaxLength"), "{value}: {error}");
+    }
+    assert_eq!(
+        parse(&form("", "<TextBox MaxLength='1048576'/>"))
+            .unwrap()
+            .edit_box
+            .max_length,
+        Some(MAX_TEXT_LENGTH)
+    );
+    assert_eq!(
+        parse(&form("", "<TextBox MaxLength='0'/>"))
+            .unwrap()
+            .edit_box
+            .max_length,
+        None
+    );
+    let generated = compile(&form("", "<TextBox IsReadOnly='True' MaxLength='64'/>")).unwrap();
+    assert!(generated.contains("is_read_only: true,"));
+    assert!(generated.contains("max_length: Some(64),"));
+    assert!(
+        compile(&form("", "<TextBox MaxLength='0'/>"))
+            .unwrap()
+            .contains("max_length: None,")
+    );
+}
+
+#[test]
+fn initial_length_counts_normalized_extended_graphemes() {
+    // Combining accents and ZWJ emoji each occupy one editing position.
+    let text = "e\u{301}👩‍💻";
+    let parsed = parse(&form(
+        "",
+        &format!("<TextBox Text='{text}' MaxLength='2'/>"),
+    ))
+    .unwrap();
+    assert_eq!(parsed.edit_box.text, text);
+    let error = parse(&form(
+        "",
+        &format!("<TextBox MaxLength='1' Text='{text}'/>"),
+    ))
+    .unwrap_err();
+    assert!(error.message.contains("Text exceeds MaxLength"));
+    assert_eq!((error.line, error.column), (2, 24));
+    let normalized = "<TextBox MaxLength='1' Text='a&#13;&#10;&#9;&#x85;&#x2028;&#x2029;&#x301;'/>";
+    assert!(parse(&form("", normalized)).is_ok());
+    assert!(
+        parse(&form(
+            "",
+            &format!("<TextBox Text='{text}' MaxLength='0'/>")
+        ))
+        .is_ok()
+    );
+}
+
+#[test]
 fn malformed_xml_and_both_empty_and_entity_dtds_are_rejected() {
     for source in [
         form("", "<TextBox>"),

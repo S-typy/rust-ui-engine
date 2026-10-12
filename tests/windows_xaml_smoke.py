@@ -262,6 +262,25 @@ class FormSession(RetainedSession):
         self.type_text(TEXT[-1])
         self.wait_value(TEXT, "focus restore permits editing preserved value")
 
+        # The compiled example sets MaxLength=64. Fill the field, then verify
+        # rejected input neither changes the value nor emits TextChanged.
+        self.key(VK_END)
+        suffix = "x" * (64 - len(TEXT))
+        self.type_text(suffix)
+        self.wait_value(TEXT + suffix, "compiled MaxLength accepts exactly 64 graphemes")
+        changes_before = self.log().count("edit-value=")
+        self.type_text("!")
+        time.sleep(0.2)
+        self.alive()
+        if last_edit_value(self.log()) != TEXT + suffix:
+            raise SmokeFailure("MaxLength accepted a 65th grapheme")
+        if self.log().count("edit-value=") != changes_before:
+            raise SmokeFailure("Rejected input emitted an edit-value event")
+        self.report["checks"].append({"check": "MaxLength rejects overflow without TextChanged"})
+        for _ in suffix:
+            self.key(VK_BACK)
+        self.wait_value(TEXT, "editing continues after rejected overflow")
+
         self.windows.require(self.windows.user.ShowWindowAsync(self.hwnd, 6), "minimize")
         self.wait("native minimize", lambda: self.windows.user.IsIconic(self.hwnd))
         self.windows.require(self.windows.user.ShowWindowAsync(self.hwnd, 9), "restore")

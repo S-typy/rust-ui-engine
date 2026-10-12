@@ -75,6 +75,9 @@ impl Gallery {
             if item.disabled {
                 node.set_disabled();
             }
+            if item.read_only {
+                node.set_read_only();
+            }
             for action in item.actions {
                 match action {
                     SemanticAction::Focus => node.add_action(Action::Focus),

@@ -5,6 +5,7 @@
         Padding="32" Theme="Light">
     <TextBox x:Name="Message"
              Height="36"
+             IsReadOnly="False" MaxLength="64"
              AutomationName="Текст"
              PlaceholderText="Введите текст…" />
 </Window>

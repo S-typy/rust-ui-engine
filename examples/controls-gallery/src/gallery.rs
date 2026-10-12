@@ -823,6 +823,8 @@ impl DesktopApp for Gallery {
                 .map_err(err)?;
             self.ui.update(viewport).map_err(err)?;
         }
+        // This example reads editor values directly when updating its model.
+        let _ = self.ui.drain_text_changes();
         Ok(())
     }
     fn scene(&self) -> &Scene {
@@ -853,13 +855,13 @@ impl DesktopApp for Gallery {
         )
     }
     fn ime_cursor(&self) -> Option<Rect> {
-        self.ui.caret_bounds()
+        self.ime_target().and_then(|_| self.ui.caret_bounds())
     }
     fn ime_target(&self) -> Option<WidgetId> {
         self.ui
             .runtime
             .focused()
-            .filter(|id| self.ui.document(*id).is_some())
+            .filter(|id| self.ui.is_text_editable(*id))
     }
     fn ime_composition_active(&self) -> Option<bool> {
         self.ime_target()
@@ -910,6 +912,7 @@ impl DesktopApp for Gallery {
                 rust_desktop_ui_controls::ClipboardRequest::Paste => ClipboardRequest::Paste,
             });
         }
+        let _ = self.ui.drain_text_changes();
         Ok(EventResponse {
             redraw,
             clipboard: std::mem::take(&mut self.clipboard),

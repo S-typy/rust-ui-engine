@@ -5,19 +5,23 @@ use rust_desktop_ui_core::{
     TextRun, UiRuntime, UiTree, WidgetId,
 };
 use rust_desktop_ui_layout::TaffyLayout;
-use rust_desktop_ui_text::{PreparedText, TextCaret, TextDocument, TextEngine, TextError};
-use std::{collections::HashMap, fmt};
+use rust_desktop_ui_text::{
+    EditError, PreparedText, TextCaret, TextDocument, TextEngine, TextError, TextLimit, TextLimits,
+};
+use std::{borrow::Cow, collections::HashMap, fmt};
 
 #[derive(Debug)]
 pub enum ControlError {
     Runtime(RuntimeError),
     Text(String),
+    Edit(EditError),
     Invalid(String),
 }
 impl fmt::Display for ControlError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Runtime(e) => e.fmt(f),
+            Self::Edit(e) => e.fmt(f),
             Self::Text(e) | Self::Invalid(e) => f.write_str(e),
         }
     }
@@ -62,10 +66,19 @@ pub struct SemanticNode {
     pub checked: Option<bool>,
     pub selected: bool,
     pub disabled: bool,
+    pub read_only: bool,
     pub focused: bool,
     pub bounds: Rect,
     pub actions: Vec<SemanticAction>,
     pub children: Vec<WidgetId>,
+}
+
+/// One committed string change. Drain after handling input or application updates.
+/// Initial values, selection, IME preedit and rejected/no-op edits emit no event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TextChanged {
+    pub id: WidgetId,
+    pub text: String,
 }
 
 #[derive(Clone, Debug)]
@@ -147,6 +160,8 @@ struct Control {
     tooltip: Option<String>,
     placeholder: String,
     single_line: bool,
+    read_only: bool,
+    max_length: Option<usize>,
     text_scroll_x: f32,
     text_scroll: f32,
     default_height: bool,
@@ -180,6 +195,7 @@ pub struct Controls {
     popup: Option<Popup>,
     clipboard: Vec<ClipboardRequest>,
     activated: Vec<WidgetId>,
+    text_changes: Vec<TextChanged>,
     viewport: Size,
     scene: Scene,
     text_layouts: HashMap<WidgetId, PreparedText>,
@@ -235,6 +251,7 @@ impl Controls {
             popup: None,
             clipboard: Vec::new(),
             activated: Vec::new(),
+            text_changes: Vec::new(),
             viewport: Size::ZERO,
             scene: Scene::default(),
             text_layouts: HashMap::new(),
@@ -298,6 +315,19 @@ impl Controls {
     pub fn drain_clipboard_requests(&mut self) -> Vec<ClipboardRequest> {
         std::mem::take(&mut self.clipboard)
     }
+    pub fn drain_text_changes(&mut self) -> Vec<TextChanged> {
+        std::mem::take(&mut self.text_changes)
+    }
+    fn record_text_change(&mut self, id: WidgetId, before: &str) {
+        if let Some(document) = self.document(id)
+            && document.text() != before
+        {
+            self.text_changes.push(TextChanged {
+                id,
+                text: document.text().to_owned(),
+            });
+        }
+    }
     pub fn document(&self, id: WidgetId) -> Option<&TextDocument> {
         match &self.controls.get(&id)?.kind {
             Kind::TextBox(document) => Some(document),
@@ -329,7 +359,65 @@ impl Controls {
             .enabled = enabled;
         self.scene_dirty = true;
         self.refresh_paints()?;
+        self.cancel_inactive_preedit();
         Ok(())
+    }
+    /// Prevent user changes while retaining focus, selection, navigation and copy.
+    /// Application `set_text` is still allowed and obeys the editor's limits.
+    pub fn set_read_only(&mut self, id: WidgetId, read_only: bool) -> Result<(), ControlError> {
+        let Some(Control {
+            kind: Kind::TextBox(document),
+            read_only: current,
+            ..
+        }) = self.controls.get_mut(&id)
+        else {
+            return Err(ControlError::Invalid("Control is not a TextBox".into()));
+        };
+        *current = read_only;
+        if read_only {
+            document.cancel_preedit();
+        }
+        self.scene_dirty = true;
+        self.refresh_paints()
+    }
+    pub fn is_read_only(&self, id: WidgetId) -> Option<bool> {
+        self.controls
+            .get(&id)
+            .filter(|c| matches!(c.kind, Kind::TextBox(_)))
+            .map(|c| c.read_only)
+    }
+    /// Whether this editor can currently accept user text (including ancestor state).
+    pub fn is_text_editable(&self, id: WidgetId) -> bool {
+        self.is_read_only(id) == Some(false) && self.is_enabled(id)
+    }
+    /// Maximum extended graphemes in committed text; `None` removes that limit.
+    /// `Some(0)` allows only empty text. The independent one-MiB byte cap remains.
+    /// A limit below the current length is rejected without truncating text/history.
+    pub fn set_max_length(
+        &mut self,
+        id: WidgetId,
+        maximum: Option<usize>,
+    ) -> Result<(), ControlError> {
+        let Some(Control {
+            kind: Kind::TextBox(document),
+            max_length,
+            ..
+        }) = self.controls.get_mut(&id)
+        else {
+            return Err(ControlError::Invalid("Control is not a TextBox".into()));
+        };
+        editor_limits(maximum)
+            .validate(document.text())
+            .map_err(edit_error)?;
+        *max_length = maximum;
+        Ok(())
+    }
+    /// Outer `None` means the ID is not a text editor; inner `None` means no grapheme limit.
+    pub fn max_length(&self, id: WidgetId) -> Option<Option<usize>> {
+        self.controls
+            .get(&id)
+            .filter(|c| matches!(c.kind, Kind::TextBox(_)))
+            .map(|c| c.max_length)
     }
     pub fn set_label(
         &mut self,
@@ -434,6 +522,8 @@ impl Controls {
                 tooltip: None,
                 placeholder: String::new(),
                 single_line: false,
+                read_only: false,
+                max_length: None,
                 text_scroll_x: 0.0,
                 text_scroll: 0.0,
                 default_height,
@@ -537,6 +627,8 @@ impl Controls {
         value: impl Into<String>,
         style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
+        let value = value.into();
+        TextLimits::default().validate(&value).map_err(edit_error)?;
         self.add(
             parent,
             Kind::TextBox(TextDocument::new(value)),
@@ -545,7 +637,8 @@ impl Controls {
             style,
         )
     }
-    /// A single-line editor. CR, LF and tab are removed from initial, pasted,
+    /// A single-line editor. CR, LF, tab, NEL and Unicode line/paragraph separators
+    /// are removed from initial, pasted,
     /// programmatic and committed text; Enter leaves the document unchanged.
     pub fn edit_box(
         &mut self,
@@ -555,7 +648,8 @@ impl Controls {
         style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
         let value = value.into();
-        let id = self.text_box(parent, label, filter_single_line(&value), style)?;
+        let value = normalize_editor_text(&value, true).map_err(edit_error)?;
+        let id = self.text_box(parent, label, value.as_ref(), style)?;
         if let Some(control) = self.controls.get_mut(&id) {
             control.single_line = true;
         }
@@ -690,6 +784,8 @@ impl Controls {
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.custom_scenes
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
+        self.text_changes
+            .retain(|event| self.runtime.tree().node(event.id).is_some());
         self.scene_dirty = true;
         Ok(())
     }
@@ -832,7 +928,7 @@ impl Controls {
                 Paint::default()
             } else {
                 Paint {
-                    background: Some(if !enabled {
+                    background: Some(if !enabled || control.read_only {
                         tokens.canvas
                     } else if self.pressed == Some(id) {
                         tokens.pressed
@@ -845,7 +941,7 @@ impl Controls {
                         width: 1.0,
                         color: tokens.border,
                     }),
-                    hover_background: (interactive && enabled).then_some(
+                    hover_background: (interactive && enabled && !control.read_only).then_some(
                         if self.pressed == Some(id) {
                             tokens.pressed
                         } else {
@@ -1277,6 +1373,8 @@ impl Controls {
             kind: Kind::TextBox(document),
             caret,
             single_line,
+            read_only,
+            max_length,
             ..
         }) = self.controls.get_mut(&id)
         else {
@@ -1349,6 +1447,9 @@ impl Controls {
             self.scene_dirty = true;
             return Ok(());
         }
+        let before = document.text().to_owned();
+        let selection_before = document.selection();
+        let limits = editor_limits(*max_length);
         match key {
             Key::ArrowLeft if shortcut => document.move_word_left(modifiers.shift),
             Key::ArrowRight if shortcut => document.move_word_right(modifiers.shift),
@@ -1358,65 +1459,90 @@ impl Controls {
             Key::End if shortcut => document.move_document_end(modifiers.shift),
             Key::Home => document.move_home(modifiers.shift),
             Key::End => document.move_end(modifiers.shift),
-            Key::Backspace => {
+            Key::Backspace if !*read_only => {
                 document.backspace();
             }
-            Key::Delete => {
+            Key::Delete if !*read_only => {
                 document.delete_forward();
             }
-            Key::Enter if !*single_line => {
-                document.insert("\n");
+            Key::Enter if !*single_line && !*read_only => {
+                if let Err(error) = document.try_insert("\n", limits) {
+                    return user_edit(Err(error));
+                }
             }
             Key::Character(value) if shortcut => match value.to_lowercase().as_str() {
                 "a" => document.select_all(),
                 "c" if !repeat => self
                     .clipboard
                     .push(ClipboardRequest::Copy(document.selected_text().to_owned())),
-                "x" if !repeat => {
+                "x" if !repeat && !*read_only => {
                     self.clipboard
                         .push(ClipboardRequest::Copy(document.selected_text().to_owned()));
                     document.insert("");
                 }
-                "v" if !repeat => self.clipboard.push(ClipboardRequest::Paste),
-                "z" if !repeat && modifiers.shift => {
-                    document.redo();
+                "v" if !repeat && !*read_only => self.clipboard.push(ClipboardRequest::Paste),
+                "z" if !repeat && modifiers.shift && !*read_only => {
+                    if let Err(error) = document.try_redo(limits) {
+                        return user_edit(Err(error));
+                    }
                 }
-                "z" if !repeat => {
-                    document.undo();
+                "z" if !repeat && !*read_only => {
+                    if let Err(error) = document.try_undo(limits) {
+                        return user_edit(Err(error));
+                    }
                 }
-                "y" if !repeat => {
-                    document.redo();
+                "y" if !repeat && !*read_only => {
+                    if let Err(error) = document.try_redo(limits) {
+                        return user_edit(Err(error));
+                    }
                 }
                 _ => {}
             },
             _ => {}
         }
-        *caret = TextCaret {
-            index: document.selection().focus,
-            ..Default::default()
-        };
+        if document.selection() != selection_before || document.text() != before {
+            *caret = TextCaret {
+                index: document.selection().focus,
+                ..Default::default()
+            };
+        }
         self.scene_dirty = true;
+        self.record_text_change(id, &before);
         Ok(())
     }
+    /// Insert user text or paste. Over-limit input is rejected as a whole.
     pub fn text_input(&mut self, text: &str) -> Result<(), ControlError> {
         self.caret_visible = true;
-        if let Some(id) = self.runtime.focused().filter(|&id| self.is_enabled(id))
+        if let Some(id) = self
+            .runtime
+            .focused()
+            .filter(|&id| self.is_text_editable(id))
             && let Some(Control {
                 kind: Kind::TextBox(document),
                 single_line,
+                max_length,
+                caret,
                 ..
             }) = self.controls.get_mut(&id)
         {
-            if *single_line {
-                let text = filter_single_line(text);
-                // A rejected Enter/tab event must not erase the current selection.
-                if !text.is_empty() {
-                    document.insert(&text);
-                }
-            } else {
-                document.insert(text);
+            let normalized = match normalize_editor_text(text, *single_line) {
+                Ok(text) => text,
+                Err(error) => return user_edit(Err(error)),
+            };
+            // Empty/filtered-only input must not erase the current selection.
+            if normalized.is_empty() {
+                return Ok(());
             }
+            let before = document.text().to_owned();
+            if let Err(error) = document.try_insert(&normalized, editor_limits(*max_length)) {
+                return user_edit(Err(error));
+            }
+            *caret = TextCaret {
+                index: document.selection().focus,
+                ..Default::default()
+            };
             self.scene_dirty = true;
+            self.record_text_change(id, &before);
         }
         Ok(())
     }
@@ -1426,38 +1552,65 @@ impl Controls {
         cursor: Option<(usize, usize)>,
     ) -> Result<(), ControlError> {
         self.caret_visible = true;
-        if let Some(id) = self.runtime.focused().filter(|&id| self.is_enabled(id))
+        if let Some(id) = self
+            .runtime
+            .focused()
+            .filter(|&id| self.is_text_editable(id))
             && let Some(Control {
                 kind: Kind::TextBox(document),
                 single_line,
+                max_length,
                 ..
             }) = self.controls.get_mut(&id)
         {
-            if *single_line && text.contains(['\r', '\n', '\t']) {
-                return Err(ControlError::Invalid(
-                    "Single-line IME preedit cannot contain CR, LF or tab".into(),
-                ));
+            if *single_line && text.chars().any(single_line_separator) {
+                // Cursor offsets refer to the original preedit, so do not filter it.
+                document.cancel_preedit();
+                self.scene_dirty = true;
+                return Ok(());
             }
-            document
-                .set_preedit(text, cursor)
-                .map_err(|e| ControlError::Text(e.to_string()))?;
+            user_edit(document.try_set_preedit(text, cursor, editor_limits(*max_length)))?;
             self.scene_dirty = true;
         }
         Ok(())
     }
     pub fn ime_commit(&mut self, text: &str) -> Result<(), ControlError> {
         self.caret_visible = true;
-        if let Some(id) = self.runtime.focused().filter(|&id| self.is_enabled(id))
+        if let Some(id) = self
+            .runtime
+            .focused()
+            .filter(|&id| self.is_text_editable(id))
             && let Some(Control {
                 kind: Kind::TextBox(document),
                 single_line,
+                max_length,
+                caret,
                 ..
             }) = self.controls.get_mut(&id)
         {
-            if *single_line {
-                document.commit(&filter_single_line(text));
-            } else {
-                document.commit(text);
+            let before = document.text().to_owned();
+            let result = normalize_editor_text(text, *single_line).and_then(|text| {
+                if text.is_empty() {
+                    Ok(())
+                } else {
+                    document.try_commit(&text, editor_limits(*max_length))
+                }
+            });
+            // The IME has ended its transaction even when its result is rejected.
+            document.cancel_preedit();
+            self.scene_dirty = true;
+            if let Err(error) = result {
+                return user_edit(Err(error));
+            }
+            *caret = TextCaret {
+                index: document.selection().focus,
+                ..Default::default()
+            };
+            if document.text() != before {
+                self.text_changes.push(TextChanged {
+                    id,
+                    text: document.text().to_owned(),
+                });
             }
             self.scene_dirty = true;
         }
@@ -1472,7 +1625,10 @@ impl Controls {
         self.scene_dirty = true;
     }
     fn cancel_inactive_preedit(&mut self) {
-        let focused = self.runtime.focused();
+        let focused = self
+            .runtime
+            .focused()
+            .filter(|&id| self.is_text_editable(id));
         for (&id, control) in &mut self.controls {
             if Some(id) != focused
                 && let Kind::TextBox(document) = &mut control.kind
@@ -1497,22 +1653,33 @@ impl Controls {
             .get(&id)
             .map(|layout| layout.caret_geometry(caret))
     }
+    /// Application-owned update, allowed for disabled/read-only editors.
+    /// Normalizes single-line input and rejects limits atomically with an error.
     pub fn set_text(&mut self, id: WidgetId, text: &str) -> Result<(), ControlError> {
         let Some(Control {
             kind: Kind::TextBox(document),
             single_line,
+            max_length,
+            caret,
             ..
         }) = self.controls.get_mut(&id)
         else {
             return Err(ControlError::Invalid("Control is not a TextBox".into()));
         };
-        document.select_all();
-        if *single_line {
-            document.insert(&filter_single_line(text));
-        } else {
-            document.insert(text);
+        let text = normalize_editor_text(text, *single_line).map_err(edit_error)?;
+        if text == document.text() {
+            return Ok(());
         }
+        let before = document.text().to_owned();
+        document
+            .try_set_text(&text, editor_limits(*max_length))
+            .map_err(edit_error)?;
+        *caret = TextCaret {
+            index: document.selection().focus,
+            ..Default::default()
+        };
         self.scene_dirty = true;
+        self.record_text_change(id, &before);
         Ok(())
     }
     fn rebuild_scene(&mut self) -> Result<(), ControlError> {
@@ -1844,6 +2011,7 @@ impl Controls {
                         checked: None,
                         selected: false,
                         disabled: !self.effective_enabled(id),
+                        read_only: false,
                         focused: self.runtime.focused() == Some(id),
                         bounds,
                         actions: Vec::new(),
@@ -1876,7 +2044,7 @@ impl Controls {
                     if control.kind.clickable() {
                         actions.push(SemanticAction::Activate);
                     }
-                    if value.is_some() {
+                    if value.is_some() && !control.read_only {
                         actions.push(SemanticAction::SetValue);
                     }
                     if checked.is_some() {
@@ -1895,6 +2063,7 @@ impl Controls {
                     checked,
                     selected,
                     disabled: !enabled,
+                    read_only: control.read_only,
                     focused: self.runtime.focused() == Some(id),
                     bounds,
                     actions,
@@ -1915,7 +2084,15 @@ impl Controls {
         match action {
             SemanticAction::Focus => self.runtime.apply(Mutation::Focus(Some(id)))?,
             SemanticAction::Activate | SemanticAction::Toggle => self.activate(id)?,
-            SemanticAction::SetValue => self.set_text(id, value.unwrap_or_default())?,
+            SemanticAction::SetValue => {
+                if self.is_text_editable(id) {
+                    // Accessibility is a user route: rejecting input must not close the host.
+                    match self.set_text(id, value.unwrap_or_default()) {
+                        Ok(()) | Err(ControlError::Edit(EditError::LimitExceeded { .. })) => {}
+                        Err(error) => return Err(error),
+                    }
+                }
+            }
             SemanticAction::Scroll => self.scroll_to(
                 id,
                 value
@@ -1937,10 +2114,52 @@ fn add_stats(target: &mut FrameStats, value: FrameStats) {
     target.semantics_nodes += value.semantics_nodes;
 }
 
-fn filter_single_line(text: &str) -> String {
-    text.chars()
-        .filter(|c| !matches!(c, '\r' | '\n' | '\t'))
-        .collect()
+fn editor_limits(max_graphemes: Option<usize>) -> TextLimits {
+    TextLimits {
+        max_graphemes,
+        ..Default::default()
+    }
+}
+
+fn edit_error(error: EditError) -> ControlError {
+    ControlError::Edit(error)
+}
+
+fn user_edit(result: Result<(), EditError>) -> Result<(), ControlError> {
+    match result {
+        Ok(()) | Err(EditError::LimitExceeded { .. }) => Ok(()),
+        Err(error) => Err(edit_error(error)),
+    }
+}
+
+fn single_line_separator(c: char) -> bool {
+    matches!(c, '\r' | '\n' | '\t' | '\u{85}' | '\u{2028}' | '\u{2029}')
+}
+
+fn normalize_editor_text(text: &str, single_line: bool) -> Result<Cow<'_, str>, EditError> {
+    let maximum = TextLimits::default().max_bytes;
+    if single_line && text.chars().any(single_line_separator) {
+        // Check the normalized byte size before allocating a copy of a large paste.
+        let bytes: usize = text
+            .chars()
+            .filter(|&c| !single_line_separator(c))
+            .map(char::len_utf8)
+            .sum();
+        if bytes > maximum {
+            return Err(EditError::LimitExceeded {
+                kind: TextLimit::Bytes,
+                maximum,
+            });
+        }
+        Ok(Cow::Owned(
+            text.chars()
+                .filter(|&c| !single_line_separator(c))
+                .collect(),
+        ))
+    } else {
+        TextLimits::default().validate(text)?;
+        Ok(Cow::Borrowed(text))
+    }
 }
 
 fn horizontal_caret_scroll(previous: f32, caret: Rect, viewport: Rect) -> f32 {

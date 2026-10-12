@@ -2221,6 +2221,7 @@ name = "rust-desktop-ui-xaml"
 version = "0.1.0"
 dependencies = [
  "roxmltree",
+ "unicode-segmentation",
 ]
 
 [[package]]

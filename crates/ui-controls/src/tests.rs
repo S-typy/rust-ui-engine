@@ -769,7 +769,7 @@ fn editbox_filters_single_line_inputs_without_changing_multiline_textbox() {
     );
     ui.text_input("\r\n\t").unwrap();
     assert_eq!(ui.document(id).unwrap().selected_text(), "xyz");
-    assert!(ui.ime_preedit("a\nb", Some((3, 3))).is_err());
+    ui.ime_preedit("a\nb", Some((3, 3))).unwrap();
     assert!(ui.document(id).unwrap().composition().is_none());
     ui.set_text(id, "").unwrap();
     ui.ime_commit("Я\n🙂\t").unwrap();
@@ -936,4 +936,475 @@ fn editbox_rtl_horizontal_scroll_keeps_both_document_ends_visible() {
             "RTL caret {caret:?} must stay inside the padded editor {bounds:?}"
         );
     }
+}
+
+fn control_modifier() -> Modifiers {
+    Modifiers {
+        control: true,
+        ..Default::default()
+    }
+}
+
+#[test]
+fn readonly_editor_keeps_navigation_copy_and_focus_but_blocks_user_mutations() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Account", "Ada", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.text_input("!").unwrap();
+    ui.drain_text_changes();
+    ui.set_read_only(id, true).unwrap();
+    assert_eq!(ui.is_read_only(id), Some(true));
+    assert!(!ui.is_text_editable(id));
+    assert_eq!(ui.runtime.focused(), Some(id));
+
+    key(&mut ui, Key::Home, Modifiers::default());
+    assert_eq!(ui.document(id).unwrap().selection().focus, 0);
+    key(&mut ui, Key::ArrowRight, Modifiers::default());
+    assert_eq!(ui.document(id).unwrap().selection().focus, 1);
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    key(&mut ui, Key::Character("c".into()), control_modifier());
+    assert_eq!(
+        ui.drain_clipboard_requests(),
+        vec![ClipboardRequest::Copy("Ada!".into())]
+    );
+    let selection = ui.document(id).unwrap().selection();
+    for key_value in [Key::Backspace, Key::Delete, Key::Enter] {
+        key(&mut ui, key_value, Modifiers::default());
+    }
+    for shortcut in ["x", "v", "z", "y"] {
+        key(&mut ui, Key::Character(shortcut.into()), control_modifier());
+    }
+    ui.text_input("replacement").unwrap();
+    ui.ime_preedit("日本", Some((6, 6))).unwrap();
+    ui.ime_commit("日本").unwrap();
+    ui.perform_action(id, SemanticAction::SetValue, Some("replacement"))
+        .unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "Ada!");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert!(ui.document(id).unwrap().can_undo());
+    assert!(!ui.document(id).unwrap().can_redo());
+    assert!(ui.drain_clipboard_requests().is_empty());
+    assert!(ui.drain_text_changes().is_empty());
+
+    let semantic = ui.semantics().into_iter().find(|n| n.id == id).unwrap();
+    assert!(semantic.read_only);
+    assert!(!semantic.disabled);
+    assert!(semantic.actions.contains(&SemanticAction::Focus));
+    assert!(!semantic.actions.contains(&SemanticAction::SetValue));
+
+    ui.set_read_only(id, false).unwrap();
+    assert!(ui.is_text_editable(id));
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "Ada");
+}
+
+#[test]
+fn readonly_transition_cancels_preedit_and_programmatic_updates_remain_available() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Account", "Ada", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    let selection = ui.document(id).unwrap().selection();
+    ui.ime_preedit("日本", Some((6, 6))).unwrap();
+    ui.set_read_only(id, true).unwrap();
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert_eq!(ui.document(id).unwrap().text(), "Ada");
+    assert!(!ui.document(id).unwrap().can_undo());
+    assert!(ui.drain_text_changes().is_empty());
+
+    ui.set_text(id, "Grace").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "Grace");
+    ui.set_enabled(id, false).unwrap();
+    ui.set_text(id, "Lin").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "Lin");
+    assert!(!ui.is_text_editable(id));
+    let changes = ui.drain_text_changes();
+    assert_eq!(changes.len(), 2);
+    assert_eq!((changes[0].id, changes[0].text.as_str()), (id, "Grace"));
+    assert_eq!((changes[1].id, changes[1].text.as_str()), (id, "Lin"));
+}
+
+#[test]
+fn maxlength_counts_resulting_graphemes_and_replacement_not_inserted_bytes() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Name", "e", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    assert_eq!(ui.max_length(id), Some(None));
+    ui.set_max_length(id, Some(1)).unwrap();
+    assert_eq!(ui.max_length(id), Some(Some(1)));
+    ui.text_input("\u{301}").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "e\u{301}");
+    assert_eq!(ui.document(id).unwrap().selection().focus, 3);
+    ui.drain_text_changes();
+
+    let selection = ui.document(id).unwrap().selection();
+    ui.text_input("🙂").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "e\u{301}");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.drain_text_changes().is_empty());
+
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    key(&mut ui, Key::Character("v".into()), control_modifier());
+    assert_eq!(ui.drain_clipboard_requests(), vec![ClipboardRequest::Paste]);
+    ui.text_input("👩‍💻").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "👩‍💻");
+    assert_eq!(ui.document(id).unwrap().selection().focus, "👩‍💻".len());
+
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    ui.drain_text_changes();
+    let selection = ui.document(id).unwrap().selection();
+    assert!(ui.set_text(id, "AB").is_err());
+    assert!(ui.set_max_length(id, Some(0)).is_err());
+    assert_eq!(ui.max_length(id), Some(Some(1)));
+    assert_eq!(ui.document(id).unwrap().text(), "👩‍💻");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.drain_text_changes().is_empty());
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "e\u{301}");
+}
+
+#[test]
+fn maxlength_rejection_preserves_redo_and_zero_means_no_committed_graphemes() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Code", "", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.text_input("ABC").unwrap();
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    ui.set_max_length(id, Some(0)).unwrap();
+    ui.drain_text_changes();
+    let selection = ui.document(id).unwrap().selection();
+    ui.text_input("x").unwrap();
+    assert!(ui.set_text(id, "x").is_err());
+    key(&mut ui, Key::Character("y".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.document(id).unwrap().can_redo());
+    assert!(!ui.document(id).unwrap().can_undo());
+    assert!(ui.drain_text_changes().is_empty());
+    ui.set_max_length(id, None).unwrap();
+    key(&mut ui, Key::Character("y".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "ABC");
+}
+
+#[test]
+fn lowering_maxlength_rejects_oversized_undo_without_losing_history() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Code", "long", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.set_text(id, "x").unwrap();
+    ui.set_max_length(id, Some(1)).unwrap();
+    ui.drain_text_changes();
+    let selection = ui.document(id).unwrap().selection();
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "x");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.document(id).unwrap().can_undo());
+    assert!(!ui.document(id).unwrap().can_redo());
+    assert!(ui.drain_text_changes().is_empty());
+    ui.set_max_length(id, None).unwrap();
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "long");
+    key(&mut ui, Key::Character("y".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "x");
+}
+
+#[test]
+fn ime_draft_can_exceed_maxlength_but_rejected_commit_preserves_selection_and_history() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Code", "a", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    ui.set_max_length(id, Some(1)).unwrap();
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    let selection = ui.document(id).unwrap().selection();
+    ui.ime_preedit("nihon", Some((5, 5))).unwrap();
+    assert_eq!(ui.document(id).unwrap().display_text(), "nihon");
+    assert_eq!(ui.document(id).unwrap().text(), "a");
+    assert!(ui.drain_text_changes().is_empty());
+    assert!(ui.set_text(id, "too long").is_err());
+    assert_eq!(ui.document(id).unwrap().display_text(), "nihon");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    ui.ime_commit("日本").unwrap();
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert_eq!(ui.document(id).unwrap().text(), "a");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(!ui.document(id).unwrap().can_undo());
+    assert!(ui.drain_text_changes().is_empty());
+
+    ui.ime_preedit("ni", Some((2, 2))).unwrap();
+    ui.ime_commit("日").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "日");
+    let changes = ui.drain_text_changes();
+    assert_eq!(changes.len(), 1);
+    assert_eq!((changes[0].id, changes[0].text.as_str()), (id, "日"));
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    assert_eq!(ui.document(id).unwrap().text(), "a");
+    assert!(!ui.document(id).unwrap().can_undo());
+}
+
+#[test]
+fn single_line_filtered_only_input_and_ime_commit_do_not_delete_selection() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Code", "keep", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    let selection = ui.document(id).unwrap().selection();
+    let separators = "\r\n\t\u{85}\u{2028}\u{2029}";
+    ui.text_input(separators).unwrap();
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    ui.ime_commit(separators).unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "keep");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert!(!ui.document(id).unwrap().can_undo());
+    assert!(ui.drain_text_changes().is_empty());
+
+    for separator in ['\r', '\n', '\t', '\u{85}', '\u{2028}', '\u{2029}'] {
+        ui.ime_preedit("draft", Some((5, 5))).unwrap();
+        let preedit = format!("a{separator}b");
+        ui.ime_preedit(&preedit, None).unwrap();
+        assert!(ui.document(id).unwrap().composition().is_none());
+        assert_eq!(ui.document(id).unwrap().text(), "keep");
+        assert_eq!(ui.document(id).unwrap().selection(), selection);
+    }
+    ui.text_input("A\u{85}B\u{2028}C\u{2029}D").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "ABCD");
+}
+
+#[test]
+fn text_changed_reports_each_actual_value_change_with_editor_identity() {
+    let mut ui = ui();
+    let first = ui
+        .edit_box(ui.root(), "First", "a", style(260.0, 36.0))
+        .unwrap();
+    let second = ui
+        .edit_box(ui.root(), "Second", "x", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    assert!(ui.drain_text_changes().is_empty());
+    focus(&mut ui, first);
+    ui.set_text(first, "a").unwrap();
+    key(&mut ui, Key::End, Modifiers::default());
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    ui.cancel_preedit();
+    assert!(ui.drain_text_changes().is_empty());
+
+    ui.text_input("b").unwrap();
+    key(&mut ui, Key::Backspace, Modifiers::default());
+    key(&mut ui, Key::Character("z".into()), control_modifier());
+    key(&mut ui, Key::Character("y".into()), control_modifier());
+    ui.set_text(second, "y").unwrap();
+    ui.perform_action(second, SemanticAction::SetValue, Some("z"))
+        .unwrap();
+    ui.perform_action(second, SemanticAction::SetValue, Some("z"))
+        .unwrap();
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    key(&mut ui, Key::Character("x".into()), control_modifier());
+    assert_eq!(
+        ui.drain_clipboard_requests(),
+        vec![ClipboardRequest::Copy("a".into())]
+    );
+    let changes: Vec<_> = ui
+        .drain_text_changes()
+        .into_iter()
+        .map(|change| (change.id, change.text))
+        .collect();
+    assert_eq!(
+        changes,
+        vec![
+            (first, "ab".into()),
+            (first, "a".into()),
+            (first, "ab".into()),
+            (first, "a".into()),
+            (second, "y".into()),
+            (second, "z".into()),
+            (first, "".into()),
+        ]
+    );
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn oversized_editor_input_is_rejected_before_document_or_widget_changes() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Code", "keep", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    let selection = ui.document(id).unwrap().selection();
+    let oversized = "x".repeat(1024 * 1024 + 1);
+    ui.text_input(&oversized).unwrap();
+    assert!(ui.set_text(id, &oversized).is_err());
+    ui.ime_preedit(&oversized, None).unwrap();
+    assert!(ui.document(id).unwrap().composition().is_none());
+    ui.ime_preedit("draft", Some((5, 5))).unwrap();
+    ui.ime_commit(&oversized).unwrap();
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert_eq!(ui.document(id).unwrap().text(), "keep");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(!ui.document(id).unwrap().can_undo());
+    assert!(ui.drain_text_changes().is_empty());
+    let nodes = ui.runtime.tree().preorder();
+    assert!(
+        ui.edit_box(ui.root(), "Too large", &oversized, style(260.0, 36.0))
+            .is_err()
+    );
+    assert!(
+        ui.text_box(ui.root(), "Too large", &oversized, style(260.0, 90.0))
+            .is_err()
+    );
+    assert_eq!(ui.runtime.tree().preorder(), nodes);
+    frame(&mut ui);
+}
+
+#[test]
+fn accessible_value_changes_obey_limits_and_readonly_without_losing_existing_text() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Code", "A", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    ui.set_max_length(id, Some(1)).unwrap();
+    ui.perform_action(id, SemanticAction::SetValue, Some("AB"))
+        .unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "A");
+    assert!(!ui.document(id).unwrap().can_undo());
+    assert!(ui.drain_text_changes().is_empty());
+    ui.perform_action(id, SemanticAction::SetValue, Some("🙂"))
+        .unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "🙂");
+    ui.drain_text_changes();
+    ui.set_read_only(id, true).unwrap();
+    ui.perform_action(id, SemanticAction::SetValue, Some("B"))
+        .unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "🙂");
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn rejected_input_keeps_visual_caret_at_bidi_boundaries() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Mixed", "abc אבג", style(260.0, 36.0))
+        .unwrap();
+    ui.set_max_length(id, Some(7)).unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    for direction in [Key::ArrowLeft, Key::ArrowRight] {
+        for _ in 0..10 {
+            key(&mut ui, direction.clone(), Modifiers::default());
+            frame(&mut ui);
+            let selection = ui.document(id).unwrap().selection();
+            let caret = ui.caret_bounds().unwrap();
+            ui.text_input("x").unwrap();
+            frame(&mut ui);
+            assert_eq!(ui.document(id).unwrap().selection(), selection);
+            assert_eq!(ui.caret_bounds().unwrap(), caret);
+        }
+    }
+    assert_eq!(ui.document(id).unwrap().text(), "abc אבג");
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn readonly_copy_and_blocked_shortcuts_keep_visual_caret_at_bidi_boundaries() {
+    let mut ui = ui();
+    let id = ui
+        .edit_box(ui.root(), "Mixed", "abc אבג", style(260.0, 36.0))
+        .unwrap();
+    ui.set_read_only(id, true).unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    for direction in [Key::ArrowLeft, Key::ArrowRight] {
+        for _ in 0..10 {
+            key(&mut ui, direction.clone(), Modifiers::default());
+            frame(&mut ui);
+            let selection = ui.document(id).unwrap().selection();
+            let caret = ui.caret_bounds().unwrap();
+            for (operation, modifiers) in [
+                (Key::Character("c".into()), control_modifier()),
+                (Key::Backspace, Modifiers::default()),
+                (Key::Delete, Modifiers::default()),
+                (Key::Character("x".into()), control_modifier()),
+                (Key::Character("v".into()), control_modifier()),
+                (Key::Character("z".into()), control_modifier()),
+                (Key::Character("y".into()), control_modifier()),
+            ] {
+                key(&mut ui, operation, modifiers);
+                frame(&mut ui);
+                assert_eq!(ui.document(id).unwrap().selection(), selection);
+                assert_eq!(ui.caret_bounds().unwrap(), caret);
+            }
+        }
+    }
+    assert_eq!(ui.document(id).unwrap().text(), "abc אבג");
+    assert!(ui.drain_text_changes().is_empty());
+}
+
+#[test]
+fn disabling_editor_ancestor_cancels_preedit_and_blocks_all_user_value_routes() {
+    let mut ui = ui();
+    let parent = ui.panel(ui.root(), style(300.0, 80.0)).unwrap();
+    let id = ui
+        .edit_box(parent, "Name", "old", style(260.0, 36.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    key(&mut ui, Key::Character("a".into()), control_modifier());
+    let selection = ui.document(id).unwrap().selection();
+    ui.ime_preedit("candidate", Some((9, 9))).unwrap();
+    ui.set_enabled(parent, false).unwrap();
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert!(!ui.is_text_editable(id));
+    ui.text_input("ignored").unwrap();
+    ui.ime_preedit("ignored", None).unwrap();
+    ui.ime_commit("ignored").unwrap();
+    ui.perform_action(id, SemanticAction::SetValue, Some("ignored"))
+        .unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "old");
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(ui.document(id).unwrap().composition().is_none());
+    assert!(!ui.document(id).unwrap().can_undo());
+    assert!(ui.drain_text_changes().is_empty());
+    let semantic = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert!(semantic.disabled);
+    assert!(!semantic.read_only);
+    assert!(semantic.actions.is_empty());
+
+    ui.set_enabled(parent, true).unwrap();
+    focus(&mut ui, id);
+    assert!(ui.is_text_editable(id));
+    ui.text_input("new").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "new");
+    let changes = ui.drain_text_changes();
+    assert_eq!(changes.len(), 1);
+    assert_eq!((changes[0].id, changes[0].text.as_str()), (id, "new"));
 }

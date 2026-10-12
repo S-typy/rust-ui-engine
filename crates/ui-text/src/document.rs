@@ -3,6 +3,67 @@ use unicode_segmentation::UnicodeSegmentation;
 
 const HISTORY_LIMIT: usize = 128;
 
+/// Limits for committed text and the transient IME display text.
+///
+/// `max_graphemes` counts extended grapheme clusters in the final committed
+/// document. `Some(0)` permits only empty committed text. Preedit is subject to
+/// `max_bytes` only, so input methods can compose a candidate before committing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TextLimits {
+    pub max_graphemes: Option<usize>,
+    pub max_bytes: usize,
+}
+
+impl Default for TextLimits {
+    fn default() -> Self {
+        Self {
+            max_graphemes: None,
+            max_bytes: 1_048_576,
+        }
+    }
+}
+
+impl TextLimits {
+    /// Check committed text without modifying a document or allocating a copy.
+    pub fn validate(&self, text: &str) -> Result<(), EditError> {
+        self.validate_bytes(text.len())?;
+        self.validate_graphemes(text)
+    }
+
+    fn validate_bytes(&self, length: usize) -> Result<(), EditError> {
+        if length > self.max_bytes {
+            return Err(self.exceeded(TextLimit::Bytes));
+        }
+        Ok(())
+    }
+
+    fn validate_graphemes(&self, text: &str) -> Result<(), EditError> {
+        if let Some(maximum) = self.max_graphemes
+            && text.graphemes(true).nth(maximum).is_some()
+        {
+            return Err(self.exceeded(TextLimit::Graphemes));
+        }
+        Ok(())
+    }
+
+    fn exceeded(&self, kind: TextLimit) -> EditError {
+        EditError::LimitExceeded {
+            kind,
+            maximum: match kind {
+                TextLimit::Bytes => self.max_bytes,
+                TextLimit::Graphemes => self.max_graphemes.unwrap_or(usize::MAX),
+            },
+        }
+    }
+}
+
+/// The unit of a rejected text limit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextLimit {
+    Bytes,
+    Graphemes,
+}
+
 /// UTF-8 byte offsets at extended grapheme boundaries in committed text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
@@ -32,14 +93,27 @@ pub struct Composition {
 pub enum EditError {
     InvalidSelection,
     InvalidPreeditCursor,
+    LimitExceeded { kind: TextLimit, maximum: usize },
 }
 
 impl fmt::Display for EditError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            Self::InvalidSelection => "selection must use grapheme boundaries within the document",
-            Self::InvalidPreeditCursor => "preedit cursor must use UTF-8 boundaries within preedit",
-        })
+        match self {
+            Self::InvalidSelection => {
+                f.write_str("selection must use grapheme boundaries within the document")
+            }
+            Self::InvalidPreeditCursor => {
+                f.write_str("preedit cursor must use UTF-8 boundaries within preedit")
+            }
+            Self::LimitExceeded { kind, maximum } => write!(
+                f,
+                "text exceeds the limit of {maximum} {}",
+                match kind {
+                    TextLimit::Bytes => "UTF-8 bytes",
+                    TextLimit::Graphemes => "graphemes",
+                }
+            ),
+        }
     }
 }
 impl std::error::Error for EditError {}
@@ -137,11 +211,29 @@ impl TextDocument {
         self.replace(0..self.text().len(), text);
     }
 
+    /// Replace committed text if it fits the limits, as one undoable operation.
+    /// On error, text, selection, composition and history remain unchanged.
+    pub fn try_set_text(&mut self, text: &str, limits: TextLimits) -> Result<(), EditError> {
+        limits.validate(text)?;
+        self.set_text(text);
+        Ok(())
+    }
+
     /// Paste and typing share the same Unicode-safe replacement operation.
     pub fn insert(&mut self, text: &str) {
         self.cancel_preedit();
         self.replace(self.selection().range(), text);
     }
+
+    /// Replace the selection if the final text fits the limits. Graphemes are
+    /// counted after joining the surrounding text, including boundary merges.
+    /// On error, text, selection, composition and history remain unchanged.
+    pub fn try_insert(&mut self, text: &str, limits: TextLimits) -> Result<(), EditError> {
+        self.validate_replacement(self.selection().range(), text, limits)?;
+        self.insert(text);
+        Ok(())
+    }
+
     pub fn paste(&mut self, text: &str) {
         self.insert(text);
     }
@@ -266,11 +358,7 @@ impl TextDocument {
         text: &str,
         cursor: Option<(usize, usize)>,
     ) -> Result<(), EditError> {
-        if let Some((start, end)) = cursor
-            && (start > end || !text.is_char_boundary(start) || !text.is_char_boundary(end))
-        {
-            return Err(EditError::InvalidPreeditCursor);
-        }
+        validate_preedit_cursor(text, cursor)?;
         if text.is_empty() {
             self.cancel_preedit();
             return Ok(());
@@ -287,6 +375,24 @@ impl TextDocument {
         Ok(())
     }
 
+    /// Update IME composition if the resulting display text fits the byte cap.
+    /// The grapheme limit is checked at commit, never by truncating preedit.
+    /// On error, the existing composition and all committed state are retained.
+    pub fn try_set_preedit(
+        &mut self,
+        text: &str,
+        cursor: Option<(usize, usize)>,
+        limits: TextLimits,
+    ) -> Result<(), EditError> {
+        validate_preedit_cursor(text, cursor)?;
+        if text.is_empty() {
+            limits.validate_bytes(self.text().len())?;
+        } else {
+            self.replacement_length(self.composition_range(), text, limits)?;
+        }
+        self.set_preedit(text, cursor)
+    }
+
     /// Commit composition as exactly one undo step, replacing its original range.
     pub fn commit(&mut self, text: &str) {
         let replacement = self
@@ -295,6 +401,16 @@ impl TextDocument {
             .map_or_else(|| self.selection().range(), |value| value.replacement);
         self.replace(replacement, text);
     }
+
+    /// Commit IME text if the final document fits the limits, as one undo step.
+    /// A rejected commit retains the composition for the caller to cancel or
+    /// update explicitly, and leaves text, selection and history unchanged.
+    pub fn try_commit(&mut self, text: &str, limits: TextLimits) -> Result<(), EditError> {
+        self.validate_replacement(self.composition_range(), text, limits)?;
+        self.commit(text);
+        Ok(())
+    }
+
     pub fn cancel_preedit(&mut self) {
         self.composition = None;
     }
@@ -333,6 +449,15 @@ impl TextDocument {
         }
     }
 
+    /// Undo if the restored text fits the current limits. A rejected undo
+    /// retains the composition, current state and both history stacks.
+    pub fn try_undo(&mut self, limits: TextLimits) -> Result<bool, EditError> {
+        if let Some(previous) = self.undo.back() {
+            limits.validate(&previous.text)?;
+        }
+        Ok(self.undo())
+    }
+
     pub fn redo(&mut self) -> bool {
         self.cancel_preedit();
         if let Some(next) = self.redo.pop() {
@@ -342,6 +467,53 @@ impl TextDocument {
         } else {
             false
         }
+    }
+
+    /// Redo if the restored text fits the current limits. A rejected redo
+    /// retains the composition, current state and both history stacks.
+    pub fn try_redo(&mut self, limits: TextLimits) -> Result<bool, EditError> {
+        if let Some(next) = self.redo.last() {
+            limits.validate(&next.text)?;
+        }
+        Ok(self.redo())
+    }
+
+    fn composition_range(&self) -> Range<usize> {
+        self.composition.as_ref().map_or_else(
+            || self.selection().range(),
+            |composition| composition.replacement.clone(),
+        )
+    }
+
+    fn replacement_length(
+        &self,
+        range: Range<usize>,
+        text: &str,
+        limits: TextLimits,
+    ) -> Result<usize, EditError> {
+        let length = (self.text().len() - range.len())
+            .checked_add(text.len())
+            .ok_or_else(|| limits.exceeded(TextLimit::Bytes))?;
+        limits.validate_bytes(length)?;
+        Ok(length)
+    }
+
+    fn validate_replacement(
+        &self,
+        range: Range<usize>,
+        text: &str,
+        limits: TextLimits,
+    ) -> Result<(), EditError> {
+        // Check the byte budget before allocating a candidate or undo snapshot.
+        let length = self.replacement_length(range.clone(), text, limits)?;
+        if limits.max_graphemes.is_some() {
+            let mut candidate = String::with_capacity(length);
+            candidate.push_str(&self.text()[..range.start]);
+            candidate.push_str(text);
+            candidate.push_str(&self.text()[range.end..]);
+            limits.validate_graphemes(&candidate)?;
+        }
+        Ok(())
     }
 
     fn replace(&mut self, range: Range<usize>, text: &str) {
@@ -386,6 +558,15 @@ impl TextDocument {
         }
         self.state.selection.focus = index;
     }
+}
+
+fn validate_preedit_cursor(text: &str, cursor: Option<(usize, usize)>) -> Result<(), EditError> {
+    if let Some((start, end)) = cursor
+        && (start > end || !text.is_char_boundary(start) || !text.is_char_boundary(end))
+    {
+        return Err(EditError::InvalidPreeditCursor);
+    }
+    Ok(())
 }
 
 fn boundaries(text: &str) -> Vec<usize> {
@@ -505,5 +686,227 @@ mod tests {
         doc.insert("b");
         assert!(!doc.can_redo());
         assert_eq!(doc.text().len(), 73);
+    }
+
+    fn assert_document_unchanged(actual: &TextDocument, before: &TextDocument) {
+        assert_eq!(actual.state, before.state);
+        assert_eq!(actual.composition, before.composition);
+        assert_eq!(actual.undo, before.undo);
+        assert_eq!(actual.redo, before.redo);
+    }
+
+    fn grapheme_limits(maximum: usize) -> TextLimits {
+        TextLimits {
+            max_graphemes: Some(maximum),
+            ..TextLimits::default()
+        }
+    }
+
+    #[test]
+    fn limits_count_graphemes_and_utf8_bytes_independently() {
+        let limits = grapheme_limits(2);
+        assert_eq!(limits.validate("e\u{301}👩‍💻"), Ok(()));
+        assert_eq!(
+            limits.validate("e\u{301}👩‍💻x"),
+            Err(EditError::LimitExceeded {
+                kind: TextLimit::Graphemes,
+                maximum: 2,
+            })
+        );
+        assert_eq!(grapheme_limits(0).validate(""), Ok(()));
+        assert!(grapheme_limits(0).validate("\u{301}").is_err());
+
+        let limits = TextLimits {
+            max_bytes: 4,
+            ..TextLimits::default()
+        };
+        assert_eq!(limits.validate("éé"), Ok(()));
+        assert_eq!(
+            limits.validate("👩x"),
+            Err(EditError::LimitExceeded {
+                kind: TextLimit::Bytes,
+                maximum: 4,
+            })
+        );
+        let limits = TextLimits::default();
+        assert_eq!(limits.max_bytes, 1_048_576);
+        assert_eq!(limits.max_graphemes, None);
+        assert!(limits.validate(&"a".repeat(1_048_576)).is_ok());
+        assert!(limits.validate(&"a".repeat(1_048_577)).is_err());
+    }
+
+    #[test]
+    fn limited_insert_counts_graphemes_after_merging_both_boundaries() {
+        let mut accent = TextDocument::new("e");
+        accent.try_insert("\u{301}", grapheme_limits(1)).unwrap();
+        assert_eq!(accent.text(), "e\u{301}");
+        assert_eq!(accent.selection().focus, accent.text().len());
+
+        let mut emoji = TextDocument::new("👩💻");
+        emoji.set_selection("👩".len(), "👩".len()).unwrap();
+        emoji.try_insert("\u{200d}", grapheme_limits(1)).unwrap();
+        assert_eq!(emoji.text(), "👩‍💻");
+        assert_eq!(emoji.selection().focus, emoji.text().len());
+
+        let mut neighboring_emoji = TextDocument::new("e💻");
+        neighboring_emoji.set_selection(1, 1).unwrap();
+        neighboring_emoji
+            .try_insert("👩\u{200d}", grapheme_limits(2))
+            .unwrap();
+        assert_eq!(neighboring_emoji.text(), "e👩‍💻");
+        assert_eq!(
+            neighboring_emoji.selection().focus,
+            neighboring_emoji.text().len()
+        );
+    }
+
+    #[test]
+    fn limited_replacement_counts_only_final_selected_range_result() {
+        let mut doc = TextDocument::new("abcd");
+        doc.set_selection(1, 3).unwrap();
+        let selection = doc.selection();
+        let limits = TextLimits {
+            max_graphemes: Some(3),
+            max_bytes: 5,
+        };
+        doc.try_insert("e\u{301}", limits).unwrap();
+        assert_eq!(doc.text(), "ae\u{301}d");
+        assert_eq!(doc.selection().focus, 4);
+        assert!(doc.undo());
+        assert_eq!(doc.text(), "abcd");
+        assert_eq!(doc.selection(), selection);
+        assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn failed_limited_edits_preserve_selection_composition_and_both_histories() {
+        let mut doc = TextDocument::new("old");
+        doc.insert("x");
+        doc.insert("y");
+        assert!(doc.undo());
+        doc.set_selection(1, 3).unwrap();
+        doc.set_preedit("中", Some((3, 3))).unwrap();
+        let before = doc.clone();
+        let limits = grapheme_limits(3);
+
+        assert!(doc.try_insert("abcd", limits).is_err());
+        assert_document_unchanged(&doc, &before);
+        assert!(doc.try_set_text("abcd", limits).is_err());
+        assert_document_unchanged(&doc, &before);
+        assert!(doc.try_commit("abcd", limits).is_err());
+        assert_document_unchanged(&doc, &before);
+
+        let byte_limits = TextLimits {
+            max_bytes: 5,
+            ..TextLimits::default()
+        };
+        assert!(doc.try_insert("中文", byte_limits).is_err());
+        assert_document_unchanged(&doc, &before);
+        assert!(doc.try_set_text("中文", byte_limits).is_err());
+        assert_document_unchanged(&doc, &before);
+        assert!(doc.try_commit("中文", byte_limits).is_err());
+        assert_document_unchanged(&doc, &before);
+
+        assert!(doc.try_redo(TextLimits::default()).unwrap());
+        assert_eq!(doc.text(), "oldxy");
+        assert!(doc.composition().is_none());
+    }
+
+    #[test]
+    fn preedit_ignores_grapheme_limit_but_bounds_final_display_bytes_atomically() {
+        let mut doc = TextDocument::new("ax");
+        doc.set_selection(1, 2).unwrap();
+        let limits = TextLimits {
+            max_graphemes: Some(0),
+            max_bytes: 7,
+        };
+        doc.try_set_preedit("日本", Some((6, 6)), limits).unwrap();
+        assert_eq!(doc.text(), "ax");
+        assert_eq!(doc.display_text(), "a日本");
+        assert!(!doc.can_undo());
+        let before = doc.clone();
+
+        assert_eq!(
+            doc.try_set_preedit("日本語", None, limits),
+            Err(EditError::LimitExceeded {
+                kind: TextLimit::Bytes,
+                maximum: 7,
+            })
+        );
+        assert_document_unchanged(&doc, &before);
+        assert_eq!(
+            doc.try_set_preedit("日", Some((1, 1)), limits),
+            Err(EditError::InvalidPreeditCursor)
+        );
+        assert_document_unchanged(&doc, &before);
+        assert!(doc.try_commit("日", limits).is_err());
+        assert_document_unchanged(&doc, &before);
+
+        doc.try_set_preedit("", None, limits).unwrap();
+        assert!(doc.composition().is_none());
+        assert_eq!(doc.state, before.state);
+        assert!(!doc.can_undo());
+    }
+
+    #[test]
+    fn limited_commit_replaces_composition_once_and_keeps_original_undo_selection() {
+        let mut doc = TextDocument::new("a候補b");
+        doc.set_selection(1, 7).unwrap();
+        let selection = doc.selection();
+        let limits = grapheme_limits(3);
+        doc.try_set_preedit("未確定", None, limits).unwrap();
+        doc.try_commit("中", limits).unwrap();
+        assert_eq!(doc.text(), "a中b");
+        assert!(doc.composition().is_none());
+        assert!(doc.try_undo(TextLimits::default()).unwrap());
+        assert_eq!(doc.text(), "a候補b");
+        assert_eq!(doc.selection(), selection);
+        assert!(!doc.can_undo());
+        assert!(doc.try_redo(limits).unwrap());
+        assert_eq!(doc.text(), "a中b");
+    }
+
+    #[test]
+    fn restricted_undo_and_redo_leave_rejected_history_and_composition_available() {
+        let mut doc = TextDocument::new("long");
+        doc.set_text("x");
+        doc.set_preedit("中", None).unwrap();
+        let before = doc.clone();
+        assert!(doc.try_undo(grapheme_limits(1)).is_err());
+        assert_document_unchanged(&doc, &before);
+        assert!(doc.try_undo(TextLimits::default()).unwrap());
+        assert_eq!(doc.text(), "long");
+        assert!(!doc.can_undo());
+
+        doc.set_preedit("中", None).unwrap();
+        let before = doc.clone();
+        assert!(doc.try_redo(grapheme_limits(0)).is_err());
+        assert_document_unchanged(&doc, &before);
+        assert!(
+            doc.try_redo(TextLimits {
+                max_bytes: 0,
+                ..TextLimits::default()
+            })
+            .is_err()
+        );
+        assert_document_unchanged(&doc, &before);
+        assert!(doc.try_redo(grapheme_limits(1)).unwrap());
+        assert_eq!(doc.text(), "x");
+        assert!(!doc.can_redo());
+    }
+
+    #[test]
+    fn zero_limit_accepts_clearing_document_and_unrestricted_api_is_compatible() {
+        let mut doc = TextDocument::new("unrestricted");
+        doc.try_set_text("", grapheme_limits(0)).unwrap();
+        assert_eq!(doc.text(), "");
+        assert!(doc.try_insert("a", grapheme_limits(0)).is_err());
+        doc.insert("legacy API");
+        assert_eq!(doc.text(), "legacy API");
+        assert!(doc.undo());
+        assert_eq!(doc.text(), "");
+        assert!(doc.undo());
+        assert_eq!(doc.text(), "unrestricted");
+        assert!(!doc.try_undo(TextLimits::default()).unwrap());
     }
 }

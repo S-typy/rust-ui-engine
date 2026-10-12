@@ -9,3 +9,4 @@ description = "Strict build-time XAML profile for Rust desktop forms"
 
 [dependencies]
 roxmltree = "=0.21.1"
+unicode-segmentation.workspace = true

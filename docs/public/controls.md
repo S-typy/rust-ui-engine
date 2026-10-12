@@ -50,6 +50,7 @@ commit передаются отдельно: `text_input`, `ime_preedit`, `ime_
 | `toggle` | Button с переключаемым checked state, общим с CommandID |
 | `checkbox` | Подпись, отдельный квадрат-индикатор и checked state |
 | `text_box` | Unicode документ, caret, selection, multiline wrapping, preedit и undo/redo |
+| `edit_box` | Однострочный TextBox с горизонтальной прокруткой caret и placeholder |
 | `scroll_view` | Viewport с clipped content, ограниченной прокруткой и keyboard navigation |
 | `tab_control` | Tab strip и overlay страниц; неактивные страницы не рисуются и не участвуют в focus |
 | `popup_menu` | Overlay menu, keyboard navigation, отключённые и toggle items, возврат focus к anchor |
@@ -107,6 +108,44 @@ Predicates должны не иметь побочных эффектов; пр�
 PageUp/PageDown используют shaped geometry. Home/End переходят к границам
 hard line, Ctrl+Home/End — документа. Shift расширяет selection.
 
+`edit_box` использует тот же документ для одной строки. Начальное значение,
+`text_input`, `set_text` и IME commit удаляют CR, LF, tab, NEL (`U+0085`),
+line separator (`U+2028`) и paragraph separator (`U+2029`). Пустой или состоящий
+только из этих разделителей пользовательский ввод сохраняет selection и текст.
+Enter не вставляет новую строку. Preedit с разделителями отменяется целиком:
+фильтрация изменила бы переданные IME смещения cursor.
+
+`set_read_only(id, true)` запрещает пользовательское изменение, сохраняя focus,
+navigation, selection и Copy. Typing, Cut, Paste, undo/redo, IME и accessibility
+SetValue не меняют read-only редактор. Переход в read-only отменяет preedit.
+`is_read_only(id)` возвращает `Option<bool>`, а `is_text_editable(id)` дополнительно
+учитывает disabled state редактора и ancestors. Программный `set_text` разрешён
+для read-only и disabled редакторов и проходит проверку ограничений.
+
+`set_max_length(id, Some(n))` ограничивает committed text по числу extended
+graphemes в итоговой строке, включая слияния на границах вставки. `None` снимает
+этот лимит; `Some(0)` разрешает только пустую строку. Установка лимита ниже текущей
+длины возвращает ошибку, сохраняя текст и прежний лимит. `max_length(id)` возвращает
+`Option<Option<usize>>`: внешний `None` означает, что ID не является редактором.
+Существующая undo/redo history сохраняется, но восстановление значения, которое
+нарушает текущий лимит, отклоняется.
+
+Каждый редактор также ограничен 1 MiB UTF-8, включая отображаемый IME preedit.
+Пользовательская вставка сверх ограничений отклоняется целиком без обрезания;
+`set_text` и создание слишком большого редактора возвращают ошибку. Отказ
+сохраняет документ, selection и history. Preedit проверяется только по байтам;
+предел graphemes применяется при commit. После IME commit композиция заканчивается
+даже при отклонённом результате. Это лимит одного документа: отдельные ограничения
+shaping, glyph count и общего объёма текста сцены renderer продолжают действовать.
+Контракт низкоуровневых операций описан в [документации текста](text.md#bounded-editing).
+
+После обработки ввода и программных обновлений вызывайте `drain_text_changes()`.
+Он возвращает последовательность `TextChanged { id, text }` с новым committed
+значением для каждого фактического изменения, включая undo/redo и `set_text`.
+Создание редактора, selection, preedit, повторное присваивание того же значения
+и отклонённые операции событий не создают. После чтения очередь очищается;
+события удалённых controls из неё исключаются.
+
 Ctrl/Cmd+A выбирает всё; C/X/V создают `ClipboardRequest::Copy` или `Paste`.
 Host выполняет системную clipboard операцию и передаёт результат вставки через
 `text_input`. Ctrl/Cmd+Z, Shift+Z и Y управляют undo/redo. Ctrl+Alt трактуется
@@ -130,17 +169,20 @@ editing transactions не входят в текущий TextBox.
 
 ## Темы и семантика
 
-Light, Dark и Compact задают собственные `ThemeTokens`: цвета surface/text,
-hover/pressed/selected/focus, spacing, font size и высоту controls. `set_theme`
+Light, Dark, Compact, FluentLight и FluentDark задают собственные `ThemeTokens`:
+цвета surface/text, hover/pressed/selected/focus, spacing, font size и высоту
+controls. `set_theme`
 меняет оформление без пересоздания control IDs и checked/document state.
 Compact уменьшает default heights; явные размеры приложения сохраняются.
 
 `semantics()` возвращает независимые `SemanticNode`: role, label, value,
-checked/selected/disabled/focused, bounds, children и доступные действия.
+checked/selected/disabled/read_only/focused, bounds, children и доступные действия.
 Структурные узлы включены как Panel; единственный корень имеет `parent: None`,
 а hidden pages исключены вместе с descendants.
 `perform_action` выполняет Focus/Activate/Toggle/SetValue/Scroll с проверкой
-доступности. Платформенный адаптер связывает эти данные с accessibility API.
+доступности. Read-only редактор сохраняет Focus, но не предоставляет SetValue;
+прямой вызов этого действия также не изменяет его значение. Платформенный адаптер
+связывает эти данные с accessibility API.
 Наличие semantic nodes не заменяет проверки screen reader и native focus.
 
 `set_custom_scene(id, scene)` вставляет собственную отрисовку приложения на
