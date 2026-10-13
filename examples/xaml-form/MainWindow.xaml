@@ -1,64 +1,56 @@
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Форма · Rust UI"
-        Width="640" Height="512"
-        Padding="32" Theme="Light">
-    <StackPanel x:Name="Form" Spacing="8">
-        <TextBlock Text="Форма с несколькими элементами" Height="32" />
-        <TextBlock Text="Текст сообщения" />
-        <TextBox x:Name="Message"
-                 Height="36"
-                 FontSize="14" Padding="12,5" CornerRadius="4" BorderThickness="1"
-                 IsReadOnly="False" MaxLength="64"
-                 IsRequired="True" CommitOnLostFocus="True"
-                 ValidationMessage="Введите текст перед подтверждением."
-                 AutomationName="Текст"
-                 PlaceholderText="Введите текст…" />
-        <CheckBox x:Name="Option" Content="Только чтение" FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
-        <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
-            <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Icon="Check" Width="160"
-                    FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
-            <ToggleButton x:Name="Pin" Content="Закрепить" Command="Pin" Icon="Pin" Width="120"
-                          FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
-            <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="8" Height="32">
-            <RadioButton x:Name="AlignLeft" Content="Слева" GroupName="Alignment" IsChecked="True" Width="120" />
-            <RadioButton x:Name="AlignCenter" Content="По центру" GroupName="Alignment" Width="120" />
-            <RadioButton x:Name="AlignRight" Content="Справа" GroupName="Alignment" IsEnabled="False" Width="120" />
-        </StackPanel>
-        <StackPanel Orientation="Horizontal" Spacing="8" Height="32">
-            <Icon x:Name="CheckIcon" Symbol="Check" AutomationName="Готово" Width="24" Height="24" Margin="0,4" />
-            <Icon x:Name="CloseIcon" Symbol="Close" AutomationName="Закрыть" Width="24" Height="24" Margin="0,4" />
-            <Icon x:Name="AddIcon" Symbol="Add" AutomationName="Добавить" Width="24" Height="24" Margin="0,4" />
-            <Icon x:Name="RemoveIcon" Symbol="Remove" AutomationName="Убрать" Width="24" Height="24" Margin="0,4" />
-            <Icon x:Name="ChevronDownIcon" Symbol="ChevronDown" AutomationName="Вниз" Width="24" Height="24" Margin="0,4" />
-            <Icon x:Name="ChevronRightIcon" Symbol="ChevronRight" AutomationName="Вправо" Width="24" Height="24" Margin="0,4" />
-            <Icon x:Name="SaveIcon" Symbol="Save" AutomationName="Сохранить" Width="24" Height="24" Margin="0,4" />
-            <Separator x:Name="VRule" Orientation="Vertical" />
-            <Icon x:Name="DisabledIcon" Symbol="Pin" AutomationName="Закреплено" IsEnabled="False" Width="24" Height="24" Margin="0,4" />
-        </StackPanel>
-        <Separator x:Name="HRule" />
-        <TextBlock x:Name="Help" Height="40"
-                   Text="Enter — подтвердить · Escape — отменить изменения" />
-        <TextBlock x:Name="Status" Height="56" Text="Изменений нет." />
-        <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
-            <DropDownButton x:Name="ActionMenu" Content="Действия" Width="160"
-                            ToolTip="Открыть меню действий">
-                <MenuItem Header="Режим">
-                    <MenuItem Header="Закрепить" Command="Pin" />
-                </MenuItem>
-                <Separator />
-                <MenuItem Header="Недоступно" Command="Confirm" IsEnabled="False" />
-            </DropDownButton>
-            <SplitButton x:Name="AcceptSplit" Content="Подтвердить" Command="Confirm" Width="240"
-                         Icon="Check" ToolTip="Подтвердить или выбрать действие">
-                <MenuItem Header="Режим">
-                    <MenuItem Header="Закрепить" Command="Pin" />
-                </MenuItem>
-                <Separator />
-                <MenuItem Header="Недоступно" Command="Confirm" IsEnabled="False" />
-            </SplitButton>
+        Title="Форма · XAML Ribbon" Width="1040" Height="720"
+        Padding="16" Theme="Light">
+    <StackPanel x:Name="Shell" Spacing="16">
+        <Ribbon x:Name="MainRibbon" SelectedTab="Home" AutomationName="Лента команд">
+            <Ribbon.QuickAccessToolbar>
+                <Button Command="Confirm" />
+                <Button Command="Pin" />
+                <Button Command="Clear" />
+            </Ribbon.QuickAccessToolbar>
+            <RibbonTab Id="Home" Header="Главная" KeyTip="H">
+                <RibbonGroup Id="Document" Header="Документ" CollapsePriority="1">
+                    <SplitButton Command="Confirm" KeyTip="S" Icon="Check"
+                                 ToolTip="Подтвердить значение или выбрать другое действие">
+                        <MenuItem Command="Confirm" />
+                        <MenuItem Command="Clear" />
+                    </SplitButton>
+                    <Button Command="Clear" KeyTip="N" Icon="Remove" ToolTip="Очистить текст" />
+                </RibbonGroup>
+                <RibbonGroup Id="Editing" Header="Редактирование" CollapsePriority="2">
+                    <ToggleButton Command="Pin" Size="Small" KeyTip="P" Icon="Pin"
+                                  ToolTip="Закрепить документ" />
+                    <Button Command="Confirm" Size="Small" KeyTip="E" />
+                    <Button Command="Disabled" Size="Small" KeyTip="D" />
+                </RibbonGroup>
+            </RibbonTab>
+            <RibbonTab Id="View" Header="Вид" KeyTip="V">
+                <RibbonGroup Id="Appearance" Header="Оформление" CollapsePriority="1">
+                    <Button Command="Light" KeyTip="L" />
+                    <Button Command="Dark" KeyTip="D" />
+                </RibbonGroup>
+                <RibbonGroup Id="ViewOptions" Header="Документ" CollapsePriority="2">
+                    <ToggleButton Command="Pin" Size="Small" KeyTip="P" />
+                </RibbonGroup>
+            </RibbonTab>
+        </Ribbon>
+        <StackPanel x:Name="Form" Spacing="12" Padding="16">
+            <TextBlock Text="Документ" Height="32" />
+            <TextBlock Text="Текст сообщения" />
+            <TextBox x:Name="Message" Height="36" FontSize="14" Padding="12,5"
+                     CornerRadius="4" BorderThickness="1" MaxLength="64"
+                     IsRequired="True" CommitOnLostFocus="True"
+                     ValidationMessage="Введите текст перед подтверждением."
+                     AutomationName="Текст" PlaceholderText="Введите текст…" />
+            <CheckBox x:Name="Option" Content="Только чтение" />
+            <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
+                <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Icon="Check" Width="176" />
+                <ToggleButton x:Name="Pin" Content="Закрепить" Command="Pin" Icon="Pin" Width="144" />
+            </StackPanel>
+            <Separator />
+            <TextBlock x:Name="Help" Height="40" Text="Alt или F10 — команды ленты · Enter — подтвердить · Escape — отменить" />
+            <TextBlock x:Name="Status" Height="56" Text="Изменений нет." />
         </StackPanel>
     </StackPanel>
 </Window>

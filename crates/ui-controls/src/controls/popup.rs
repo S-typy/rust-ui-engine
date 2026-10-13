@@ -114,7 +114,7 @@ fn validate_entries(
 }
 
 impl Controls {
-    fn preflight_menu(&mut self, entries: &[MenuEntry]) -> Result<(), ControlError> {
+    pub(crate) fn preflight_menu(&mut self, entries: &[MenuEntry]) -> Result<(), ControlError> {
         validate_entries(entries, 1, &mut 0, &mut 0)?;
         let mut pending = vec![entries];
         while let Some(entries) = pending.pop() {
@@ -444,6 +444,9 @@ impl Controls {
     }
     pub fn popup_open(&self) -> bool {
         self.popup.is_some()
+    }
+    pub(crate) fn popup_anchor(&self) -> Option<WidgetId> {
+        self.popup.as_ref().map(|popup| popup.anchor)
     }
     pub fn popup_depth(&self) -> usize {
         self.popup.as_ref().map_or(0, |popup| popup.levels.len())

@@ -3,11 +3,17 @@ mod accessibility;
 mod form;
 mod popup_diagnostics;
 #[cfg(test)]
+mod ribbon_tests;
+#[cfg(test)]
 mod tests;
 mod view;
+mod view_ribbon;
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/main_window.rs"));
+}
+mod generated_controls {
+    include!(concat!(env!("OUT_DIR"), "/controls_window.rs"));
 }
 
 use rust_desktop_ui_platform_winit::{RunOptions, run};
@@ -25,17 +31,24 @@ fn main() -> ExitCode {
 }
 
 fn start() -> Result<(), String> {
-    let mut definition = generated::window_definition();
+    let mut theme = None;
+    let mut controls = false;
     let mut smoke_test = false;
     let mut diagnostics = false;
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
-            "--dark" => definition.theme = Theme::Dark,
-            "--light" => definition.theme = Theme::Light,
+            "--dark" => theme = Some(Theme::Dark),
+            "--light" => theme = Some(Theme::Light),
+            "--controls" => controls = true,
             "--smoke-test" => smoke_test = true,
             "--diagnostics" => diagnostics = true,
             "--help" | "-h" => {
-                println!("xaml-form [--light | --dark] [--smoke-test] [--diagnostics]");
+                println!(
+                    "xaml-form [--controls] [--light | --dark] [--smoke-test] [--diagnostics]"
+                );
+                println!(
+                    "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
+                );
                 println!(
                     "--diagnostics logs input, values and validation for automated input tests."
                 );
@@ -43,6 +56,14 @@ fn start() -> Result<(), String> {
             }
             _ => return Err(format!("Unknown argument: {argument}")),
         }
+    }
+    let mut definition = if controls {
+        generated_controls::window_definition()
+    } else {
+        generated::window_definition()
+    };
+    if let Some(theme) = theme {
+        definition.theme = theme;
     }
     let options = RunOptions {
         width: definition.width,
@@ -58,6 +79,7 @@ fn start() -> Result<(), String> {
             app.find_name("Message").is_some()
         );
         for name in [
+            "MainRibbon",
             "Message",
             "Option",
             "Confirm",

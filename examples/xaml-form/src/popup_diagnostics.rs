@@ -12,7 +12,7 @@ pub(crate) fn snapshot(ui: &Controls) -> String {
         .collect::<Vec<_>>()
         .join(",");
     let controls = nodes.iter().filter(|node| matches!(node.role,
-        Role::Button | Role::ToggleButton | Role::MenuItem | Role::Separator))
+        Role::Button | Role::ToggleButton | Role::MenuItem | Role::Separator | Role::Tab | Role::TextBox))
         .map(|node| format!(
             "{{\"label\":{},\"role\":{},\"checked\":{},\"enabled\":{},\"bounds\":{},\"clip\":{},\"has_popup\":{},\"expanded\":{},\"focused\":{}}}",
             string(&node.label), string(&format!("{:?}", node.role)), optional_bool(node.checked),
@@ -37,6 +37,21 @@ pub(crate) fn snapshot(ui: &Controls) -> String {
         ui.tooltip_bounds().map_or_else(|| "null".into(), rectangle),
         ui.tooltip_deadline().is_some(),
         string(hovered)
+    )
+}
+
+pub(crate) fn ribbon_snapshot(
+    ui: &Controls,
+    mounted: &crate::view_ribbon::MountedRibbon,
+) -> String {
+    format!(
+        "{{\"active_tab\":{},\"key_tips\":{},\"bounds\":{},\"presentations\":{}}}",
+        string(mounted.ribbon.active_tab()),
+        mounted.ribbon.key_tips_visible(),
+        ui.runtime
+            .bounds(mounted.wrapper)
+            .map_or_else(|| "null".into(), rectangle),
+        string(&format!("{:?}", mounted.ribbon.presentations()))
     )
 }
 

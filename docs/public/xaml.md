@@ -4,7 +4,8 @@
 Профиль описывает нативное окно `Window`, вложенные `StackPanel`, подписи
 `TextBlock`, однострочные `TextBox`, кнопки `Button`, переключатели `ToggleButton`,
 флажки `CheckBox`, переключатели группы `RadioButton`, векторные `Icon`
-и разделители `Separator`, а также `DropDownButton` и `SplitButton` со статическими меню.
+и разделители `Separator`, `DropDownButton` и `SplitButton` со статическими меню,
+а также командный `Ribbon` с вкладками, группами и панелью быстрого доступа.
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -14,7 +15,13 @@
 cargo run -p xaml-form --locked
 cargo run -p xaml-form --locked -- --dark
 cargo run -p xaml-form --locked -- --light --smoke-test
+cargo run -p xaml-form --locked -- --controls
 ```
+
+По умолчанию открывается [MainWindow.xaml](../../examples/xaml-form/MainWindow.xaml)
+с Ribbon и редактором. `--controls` открывает
+[ControlsWindow.xaml](../../examples/xaml-form/ControlsWindow.xaml), отдельную форму
+с базовыми элементами и popup-меню. Обе разметки компилируются при сборке.
 
 `--light` и `--dark` переопределяют тему из разметки. `--smoke-test` запускает
 проверку кадров и изменения размера с автоматическим завершением.
@@ -23,6 +30,9 @@ cargo run -p xaml-form --locked -- --light --smoke-test
 введённый текст не журналируется, заголовок соответствует `Window.Title`.
 
 ## Разметка
+
+Следующий пример показывает форму базовых элементов (`--controls`). Профиль
+Ribbon описан отдельно [ниже](#ribbon-в-xaml).
 
 ```xml
 <Window xmlns="urn:rust-ui-engine:ui"
@@ -104,6 +114,7 @@ URI пространства имён. Пространство имён WPF pre
 | Элемент | Дополнительные свойства | Назначение |
 |---|---|---|
 | StackPanel | `Orientation="Vertical"`, `Spacing="0"`, `Padding="0"` | Последовательная компоновка; также доступна `Horizontal` |
+| Ribbon | необязательный `SelectedTab`, модель вкладок/групп/команд | Адаптивная командная лента; не больше одной на окно |
 | TextBlock | `Text=""` | Видимая подпись |
 | Button | `Content=""`, необязательный `Command` | Кнопка, которую приложение связывает с командой Rust |
 | ToggleButton | `Content=""`, `IsChecked="False"`, необязательный `Command` | Кнопка с выбранным состоянием |
@@ -357,6 +368,10 @@ Message. При использовании этой команды отсутс�
 Команда Pin зарегистрирована через `register_toggle` и связана с кнопкой
 «Закрепить». Она демонстрирует общее состояние команды без изменения редактора
 или закрепления окна; прикладное поведение можно подключить в Rust.
+В Ribbon-примере `Clear` очищает текущий текст Message, если редактор не read-only,
+не подтверждая пустое значение. `Light` и `Dark` переключают тему; `Disabled`
+показывает недоступную команду. Эти команды зарегистрированы тем же Form и могут
+использоваться обычными кнопками или Ribbon placements без отдельных обработчиков.
 Всё визуальное дерево примера задано XAML: при старой разметке Window/TextBox
 адаптер не добавляет подписи самостоятельно. Escape отменяет изменения активного
 редактора; подтверждение корректного значения при уходе фокуса остаётся включённым.
@@ -405,7 +420,7 @@ MenuItemCheckBox с Toggled. Пункты меню остаются связан
 с общей командой. Программная проверка этой проекции не заменяет проверку
 конкретным screen reader.
 
-В примере новый ряд «Действия»/SplitButton находится под Status, начиная с y=433;
+В форме `--controls` ряд «Действия»/SplitButton находится под Status, начиная с y=433;
 прежние контролы сохраняют координаты. Оба меню показывают вложенный «Режим»
 с общей командой Pin, разделитель и отключённое действие. Основная часть
 SplitButton подтверждает Message той же командой Confirm.
@@ -533,6 +548,112 @@ AutomationName меняет доступное имя, сохраняя види
 Для каждого редактора передаются required, `Invalid::True` и отдельный узел
 полного сообщения ошибки со связью `error_message`. Status имеет live-status.
 Это программный контракт, не утверждение о проверке конкретным экранным диктором.
+
+## Ribbon в XAML
+
+В пределах одного `Window` допускается один `Ribbon`. Он монтирует существующий
+компонент [Ribbon](ribbon.md); разметка задаёт статическую модель команд,
+а Rust-код регистрирует их подписи, доступность, checked state и обработчики.
+
+```xml
+<Window xmlns="urn:rust-ui-engine:ui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="960" Height="640" Padding="24">
+    <StackPanel Spacing="12">
+        <Ribbon x:Name="MainRibbon" SelectedTab="Home">
+            <Ribbon.QuickAccessToolbar>
+                <Button Command="Confirm" />
+                <Button Command="Pin" />
+            </Ribbon.QuickAccessToolbar>
+            <RibbonTab Id="Home" Header="Главная" KeyTip="H">
+                <RibbonGroup Id="Document" Header="Документ" CollapsePriority="1">
+                    <Button Command="Confirm" KeyTip="C" Icon="Check"
+                            ToolTip="Подтвердить значение" />
+                    <ToggleButton Command="Pin" KeyTip="P" Size="Small" Icon="Pin" />
+                    <SplitButton Command="Confirm" KeyTip="S">
+                        <MenuItem Command="Pin" />
+                    </SplitButton>
+                </RibbonGroup>
+            </RibbonTab>
+        </Ribbon>
+        <TextBox x:Name="Message" Height="36" IsRequired="True" />
+    </StackPanel>
+</Window>
+```
+
+| Узел модели | Свойства и содержимое |
+|---|---|
+| Ribbon | Общие свойства элемента, необязательный `SelectedTab`; вкладки и не больше одного `Ribbon.QuickAccessToolbar` |
+| Ribbon.QuickAccessToolbar | Только пустые `<Button Command="Id" />`, без повторов Command; атрибутов нет |
+| RibbonTab | Обязательные `Id`, непустой `Header`, `KeyTip`; необязательный `Context`; минимум одна группа |
+| RibbonGroup | Обязательные `Id`, непустой `Header`; `CollapsePriority="0"` в диапазоне 0–65535; минимум одна команда |
+| Button / ToggleButton внутри группы | Обязательные `Command`, `KeyTip`; `Size="Large"` или `Small`, необязательные `Icon`, `ToolTip` |
+| SplitButton внутри группы | Те же свойства, только `Size="Large"`; минимум один пустой `<MenuItem Command="Id" />` |
+
+Узлы внутри Ribbon — части модели, а не обычные элементы StackPanel. Они не
+принимают `x:Name`, размеры, стили кнопок, `Content`, `IsEnabled` или `IsChecked`.
+Только сам Ribbon входит в namescope формы. `Command`, `Id`, `Context` и
+`SelectedTab` имеют синтаксис `[A-Za-z_][A-Za-z0-9_]*`. Id вкладок уникальны в
+Ribbon, Id групп — внутри своей вкладки. Должна существовать обычная вкладка
+без `Context`; `SelectedTab`, если задан, указывает на такую вкладку. Иначе
+выбирается первая обычная вкладка. Contextual tabs скрыты, пока приложение
+не передаст соответствующий context через `Ribbon::set_context`.
+
+KeyTip состоит из ASCII-букв и цифр, регистр нормализуется. Вкладки имеют общий
+набор KeyTips, команды — отдельный набор на каждую вкладку. В одном наборе
+недопустимы повторы и префиксы: `A` и `AB` конфликтуют. KeyTip вкладки не может
+начинаться с 1–9: эти цифры зарезервированы для первых девяти команд QAT.
+Пустой KeyTip отклоняется. Изменение ширины не меняет назначенные клавиши.
+
+До монтажа всего дерева адаптер проверяет регистрацию всех команд, включая
+QAT, скрытые вкладки и secondary menu. Для `ToggleButton` требуется заранее
+зарегистрированный `checked: Some(bool)`, например `register_toggle`; разметка
+не преобразует обычную команду в переключатель. Command state общий для Ribbon,
+QAT, меню и кнопок за пределами ленты. Кнопка `Button` также отражает состояние
+зарегистрированной toggle-команды. Primary SplitButton выполняет команду,
+стрелка только открывает плоское меню; вложенные меню и Separator внутри
+Ribbon SplitButton этим профилем не принимаются.
+
+Свойства `Icon` и `ToolTip` описывают оформление команды в Ribbon/QAT.
+`Icon` использует тот же набор собственных символов, что обычные кнопки;
+ToolTip — до 4096 UTF-8 байт. Это свойства представления, а не ресурсные ссылки.
+Подпись и состояние команды по-прежнему принадлежат registry.
+Если команда встречается несколько раз, незаданные Icon/ToolTip наследуют
+описание другого её размещения. Два явно разных значения одного свойства
+для одной команды отклоняются адаптером до монтажа.
+
+Вкладки и группы участвуют в общих ограничениях XAML на 256 элементов и
+32 уровня, включая QAT property element и ссылки MenuItem. Размер исходного
+файла ограничен 1 MiB. Ручной Rust AST проходит проверку структуры и ссылок
+до изменения retained tree. Это не runtime XAML loading и не data binding.
+
+Ширина Ribbon берётся из фактического layout его контейнера, включая отступы
+родителей. При сужении группы переходят в collapsed/overflow меню. Смена
+ширины, темы или вкладки перестраивает внутренние placements Ribbon;
+идентификаторы соседних элементов, document, accepted value и undo редактора
+сохраняются. Автоматическая высота использует измеренные метрики Ribbon.
+Явный Height задаёт границу его области и может обрезать содержимое.
+Ширины команд и QAT учитывают подпись, видимые KeyTips, Icon и padding; это
+не фиксированные ячейки для всех строк. Small-команды образуют колонки по три,
+QAT переносит не поместившийся остаток в More. Ширина отдельной измеренной
+кнопки ограничена 512 logical pixels; более длинная подпись может обрезаться,
+полная строка сохраняется в registry и ToolTip. Точный план доступен через
+`Ribbon::presentations()`; helper `layout_groups` даёт оценку по базовым размерам.
+
+Форма направляет обычный input в `Ribbon::handle_input` до Controls, затем
+обрабатывает активации вкладок через `Ribbon::process`. Alt/F10 включает
+KeyTips. Парные Text events клавиш KeyTips подавляются, включая событие после
+выполнения последней команды; следующий обычный ввод остаётся доступен.
+Escape закрывает один уровень KeyTips, завершение режима возвращает фокус
+доступному прежнему контролу. Переход с редактора по-прежнему соблюдает его
+`CommitOnLostFocus`. Потеря focus окна, указатель и недоступность Ribbon
+отменяют режим. Tab, keyboard popup и accessibility используют общие Controls.
+Явное accessibility action также отменяет KeyTips и подавление Text events,
+сохраняя focus для запрошенного действия.
+
+Этот профиль не содержит backstage, gallery items, embedded ComboBox,
+runtime binding, drag customization, Ribbon styles/templates или полного
+WPF Ribbon API. Цвета и плотность следуют собственным темам Controls.
 
 ## Границы профиля
 

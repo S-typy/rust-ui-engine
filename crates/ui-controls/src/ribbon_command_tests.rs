@@ -664,3 +664,581 @@ fn menu_count_rejection_preserves_tree_popup_and_command_state_before_rebuild() 
     assert_eq!(ui.commands().checked(&"flag".into()), None);
     assert_eq!(ui.runtime.tree().preorder(), ids);
 }
+
+#[test]
+fn explicit_mount_width_avoids_an_invalid_intermediate_default_layout() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let mut ribbon = Ribbon::new(RibbonModel {
+        quick_access: (0..270)
+            .map(|index| format!("command-{index}").into())
+            .collect(),
+        tabs: vec![],
+    })
+    .unwrap();
+    let initial = ui.runtime.tree().preorder();
+    assert!(ribbon.preflight(&mut ui, 800.0).is_err());
+    let height = ribbon.preflight(&mut ui, 2200.0).unwrap();
+    assert_eq!(ui.runtime.tree().preorder(), initial);
+    assert_eq!(ribbon.container(), None);
+    let root = ui.root();
+    let container = ribbon.mount_with_width(&mut ui, root, 2200.0).unwrap();
+    assert_eq!(ribbon.width, 2200.0);
+    assert_eq!(
+        ui.runtime
+            .tree()
+            .node(container)
+            .unwrap()
+            .props
+            .style
+            .height,
+        Length::Px(height)
+    );
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn text_and_tooltip_preflight_failures_preserve_live_tree_popup_and_legacy_state() {
+    let (mut ui, mut ribbon, _) = fixture();
+    frame(&mut ui, &mut ribbon, 100.0);
+    open_menu(&mut ui, &mut ribbon, "flag");
+    let before = ui.runtime.tree().preorder();
+    let focused = ui.runtime.focused();
+    let presentations = ribbon.presentations().to_vec();
+    ribbon.model.tabs[0].groups[0].label = "x".repeat(1024 * 1024 + 1);
+    ribbon.dirty = true;
+    assert!(ribbon.update(&mut ui, 900.0).is_err());
+    assert_eq!(ui.runtime.tree().preorder(), before);
+    assert_eq!(ui.runtime.focused(), focused);
+    assert_eq!(ribbon.presentations(), presentations);
+    assert!(ui.popup_open());
+
+    let mut fresh = Ribbon::new(RibbonModel {
+        quick_access: vec![],
+        tabs: vec![RibbonTab {
+            id: "home".into(),
+            label: "Home".into(),
+            key_tip: "H".into(),
+            context: None,
+            groups: vec![group(
+                "legacy",
+                vec![RibbonItem::new("plain", RibbonItemKind::Toggle, "L")],
+            )],
+        }],
+    })
+    .unwrap();
+    ui.commands_mut().register("plain", "x".repeat(4097));
+    let root = ui.root();
+    for width in [f32::NAN, -1.0, 900.0] {
+        assert!(fresh.mount_with_width(&mut ui, root, width).is_err());
+        assert_eq!(fresh.parent, None);
+        assert_eq!(fresh.container(), None);
+        assert!(!fresh.legacy_toggles_initialized);
+        assert_eq!(ui.commands().checked(&"plain".into()), None);
+        assert_eq!(ui.runtime.tree().preorder(), before);
+    }
+}
+
+#[test]
+fn generated_menu_text_is_checked_before_removing_existing_children() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let before = ui.runtime.tree().preorder();
+    let old_width = ribbon.width;
+    // A secondary command has no body tooltip: this specifically exercises the
+    // generated menu's own aggregate text validation.
+    ui.commands_mut()
+        .register("secondary", "x".repeat(1024 * 1024));
+    ribbon.dirty = true;
+    let error = ribbon.update(&mut ui, 901.0).unwrap_err();
+    assert!(error.to_string().contains("Menu text exceeds"));
+    assert_eq!(ui.runtime.tree().preorder(), before);
+    assert_eq!(ribbon.width, old_width);
+}
+
+#[test]
+fn generated_keytip_caption_rejection_preserves_the_live_ribbon() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let before = ui.runtime.tree().preorder();
+    ribbon.model.tabs[0].key_tip = "Z".repeat(1024 * 1024);
+    assert!(key(&mut ribbon, &mut ui, Key::Alt));
+    assert!(ribbon.update(&mut ui, 900.0).is_err());
+    assert_eq!(ui.runtime.tree().preorder(), before);
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn command_appearance_is_shared_by_qat_and_body_and_rejected_atomically() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let appearance = RibbonCommandAppearance {
+        icon: Some(ButtonIcon::new(crate::IconSymbol::Pin)),
+        tool_tip: Some("Pin this document".into()),
+    };
+    ribbon
+        .set_command_appearance("flag", appearance.clone())
+        .unwrap();
+    frame(&mut ui, &mut ribbon, 900.0);
+    for id in placements(&ui, &ribbon, "flag") {
+        assert_eq!(ui.button_icon(id), appearance.icon.as_ref());
+        assert_eq!(ui.tooltip(id), Some("Pin this document"));
+    }
+    let before = ui.runtime.tree().preorder();
+    for invalid in [
+        RibbonCommandAppearance {
+            icon: Some(ButtonIcon {
+                size: f32::NAN,
+                ..ButtonIcon::new(crate::IconSymbol::Pin)
+            }),
+            ..Default::default()
+        },
+        RibbonCommandAppearance {
+            tool_tip: Some("x".repeat(4097)),
+            ..Default::default()
+        },
+    ] {
+        assert!(ribbon.set_command_appearance("flag", invalid).is_err());
+        assert_eq!(
+            ribbon.command_appearances.get(&"flag".into()),
+            Some(&appearance)
+        );
+        assert!(!ribbon.dirty);
+        assert_eq!(ui.runtime.tree().preorder(), before);
+    }
+    ui.set_theme(Theme::FluentDark).unwrap();
+    frame(&mut ui, &mut ribbon, 300.0);
+    frame(&mut ui, &mut ribbon, 900.0);
+    for id in placements(&ui, &ribbon, "flag") {
+        assert_eq!(ui.button_icon(id), appearance.icon.as_ref());
+        assert_eq!(ui.tooltip(id), Some("Pin this document"));
+    }
+    ribbon
+        .set_command_appearance(
+            "flag",
+            RibbonCommandAppearance {
+                tool_tip: Some(String::new()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    frame(&mut ui, &mut ribbon, 900.0);
+    for id in placements(&ui, &ribbon, "flag") {
+        assert_eq!(ui.button_icon(id), None);
+        assert_eq!(ui.tooltip(id), None);
+    }
+}
+
+#[test]
+fn rebuilding_ribbon_preserves_sibling_editor_session_and_foreign_popup() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let root = ui.root();
+    let editor = ui
+        .edit_box(
+            root,
+            "Document",
+            "",
+            LayoutStyle {
+                height: Length::Px(36.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    ui.set_editor_validation(
+        editor,
+        crate::EditorValidation {
+            is_required: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+    ui.text_input(" ").unwrap();
+    assert!(matches!(
+        ui.commit_edit(editor).unwrap(),
+        crate::CommitOutcome::Invalid(_)
+    ));
+    let selection = ui.document(editor).unwrap().selection();
+    let diagnostic = ui.validation_error(editor).unwrap().to_owned();
+    assert!(ui.document(editor).unwrap().can_undo());
+    frame(&mut ui, &mut ribbon, 300.0);
+    assert_eq!(ui.runtime.focused(), Some(editor));
+    let anchor = ui
+        .dropdown_button(
+            root,
+            "External",
+            &[MenuEntry::Item(MenuItem::new("Plain", "plain"))],
+            LayoutStyle {
+                height: Length::Px(36.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    ui.update(Size::new(900.0, 600.0)).unwrap();
+    ui.activate(anchor).unwrap();
+    let focused = ui.runtime.focused();
+    let menu_ids: Vec<_> = ui
+        .semantics()
+        .iter()
+        .filter(|node| matches!(node.role, Role::Menu | Role::MenuItem))
+        .map(|node| node.id)
+        .collect();
+    assert!(ui.popup_open());
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert!(ui.popup_open());
+    assert_eq!(ui.runtime.focused(), focused);
+    assert_eq!(ui.popup_anchor(), Some(anchor));
+    assert!(menu_ids.iter().all(|id| ui.runtime.tree().contains(*id)));
+    assert_eq!(ui.document(editor).unwrap().text(), " ");
+    assert_eq!(ui.document(editor).unwrap().selection(), selection);
+    assert!(ui.document(editor).unwrap().can_undo());
+    assert_eq!(ui.accepted_value(editor), Some(""));
+    assert_eq!(ui.validation_error(editor), Some(diagnostic.as_str()));
+}
+
+#[test]
+fn keytips_rebuild_keeps_tab_focus_and_escape_or_command_returns_to_editor() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let root = ui.root();
+    let editor = ui
+        .edit_box(root, "Document", "draft", LayoutStyle::default())
+        .unwrap();
+    ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+    assert!(key(&mut ribbon, &mut ui, Key::Alt));
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_eq!(ui.runtime.focused(), ribbon.tabs.get("home").copied());
+    assert!(key(&mut ribbon, &mut ui, Key::Character("H".into())));
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_eq!(ui.runtime.focused(), ribbon.tabs.get("home").copied());
+    assert!(key(&mut ribbon, &mut ui, Key::Escape));
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_eq!(ui.runtime.focused(), ribbon.tabs.get("home").copied());
+    assert!(key(&mut ribbon, &mut ui, Key::Escape));
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_eq!(ui.runtime.focused(), Some(editor));
+    tips(&mut ribbon, &mut ui, &["H", "F"]);
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_eq!(ui.runtime.focused(), Some(editor));
+    assert_invocation(&mut ui, "flag", Some(true));
+    assert_eq!(ui.document(editor).unwrap().text(), "draft");
+}
+
+#[test]
+fn pointer_blur_and_tab_cancel_keytips_without_forcing_previous_focus() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let root = ui.root();
+    let editor = ui
+        .edit_box(root, "Document", "", LayoutStyle::default())
+        .unwrap();
+    for event in [
+        InputEvent::PointerDown {
+            position: Point::new(1.0, 1.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        },
+        InputEvent::WindowFocused(false),
+        InputEvent::KeyDown {
+            key: Key::Tab,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        },
+    ] {
+        ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+        assert!(key(&mut ribbon, &mut ui, Key::Alt));
+        let current = ui.runtime.focused();
+        assert!(!ribbon.handle_input(&mut ui, &event).unwrap());
+        assert!(!ribbon.key_tips_visible());
+        assert_eq!(ribbon.key_tip_return_focus, None);
+        assert_eq!(ui.runtime.focused(), current);
+        assert_ne!(ui.runtime.focused(), Some(editor));
+    }
+}
+
+#[test]
+fn tab_arrows_home_and_end_switch_visible_tabs_and_keep_focus_after_reflow() {
+    let (mut ui, mut ribbon, _) = fixture();
+    ribbon.model.tabs.extend([
+        RibbonTab {
+            id: "context".into(),
+            label: "Context".into(),
+            key_tip: "C".into(),
+            context: Some("selected".into()),
+            groups: vec![],
+        },
+        RibbonTab {
+            id: "view".into(),
+            label: "View".into(),
+            key_tip: "V".into(),
+            context: None,
+            groups: vec![],
+        },
+    ]);
+    ribbon.dirty = true;
+    frame(&mut ui, &mut ribbon, 900.0);
+    ui.runtime
+        .apply(Mutation::Focus(ribbon.tabs.get("home").copied()))
+        .unwrap();
+    for (input, selected) in [
+        (Key::ArrowRight, "view"),
+        (Key::ArrowRight, "home"),
+        (Key::ArrowLeft, "view"),
+        (Key::Home, "home"),
+        (Key::End, "view"),
+    ] {
+        assert!(key(&mut ribbon, &mut ui, input));
+        frame(&mut ui, &mut ribbon, 900.0);
+        assert_eq!(ribbon.active_tab(), selected);
+        assert_eq!(ui.runtime.focused(), ribbon.tabs.get(selected).copied());
+    }
+    ribbon.set_context(Some("selected"));
+    frame(&mut ui, &mut ribbon, 300.0);
+    assert!(key(&mut ribbon, &mut ui, Key::ArrowLeft));
+    frame(&mut ui, &mut ribbon, 300.0);
+    assert_eq!(ribbon.active_tab(), "context");
+    assert_eq!(ui.runtime.focused(), ribbon.tabs.get("context").copied());
+    ribbon.set_context(None);
+    frame(&mut ui, &mut ribbon, 300.0);
+    assert_eq!(ui.runtime.focused(), ribbon.tabs.get("home").copied());
+}
+
+#[test]
+fn measured_icon_captions_fit_qat_small_and_split_text_clips_in_each_theme_and_keytip_state() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let labels = [
+        ("flag", "Закрепить текущий документ"),
+        ("primary", "Подтвердить значение"),
+        ("plain", "Действие с длинной подписью"),
+    ];
+    for (command, label) in labels {
+        ui.commands_mut().register(command, label);
+        ribbon
+            .set_command_appearance(
+                command,
+                RibbonCommandAppearance {
+                    icon: Some(ButtonIcon::new(crate::IconSymbol::Pin)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    for theme in [Theme::FluentLight, Theme::FluentDark, Theme::Compact] {
+        ui.set_theme(theme).unwrap();
+        for tips in [Tips::Hidden, Tips::Tabs, Tips::Commands] {
+            ribbon.tips = tips;
+            ribbon.dirty = true;
+            frame(&mut ui, &mut ribbon, 2200.0);
+            assert!(
+                ribbon
+                    .presentations()
+                    .iter()
+                    .all(|p| matches!(p, RibbonPresentation::Full(_)))
+            );
+            let runs: Vec<_> = ui
+                .scene()
+                .texts
+                .iter()
+                .filter(|run| labels.iter().any(|(_, label)| run.text.starts_with(label)))
+                .cloned()
+                .collect();
+            assert_eq!(
+                runs.len(),
+                5,
+                "QAT x2, Small x2 and Split primary must all paint"
+            );
+            for run in runs {
+                let measured = ui.measure_text(&run.text, 4096.0, false).unwrap();
+                assert!(
+                    measured.width <= run.clip.width,
+                    "{theme:?}/{tips:?} {:?}: shaped {} exceeds actual text clip {}",
+                    run.text,
+                    measured.width,
+                    run.clip.width
+                );
+                assert!(run.clip.x >= run.bounds.x - 0.01);
+            }
+        }
+    }
+}
+
+#[test]
+fn measured_widths_drive_qat_overflow_and_group_collapse_then_restore_full_content() {
+    let (mut ui, mut ribbon, _) = fixture();
+    ui.commands_mut()
+        .register("flag", "Закрепить выбранный документ");
+    ribbon
+        .set_command_appearance(
+            "flag",
+            RibbonCommandAppearance {
+                icon: Some(ButtonIcon::new(crate::IconSymbol::Pin)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let required = ui
+        .measure_text("Закрепить выбранный документ", 4096.0, false)
+        .unwrap()
+        .width
+        .ceil()
+        + 16.0
+        + 8.0
+        + 17.0;
+    assert!(required > 128.0 && required < MAX_COMMAND_WIDTH);
+    // One pixel less than the measured first command plus the overflow reserve.
+    // The old fixed-width plan would still show two QAT buttons here.
+    let width = required + 44.0 + 4.0 - 1.0 + 12.0;
+    frame(&mut ui, &mut ribbon, width);
+    let qat = ui
+        .runtime
+        .tree()
+        .children(ribbon.container().unwrap())
+        .unwrap()[0];
+    let qat_children = ui.runtime.tree().children(qat).unwrap();
+    assert_eq!(qat_children.len(), 1);
+    let more = qat_children[0];
+    assert_eq!(ui.command_id(more), None);
+    assert!(
+        ribbon
+            .presentations()
+            .iter()
+            .any(|p| matches!(p, RibbonPresentation::Collapsed(_)))
+    );
+    ui.activate(more).unwrap();
+    ribbon.process(&mut ui).unwrap();
+    assert_eq!(
+        ui.semantics()
+            .iter()
+            .filter(|node| node.role == Role::MenuItem)
+            .count(),
+        2
+    );
+    ui.close_popup().unwrap();
+    frame(&mut ui, &mut ribbon, 2200.0);
+    assert!(
+        ribbon
+            .presentations()
+            .iter()
+            .all(|p| matches!(p, RibbonPresentation::Full(_)))
+    );
+    let ids = placements(&ui, &ribbon, "flag");
+    assert_eq!(ids.len(), 2);
+    assert!(
+        ids.iter()
+            .all(|id| ui.runtime.bounds(*id).unwrap().width >= required)
+    );
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn measured_qat_capacity_is_used_for_atomic_menu_preflight() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    ui.commands_mut().register("command-0", "W".repeat(100));
+    let mut ribbon = Ribbon::new(RibbonModel {
+        tabs: vec![],
+        quick_access: (0..257)
+            .map(|index| format!("command-{index}").into())
+            .collect(),
+    })
+    .unwrap();
+    let root = ui.root();
+    ribbon.mount_with_width(&mut ui, root, 1000.0).unwrap();
+    frame(&mut ui, &mut ribbon, 1000.0);
+    let first = ui
+        .runtime
+        .tree()
+        .preorder()
+        .into_iter()
+        .find(|id| ui.command_id(*id).is_some_and(|id| id.0 == "command-0"))
+        .unwrap();
+    assert_eq!(ui.runtime.bounds(first).unwrap().width, MAX_COMMAND_WIDTH);
+    let before = ui.runtime.tree().preorder();
+    let error = ribbon.update(&mut ui, 320.0).unwrap_err();
+    assert!(error.to_string().contains("QAT overflow would contain 257"));
+    assert_eq!(ui.runtime.tree().preorder(), before);
+    assert_eq!(ribbon.width, 1000.0);
+}
+
+#[test]
+fn measured_collapsed_russian_headers_and_commands_fit_their_actual_dropdown_text_clips() {
+    let (mut ui, mut ribbon, _) = fixture();
+    ribbon.model.tabs[0].groups[0].label = "Документ".into();
+    ribbon.model.tabs[0].groups[1].label = "Редактирование".into();
+    ribbon.model.tabs[0].groups[1].items.push(RibbonItem::new(
+        "primary",
+        RibbonItemKind::Large,
+        "X",
+    ));
+    for theme in [Theme::FluentLight, Theme::FluentDark, Theme::Compact] {
+        ui.set_theme(theme).unwrap();
+        ribbon.dirty = true;
+        // Equivalent to a 360px form with 16px outer padding on either side.
+        frame(&mut ui, &mut ribbon, 328.0);
+        assert_eq!(
+            ribbon
+                .presentations()
+                .iter()
+                .filter(|p| matches!(p, RibbonPresentation::Collapsed(_)))
+                .count(),
+            2
+        );
+        let runs: Vec<_> = ui
+            .scene()
+            .texts
+            .iter()
+            .filter(|run| run.text.ends_with("\nCommands"))
+            .cloned()
+            .collect();
+        assert_eq!(runs.len(), 2);
+        for run in runs {
+            let shaped = ui.measure_text(&run.text, 4096.0, false).unwrap();
+            assert!(
+                shaped.width <= run.clip.width,
+                "{theme:?} {:?}: {}px text exceeds {}px dropdown clip",
+                run.text,
+                shaped.width,
+                run.clip.width
+            );
+            assert!(shaped.height <= run.clip.height);
+            assert!(run.clip.x >= 0.0 && run.clip.x + run.clip.width <= 328.0);
+        }
+        frame(&mut ui, &mut ribbon, 148.0);
+        assert!(matches!(
+            ribbon.presentations(),
+            [RibbonPresentation::Overflow(_)]
+        ));
+        assert!(
+            !ui.scene()
+                .texts
+                .iter()
+                .any(|run| run.text.ends_with("\nCommands"))
+        );
+    }
+}
+
+#[test]
+fn a_wide_collapsed_header_never_expands_an_already_narrow_full_group() {
+    let (mut ui, mut ribbon, _) = fixture();
+    ribbon.model.tabs[0].groups[0].label = "Название группы длиннее её единственной кнопки".into();
+    ribbon.model.tabs[0].groups[0].items =
+        vec![RibbonItem::new("flag", RibbonItemKind::Small, "F")];
+    ribbon.model.tabs[0].groups[1].items = vec![
+        RibbonItem::new("primary", RibbonItemKind::Large, "P"),
+        RibbonItem::new("plain", RibbonItemKind::Large, "O"),
+    ];
+    ribbon.dirty = true;
+    frame(&mut ui, &mut ribbon, 300.0);
+    assert_eq!(
+        ribbon.presentations(),
+        &[
+            RibbonPresentation::Full("work".into()),
+            RibbonPresentation::Collapsed("other".into()),
+        ]
+    );
+    let body = placements(&ui, &ribbon, "flag")
+        .into_iter()
+        .find(|id| {
+            ui.runtime.bounds(*id).unwrap().height > 0.0 && ui.runtime.bounds(*id).unwrap().y > 60.0
+        })
+        .unwrap();
+    assert_eq!(ui.runtime.bounds(body).unwrap().width, 128.0);
+    frame(&mut ui, &mut ribbon, 100.0);
+    assert!(matches!(
+        ribbon.presentations(),
+        [RibbonPresentation::Overflow(_)]
+    ));
+}

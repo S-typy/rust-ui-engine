@@ -1,5 +1,5 @@
 //! Command-oriented Ribbon with adaptive group collapse and keyboard KeyTips.
-use crate::{CommandId, ControlError, Controls, MenuEntry, MenuItem, Role, Theme};
+use crate::{ButtonIcon, CommandId, ControlError, Controls, MenuEntry, MenuItem, Role, Theme};
 use rust_desktop_ui_core::{
     Axis, Edges, InputEvent, Key, LayoutKind, LayoutStyle, Length, Mutation, WidgetId,
 };
@@ -57,6 +57,28 @@ pub struct RibbonModel {
     pub tabs: Vec<RibbonTab>,
     pub quick_access: Vec<CommandId>,
 }
+/// Presentation shared by a command's Ribbon body and quick-access placements.
+/// Labels, enabled state and checked state remain owned by the command registry.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RibbonCommandAppearance {
+    pub icon: Option<ButtonIcon>,
+    /// `None` uses the command label; an empty string suppresses the tooltip.
+    pub tool_tip: Option<String>,
+}
+
+impl RibbonCommandAppearance {
+    fn validate(&self) -> Result<(), ControlError> {
+        if let Some(icon) = self.icon {
+            icon.validate()?;
+        }
+        if self.tool_tip.as_ref().is_some_and(|text| text.len() > 4096) {
+            return Err(ControlError::Invalid(
+                "Ribbon tooltip text must not exceed 4096 UTF-8 bytes".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RibbonPresentation {
     Full(String),
@@ -88,7 +110,11 @@ struct RibbonMetrics {
 }
 
 impl RibbonMetrics {
-    fn measure(ui: &mut Controls, model: &RibbonModel) -> Result<Self, ControlError> {
+    fn measure(
+        ui: &mut Controls,
+        model: &RibbonModel,
+        widths: &RibbonWidths,
+    ) -> Result<Self, ControlError> {
         let compact = ui.theme() == Theme::Compact;
         let mut text_height = ui.measure_text("Ag More", 4096.0, false)?.height.ceil();
         let mut caption = 20.0_f32;
@@ -99,9 +125,13 @@ impl RibbonMetrics {
             labels.push(tab.label.clone());
             for group in &tab.groups {
                 caption = caption.max(
-                    ui.measure_text(&group.label, (group_width(group) - 24.0).max(0.0), true)?
-                        .height
-                        .ceil(),
+                    ui.measure_text(
+                        &group.label,
+                        (widths.group(&tab.id, &group.id).width - 24.0).max(0.0),
+                        true,
+                    )?
+                    .height
+                    .ceil(),
                 );
                 for item in &group.items {
                     labels.push(
@@ -141,6 +171,155 @@ impl RibbonMetrics {
     }
 }
 
+const MAX_COMMAND_WIDTH: f32 = 512.0;
+
+struct MeasuredGroup {
+    width: f32,
+    collapsed: f32,
+    items: Vec<f32>,
+}
+
+/// One measured profile feeds layout planning, popup preflight and construction.
+/// Short labels retain the legacy minimum widths; longer labels include their
+/// icon, gap and default button padding, up to a bounded presentation width.
+struct RibbonWidths {
+    qat: Vec<f32>,
+    groups: HashMap<(String, String), MeasuredGroup>,
+}
+
+impl RibbonWidths {
+    fn measure(
+        ui: &mut Controls,
+        model: &RibbonModel,
+        appearances: &HashMap<CommandId, RibbonCommandAppearance>,
+        tips: Tips,
+    ) -> Result<Self, ControlError> {
+        let mut measure_command = |command: &CommandId, key_tip: Option<&str>, minimum: f32| {
+            let label = ui.commands().label(command).unwrap_or(&command.0);
+            let caption =
+                key_tip.map_or_else(|| label.to_owned(), |tip| format!("{label} [{tip}]"));
+            let icon_width = appearances
+                .get(command)
+                .and_then(|appearance| appearance.icon)
+                .map_or(0.0, |icon| {
+                    icon.size
+                        + if caption.is_empty() {
+                            0.0
+                        } else {
+                            icon.spacing
+                        }
+                });
+            // ButtonStyle's theme-relative defaults use 8px left/right padding.
+            // Ceil plus one pixel protects fractional shaping and device snapping.
+            let text = ui.measure_text(&caption, 4096.0, false)?;
+            Ok::<f32, ControlError>(
+                (text.width.ceil() + icon_width + 17.0).clamp(minimum, MAX_COMMAND_WIDTH),
+            )
+        };
+        let mut qat = Vec::new();
+        for (index, command) in model.quick_access.iter().enumerate() {
+            let key_tip = (tips == Tips::Tabs && index < 9).then(|| (index + 1).to_string());
+            qat.push(measure_command(command, key_tip.as_deref(), 104.0)?);
+        }
+        let mut groups = HashMap::new();
+        for tab in &model.tabs {
+            for group in &tab.groups {
+                let mut items = Vec::new();
+                for item in &group.items {
+                    items.push(measure_command(
+                        &item.command,
+                        (tips == Tips::Commands).then_some(item.key_tip.as_str()),
+                        if matches!(item.kind, RibbonItemKind::Small) {
+                            128.0
+                        } else {
+                            104.0
+                        },
+                    )?);
+                }
+                let mut width = 8.0;
+                let mut index = 0;
+                while index < group.items.len() {
+                    if matches!(group.items[index].kind, RibbonItemKind::Small) {
+                        let count = group.items[index..]
+                            .iter()
+                            .take(3)
+                            .take_while(|item| matches!(item.kind, RibbonItemKind::Small))
+                            .count();
+                        let column = items[index..index + count]
+                            .iter()
+                            .copied()
+                            .fold(128.0_f32, f32::max);
+                        items[index..index + count].fill(column);
+                        width += column + 4.0;
+                        index += count;
+                    } else {
+                        width += items[index] + 4.0;
+                        index += 1;
+                    }
+                }
+                groups.insert(
+                    (tab.id.clone(), group.id.clone()),
+                    MeasuredGroup {
+                        width,
+                        collapsed: width,
+                        items,
+                    },
+                );
+            }
+        }
+        for tab in &model.tabs {
+            for group in &tab.groups {
+                let caption = format!("{}\nCommands", group.label);
+                let text = ui.measure_text(&caption, 4096.0, false)?;
+                // The shared dropdown reserves 20px for its arrow, in addition
+                // to 8px button padding on each side. A collapse never expands
+                // a group: an already narrower full group stays full instead.
+                let measured = groups.get_mut(&(tab.id.clone(), group.id.clone())).unwrap();
+                measured.collapsed = (text.width.ceil() + 37.0)
+                    .clamp(COLLAPSED, MAX_COMMAND_WIDTH)
+                    .min(measured.width);
+            }
+        }
+        Ok(Self { qat, groups })
+    }
+    fn group(&self, tab: &str, group: &str) -> &MeasuredGroup {
+        &self.groups[&(tab.to_owned(), group.to_owned())]
+    }
+    fn qat_capacity(&self, available: f32) -> usize {
+        let total = self.qat.iter().sum::<f32>() + 4.0 * self.qat.len().saturating_sub(1) as f32;
+        if total <= available {
+            return self.qat.len();
+        }
+        let mut used = 44.0; // The menu button plus a gap after each visible command.
+        self.qat
+            .iter()
+            .take_while(|&&width| {
+                used += width + 4.0;
+                used <= available
+            })
+            .count()
+    }
+    fn layout_groups(&self, tab: &RibbonTab, available: f32) -> Vec<RibbonPresentation> {
+        plan_groups(
+            &tab.groups,
+            available,
+            tab.groups
+                .iter()
+                .map(|group| self.group(&tab.id, &group.id).width)
+                .collect(),
+            tab.groups
+                .iter()
+                .map(|group| self.group(&tab.id, &group.id).collapsed)
+                .collect(),
+        )
+    }
+}
+
+struct RibbonMeasurements {
+    metrics: RibbonMetrics,
+    widths: RibbonWidths,
+}
+
 /// Retained Ribbon composition; application logic stays in the command registry.
 pub struct Ribbon {
     model: RibbonModel,
@@ -157,6 +336,8 @@ pub struct Ribbon {
     theme: Option<Theme>,
     presentations: Vec<RibbonPresentation>,
     legacy_toggles_initialized: bool,
+    command_appearances: HashMap<CommandId, RibbonCommandAppearance>,
+    key_tip_return_focus: Option<WidgetId>,
 }
 
 impl Ribbon {
@@ -216,6 +397,8 @@ impl Ribbon {
             theme: None,
             presentations: Vec::new(),
             legacy_toggles_initialized: false,
+            command_appearances: HashMap::new(),
+            key_tip_return_focus: None,
         })
     }
     pub fn model(&self) -> &RibbonModel {
@@ -227,11 +410,31 @@ impl Ribbon {
     pub fn key_tips_visible(&self) -> bool {
         self.tips != Tips::Hidden
     }
+    /// Ends KeyTips without changing focus. Hosts use this before explicit
+    /// accessibility actions or other input routes outside `handle_input`.
+    pub fn cancel_key_tips(&mut self, ui: &mut Controls) {
+        self.finish_key_tips(ui, false);
+    }
     pub fn presentations(&self) -> &[RibbonPresentation] {
         &self.presentations
     }
     pub fn container(&self) -> Option<WidgetId> {
         self.container
+    }
+    /// Changes only this Ribbon's presentation of the command. Validation is
+    /// atomic; the next `update` applies a changed appearance to all placements.
+    pub fn set_command_appearance(
+        &mut self,
+        command: impl Into<CommandId>,
+        appearance: RibbonCommandAppearance,
+    ) -> Result<(), ControlError> {
+        appearance.validate()?;
+        let command = command.into();
+        if self.command_appearances.get(&command) != Some(&appearance) {
+            self.command_appearances.insert(command, appearance);
+            self.dirty = true;
+        }
+        Ok(())
     }
     pub fn set_context(&mut self, context: Option<&str>) {
         let next = context.map(str::to_owned);
@@ -243,8 +446,10 @@ impl Ribbon {
     }
     pub fn set_active_tab(&mut self, id: &str) -> bool {
         if self.visible_tabs().iter().any(|tab| tab.id == id) {
-            self.active = id.into();
-            self.dirty = true;
+            if self.active != id {
+                self.active = id.into();
+                self.dirty = true;
+            }
             true
         } else {
             false
@@ -266,6 +471,16 @@ impl Ribbon {
         changed
     }
     pub fn mount(&mut self, ui: &mut Controls, parent: WidgetId) -> Result<WidgetId, ControlError> {
+        self.mount_with_width(ui, parent, 800.0)
+    }
+    /// Mounts at the actual available width, without an intermediate 800px
+    /// layout. A containing panel may own margins, visibility and explicit size.
+    pub fn mount_with_width(
+        &mut self,
+        ui: &mut Controls,
+        parent: WidgetId,
+        width: f32,
+    ) -> Result<WidgetId, ControlError> {
         if ui.runtime.tree().node(parent).is_none() {
             return Err(ControlError::Invalid("Unknown Ribbon parent".into()));
         }
@@ -281,12 +496,138 @@ impl Ribbon {
                 ));
             }
         }
-        self.validate_popup_counts(800.0)?;
+        self.preflight(ui, width)?;
         self.parent = Some(parent);
         self.dirty = true;
-        self.update(ui, 800.0)?;
+        self.update(ui, width)?;
         self.container
             .ok_or_else(|| ControlError::Invalid("Ribbon was not mounted".into()))
+    }
+    /// Validates the requested layout, generated menus, text and presentation
+    /// before tree or command mutation. Returns the natural logical height.
+    pub fn preflight(&self, ui: &mut Controls, width: f32) -> Result<f32, ControlError> {
+        Ok(self.preflight_metrics(ui, width)?.metrics.total())
+    }
+    fn preflight_metrics(
+        &self,
+        ui: &mut Controls,
+        width: f32,
+    ) -> Result<RibbonMeasurements, ControlError> {
+        if !width.is_finite() || width < 0.0 {
+            return Err(ControlError::Invalid("Invalid Ribbon width".into()));
+        }
+        for appearance in self.command_appearances.values() {
+            appearance.validate()?;
+        }
+        // KeyTip captions are generated text too. Validate before replacing the
+        // live subtree; a valid base label can exceed the text limit once its
+        // model-provided KeyTip has been appended.
+        for tab in &self.model.tabs {
+            if self.tips == Tips::Tabs {
+                ui.measure_text(&format!("{} [{}]", tab.label, tab.key_tip), 4096.0, false)?;
+            } else if self.tips == Tips::Commands {
+                for item in tab.groups.iter().flat_map(|group| &group.items) {
+                    let label = ui
+                        .commands()
+                        .label(&item.command)
+                        .unwrap_or(&item.command.0);
+                    ui.measure_text(&format!("{} [{}]", label, item.key_tip), 4096.0, false)?;
+                }
+            }
+        }
+        for command in self.model.quick_access.iter().chain(
+            self.model
+                .tabs
+                .iter()
+                .flat_map(|tab| &tab.groups)
+                .flat_map(|group| &group.items)
+                .map(|item| &item.command),
+        ) {
+            let label = ui.commands().label(command).unwrap_or(&command.0);
+            let tooltip = self
+                .command_appearances
+                .get(command)
+                .and_then(|appearance| appearance.tool_tip.as_deref())
+                .unwrap_or(label);
+            if tooltip.len() > 4096 {
+                return Err(ControlError::Invalid(
+                    "Ribbon tooltip text must not exceed 4096 UTF-8 bytes".into(),
+                ));
+            }
+        }
+        let widths = RibbonWidths::measure(ui, &self.model, &self.command_appearances, self.tips)?;
+        self.validate_popup_counts(width, &widths)?;
+        let available = (width - 12.0).max(0.0);
+        let capacity = widths.qat_capacity(available);
+        if self.model.quick_access.len() > capacity {
+            let entries: Vec<_> = self
+                .model
+                .quick_access
+                .iter()
+                .skip(capacity)
+                .map(|command| {
+                    MenuEntry::Item(MenuItem::new(
+                        ui.commands().label(command).unwrap_or(&command.0),
+                        command.clone(),
+                    ))
+                })
+                .collect();
+            ui.preflight_menu(&entries)?;
+        }
+        let visible = self.visible_tabs();
+        if let Some(tab) = visible
+            .iter()
+            .find(|tab| tab.id == self.active)
+            .or(visible.first())
+        {
+            for presentation in widths.layout_groups(tab, available) {
+                let entries: Vec<_> = match presentation {
+                    RibbonPresentation::Full(id) => {
+                        if let Some(group) = tab.groups.iter().find(|group| group.id == id) {
+                            for item in &group.items {
+                                if let RibbonItemKind::Split { menu } = &item.kind {
+                                    let entries: Vec<_> = menu
+                                        .iter()
+                                        .map(|command| {
+                                            MenuEntry::Item(MenuItem::new(
+                                                ui.commands().label(command).unwrap_or(&command.0),
+                                                command.clone(),
+                                            ))
+                                        })
+                                        .collect();
+                                    if !entries.is_empty() {
+                                        ui.preflight_menu(&entries)?;
+                                    }
+                                }
+                            }
+                        }
+                        Vec::new()
+                    }
+                    RibbonPresentation::Collapsed(id) => tab
+                        .groups
+                        .iter()
+                        .find(|group| group.id == id)
+                        .map(|group| group_menu(ui, group))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(MenuEntry::Item)
+                        .collect(),
+                    RibbonPresentation::Overflow(_) => tab
+                        .groups
+                        .iter()
+                        .flat_map(|group| group_menu(ui, group))
+                        .map(MenuEntry::Item)
+                        .collect(),
+                };
+                if !entries.is_empty() {
+                    ui.preflight_menu(&entries)?;
+                }
+            }
+        }
+        Ok(RibbonMeasurements {
+            metrics: RibbonMetrics::measure(ui, &self.model, &widths)?,
+            widths,
+        })
     }
     fn visible_tabs(&self) -> Vec<&RibbonTab> {
         self.model
@@ -325,7 +666,7 @@ impl Ribbon {
         }
         self.legacy_toggles_initialized = true;
     }
-    fn validate_popup_counts(&self, width: f32) -> Result<(), ControlError> {
+    fn validate_popup_counts(&self, width: f32, widths: &RibbonWidths) -> Result<(), ControlError> {
         let check = |count: usize, name: &str| {
             if count > crate::MAX_MENU_ITEMS {
                 Err(ControlError::Invalid(format!(
@@ -337,7 +678,7 @@ impl Ribbon {
             }
         };
         let available = (width - 12.0).max(0.0);
-        let capacity = ((available - 44.0).max(0.0) / 108.0).floor() as usize;
+        let capacity = widths.qat_capacity(available);
         check(
             self.model.quick_access.len().saturating_sub(capacity),
             "QAT overflow",
@@ -356,7 +697,7 @@ impl Ribbon {
                     })
                 })
             };
-            for presentation in layout_groups(&tab.groups, available) {
+            for presentation in widths.layout_groups(tab, available) {
                 match presentation {
                     RibbonPresentation::Full(id) => {
                         if let Some(group) = tab.groups.iter().find(|group| group.id == id) {
@@ -396,20 +737,21 @@ impl Ribbon {
         let Some(parent) = self.parent else {
             return Ok(());
         };
-        self.validate_popup_counts(width)?;
+        let measured = self.preflight_metrics(ui, width)?;
+        let metrics = measured.metrics;
         self.initialize_legacy_toggles(ui);
-        let restore_command = ui
-            .runtime
-            .focused()
+        let popup_anchor = ui.popup_anchor().filter(|id| self.owns_node(ui, *id));
+        let focused = ui.runtime.focused();
+        let restore_action = focused
+            .or(popup_anchor)
             .and_then(|id| self.actions.get(&id))
-            .and_then(|a| {
-                if let Action::Command(id) = a {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            });
-        ui.close_popup()?;
+            .cloned()
+            .or_else(|| popup_anchor.and_then(|id| self.actions.get(&id)).cloned());
+        let restore_ribbon_focus =
+            popup_anchor.is_some() || focused.is_some_and(|id| self.owns_node(ui, id));
+        if popup_anchor.is_some() {
+            ui.close_popup()?;
+        }
         if let Some(container) = self.container {
             let children = ui
                 .runtime
@@ -427,7 +769,6 @@ impl Ribbon {
         self.ensure_active();
         self.width = width;
         self.theme = Some(ui.theme());
-        let metrics = RibbonMetrics::measure(ui, &self.model)?;
         let style = LayoutStyle {
             kind: LayoutKind::Stack(Axis::Vertical),
             height: Length::Px(metrics.total()),
@@ -458,7 +799,7 @@ impl Ribbon {
             },
         )?;
         ui.set_role(qat, Role::Group);
-        let capacity = ((available - 44.0).max(0.0) / 108.0).floor() as usize;
+        let capacity = measured.widths.qat_capacity(available);
         for (index, command) in self.model.quick_access.iter().take(capacity).enumerate() {
             let label = ui
                 .commands()
@@ -475,13 +816,13 @@ impl Ribbon {
                 caption,
                 Some(command.clone()),
                 LayoutStyle {
-                    width: Length::Px(104.0),
+                    width: Length::Px(measured.widths.qat[index]),
                     height: Length::Px(metrics.qat),
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
             )?;
-            ui.set_tooltip(id, label)?;
+            self.apply_command_appearance(ui, id, command, &label)?;
             self.actions.insert(id, Action::Command(command.clone()));
         }
         if self.model.quick_access.len() > capacity {
@@ -565,12 +906,18 @@ impl Ribbon {
             .find(|tab| tab.id == self.active)
             .cloned()
         {
-            self.presentations = layout_groups(&tab.groups, available);
+            self.presentations = measured.widths.layout_groups(&tab, available);
             for presentation in self.presentations.clone() {
                 match presentation {
                     RibbonPresentation::Full(id) => {
                         if let Some(group) = tab.groups.iter().find(|g| g.id == id) {
-                            self.mount_group(ui, groups_row, group, metrics)?;
+                            self.mount_group(
+                                ui,
+                                groups_row,
+                                group,
+                                metrics,
+                                measured.widths.group(&tab.id, &group.id),
+                            )?;
                         }
                     }
                     RibbonPresentation::Collapsed(id) => {
@@ -585,7 +932,9 @@ impl Ribbon {
                                 format!("{}\nCommands", group.label),
                                 &entries,
                                 LayoutStyle {
-                                    width: Length::Px(COLLAPSED),
+                                    width: Length::Px(
+                                        measured.widths.group(&tab.id, &group.id).collapsed,
+                                    ),
                                     height: Length::Percent(1.0),
                                     flex_shrink: 0.0,
                                     ..Default::default()
@@ -620,15 +969,58 @@ impl Ribbon {
         }
         self.dirty = false;
         // Focus can be restored before layout because eligibility is a logical tree property.
-        if let Some(command) = restore_command
-            && let Some(id) = ui.runtime.tree().preorder().into_iter().find(|id| {
+        let restored = ui
+            .runtime
+            .tree()
+            .preorder()
+            .into_iter()
+            .find(|id| {
                 ui.is_enabled(*id)
-                    && matches!(self.actions.get(id), Some(Action::Command(candidate)) if *candidate == command)
+                    && match (&restore_action, self.actions.get(id)) {
+                        (Some(Action::Command(command)), Some(Action::Command(candidate))) => {
+                            command == candidate
+                        }
+                        (Some(Action::Tab(tab)), Some(Action::Tab(candidate))) => tab == candidate,
+                        _ => false,
+                    }
             })
-        {
+            .or_else(|| {
+                restore_ribbon_focus
+                    .then(|| self.tabs.get(&self.active).copied())
+                    .flatten()
+                    .filter(|id| ui.is_enabled(*id))
+            });
+        if let Some(id) = restored {
             let _ = ui.runtime.apply(Mutation::Focus(Some(id)));
         }
         Ok(())
+    }
+    fn owns_node(&self, ui: &Controls, mut id: WidgetId) -> bool {
+        loop {
+            if Some(id) == self.container {
+                return true;
+            }
+            let Some(parent) = ui.runtime.tree().parent(id) else {
+                return false;
+            };
+            id = parent;
+        }
+    }
+    fn apply_command_appearance(
+        &self,
+        ui: &mut Controls,
+        id: WidgetId,
+        command: &CommandId,
+        label: &str,
+    ) -> Result<(), ControlError> {
+        let appearance = self.command_appearances.get(command);
+        ui.set_button_icon(id, appearance.and_then(|appearance| appearance.icon))?;
+        ui.set_tooltip(
+            id,
+            appearance
+                .and_then(|appearance| appearance.tool_tip.as_deref())
+                .unwrap_or(label),
+        )
     }
     fn mount_group(
         &mut self,
@@ -636,12 +1028,13 @@ impl Ribbon {
         parent: WidgetId,
         group: &RibbonGroup,
         metrics: RibbonMetrics,
+        measured: &MeasuredGroup,
     ) -> Result<(), ControlError> {
         let panel = ui.panel(
             parent,
             LayoutStyle {
                 kind: LayoutKind::Stack(Axis::Vertical),
-                width: Length::Px(group_width(group)),
+                width: Length::Px(measured.width),
                 height: Length::Percent(1.0),
                 flex_shrink: 0.0,
                 padding: Edges::all(4.0),
@@ -662,7 +1055,7 @@ impl Ribbon {
         )?;
         let mut small_column = None;
         let mut small_count = 0;
-        for item in &group.items {
+        for (index, item) in group.items.iter().enumerate() {
             let label = ui
                 .commands()
                 .label(&item.command)
@@ -679,7 +1072,7 @@ impl Ribbon {
                         row,
                         LayoutStyle {
                             kind: LayoutKind::Stack(Axis::Vertical),
-                            width: Length::Px(128.0),
+                            width: Length::Px(measured.items[index]),
                             height: Length::Percent(1.0),
                             gap: 2.0,
                             flex_shrink: 0.0,
@@ -688,11 +1081,15 @@ impl Ribbon {
                     )?);
                 }
                 small_count += 1;
-                (small_column.unwrap_or(row), metrics.small, 128.0)
+                (
+                    small_column.unwrap_or(row),
+                    metrics.small,
+                    measured.items[index],
+                )
             } else {
                 small_count = 0;
                 small_column = None;
-                (row, metrics.large, 104.0)
+                (row, metrics.large, measured.items[index])
             };
             let style = LayoutStyle {
                 width: Length::Px(width),
@@ -745,7 +1142,7 @@ impl Ribbon {
                 }
                 _ => ui.button(host, caption, Some(item.command.clone()), style)?,
             };
-            ui.set_tooltip(id, label)?;
+            self.apply_command_appearance(ui, id, &item.command, &label)?;
             self.actions
                 .insert(id, Action::Command(item.command.clone()));
         }
@@ -784,12 +1181,17 @@ impl Ribbon {
         ui: &mut Controls,
         event: &InputEvent,
     ) -> Result<bool, ControlError> {
+        if matches!(
+            event,
+            InputEvent::WindowFocused(false)
+                | InputEvent::PointerDown { .. }
+                | InputEvent::Wheel { .. }
+        ) {
+            self.finish_key_tips(ui, false);
+            return Ok(false);
+        }
         if !self.container.is_some_and(|id| ui.is_enabled(id)) {
-            if self.tips != Tips::Hidden || !self.tip_prefix.is_empty() {
-                self.tips = Tips::Hidden;
-                self.tip_prefix.clear();
-                self.dirty = true;
-            }
+            self.finish_key_tips(ui, false);
             return Ok(false);
         }
         let InputEvent::KeyDown {
@@ -800,19 +1202,58 @@ impl Ribbon {
         else {
             return Ok(false);
         };
+        // An open menu owns keyboard navigation, including Escape and arrows.
+        if ui.popup_open() {
+            return Ok(false);
+        }
+        if self.tips == Tips::Hidden
+            && !modifiers.alt
+            && !modifiers.control
+            && !modifiers.super_key
+            && let Some(Action::Tab(focused)) =
+                ui.runtime.focused().and_then(|id| self.actions.get(&id))
+        {
+            let visible = self.visible_tabs();
+            if let Some(index) = visible.iter().position(|tab| tab.id == *focused) {
+                let next = match key {
+                    Key::ArrowLeft => Some((index + visible.len() - 1) % visible.len()),
+                    Key::ArrowRight => Some((index + 1) % visible.len()),
+                    Key::Home => Some(0),
+                    Key::End => Some(visible.len() - 1),
+                    _ => None,
+                };
+                if let Some(next) = next {
+                    let tab = visible[next].id.clone();
+                    if let Some(id) = self.tabs.get(&tab).copied().filter(|id| ui.is_enabled(*id)) {
+                        ui.runtime.apply(Mutation::Focus(Some(id)))?;
+                        self.active = tab;
+                        self.dirty = true;
+                        ui.dismiss_tooltip();
+                        return Ok(true);
+                    }
+                }
+            }
+        }
         if *repeat {
             return Ok(self.tips != Tips::Hidden);
         }
         if matches!(key, Key::Alt | Key::F10) && !modifiers.control && !modifiers.super_key {
-            self.tips = if self.tips == Tips::Hidden {
-                Tips::Tabs
+            ui.dismiss_tooltip();
+            if self.tips == Tips::Hidden {
+                self.key_tip_return_focus = ui.runtime.focused();
+                self.tips = Tips::Tabs;
+                self.tip_prefix.clear();
+                self.dirty = true;
+                if let Some(id) = self
+                    .tabs
+                    .get(&self.active)
+                    .copied()
+                    .filter(|id| ui.is_enabled(*id))
+                {
+                    ui.runtime.apply(Mutation::Focus(Some(id)))?;
+                }
             } else {
-                Tips::Hidden
-            };
-            self.tip_prefix.clear();
-            self.dirty = true;
-            if let Some(&id) = self.tabs.get(&self.active) {
-                ui.runtime.apply(Mutation::Focus(Some(id)))?;
+                self.finish_key_tips(ui, true);
             }
             return Ok(true);
         }
@@ -820,15 +1261,22 @@ impl Ribbon {
             return Ok(false);
         }
         if *key == Key::Escape {
-            self.tips = if self.tips == Tips::Commands {
-                Tips::Tabs
+            if self.tips == Tips::Commands {
+                self.tips = Tips::Tabs;
+                self.tip_prefix.clear();
+                self.dirty = true;
             } else {
-                Tips::Hidden
-            };
-            self.tip_prefix.clear();
-            self.dirty = true;
-            ui.close_popup()?;
+                self.finish_key_tips(ui, true);
+            }
             return Ok(true);
+        }
+        if *key == Key::Tab {
+            self.finish_key_tips(ui, false);
+            return Ok(false);
+        }
+        if modifiers.control || modifiers.super_key {
+            self.finish_key_tips(ui, false);
+            return Ok(false);
         }
         let Key::Character(character) = key else {
             return Ok(false);
@@ -841,9 +1289,7 @@ impl Ribbon {
                 && let Some(command) = self.model.quick_access.get(index - 1)
             {
                 ui.commands_mut().activate(command);
-                self.tips = Tips::Hidden;
-                self.tip_prefix.clear();
-                self.dirty = true;
+                self.finish_key_tips(ui, true);
                 return Ok(true);
             }
             let visible = self.visible_tabs();
@@ -855,6 +1301,14 @@ impl Ribbon {
                 self.tips = Tips::Commands;
                 self.tip_prefix.clear();
                 self.dirty = true;
+                if let Some(id) = self
+                    .tabs
+                    .get(&self.active)
+                    .copied()
+                    .filter(|id| ui.is_enabled(*id))
+                {
+                    ui.runtime.apply(Mutation::Focus(Some(id)))?;
+                }
             } else if !visible
                 .iter()
                 .any(|tab| tab.key_tip.to_uppercase().starts_with(&self.tip_prefix))
@@ -868,9 +1322,7 @@ impl Ribbon {
                 .find(|item| item.key_tip.eq_ignore_ascii_case(&self.tip_prefix))
             {
                 ui.commands_mut().activate(&item.command);
-                self.tips = Tips::Hidden;
-                self.tip_prefix.clear();
-                self.dirty = true;
+                self.finish_key_tips(ui, true);
             } else if !items
                 .iter()
                 .any(|item| item.key_tip.to_uppercase().starts_with(&self.tip_prefix))
@@ -879,6 +1331,24 @@ impl Ribbon {
             }
         }
         Ok(true)
+    }
+    fn finish_key_tips(&mut self, ui: &mut Controls, restore: bool) {
+        if self.tips != Tips::Hidden || !self.tip_prefix.is_empty() {
+            self.tips = Tips::Hidden;
+            self.tip_prefix.clear();
+            self.dirty = true;
+        }
+        if let Some(id) = self.key_tip_return_focus.take()
+            && restore
+            && ui.is_enabled(id)
+            && ui
+                .runtime
+                .tree()
+                .node(id)
+                .is_some_and(|node| node.props.focusable)
+        {
+            let _ = ui.runtime.apply(Mutation::Focus(Some(id)));
+        }
     }
 }
 
@@ -925,11 +1395,24 @@ fn group_width(group: &RibbonGroup) -> f32 {
 }
 /// Deterministic adaptive plan. At tiny widths one menu retains every command.
 pub fn layout_groups(groups: &[RibbonGroup], width: f32) -> Vec<RibbonPresentation> {
+    plan_groups(
+        groups,
+        width,
+        groups.iter().map(group_width).collect(),
+        vec![COLLAPSED; groups.len()],
+    )
+}
+
+fn plan_groups(
+    groups: &[RibbonGroup],
+    width: f32,
+    mut widths: Vec<f32>,
+    collapsed_widths: Vec<f32>,
+) -> Vec<RibbonPresentation> {
     if groups.is_empty() {
         return Vec::new();
     }
     let gap = 6.0 * (groups.len() - 1) as f32;
-    let mut widths: Vec<_> = groups.iter().map(group_width).collect();
     let mut collapsed = vec![false; groups.len()];
     let mut order: Vec<_> = (0..groups.len()).collect();
     order.sort_by_key(|&index| std::cmp::Reverse(groups[index].collapse_priority));
@@ -937,8 +1420,8 @@ pub fn layout_groups(groups: &[RibbonGroup], width: f32) -> Vec<RibbonPresentati
         if widths.iter().sum::<f32>() + gap <= width {
             break;
         }
-        if widths[index] > COLLAPSED {
-            widths[index] = COLLAPSED;
+        if widths[index] > collapsed_widths[index] {
+            widths[index] = collapsed_widths[index];
             collapsed[index] = true;
         }
     }

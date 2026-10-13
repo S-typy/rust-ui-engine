@@ -2,7 +2,7 @@
 //!
 //! This profile supports a `Window` containing a tree of stack panels, text,
 //! editors, buttons, check boxes, radio buttons, icons, separators and static
-//! dropdown/split menus. Elements use
+//! dropdown/split menus and a command-oriented Ribbon. Elements use
 //! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. It does not load WPF types,
 //! execute markup extensions, resolve external entities, or implement bindings.
 //! Unknown syntax is an error instead of being silently ignored.
@@ -25,6 +25,12 @@ use roxmltree::{Attribute, Document, Node, ParsingOptions};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod codegen;
+mod ribbon;
+
+pub use ribbon::{
+    RibbonDefinition, RibbonGroupDefinition, RibbonItemDefinition, RibbonItemKindDefinition,
+    RibbonItemSize, RibbonTabDefinition, validate_ribbon,
+};
 
 /// Namespace for this library's controls; not the WPF presentation namespace.
 pub const UI_NAMESPACE: &str = "urn:rust-ui-engine:ui";
@@ -129,6 +135,7 @@ pub struct ElementDefinition {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
     StackPanel(StackPanelDefinition),
+    Ribbon(RibbonDefinition),
     TextBox(EditBoxDefinition),
     TextBlock(TextBlockDefinition),
     Button(ButtonDefinition),
@@ -492,6 +499,9 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
     }
     definition.content =
         content.ok_or_else(|| at_node(window, "Window must contain exactly one root element"))?;
+    if ribbon::count(&definition.content) > 1 {
+        return Err(at_node(window, "Window supports at most one Ribbon"));
+    }
     Ok(definition)
 }
 
@@ -526,6 +536,7 @@ fn parse_element(
     let element_name = node.tag_name().name();
     let mut kind = match element_name {
         "StackPanel" => ElementKind::StackPanel(StackPanelDefinition::default()),
+        "Ribbon" => ElementKind::Ribbon(RibbonDefinition::default()),
         "TextBox" => ElementKind::TextBox(EditBoxDefinition::default()),
         "TextBlock" => ElementKind::TextBlock(TextBlockDefinition::default()),
         "Button" => ElementKind::Button(ButtonDefinition::default()),
@@ -587,6 +598,11 @@ fn parse_element(
             "IsEnabled" => common.is_enabled = boolean(document, attribute)?,
             property => {
                 let supported = match &mut kind {
+                    ElementKind::Ribbon(ribbon) if property == "SelectedTab" => {
+                        identifier(document, attribute, "SelectedTab")?;
+                        ribbon.selected_tab = Some(attribute.value().into());
+                        true
+                    }
                     ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
                         if property == "Command" && element_name == "DropDownButton" {
                             false
@@ -758,35 +774,39 @@ fn parse_element(
         }
     }
     let mut menu_text_bytes = 0;
-    for child in node.children() {
-        if child.is_element() {
-            if let ElementKind::StackPanel(panel) = &mut kind {
-                panel.children.push(parse_element(
-                    child,
-                    depth + 1,
-                    element_id,
-                    count,
-                    names,
-                    checked_radio_groups,
-                )?);
-            } else if let ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) =
-                &mut kind
-            {
-                menu.items.push(parse_menu_entry(
-                    child,
-                    depth + 1,
-                    1,
-                    count,
-                    &mut menu_text_bytes,
-                )?);
+    if let ElementKind::Ribbon(ribbon) = &mut kind {
+        ribbon::parse_children(node, depth, count, ribbon)?;
+    } else {
+        for child in node.children() {
+            if child.is_element() {
+                if let ElementKind::StackPanel(panel) = &mut kind {
+                    panel.children.push(parse_element(
+                        child,
+                        depth + 1,
+                        element_id,
+                        count,
+                        names,
+                        checked_radio_groups,
+                    )?);
+                } else if let ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) =
+                    &mut kind
+                {
+                    menu.items.push(parse_menu_entry(
+                        child,
+                        depth + 1,
+                        1,
+                        count,
+                        &mut menu_text_bytes,
+                    )?);
+                } else {
+                    return Err(at_node(
+                        child,
+                        format!("{element_name} cannot contain child elements"),
+                    ));
+                }
             } else {
-                return Err(at_node(
-                    child,
-                    format!("{element_name} cannot contain child elements"),
-                ));
+                require_empty_content(child)?;
             }
-        } else {
-            require_empty_content(child)?;
         }
     }
     if let ElementKind::TextBox(editor) = &kind {
@@ -1394,5 +1414,7 @@ pub fn compile_file(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result
     })
 }
 
+#[cfg(test)]
+mod ribbon_tests;
 #[cfg(test)]
 mod tests;

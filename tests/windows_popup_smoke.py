@@ -339,7 +339,7 @@ def main():
         windows = PopupWindows(args.dark)
         original = windows.cursor_position()
         with (output / "stdout.log").open("wb") as stdout, (output / "stderr.log").open("wb") as stderr:
-            process = subprocess.Popen([str(executable), "--diagnostics"] + (["--dark"] if args.dark else []),
+            process = subprocess.Popen([str(executable), "--controls", "--diagnostics"] + (["--dark"] if args.dark else []),
                                        stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
             report["process_id"] = process.pid
             session = PopupSession(windows, process, report, args.timeout, original)

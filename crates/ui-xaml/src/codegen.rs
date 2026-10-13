@@ -43,6 +43,10 @@ fn optional_icon(value: Option<IconSymbol>) -> String {
 fn element(element: &ElementDefinition) -> String {
     let common = &element.common;
     let kind = match &element.kind {
+        ElementKind::Ribbon(ribbon) => format!(
+            "rust_desktop_ui_xaml::ElementKind::Ribbon({})",
+            ribbon_definition(ribbon),
+        ),
         ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
             let kind = if matches!(element.kind, ElementKind::SplitButton(_)) { "SplitButton" } else { "DropDownButton" };
             let button = &menu.button;
@@ -126,6 +130,42 @@ fn element(element: &ElementDefinition) -> String {
         is_enabled = common.is_enabled,
         automation_name = optional_string(&common.automation_name),
         tool_tip = optional_string(&common.tool_tip),
+    )
+}
+
+fn ribbon_definition(ribbon: &crate::RibbonDefinition) -> String {
+    let tabs = ribbon.tabs.iter().map(|tab| {
+        let groups = tab.groups.iter().map(|group| {
+            let items = group.items.iter().map(|item| format!(
+                "rust_desktop_ui_xaml::RibbonItemDefinition {{ command: {:?}.into(), key_tip: {:?}.into(), size: rust_desktop_ui_xaml::RibbonItemSize::{:?}, kind: rust_desktop_ui_xaml::RibbonItemKindDefinition::{:?}, icon: {}, tool_tip: {}, menu: {} }}",
+                item.command, item.key_tip, item.size, item.kind, optional_icon(item.icon), optional_string(&item.tool_tip), string_vec(&item.menu),
+            )).collect::<Vec<_>>().join(",");
+            format!(
+                "rust_desktop_ui_xaml::RibbonGroupDefinition {{ id: {:?}.into(), header: {:?}.into(), collapse_priority: {}, items: vec![{}] }}",
+                group.id, group.header, group.collapse_priority, items,
+            )
+        }).collect::<Vec<_>>().join(",");
+        format!(
+            "rust_desktop_ui_xaml::RibbonTabDefinition {{ id: {:?}.into(), header: {:?}.into(), key_tip: {:?}.into(), context: {}, groups: vec![{}] }}",
+            tab.id, tab.header, tab.key_tip, optional_string(&tab.context), groups,
+        )
+    }).collect::<Vec<_>>().join(",");
+    format!(
+        "rust_desktop_ui_xaml::RibbonDefinition {{ selected_tab: {}, quick_access: {}, tabs: vec![{}] }}",
+        optional_string(&ribbon.selected_tab),
+        string_vec(&ribbon.quick_access),
+        tabs,
+    )
+}
+
+fn string_vec(values: &[String]) -> String {
+    format!(
+        "vec![{}]",
+        values
+            .iter()
+            .map(|value| format!("{value:?}.into()"))
+            .collect::<Vec<_>>()
+            .join(",")
     )
 }
 

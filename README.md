@@ -13,7 +13,13 @@ Linux/macOS GPU execution still need the checks recorded in the
 
 ## Run the XAML form
 
-The compiled XAML profile provides a native window with nested stack panels,
+The default [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) combines a
+command-oriented Ribbon with an editable form. Declare tabs, groups, quick-access
+commands and large or small buttons in XAML; register command labels, availability,
+toggle state and handlers in Rust. Split buttons open a separate command menu.
+Alt or F10 activates Ribbon KeyTips, and narrow windows collapse groups into menus.
+
+The compiled profile also provides nested stack panels,
 labels, single-line edit boxes, buttons, toggle buttons, checkboxes and radio groups. Buttons
 share theme-relative styling and Fluent hover, press, checked and focus states.
 Radio groups use one Tab stop; arrow keys select a visible, enabled option.
@@ -21,12 +27,16 @@ Own vector icons work alone or inside buttons; horizontal and vertical separator
 divide groups without entering the keyboard focus order.
 Editors support light/dark
 Fluent styling, placeholder text, Unicode editing and value validation.
-Edit [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) and rebuild:
+Edit the XAML and rebuild:
 
 ```sh
 cargo run --release --locked -p xaml-form
 cargo run --release --locked -p xaml-form -- --dark
+cargo run --release --locked -p xaml-form -- --controls
 ```
+
+`--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
+the separate example of individual controls and popup menus.
 
 The build validates the markup and generates a Rust window definition. No .NET
 runtime is required. This is a bounded, explicit control-tree profile, with no bindings,

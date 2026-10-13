@@ -4,7 +4,7 @@ use crate::{
 };
 use rust_desktop_ui_controls::{CommitOutcome, Controls, EditEvent, Role, Theme};
 use rust_desktop_ui_core::{
-    Axis, LayoutKind, LayoutStyle, Length, Mutation, Rect, Scene, Size, WidgetId,
+    Axis, InputEvent, LayoutKind, LayoutStyle, Length, Mutation, Rect, Scene, Size, WidgetId,
 };
 use rust_desktop_ui_platform_winit::{
     ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, accesskit,
@@ -27,6 +27,8 @@ pub(crate) struct Form {
     last_focus: Option<WidgetId>,
     diagnostics: bool,
     last_popup_diagnostic: String,
+    last_ribbon_diagnostic: String,
+    suppress_text: bool,
 }
 
 impl Form {
@@ -39,6 +41,15 @@ impl Form {
         // Application-owned registration; the generic mount never invents handlers.
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
+        for (id, label) in [
+            ("Clear", "Очистить"),
+            ("Light", "Светлая"),
+            ("Dark", "Тёмная"),
+            ("Disabled", "Недоступно"),
+        ] {
+            ui.commands_mut().register(id, label);
+        }
+        ui.commands_mut().set_enabled(&"Disabled".into(), false);
         ui.runtime
             .apply(Mutation::SetStyle {
                 node: ui.root(),
@@ -119,6 +130,8 @@ impl Form {
             last_focus: None,
             diagnostics,
             last_popup_diagnostic: String::new(),
+            last_ribbon_diagnostic: String::new(),
+            suppress_text: false,
         })
     }
     pub(crate) fn find_name(&self, name: &str) -> Option<WidgetId> {
@@ -154,6 +167,14 @@ impl Form {
             })
     }
     fn refresh_status(&mut self) -> Result<bool, String> {
+        let clear_enabled = self
+            .message()
+            .is_some_and(|id| self.ui.is_read_only(id) == Some(false));
+        if self.ui.commands().enabled(&"Clear".into()) != clear_enabled {
+            self.ui
+                .commands_mut()
+                .set_enabled(&"Clear".into(), clear_enabled);
+        }
         if self.message().is_none() {
             return Ok(false);
         }
@@ -201,6 +222,9 @@ impl Form {
         }
     }
     fn application_events(&mut self) -> Result<(), String> {
+        if let Some(mounted) = &mut self.view.ribbon {
+            mounted.ribbon.process(&mut self.ui).map_err(err)?;
+        }
         for invocation in self.ui.commands_mut().drain_invocations() {
             if self.diagnostics {
                 println!("command={}", invocation.id.0);
@@ -215,6 +239,17 @@ impl Form {
                 ) {
                     self.last_notice = "Значение подтверждено.";
                 }
+            } else if invocation.id.0 == "Clear" {
+                if let Some(editor) = self.message()
+                    && self.ui.is_read_only(editor) == Some(false)
+                {
+                    self.ui.set_text(editor, "").map_err(err)?;
+                    self.last_notice = "Текст очищен.";
+                }
+            } else if invocation.id.0 == "Light" {
+                self.ui.set_theme(Theme::FluentLight).map_err(err)?;
+            } else if invocation.id.0 == "Dark" {
+                self.ui.set_theme(Theme::FluentDark).map_err(err)?;
             }
         }
         for id in self
@@ -285,6 +320,10 @@ impl DesktopApp for Form {
         self.refresh_status()?;
         self.ui.update(viewport).map_err(err)?;
         self.application_events()?;
+        if let Some(mounted) = &mut self.view.ribbon {
+            mounted.update(&mut self.ui)?;
+            self.ui.update(viewport).map_err(err)?;
+        }
         self.consume_edit_events();
         if self.refresh_status()? {
             self.ui.update(viewport).map_err(err)?;
@@ -294,6 +333,13 @@ impl DesktopApp for Form {
             if snapshot != self.last_popup_diagnostic {
                 println!("popup-state {snapshot}");
                 self.last_popup_diagnostic = snapshot;
+            }
+            if let Some(mounted) = &self.view.ribbon {
+                let snapshot = crate::popup_diagnostics::ribbon_snapshot(&self.ui, mounted);
+                if snapshot != self.last_ribbon_diagnostic {
+                    println!("ribbon-state {snapshot}");
+                    self.last_ribbon_diagnostic = snapshot;
+                }
             }
         }
         Ok(())
@@ -328,10 +374,47 @@ impl DesktopApp for Form {
         }
         let mut redraw = true;
         match event {
-            PlatformEvent::Input(input) => self.ui.dispatch(input).map_err(err)?,
-            PlatformEvent::Text(text) | PlatformEvent::Paste(text) => {
-                self.ui.text_input(&text).map_err(err)?
+            PlatformEvent::Input(input) => {
+                if !matches!(
+                    input,
+                    InputEvent::PointerMoved { .. } | InputEvent::WindowFocused(true)
+                ) {
+                    self.ui.dismiss_tooltip();
+                }
+                let mut consumed = false;
+                if let Some(mounted) = &mut self.view.ribbon {
+                    if matches!(input, InputEvent::KeyDown { .. } | InputEvent::KeyUp { .. }) {
+                        self.suppress_text = mounted.ribbon.key_tips_visible();
+                    } else if matches!(
+                        input,
+                        InputEvent::PointerDown { .. } | InputEvent::WindowFocused(false)
+                    ) {
+                        self.suppress_text = false;
+                    }
+                    consumed = mounted
+                        .ribbon
+                        .handle_input(&mut self.ui, &input)
+                        .map_err(err)?;
+                    if consumed {
+                        self.suppress_text = true;
+                    }
+                }
+                if !consumed {
+                    self.ui.dispatch(input).map_err(err)?;
+                }
             }
+            PlatformEvent::Text(text) => {
+                if !self.suppress_text
+                    && !self
+                        .view
+                        .ribbon
+                        .as_ref()
+                        .is_some_and(|mounted| mounted.ribbon.key_tips_visible())
+                {
+                    self.ui.text_input(&text).map_err(err)?;
+                }
+            }
+            PlatformEvent::Paste(text) => self.ui.text_input(&text).map_err(err)?,
             PlatformEvent::ImePreedit(text, cursor) => {
                 self.ui.ime_preedit(&text, cursor).map_err(err)?
             }
@@ -342,6 +425,10 @@ impl DesktopApp for Form {
                 redraw |= self.ui.tooltip_tick(Instant::now()).map_err(err)?;
             }
             PlatformEvent::Accessibility(request) => {
+                self.suppress_text = false;
+                if let Some(mounted) = &mut self.view.ribbon {
+                    mounted.ribbon.cancel_key_tips(&mut self.ui);
+                }
                 self.accessible.action(&mut self.ui, request)?
             }
         }

@@ -1082,7 +1082,7 @@ def main() -> int:
         windows = FormWindows(args.dark)
         original_cursor = windows.cursor_position()
         with (output / "stdout.log").open("wb") as stdout, (output / "stderr.log").open("wb") as stderr:
-            command = [str(executable), "--diagnostics"] + (["--dark"] if args.dark else [])
+            command = [str(executable), "--controls", "--diagnostics"] + (["--dark"] if args.dark else [])
             process = subprocess.Popen(command, stdout=stdout, stderr=stderr,
                                        creationflags=subprocess.CREATE_NO_WINDOW)
             report["process_id"] = process.pid

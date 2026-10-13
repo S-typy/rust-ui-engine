@@ -10,6 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
 pub(crate) struct MountedView {
+    pub(crate) ribbon: Option<crate::view_ribbon::MountedRibbon>,
     pub(crate) names: HashMap<String, WidgetId>,
     pub(crate) automation_names: HashMap<WidgetId, String>,
     pub(crate) editors: Vec<WidgetId>,
@@ -65,7 +66,7 @@ impl MountedView {
         };
         let height = common.height.map_or_else(
             || match &element.kind {
-                ElementKind::StackPanel(_) => Length::Auto,
+                ElementKind::StackPanel(_) | ElementKind::Ribbon(_) => Length::Auto,
                 ElementKind::TextBox(_)
                 | ElementKind::Button(_)
                 | ElementKind::ToggleButton(_)
@@ -90,6 +91,27 @@ impl MountedView {
             ..Default::default()
         };
         let id = match &element.kind {
+            ElementKind::Ribbon(definition) => {
+                let mut ribbon = crate::view_ribbon::build_ribbon(ui, definition)?;
+                let initial_width = common.width.unwrap_or(0.0);
+                ribbon.preflight(ui, initial_width).map_err(err)?;
+                let wrapper = ui
+                    .transparent_panel(
+                        parent,
+                        LayoutStyle {
+                            kind: LayoutKind::Stack(Axis::Vertical),
+                            ..style
+                        },
+                    )
+                    .map_err(err)?;
+                ribbon
+                    .mount_with_width(ui, wrapper, initial_width)
+                    .map_err(err)?;
+                self.commands
+                    .extend(crate::view_ribbon::commands(definition));
+                self.ribbon = Some(crate::view_ribbon::MountedRibbon { wrapper, ribbon });
+                wrapper
+            }
             ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
                 let entries = menu_entries(&menu.items, &mut self.commands);
                 let button = &menu.button;
@@ -329,6 +351,7 @@ impl MountedView {
             id,
             match &element.kind {
                 ElementKind::StackPanel(_) => Role::Panel,
+                ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) => Role::TextBox,
                 ElementKind::TextBlock(_) => Role::Label,
                 ElementKind::Button(_) => Role::Button,
@@ -360,6 +383,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         return Ok(width);
     }
     match &element.kind {
+        ElementKind::Ribbon(_) => Ok(640.0),
         ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
             let button = &menu.button;
             let arrow = if matches!(element.kind, ElementKind::SplitButton(_)) {
@@ -427,11 +451,12 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
     }
 }
 
-fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> {
+fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), String> {
     let mut pending = vec![(root, 1, 0)];
     let mut names = HashSet::new();
     let mut checked_radio_groups = HashSet::new();
     let mut count = 0;
+    let mut has_ribbon = false;
     while let Some((element, depth, parent)) = pending.pop() {
         count += 1;
         if count > rust_desktop_ui_xaml::MAX_ELEMENTS
@@ -453,6 +478,23 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         match &element.kind {
+            ElementKind::Ribbon(definition) => {
+                if has_ribbon {
+                    return Err("Only one Ribbon is supported per Window".into());
+                }
+                has_ribbon = true;
+                let ribbon = crate::view_ribbon::build_ribbon(ui, definition)?;
+                let (nested, ribbon_depth) = crate::view_ribbon::nested_size(definition);
+                count += nested;
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || depth + ribbon_depth - 1 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH
+                {
+                    return Err("XAML Ribbon exceeds the element count or depth limit".into());
+                }
+                ribbon
+                    .preflight(ui, element.common.width.unwrap_or(0.0))
+                    .map_err(err)?;
+            }
             ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
                 let button = &menu.button;
                 validate_menu_button_metrics(&element.common, &button.style)?;
@@ -743,7 +785,7 @@ fn button_icon(
     })
 }
 
-fn icon_symbol(symbol: rust_desktop_ui_xaml::IconSymbol) -> IconSymbol {
+pub(crate) fn icon_symbol(symbol: rust_desktop_ui_xaml::IconSymbol) -> IconSymbol {
     match symbol {
         rust_desktop_ui_xaml::IconSymbol::Check => IconSymbol::Check,
         rust_desktop_ui_xaml::IconSymbol::Close => IconSymbol::Close,

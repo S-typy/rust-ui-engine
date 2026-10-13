@@ -1,4 +1,4 @@
-use crate::{form::Form, generated};
+use crate::{form::Form, generated_controls as generated};
 use rust_desktop_ui_controls::{
     CommitOutcome, EditBoxStyle, EditorSettings, EditorValidation, Theme,
 };
@@ -107,7 +107,7 @@ fn accessible_action(
 
 #[test]
 fn compiled_markup_matches_source_and_mounts_named_editbox() {
-    let expected = rust_desktop_ui_xaml::parse(include_str!("../MainWindow.xaml")).unwrap();
+    let expected = rust_desktop_ui_xaml::parse(include_str!("../ControlsWindow.xaml")).unwrap();
     let compiled = generated::window_definition();
     assert_eq!(compiled, expected);
     let mut form = form();
