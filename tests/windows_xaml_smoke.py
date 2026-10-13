@@ -33,6 +33,10 @@ VK_TAB = 0x09
 VK_RETURN = 0x0D
 VK_ESCAPE = 0x1B
 VK_SPACE = 0x20
+VK_LEFT = 0x25
+VK_UP = 0x26
+VK_RIGHT = 0x27
+VK_DOWN = 0x28
 VK_END = 0x23
 VK_F24 = 0x87
 TEXT = "Привет Rust"
@@ -159,7 +163,7 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
         # The example places its validation status after the fixed-height help
         # label. Check readable message glyphs separately from the field chrome.
         # This is coverage, not OCR; the exact text is checked in diagnostics.
-        for y in range(round(280 * scale), round(316 * scale)):
+        for y in range(round(320 * scale), min(height, round(356 * scale))):
             for x in range(round(40 * scale), min(width, round(420 * scale))):
                 color = pixel(x, y)
                 if near(color, foreground, 10) or near(color, error, 10):
@@ -233,15 +237,48 @@ def button_capture_checkpoints(pixels: bytes, width: int, height: int, scale: fl
             "pin_checked": checked, "pin_phase": phase, "pin_focused": focused}
 
 
+def radio_capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
+                              dark: bool, selected: str, focused: str | None) -> dict:
+    """Check circular indicators, exclusive dots and separate keyboard focus."""
+    if selected not in ("AlignLeft", "AlignCenter"):
+        raise SmokeFailure("Invalid radio fixture selection")
+    canvas = (32, 32, 32) if dark else (243, 243, 243)
+    surface = (45, 45, 45) if dark else (255, 255, 255)
+    accent = (96, 205, 255) if dark else (0, 95, 184)
+    dot = canvas if dark else (255, 255, 255)
+    samples = {}
+    for name, left in (("AlignLeft", 32), ("AlignCenter", 160), ("AlignRight", 288)):
+        background = accent if name == selected else canvas if name == "AlignRight" else surface
+        for part, (x, y, expected) in {
+            "dot": (left + 17, 248, dot if name == selected else background),
+            "fill": (left + 17, 242, background),
+            "circle_corner": (left + 8, 239, canvas),
+            "row": (left + 108, 258, canvas),
+            "focus": (left + 3, 248, accent if name == focused else canvas),
+        }.items():
+            px, py = round(x * scale), round(y * scale)
+            if not 0 <= px < width or not 0 <= py < height:
+                raise SmokeFailure("Radio checkpoint lies outside the capture")
+            offset = ((height - 1 - py) * width + px) * 4
+            blue, green, red = pixels[offset:offset + 3]
+            actual = (red, green, blue)
+            if any(abs(a - b) > 3 for a, b in zip(actual, expected, strict=True)):
+                raise SmokeFailure(f"Unexpected {name} {part}: {actual}, expected {expected}")
+            samples[f"{name}_{part}"] = actual
+    return samples
+
+
 class FormWindows(GalleryWindows):
     def __init__(self, dark: bool, focused: bool = False, invalid: bool = False,
-                 read_only: bool = False, buttons: dict | None = None):
+                 read_only: bool = False, buttons: dict | None = None,
+                 radios: dict | None = None):
         super().__init__()
         self.dark = dark
         self.focused = focused
         self.invalid = invalid
         self.read_only = read_only
         self.buttons = buttons
+        self.radios = radios
 
     def find_window(self, pid: int) -> int | None:
         found = []
@@ -271,14 +308,17 @@ class FormWindows(GalleryWindows):
             result["buttons"] = button_capture_checkpoints(pixels, width, height, scale,
                                                           self.dark, option_checked=self.read_only,
                                                           **self.buttons)
+        if self.radios is not None:
+            result["radios"] = radio_capture_checkpoints(pixels, width, height, scale,
+                                                        self.dark, **self.radios)
         return result
 
 
 def form_capture_worker(hwnd: int, pid: int, destination: Path, result_queue,
                         dark: bool, focused: bool, invalid: bool, read_only: bool,
-                        buttons: dict | None = None) -> None:
+                        buttons: dict | None = None, radios: dict | None = None) -> None:
     try:
-        result_queue.put(FormWindows(dark, focused, invalid, read_only, buttons).screenshot(hwnd, pid, destination))
+        result_queue.put(FormWindows(dark, focused, invalid, read_only, buttons, radios).screenshot(hwnd, pid, destination))
     except Exception as error:
         result_queue.put({"status": "unavailable", "reason": str(error)})
 
@@ -350,14 +390,15 @@ class FormSession(RetainedSession):
         self.wait_focus("Message", "pointer focuses the nested Message editor")
 
     def capture(self, output: Path, name: str, focused: bool, invalid: bool = False,
-                read_only: bool = False, buttons: dict | None = None) -> None:
+                read_only: bool = False, buttons: dict | None = None,
+                radios: dict | None = None) -> None:
         # A focused field blinks every 500ms, so idle-frame equality is not a
         # valid settling condition. Require a live frame and allow queued input.
         self.wait_state("live frame before " + name, lambda s: s["frames"] > 0)
         time.sleep(0.15)
         result = capture_client(self.hwnd, self.process.pid, output / f"{name}.bmp",
                                 self.timeout, worker_target=form_capture_worker,
-                                worker_args=(self.windows.dark, focused, invalid, read_only, buttons))
+                                worker_args=(self.windows.dark, focused, invalid, read_only, buttons, radios))
         self.report["captures"][name] = result
         if result["status"] != "available":
             raise SmokeFailure(f"Required {name} capture unavailable: {result.get('reason')}")
@@ -402,8 +443,9 @@ class FormSession(RetainedSession):
         toggles = self.log().count("toggle-state=Pin checked=")
         self.key(VK_RETURN)
         self.wait_pin(False, toggles, "Enter clears Pin")
+        self.run_radios(output, scale)
         self.key(VK_TAB)
-        self.wait_focus("Message", "Tab skips Disabled and wraps to Message")
+        self.wait_focus("Message", "Tab leaves radio group and wraps to Message")
         self.click_control(380, 206, scale)
         time.sleep(0.15)
         if last_edit_diagnostic(self.log(), "focus-name") == "Disabled":
@@ -415,7 +457,7 @@ class FormSession(RetainedSession):
         toggles = self.log().count("checkbox-state=Option checked=")
         self.key(VK_SPACE)
         self.wait_checkbox(True, "Space checks Option and makes editor read-only", toggles)
-        for name in ("Confirm", "Pin", "Message"):
+        for name in ("Confirm", "Pin", "AlignLeft", "Message"):
             self.key(VK_TAB)
             self.wait_focus(name, "Tab reaches " + name)
         self.capture(output, "check-checked", focused=True, invalid=True, read_only=True,
@@ -426,7 +468,7 @@ class FormSession(RetainedSession):
         self.wait_checkbox(False, "pointer clears Option", toggles)
         self.click_editor(scale)
         before = parse_state(self.windows.title(self.hwnd))["frames"]
-        target = (round(480 * scale), round(360 * scale))
+        target = (round(480 * scale), round(400 * scale))
         self.windows.resize_client(self.hwnd, *target)
         self.wait("client resize", lambda: self.windows.client_size(self.hwnd) == target)
         self.wait_state("resize redraw", lambda state: state["frames"] > before)
@@ -438,6 +480,54 @@ class FormSession(RetainedSession):
             raise SmokeFailure(f"Unexpected close status {code}")
         self.report["checks"].append({"check": "native close", "exit_code": code})
 
+    def wait_radio(self, selected: str, description: str) -> None:
+        def matches():
+            log = self.log()
+            for name in ("AlignLeft", "AlignCenter", "AlignRight"):
+                values = re.findall(r"^radio-state=" + name + r" checked=(true|false)$",
+                                    log, re.MULTILINE)
+                if not values or values[-1] != str(name == selected).lower():
+                    return False
+            return True
+        self.wait(description, matches)
+        self.report["checks"].append({"check": description, "selected_radio": selected})
+
+    def run_radios(self, output: Path, scale: float) -> None:
+        self.key(VK_TAB)
+        self.wait_focus("AlignLeft", "Tab skips Disabled and enters selected radio")
+        self.wait_radio("AlignLeft", "XAML initializes exactly one selected radio")
+        self.capture(output, "radio-left", focused=False, invalid=True,
+                     radios={"selected": "AlignLeft", "focused": "AlignLeft"})
+        for key, selected, description in (
+            (VK_RIGHT, "AlignCenter", "Right selects next radio"),
+            (VK_RIGHT, "AlignLeft", "Right skips disabled radio and wraps"),
+            (VK_LEFT, "AlignCenter", "Left wraps backwards skipping disabled radio"),
+            (VK_UP, "AlignLeft", "Up selects previous radio"),
+            (VK_DOWN, "AlignCenter", "Down selects next radio"),
+        ):
+            self.key(key)
+            self.wait_focus(selected, description + " and moves focus")
+            self.wait_radio(selected, description + " exclusively")
+        self.key(VK_SPACE)
+        self.capture(output, "radio-center-space", focused=False, invalid=True,
+                     radios={"selected": "AlignCenter", "focused": "AlignCenter"})
+        self.wait_radio("AlignCenter", "Space preserves an already selected radio")
+        self.key(VK_TAB)
+        self.wait_focus("Message", "Tab exits the selected second radio in one step")
+        self.click_control(340, 248, scale)
+        self.capture(output, "radio-disabled", focused=False, invalid=True,
+                     radios={"selected": "AlignCenter", "focused": None})
+        if last_edit_diagnostic(self.log(), "focus-name") == "AlignRight":
+            raise SmokeFailure("Disabled radio accepted pointer focus")
+        self.wait_radio("AlignCenter", "Disabled radio rejects pointer selection")
+        self.click_control(90, 248, scale)
+        self.wait_focus("AlignLeft", "Mouse focuses the first radio")
+        self.wait_radio("AlignLeft", "Mouse selects first radio and clears second")
+        self.key(VK_RETURN)
+        self.capture(output, "radio-left-enter", focused=False, invalid=True,
+                     radios={"selected": "AlignLeft", "focused": "AlignLeft"})
+        self.wait_radio("AlignLeft", "Enter preserves the selected radio")
+
     def run(self, output: Path) -> None:
         self.stdout_path = output / "stdout.log"
         self.hwnd = self.wait("visible form child window", lambda:
@@ -448,20 +538,22 @@ class FormSession(RetainedSession):
         self.wait("compiled x:Name resolves", lambda:
                   "named-editor=Message resolved=true" in self.log())
         self.report["checks"].append({"check": "compiled x:Name Message resolves"})
-        for name in ("Message", "Option", "Confirm", "Pin", "Disabled"):
+        names = ("Message", "Option", "Confirm", "Pin", "Disabled",
+                 "AlignLeft", "AlignCenter", "AlignRight")
+        for name in names:
             self.wait("compiled nested x:Name " + name + " resolves", lambda name=name:
                       f"named-control={name} resolved=true" in self.log())
         self.report["checks"].append({"check": "compiled nested control names resolve",
-                                      "names": ["Message", "Option", "Confirm", "Pin", "Disabled"]})
+                                      "names": list(names)})
         dpi = self.windows.user.GetDpiForWindow(self.hwnd)
         if dpi <= 0:
             raise SmokeFailure("GetDpiForWindow returned zero")
         scale = dpi / 96.0
         self.report["dpi"] = dpi
         actual = self.windows.client_size(self.hwnd)
-        expected = (round(640 * scale), round(400 * scale))
+        expected = (round(640 * scale), round(440 * scale))
         if any(abs(a - b) > 1 for a, b in zip(actual, expected, strict=True)):
-            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x400 at DPI {dpi}: {expected}")
+            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x440 at DPI {dpi}: {expected}")
         self.report["checks"].append({"check": "initial client dimensions match compiled XAML",
                                       "actual_physical": actual, "expected_physical": expected,
                                       "rounding_tolerance_pixels": 1})
@@ -505,7 +597,7 @@ class FormSession(RetainedSession):
                                   "Enter accepts the valid Unicode draft")
         self.capture(output, "typed", focused=True)
 
-        # The visual tree order is Message, Option, Confirm, Pin. Structural panels
+        # The radio group contributes one stop after Pin. Structural panels
         # and labels must not introduce tab stops; the final stop wraps.
         self.key(VK_TAB)
         self.wait_focus("Option", "Tab moves from Message to nested Option")
@@ -518,7 +610,9 @@ class FormSession(RetainedSession):
         self.key(VK_TAB)
         self.wait_focus("Pin", "Tab moves from Confirm to Pin")
         self.key(VK_TAB)
-        self.wait_focus("Message", "Tab skips Disabled and wraps to read-only Message")
+        self.wait_focus("AlignLeft", "Tab skips Disabled and enters the radio group")
+        self.key(VK_TAB)
+        self.wait_focus("Message", "Tab leaves the radio group for read-only Message")
         changes_before = self.log().count("edit-value=")
         text_before = self.log().count('edit-input=Text("READONLY")')
         self.type_text("READONLY")
@@ -572,7 +666,7 @@ class FormSession(RetainedSession):
         self.wait_value(TEXT[:-1], "Backspace removes final grapheme")
 
         before = parse_state(self.windows.title(self.hwnd))["frames"]
-        target = (round(480 * scale), round(360 * scale))
+        target = (round(480 * scale), round(400 * scale))
         self.windows.resize_client(self.hwnd, *target)
         self.wait("native client resize", lambda: self.windows.client_size(self.hwnd) == target)
         self.wait_state("resized form redraw", lambda s: s["frames"] > before)
@@ -662,7 +756,7 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("Diagnostic expressions must be rejected")
-    width, height = 640, 400
+    width, height = 640, 440
     for dark in (False, True):
         canvas = 32 if dark else 243
         surface = 45 if dark else 255
@@ -717,7 +811,7 @@ def self_test() -> None:
         error = (255, 153, 164) if dark else (196, 43, 28)
         set_rgb(200, 104, error)
         set_rgb(200, 138, error)
-        for y in range(284, 289):
+        for y in range(324, 329):
             for x in range(45, 80):
                 set_rgb(x, y, (foreground,) * 3)
         invalid_fixture = bytes(pixels)
@@ -731,7 +825,7 @@ def self_test() -> None:
         else:
             raise AssertionError("A normal border must not pass as invalid appearance")
         pixels[:] = invalid_fixture
-        for y in range(280, 316):
+        for y in range(320, 356):
             for x in range(40, 420):
                 set_rgb(x, y, (canvas,) * 3)
         try:
@@ -765,6 +859,25 @@ def self_test() -> None:
                 raise AssertionError("Wrong checked/focus palette must fail")
             set_rgb(*damaged, selected if damaged[0] == 308 else accent)
         pixels[:] = direct
+        dot = (canvas,) * 3 if dark else (255, 255, 255)
+        for left in (32, 160, 288):
+            background = accent if left == 32 else (canvas,) * 3 if left == 288 else (surface,) * 3
+            set_rgb(left + 17, 248, dot if left == 32 else background)
+            set_rgb(left + 17, 242, background)
+            set_rgb(left + 3, 248, accent if left == 32 else (canvas,) * 3)
+        radio_fixture = bytes(pixels)
+        radio_capture_checkpoints(pixels, width, height, 1.0, dark, "AlignLeft", "AlignLeft")
+        for x, y, wrong in ((49, 248, accent), (40, 239, accent),
+                            (35, 248, (canvas,) * 3), (177, 242, accent)):
+            pixels[:] = radio_fixture
+            set_rgb(x, y, wrong)
+            try:
+                radio_capture_checkpoints(pixels, width, height, 1.0, dark, "AlignLeft", "AlignLeft")
+            except SmokeFailure:
+                pass
+            else:
+                raise AssertionError("Missing dot/focus, square indicator or duplicate selection must fail")
+        pixels[:] = direct
         # Reproduce the previous accidental linear->sRGB palette encoding.
         for x, y in ((8, 8), (32, 104)):
             wrong = round(255 * (1.055 * (canvas / 255) ** (1 / 2.4) - 0.055))
@@ -781,7 +894,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("Invalid scale must be rejected")
-    print("PASS: XAML tree names/focus/checkbox diagnostics, direct-sRGB, nested controls, read-only/invalid palettes and corner/glyph fixtures")
+    print("PASS: XAML tree diagnostics, direct-sRGB, nested controls, read-only/invalid palettes, radio exclusivity/dot/focus/circle and corner/glyph fixtures")
 
 
 def main() -> int:
@@ -792,7 +905,7 @@ def main() -> int:
     parser.add_argument("--timeout", type=float, default=20)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--controls-only", action="store_true",
-                        help="Test buttons/check box, focus and resize without Unicode text injection")
+                        help="Test buttons/check box/radio groups, focus and resize without Unicode text injection")
     args = parser.parse_args()
     if args.self_test:
         self_test()

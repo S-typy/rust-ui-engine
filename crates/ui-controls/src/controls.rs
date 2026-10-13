@@ -11,7 +11,19 @@ use rust_desktop_ui_layout::TaffyLayout;
 use rust_desktop_ui_text::{
     EditError, PreparedText, TextCaret, TextDocument, TextEngine, TextError, TextLimit, TextLimits,
 };
-use std::{borrow::Cow, collections::HashMap, fmt};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::atomic::{AtomicU64, Ordering},
+};
+
+/// An opaque radio group allocated by one `Controls` instance. Group identities
+/// are process-unique and cannot be used to add members in another instance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct RadioGroupId(u64);
+
+static NEXT_RADIO_GROUP: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug)]
 pub enum ControlError {
@@ -43,6 +55,7 @@ pub enum Role {
     Button,
     ToggleButton,
     CheckBox,
+    RadioButton,
     TextBox,
     ScrollView,
     TabList,
@@ -129,6 +142,7 @@ enum Kind {
     Button,
     Toggle,
     CheckBox,
+    Radio { group: RadioGroupId },
     TextBox(TextDocument),
     Scroll { content: WidgetId, extent: f32 },
     Tab { group: WidgetId, index: usize },
@@ -136,12 +150,20 @@ enum Kind {
 }
 impl Kind {
     fn button_style(&self) -> bool {
-        matches!(self, Self::Button | Self::Toggle | Self::CheckBox)
+        matches!(
+            self,
+            Self::Button | Self::Toggle | Self::CheckBox | Self::Radio { .. }
+        )
     }
     fn clickable(&self) -> bool {
         matches!(
             self,
-            Self::Button | Self::Toggle | Self::CheckBox | Self::Tab { .. } | Self::MenuItem { .. }
+            Self::Button
+                | Self::Toggle
+                | Self::CheckBox
+                | Self::Radio { .. }
+                | Self::Tab { .. }
+                | Self::MenuItem { .. }
         )
     }
     fn role(&self) -> Role {
@@ -151,6 +173,7 @@ impl Kind {
             Self::Button => Role::Button,
             Self::Toggle => Role::ToggleButton,
             Self::CheckBox => Role::CheckBox,
+            Self::Radio { .. } => Role::RadioButton,
             Self::TextBox(_) => Role::TextBox,
             Self::Scroll { .. } => Role::ScrollView,
             Self::Tab { .. } => Role::Tab,
@@ -204,6 +227,7 @@ pub struct Controls {
     theme: Theme,
     controls: HashMap<WidgetId, Control>,
     tabs: HashMap<WidgetId, Tabs>,
+    radio_groups: HashSet<RadioGroupId>,
     commands: CommandRegistry,
     pressed: Option<WidgetId>,
     keyboard_pressed: bool,
@@ -262,6 +286,7 @@ impl Controls {
             theme,
             controls: HashMap::new(),
             tabs: HashMap::new(),
+            radio_groups: HashSet::new(),
             commands: CommandRegistry::default(),
             pressed: None,
             keyboard_pressed: false,
@@ -535,7 +560,7 @@ impl Controls {
             .get(&id)
             .filter(|c| {
                 self.runtime.tree().node(id).is_some()
-                    && matches!(c.kind, Kind::Toggle | Kind::CheckBox)
+                    && matches!(c.kind, Kind::Toggle | Kind::CheckBox | Kind::Radio { .. })
             })
             .map(|c| {
                 c.command
@@ -545,6 +570,24 @@ impl Controls {
             })
     }
     pub fn set_checked(&mut self, id: WidgetId, checked: bool) -> Result<(), ControlError> {
+        if self.runtime.tree().node(id).is_none() || !self.controls.contains_key(&id) {
+            return Err(ControlError::Invalid("Unknown control".into()));
+        }
+        if let Some(group) = self.radio_group_of(id) {
+            for (&peer, control) in &mut self.controls {
+                if self.runtime.tree().node(peer).is_some()
+                    && matches!(control.kind, Kind::Radio { group: candidate } if candidate == group)
+                    && (checked || peer == id)
+                {
+                    let value = checked && peer == id;
+                    if control.checked != value {
+                        control.checked = value;
+                        self.scene_dirty = true;
+                    }
+                }
+            }
+            return self.refresh_radio_tab_stops();
+        }
         let control = self
             .controls
             .get_mut(&id)
@@ -633,7 +676,7 @@ impl Controls {
             .filter(|c| matches!(c.kind, Kind::TextBox(_)))
             .map(|c| &c.edit_box_style)
     }
-    /// Set shared Button/ToggleButton/CheckBox appearance atomically. Explicit
+    /// Set shared Button/ToggleButton/CheckBox/RadioButton appearance atomically. Explicit
     /// styling enables the shared renderer even with a legacy theme.
     pub fn set_button_style(
         &mut self,
@@ -642,7 +685,7 @@ impl Controls {
     ) -> Result<(), ControlError> {
         if self.button_style(id).is_none() {
             return Err(ControlError::Invalid(
-                "Control is not a Button, ToggleButton or CheckBox".into(),
+                "Control is not a Button, ToggleButton, CheckBox or RadioButton".into(),
             ));
         }
         style.validate()?;
@@ -970,6 +1013,44 @@ impl Controls {
         self.set_checked(id, checked)?;
         Ok(id)
     }
+    /// Allocate an empty radio group owned by this control collection.
+    pub fn radio_group(&mut self) -> RadioGroupId {
+        let id = RadioGroupId(
+            NEXT_RADIO_GROUP
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_add(1)
+                })
+                .expect("radio group identity space exhausted"),
+        );
+        self.radio_groups.insert(id);
+        id
+    }
+    /// Add a radio button. A checked initial value replaces the group's current
+    /// selection, including hidden or disabled members. No command is attached.
+    pub fn radio_button(
+        &mut self,
+        parent: WidgetId,
+        label: impl Into<String>,
+        group: RadioGroupId,
+        checked: bool,
+        style: LayoutStyle,
+    ) -> Result<WidgetId, ControlError> {
+        if !self.radio_groups.contains(&group) {
+            return Err(ControlError::Invalid(
+                "Radio group belongs to another Controls instance".into(),
+            ));
+        }
+        let id = self.add(parent, Kind::Radio { group }, label.into(), None, style)?;
+        self.set_checked(id, checked)?;
+        Ok(id)
+    }
+    pub fn radio_group_of(&self, id: WidgetId) -> Option<RadioGroupId> {
+        self.runtime.tree().node(id)?;
+        match self.controls.get(&id)?.kind {
+            Kind::Radio { group } => Some(group),
+            _ => None,
+        }
+    }
     pub fn text_box(
         &mut self,
         parent: WidgetId,
@@ -1269,6 +1350,107 @@ impl Controls {
             id = parent;
         }
     }
+    fn radio_members(&self, group: RadioGroupId) -> Vec<WidgetId> {
+        self.runtime
+            .tree()
+            .preorder()
+            .into_iter()
+            .filter(|&id| {
+                self.radio_group_of(id) == Some(group)
+                    && self.is_enabled(id)
+                    && self
+                        .runtime
+                        .tree()
+                        .node(id)
+                        .is_some_and(|node| node.props.focusable)
+            })
+            .collect()
+    }
+    fn refresh_radio_tab_stops(&mut self) -> Result<(), ControlError> {
+        let mut representatives = HashMap::new();
+        for id in self.runtime.tree().preorder() {
+            if let Some(group) = self.radio_group_of(id)
+                && self.is_enabled(id)
+                && self
+                    .runtime
+                    .tree()
+                    .node(id)
+                    .is_some_and(|node| node.props.focusable)
+            {
+                representatives.entry(group).or_insert(id);
+                if self.checked(id) == Some(true) {
+                    representatives.insert(group, id);
+                }
+            }
+        }
+        let updates: Vec<_> = self
+            .controls
+            .iter()
+            .filter_map(|(&id, control)| {
+                let Kind::Radio { group } = control.kind else {
+                    return None;
+                };
+                let node = self.runtime.tree().node(id)?;
+                let tab_stop = representatives.get(&group) == Some(&id);
+                if node.props.tab_stop == tab_stop {
+                    return None;
+                }
+                let mut props = node.props.clone();
+                props.tab_stop = tab_stop;
+                Some((id, props))
+            })
+            .collect();
+        for (node, props) in updates {
+            self.runtime.apply(Mutation::SetProps { node, props })?;
+        }
+        Ok(())
+    }
+    fn prepare_radio_tab_exit(&mut self, event: &InputEvent) -> Result<bool, ControlError> {
+        let InputEvent::KeyDown {
+            key: Key::Tab,
+            modifiers,
+            ..
+        } = event
+        else {
+            return Ok(false);
+        };
+        if modifiers.control || modifiers.alt || modifiers.super_key {
+            return Ok(false);
+        }
+        let Some(group) = self
+            .runtime
+            .focused()
+            .and_then(|id| self.radio_group_of(id))
+        else {
+            return Ok(false);
+        };
+        // Focus may be on a nonselected member. Exclude this group for one
+        // ordinary routed Tab event so either direction leaves it. If no other
+        // stop exists, preserve the group's normal wrap destination.
+        let outside = self.runtime.tree().preorder().into_iter().any(|id| {
+            self.radio_group_of(id) != Some(group)
+                && self.effective_enabled(id)
+                && self
+                    .runtime
+                    .tree()
+                    .node(id)
+                    .is_some_and(|node| node.props.focusable && node.props.tab_stop)
+        });
+        if !outside {
+            return Ok(false);
+        }
+        for id in self.radio_members(group) {
+            if self
+                .runtime
+                .tree()
+                .node(id)
+                .is_some_and(|node| node.props.tab_stop)
+            {
+                self.edit_props(id, |props| props.tab_stop = false)?;
+            }
+        }
+        Ok(true)
+    }
     fn refresh_paints(&mut self) -> Result<(), ControlError> {
         let tokens = self.theme.tokens();
         // Use the current control/command state for every ancestor, independent
@@ -1370,7 +1552,7 @@ impl Controls {
             self.pressed = None;
             self.keyboard_pressed = false;
         }
-        Ok(())
+        self.refresh_radio_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
         self.refresh_paints()?;
@@ -1459,7 +1641,11 @@ impl Controls {
             | InputEvent::Wheel { position, .. } => self.runtime.hit_test(*position),
             _ => None,
         };
+        let restore_radio_stops = self.prepare_radio_tab_exit(&event)?;
         let report = self.runtime.dispatch(event.clone());
+        if restore_radio_stops {
+            self.refresh_radio_tab_stops()?;
+        }
         if let Some(error) = report.errors.into_iter().next() {
             return Err(error.into());
         }
@@ -1534,7 +1720,18 @@ impl Controls {
                             self.keyboard_pressed = true;
                             self.scene_dirty = true;
                         }
-                        if matches!(key, Key::ArrowLeft | Key::ArrowRight) {
+                        if self.radio_group_of(id).is_some()
+                            && !report.default_prevented
+                            && matches!(
+                                key,
+                                Key::ArrowLeft | Key::ArrowRight | Key::ArrowUp | Key::ArrowDown
+                            )
+                            && !modifiers.control
+                            && !modifiers.alt
+                            && !modifiers.super_key
+                        {
+                            self.radio_arrow(id, matches!(key, Key::ArrowRight | Key::ArrowDown))?;
+                        } else if matches!(key, Key::ArrowLeft | Key::ArrowRight) {
                             self.tab_arrow(id, key == Key::ArrowRight)?;
                         }
                     } else if matches!(
@@ -1600,6 +1797,9 @@ impl Controls {
         if !self.is_enabled(id) {
             return Ok(());
         }
+        if self.radio_group_of(id).is_some() {
+            self.set_checked(id, true)?;
+        }
         let Some(control) = self.controls.get_mut(&id) else {
             return Ok(());
         };
@@ -1638,6 +1838,23 @@ impl Controls {
             self.close_popup()?;
         }
         Ok(())
+    }
+    fn radio_arrow(&mut self, id: WidgetId, forward: bool) -> Result<(), ControlError> {
+        let Some(group) = self.radio_group_of(id) else {
+            return Ok(());
+        };
+        let members = self.radio_members(group);
+        let Some(index) = members.iter().position(|&member| member == id) else {
+            return Ok(());
+        };
+        let next = if forward {
+            (index + 1) % members.len()
+        } else {
+            (index + members.len() - 1) % members.len()
+        };
+        let target = members[next];
+        self.runtime.apply(Mutation::Focus(Some(target)))?;
+        self.activate(target)
     }
     fn tab_arrow(&mut self, id: WidgetId, forward: bool) -> Result<(), ControlError> {
         let Some(Control {
@@ -2211,17 +2428,21 @@ impl Controls {
             let paint = node.props.paint;
             if let Some(state) = self.button_visual_state(id)
                 && let Some(control) = self.controls.get(&id)
-                && (self.theme.is_fluent() || control.explicit_button_style)
+                && (self.theme.is_fluent()
+                    || control.explicit_button_style
+                    || matches!(control.kind, Kind::Radio { .. }))
             {
-                let checkbox = matches!(control.kind, Kind::CheckBox);
-                let style = control.button_style.resolve(self.theme, state, checkbox);
+                let indicator = matches!(control.kind, Kind::CheckBox | Kind::Radio { .. });
+                let radio = matches!(control.kind, Kind::Radio { .. });
+                let style = control.button_style.resolve(self.theme, state, indicator);
                 let text_bounds = paint_button(
                     &mut self.scene,
                     bounds,
                     clip,
                     style,
                     state.checked,
-                    checkbox,
+                    indicator,
+                    radio,
                 );
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
@@ -2237,7 +2458,7 @@ impl Controls {
                         font_size: style.font_size,
                         color: style.foreground,
                         weight: 400,
-                        align: if checkbox {
+                        align: if indicator {
                             TextAlign::Start
                         } else {
                             TextAlign::Center
@@ -2618,7 +2839,10 @@ impl Controls {
                 };
                 let checked = matches!(
                     control.kind,
-                    Kind::Toggle | Kind::CheckBox | Kind::MenuItem { toggle: true }
+                    Kind::Toggle
+                        | Kind::CheckBox
+                        | Kind::Radio { .. }
+                        | Kind::MenuItem { toggle: true }
                 )
                 .then(|| {
                     control
@@ -2645,7 +2869,7 @@ impl Controls {
                     if value.is_some() && !control.editor.is_read_only {
                         actions.push(SemanticAction::SetValue);
                     }
-                    if checked.is_some() {
+                    if checked.is_some() && !matches!(control.kind, Kind::Radio { .. }) {
                         actions.push(SemanticAction::Toggle);
                     }
                     if matches!(control.kind, Kind::Scroll { .. }) {
@@ -2729,7 +2953,8 @@ fn paint_button(
     ancestor_clip: Rect,
     style: crate::button::ResolvedButtonStyle,
     checked: bool,
-    checkbox: bool,
+    indicator: bool,
+    radio: bool,
 ) -> Rect {
     let clip = bounds
         .intersection(ancestor_clip)
@@ -2740,7 +2965,7 @@ fn paint_button(
         (bounds.width - style.padding.horizontal()).max(0.0),
         (bounds.height - style.padding.vertical()).max(0.0),
     );
-    let shape = if checkbox {
+    let shape = if indicator {
         let size = 18.0_f32.min(content.width).min(content.height);
         Rect::new(
             content.x,
@@ -2751,12 +2976,27 @@ fn paint_button(
     } else {
         bounds
     };
-    let radius = style.corner_radius.min(shape.width.min(shape.height) * 0.5);
+    let radius = if radio {
+        shape.width * 0.5
+    } else {
+        style.corner_radius.min(shape.width.min(shape.height) * 0.5)
+    };
     editor_fill(scene, shape, clip, radius, style.background);
     shape_border(scene, shape, clip, radius, style.border_width, style.border);
-    if checkbox {
+    if indicator {
         if checked {
-            paint_checkmark(scene, shape, clip, style.checkmark);
+            if radio {
+                let diameter = shape.width * (8.0 / 18.0);
+                let inset = (shape.width - diameter) * 0.5;
+                scene.rounded_fill(
+                    Rect::new(shape.x + inset, shape.y + inset, diameter, diameter),
+                    clip,
+                    diameter * 0.5,
+                    style.checkmark,
+                );
+            } else {
+                paint_checkmark(scene, shape, clip, style.checkmark);
+            }
         }
         let offset = (shape.width + 8.0).min(content.width);
         content.x += offset;

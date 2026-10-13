@@ -1,7 +1,7 @@
 //! Mount compiled elements without attaching application-specific behavior.
 use rust_desktop_ui_controls::{
     ButtonAppearance, ButtonStyle, Controls, EditBoxAppearance, EditBoxStyle, EditorSettings,
-    EditorValidation, Role,
+    EditorValidation, RadioGroupId, Role,
 };
 use rust_desktop_ui_core::{Axis, Color, Edges, LayoutKind, LayoutStyle, Length, WidgetId};
 use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind, Orientation};
@@ -14,8 +14,16 @@ pub(crate) struct MountedView {
     pub(crate) editors: Vec<WidgetId>,
     pub(crate) checks: Vec<WidgetId>,
     pub(crate) toggles: Vec<WidgetId>,
+    pub(crate) radios: Vec<WidgetId>,
     pub(crate) commands: Vec<String>,
     pub(crate) roles: HashMap<WidgetId, Role>,
+    radio_groups: HashMap<RadioGroupKey<WidgetId>, RadioGroupId>,
+}
+
+#[derive(Eq, Hash, PartialEq)]
+enum RadioGroupKey<Parent> {
+    Named(String),
+    Parent(Parent),
 }
 
 impl MountedView {
@@ -53,7 +61,7 @@ impl MountedView {
                 ElementKind::TextBox(_) | ElementKind::Button(_) | ElementKind::ToggleButton(_) => {
                     Length::Px(36.0)
                 }
-                ElementKind::CheckBox(_) => Length::Px(32.0),
+                ElementKind::CheckBox(_) | ElementKind::RadioButton(_) => Length::Px(32.0),
                 ElementKind::TextBlock(_) => Length::Px(24.0),
             },
             Length::Px,
@@ -135,6 +143,25 @@ impl MountedView {
                 self.checks.push(id);
                 id
             }
+            ElementKind::RadioButton(radio) => {
+                let key = radio
+                    .group_name
+                    .as_ref()
+                    .map_or(RadioGroupKey::Parent(parent), |name| {
+                        RadioGroupKey::Named(name.clone())
+                    });
+                let group = *self
+                    .radio_groups
+                    .entry(key)
+                    .or_insert_with(|| ui.radio_group());
+                let id = ui
+                    .radio_button(parent, &radio.content, group, radio.is_checked, style)
+                    .map_err(err)?;
+                ui.set_button_style(id, button_style(&radio.style))
+                    .map_err(err)?;
+                self.radios.push(id);
+                id
+            }
             ElementKind::TextBox(field) => {
                 let id = ui
                     .edit_box(
@@ -200,6 +227,7 @@ impl MountedView {
                 ElementKind::Button(_) => Role::Button,
                 ElementKind::ToggleButton(_) => Role::ToggleButton,
                 ElementKind::CheckBox(_) => Role::CheckBox,
+                ElementKind::RadioButton(_) => Role::RadioButton,
             },
         );
         if let Some(name) = &common.name
@@ -232,6 +260,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             button_width(ui, &button.content, &button.style, false)
         }
         ElementKind::CheckBox(check) => button_width(ui, &check.content, &check.style, true),
+        ElementKind::RadioButton(radio) => button_width(ui, &radio.content, &radio.style, true),
         ElementKind::StackPanel(panel) => {
             let mut widths = Vec::with_capacity(panel.children.len());
             for child in &panel.children {
@@ -252,10 +281,11 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
 }
 
 fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> {
-    let mut pending = vec![(root, 1)];
+    let mut pending = vec![(root, 1, 0)];
     let mut names = HashSet::new();
+    let mut checked_radio_groups = HashSet::new();
     let mut count = 0;
-    while let Some((element, depth)) = pending.pop() {
+    while let Some((element, depth, parent)) = pending.pop() {
         count += 1;
         if count > rust_desktop_ui_xaml::MAX_ELEMENTS
             || depth > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH
@@ -272,7 +302,7 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
                 if panel.children.len() > rust_desktop_ui_xaml::MAX_ELEMENTS {
                     return Err("XAML content exceeds the element count limit".into());
                 }
-                pending.extend(panel.children.iter().map(|child| (child, depth + 1)));
+                pending.extend(panel.children.iter().map(|child| (child, depth + 1, count)));
             }
             ElementKind::Button(button) => {
                 if let Some(command) = &button.command
@@ -291,6 +321,32 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
                         return Err(format!(
                             "ToggleButton command '{command}' requires a registered checked state"
                         ));
+                    }
+                }
+            }
+            ElementKind::RadioButton(radio) => {
+                if let Some(name) = &radio.group_name {
+                    let mut chars = name.chars();
+                    if !chars
+                        .next()
+                        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+                    {
+                        return Err("GroupName must match [A-Za-z_][A-Za-z0-9_]*".into());
+                    }
+                }
+                if radio.is_checked {
+                    let group = radio
+                        .group_name
+                        .as_ref()
+                        .map_or(RadioGroupKey::Parent(parent), |name| {
+                            RadioGroupKey::Named(name.clone())
+                        });
+                    if !checked_radio_groups.insert(group) {
+                        return Err(
+                            "A RadioButton group may have at most one initial IsChecked=True"
+                                .into(),
+                        );
                     }
                 }
             }

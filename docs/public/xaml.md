@@ -2,8 +2,8 @@
 
 `rust-desktop-ui-xaml` компилирует собственный ограниченный профиль XAML в Rust.
 Профиль описывает нативное окно `Window`, вложенные `StackPanel`, подписи
-`TextBlock`, однострочные `TextBox`, кнопки `Button`, переключатели `ToggleButton`
-и флажки `CheckBox`.
+`TextBlock`, однострочные `TextBox`, кнопки `Button`, переключатели `ToggleButton`,
+флажки `CheckBox` и переключатели группы `RadioButton`.
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -27,7 +27,7 @@ cargo run -p xaml-form --locked -- --light --smoke-test
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Форма · Rust UI"
-        Width="640" Height="400"
+        Width="640" Height="440"
         Padding="32" Theme="Light">
     <StackPanel x:Name="Form" Spacing="8">
         <TextBlock Text="Форма с несколькими элементами" Height="32" />
@@ -42,6 +42,11 @@ cargo run -p xaml-form --locked -- --light --smoke-test
             <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Width="160" />
             <ToggleButton x:Name="Pin" Content="Закрепить" Width="120" />
             <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8" Height="32">
+            <RadioButton x:Name="AlignLeft" Content="Слева" GroupName="Alignment" IsChecked="True" Width="120" />
+            <RadioButton x:Name="AlignCenter" Content="По центру" GroupName="Alignment" Width="120" />
+            <RadioButton x:Name="AlignRight" Content="Справа" GroupName="Alignment" IsEnabled="False" Width="120" />
         </StackPanel>
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />
@@ -67,6 +72,7 @@ URI пространства имён. Пространство имён WPF pre
 | Button | `Content=""`, необязательный `Command` | Кнопка, которую приложение связывает с командой Rust |
 | ToggleButton | `Content=""`, `IsChecked="False"`, необязательный `Command` | Кнопка с выбранным состоянием |
 | CheckBox | `Content=""`, `IsChecked="False"` | Двухсостоянийный флажок |
+| RadioButton | `Content=""`, `IsChecked="False"`, необязательный `GroupName` | Взаимоисключающий выбор в группе |
 
 Для каждого элемента содержимого доступны `x:Name`, `Width`, `Height`, `Margin`,
 `IsEnabled` и `AutomationName`. Имена уникальны во всём дереве окна.
@@ -86,12 +92,33 @@ binding. Его регистрацией и обработчиком управ�
 в разметке. Неизвестная команда или отсутствие её checked state отклоняются
 до монтажа дерева. `CheckBox` в этом профиле не принимает `Command`.
 
-У трёх кнопочных элементов доступны `FontSize`, `Padding`, `CornerRadius`,
+`RadioButton` не принимает `Command`. Его `GroupName`, если задан, должен
+соответствовать `[A-Za-z_][A-Za-z0-9_]*`; пустое значение запрещено. Именованная
+группа объединяет RadioButton во всём одном монтаже дерева, включая разные
+StackPanel. Без GroupName объединяются только RadioButton с одним непосредственным
+родителем. Именованная и безымянная группы не смешиваются; регистр имени значим.
+Повторный монтаж той же разметки получает независимые группы, даже в одном Controls.
+
+В каждой группе допустим максимум один начальный `IsChecked="True"`, включая
+отключённые элементы. Неоднозначный выбор отклоняется компилятором; адаптер также
+проверяет вручную созданный AST до изменения retained tree. Все начальные значения
+False допустимы. Активация выбирает элемент и снимает выбор с прежнего участника;
+повторная активация выбранного элемента не снимает выбор. Tab останавливается на
+одном доступном участнике группы. Стрелки Left/Up и Right/Down выбирают предыдущего
+и следующего доступного участника с обходом по кругу, пропуская disabled и hidden.
+Space, Enter, pointer и accessibility Click используют тот же выбор. Нативная
+проекция передаёт роль RadioButton и checked-состояние; это не подтверждение
+проверки с реальным screen reader.
+
+У Button, ToggleButton, CheckBox и RadioButton доступны `FontSize`, `Padding`, `CornerRadius`,
 `BorderThickness`, `Background`, `Foreground`, `BorderBrush` и `FocusBrush`.
 Числа и цвета имеют тот же синтаксис и пределы, что у TextBox ниже.
 Они компилируются в `ButtonStyleDefinition`, а адаптер применяет `ButtonStyle`.
 Незаданные значения следуют Fluent-теме. У CheckBox фон, граница и скругление
 относятся к компактному индикатору; строка подписи остаётся прозрачной.
+RadioButton также имеет прозрачную строку и круглый индикатор с точкой выбора.
+Его индикатор сохраняет круглую форму при любом CornerRadius; это свойство
+задаёт скругление кольца фокуса всей строки.
 Настройка отдельных состояний доступна в Rust через `ButtonStyle`;
 XAML styles, triggers и templates пока не поддерживаются.
 
@@ -100,7 +127,7 @@ XAML styles, triggers и templates пока не поддерживаются.
 по тексту, флажка — по тексту и индикатору; поле получает ширину 240. Минимальная
 желаемая ширина кнопки — 80. Для кнопок и флажков измерение учитывает FontSize
 и горизонтальный Padding. Высота по умолчанию: TextBox, Button и ToggleButton — 36,
-CheckBox — 32, TextBlock — 24. Автоматический размер вложенной панели учитывает
+CheckBox и RadioButton — 32, TextBlock — 24. Автоматический размер вложенной панели учитывает
 её детей, отступы и интервалы. Явные Width/Height задают фиксированный размер.
 Это ограниченная компоновка примера; полноценный WPF measure/arrange здесь не реализован.
 StackPanel монтируется как `Controls::transparent_panel`: контейнер задаёт
@@ -405,12 +432,18 @@ python tests/windows_xaml_smoke.py --exe target/release/xaml-form.exe --controls
 Для тёмной темы добавьте `--dark`; backend выбирается переменной `WGPU_BACKEND`
 (`dx12` или `vulkan`). Сценарий использует Win32-сообщения только своему окну;
 он не подтверждает работу настоящей IME, внешнего clipboard или screen reader.
-Режим `--controls-only` проверяет Button/ToggleButton/CheckBox, их палитры,
+Режим `--controls-only` проверяет Button/ToggleButton/CheckBox/RadioButton, их палитры,
 нажатие и его отмену, Enter/Space, Tab с пропуском disabled, resize и закрытие.
+Для RadioButton дополнительно проверяются исключительный выбор мышью и четырьмя
+стрелками, круглый индикатор с точкой и независимый фокус, пропуск disabled,
+сохранение выбранного состояния после Space/Enter и выход из группы по Tab.
 Этот режим не вводит текст и не проверяет accepted value или отмену редактора.
 2026-10-12 этот сценарий прошёл на NVIDIA RTX 3090 с DX12 и Vulkan в обеих
 темах при DPI 144: по 30 проверок и 8 снимков на сочетание. Проверены пиксельные
 палитры и контраст отметки, скругления, глифы, фокус и pointer/keyboard activation.
+2026-10-13 расширенный сценарий RadioButton прошёл на том же аппаратном GPU:
+DX12/Vulkan, Light/Dark, DPI 144 — по 53 проверки и 12 снимков; resize 640×440 →
+480×400 logical pixels. Снимки обеих тем и уменьшенной формы просмотрены.
 Нативный сценарий проверяет обычный Tab и возврат к первому контролу. Shift+Tab
 проверяется на уровне модели ввода; posted Win32-сообщения не устанавливают
 реальное состояние Shift, которое читает host.

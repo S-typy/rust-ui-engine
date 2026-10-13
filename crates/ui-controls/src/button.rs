@@ -1,8 +1,8 @@
 use crate::{ControlError, Theme};
 use rust_desktop_ui_core::{Color, Edges};
 
-/// Optional colors shared by Button, ToggleButton and CheckBox. For CheckBox,
-/// background/border describe its indicator; the surrounding row is transparent.
+/// Optional colors shared by Button, ToggleButton, CheckBox and RadioButton. For indicators,
+/// background/border describe the indicator; the surrounding row is transparent.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct ButtonAppearance {
     pub background: Option<Color>,
@@ -10,6 +10,7 @@ pub struct ButtonAppearance {
     pub border: Option<Color>,
     /// Independent keyboard focus indicator.
     pub accent: Option<Color>,
+    /// CheckBox mark or RadioButton dot.
     pub checkmark: Option<Color>,
 }
 

@@ -74,6 +74,13 @@ fn element(element: &ElementDefinition) -> String {
             check_box.is_checked,
             button_style(&check_box.style),
         ),
+        ElementKind::RadioButton(radio) => format!(
+            "rust_desktop_ui_xaml::ElementKind::RadioButton(rust_desktop_ui_xaml::RadioButtonDefinition {{ content: {:?}.into(), group_name: {}, is_checked: {}, style: {} }})",
+            radio.content,
+            optional_string(&radio.group_name),
+            radio.is_checked,
+            button_style(&radio.style),
+        ),
     };
     format!(
         "rust_desktop_ui_xaml::ElementDefinition {{

@@ -1,7 +1,7 @@
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Форма · Rust UI"
-        Width="640" Height="400"
+        Width="640" Height="440"
         Padding="32" Theme="Light">
     <StackPanel x:Name="Form" Spacing="8">
         <TextBlock Text="Форма с несколькими элементами" Height="32" />
@@ -21,6 +21,11 @@
             <ToggleButton x:Name="Pin" Content="Закрепить" Width="120"
                           FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
             <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
+        </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8" Height="32">
+            <RadioButton x:Name="AlignLeft" Content="Слева" GroupName="Alignment" IsChecked="True" Width="120" />
+            <RadioButton x:Name="AlignCenter" Content="По центру" GroupName="Alignment" Width="120" />
+            <RadioButton x:Name="AlignRight" Content="Справа" GroupName="Alignment" IsEnabled="False" Width="120" />
         </StackPanel>
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />

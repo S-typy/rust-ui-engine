@@ -24,7 +24,7 @@ fn editor_definition(
 
 fn form() -> Form {
     let mut form = Form::new(generated::window_definition(), false).unwrap();
-    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 440.0), 1.0).unwrap();
     form
 }
 
@@ -1107,8 +1107,8 @@ fn xaml_layout_panels_leave_the_canvas_visible_behind_rounded_editors_in_both_th
 }
 
 #[test]
-fn xaml_button_styles_mount_for_all_three_controls_and_keep_theme_overrides() {
-    for tag in ["Button", "ToggleButton", "CheckBox"] {
+fn xaml_button_styles_mount_for_all_button_like_controls_and_keep_theme_overrides() {
+    for tag in ["Button", "ToggleButton", "CheckBox", "RadioButton"] {
         let mut form = markup(&format!(
             r##"<{tag} x:Name="Styled" Content="Styled action" Width="240" Height="48" FontSize="20" Padding="7,3,11,4" CornerRadius="6" BorderThickness="2" Background="#112233" Foreground="#80445566" BorderBrush="#778899" FocusBrush="#AABBCC"/>"##
         ));
@@ -1298,10 +1298,19 @@ fn sample_button_row_keeps_geometry_and_tab_order_skips_the_disabled_button() {
             (x, 188.0, width, 36.0)
         );
     }
-    for name in ["Message", "Option", "Confirm", "Pin", "Message"] {
+    for name in [
+        "Message",
+        "Option",
+        "Confirm",
+        "Pin",
+        "AlignLeft",
+        "Message",
+    ] {
         tab(&mut form, false);
         assert_eq!(form.ui.runtime.focused(), form.find_name(name));
     }
+    tab(&mut form, true);
+    assert_eq!(form.ui.runtime.focused(), form.find_name("AlignLeft"));
     tab(&mut form, true);
     assert_eq!(form.ui.runtime.focused(), Some(pin));
     form.update(Size::new(480.0, 360.0), 1.0).unwrap();
@@ -1322,4 +1331,236 @@ fn sample_button_row_keeps_geometry_and_tab_order_skips_the_disabled_button() {
         .find(|rect| rect.bounds == pin_bounds && rect.stroke_width.is_none())
         .unwrap();
     assert!(pin_fill.clip.x + pin_fill.clip.width <= 288.0);
+}
+
+#[test]
+fn radio_groups_are_scoped_to_each_mount_and_unnamed_groups_to_each_parent() {
+    use crate::view::MountedView;
+    use rust_desktop_ui_controls::Controls;
+    let source = r#"<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><StackPanel>
+        <RadioButton x:Name="NamedA" GroupName="Shared" IsChecked="True"/>
+        <RadioButton x:Name="DefaultA" IsChecked="True"/>
+        <RadioButton x:Name="DefaultB"/>
+        <StackPanel>
+            <RadioButton x:Name="NamedB" GroupName="Shared"/>
+            <RadioButton x:Name="NestedDefault" IsChecked="True"/>
+        </StackPanel>
+    </StackPanel></Window>"#;
+    let definition = rust_desktop_ui_xaml::parse(source).unwrap();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let first = MountedView::mount(&mut ui, root, &definition.content).unwrap();
+    let second = MountedView::mount(&mut ui, root, &definition.content).unwrap();
+    let first_named = first.find_name("NamedA").unwrap();
+    let second_named = second.find_name("NamedA").unwrap();
+    ui.activate(first.find_name("NamedB").unwrap()).unwrap();
+    assert_eq!(ui.checked(first_named), Some(false));
+    assert_eq!(ui.checked(first.find_name("NamedB").unwrap()), Some(true));
+    assert_eq!(ui.checked(second_named), Some(true));
+    assert_eq!(ui.checked(second.find_name("NamedB").unwrap()), Some(false));
+    ui.activate(first.find_name("DefaultB").unwrap()).unwrap();
+    assert_eq!(
+        ui.checked(first.find_name("DefaultA").unwrap()),
+        Some(false)
+    );
+    assert_eq!(ui.checked(first.find_name("DefaultB").unwrap()), Some(true));
+    assert_eq!(
+        ui.checked(first.find_name("NestedDefault").unwrap()),
+        Some(true)
+    );
+    assert_eq!(ui.checked(first.find_name("NamedB").unwrap()), Some(true));
+    assert_eq!(
+        ui.checked(second.find_name("DefaultA").unwrap()),
+        Some(true)
+    );
+    // Even root radios mounted into the very same parent have distinct default groups.
+    let root_radio = rust_desktop_ui_xaml::parse(
+        r#"<Window xmlns="urn:rust-ui-engine:ui"><RadioButton IsChecked="True"/></Window>"#,
+    )
+    .unwrap();
+    let third = MountedView::mount(&mut ui, root, &root_radio.content).unwrap();
+    let fourth = MountedView::mount(&mut ui, root, &root_radio.content).unwrap();
+    assert_eq!(ui.checked(third.radios[0]), Some(true));
+    assert_eq!(ui.checked(fourth.radios[0]), Some(true));
+}
+
+#[test]
+fn radio_manual_ast_rejects_ambiguous_or_invalid_groups_before_any_tree_mutation() {
+    use crate::view::MountedView;
+    use rust_desktop_ui_controls::Controls;
+    use rust_desktop_ui_xaml::{
+        ElementDefinition, ElementKind, RadioButtonDefinition, StackPanelDefinition,
+    };
+    let radio = |group: Option<&str>| ElementDefinition {
+        kind: ElementKind::RadioButton(RadioButtonDefinition {
+            group_name: group.map(str::to_owned),
+            is_checked: true,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let panel = |children| ElementDefinition {
+        kind: ElementKind::StackPanel(StackPanelDefinition {
+            children,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    for invalid in [
+        panel(vec![radio(None), radio(None)]),
+        panel(vec![radio(Some("G")), panel(vec![radio(Some("G"))])]),
+        radio(Some("")),
+        radio(Some("invalid name")),
+    ] {
+        let before = ui.runtime.tree().len();
+        let error = MountedView::mount(&mut ui, root, &invalid)
+            .err()
+            .expect("invalid group must fail");
+        assert!(
+            error.contains("at most one initial") || error.contains("GroupName"),
+            "{error}"
+        );
+        assert_eq!(ui.runtime.tree().len(), before);
+    }
+    assert!(
+        MountedView::mount(
+            &mut ui,
+            root,
+            &panel(vec![radio(None), panel(vec![radio(None)])])
+        )
+        .is_ok()
+    );
+}
+
+#[test]
+fn radio_keyboard_navigation_and_accessibility_keep_one_selected_peer() {
+    let mut form = markup(
+        r#"<StackPanel>
+        <Button x:Name="Before" Content="Before"/>
+        <StackPanel x:Name="Group">
+            <RadioButton x:Name="A" Content="First" GroupName="G" AutomationName="First choice"/>
+            <RadioButton x:Name="B" Content="Second" GroupName="G" IsChecked="True"/>
+            <RadioButton x:Name="C" Content="Unavailable" GroupName="G" IsEnabled="False"/>
+        </StackPanel>
+        <Button x:Name="After" Content="After"/>
+    </StackPanel>"#,
+    );
+    for name in ["Before", "B", "After"] {
+        tab(&mut form, false);
+        assert_eq!(form.ui.runtime.focused(), form.find_name(name));
+    }
+    tab(&mut form, true);
+    assert_eq!(form.ui.runtime.focused(), form.find_name("B"));
+    for (arrow, selected) in [
+        (Key::ArrowRight, "A"),
+        (Key::ArrowDown, "B"),
+        (Key::ArrowLeft, "A"),
+        (Key::ArrowUp, "B"),
+    ] {
+        key(&mut form, arrow, false);
+        assert_eq!(form.ui.runtime.focused(), form.find_name(selected));
+        for name in ["A", "B", "C"] {
+            assert_eq!(
+                form.ui.checked(form.find_name(name).unwrap()),
+                Some(name == selected)
+            );
+        }
+    }
+    key(&mut form, Key::Enter, false);
+    key(&mut form, Key::Space, false);
+    form.event(PlatformEvent::Input(InputEvent::KeyUp {
+        key: Key::Space,
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+    assert_eq!(form.ui.checked(form.find_name("B").unwrap()), Some(true));
+    accessible_action(&mut form, "A", accesskit::Action::Click, None);
+    click(&mut form, "A"); // Reselecting does not clear a radio button.
+    accessible_action(&mut form, "C", accesskit::Action::Click, None);
+    let tree = form.accessibility(1.0);
+    for name in ["A", "B", "C"] {
+        let widget = form.find_name(name).unwrap();
+        let node = &tree
+            .nodes
+            .iter()
+            .find(|(id, _)| Some(*id) == form.accessible.id(widget))
+            .unwrap()
+            .1;
+        assert_eq!(node.role(), accesskit::Role::RadioButton);
+        assert_eq!(
+            node.toggled(),
+            Some(if name == "A" {
+                accesskit::Toggled::True
+            } else {
+                accesskit::Toggled::False
+            })
+        );
+        assert_eq!(node.supports_action(accesskit::Action::Click), name != "C");
+        assert_eq!(node.is_disabled(), name == "C");
+        if name == "A" {
+            assert_eq!(node.label(), Some("First choice"));
+        }
+    }
+    let group = form.find_name("Group").unwrap();
+    form.ui.set_enabled(group, false).unwrap();
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    accessible_action(&mut form, "B", accesskit::Action::Click, None);
+    assert_eq!(form.ui.checked(form.find_name("A").unwrap()), Some(true));
+}
+
+#[test]
+fn radio_sample_geometry_and_auto_width_follow_shared_font_and_indicator_metrics() {
+    let form = form();
+    assert_eq!(generated::window_definition().height, 440.0);
+    for (name, x) in [
+        ("AlignLeft", 32.0),
+        ("AlignCenter", 160.0),
+        ("AlignRight", 288.0),
+    ] {
+        let bounds = form
+            .ui
+            .runtime
+            .bounds(form.find_name(name).unwrap())
+            .unwrap();
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (x, 232.0, 120.0, 32.0)
+        );
+    }
+    assert_eq!(
+        form.ui
+            .runtime
+            .bounds(form.find_name("Help").unwrap())
+            .unwrap()
+            .y,
+        272.0
+    );
+    assert_eq!(
+        form.ui
+            .runtime
+            .bounds(form.find_name("Status").unwrap())
+            .unwrap()
+            .y,
+        320.0
+    );
+    let mut auto = markup(
+        r#"<StackPanel Orientation="Horizontal"><RadioButton x:Name="Auto" Content="Wide choice" FontSize="20" Padding="9,5,17,5" Height="50"/></StackPanel>"#,
+    );
+    let radio = auto.find_name("Auto").unwrap();
+    let width = auto
+        .ui
+        .measure_text_with_font_size("Wide choice", 16384.0, false, 20.0)
+        .unwrap()
+        .width;
+    assert!((auto.ui.runtime.bounds(radio).unwrap().width - width - 26.0 - 26.0).abs() < 0.01);
+    let text = auto
+        .scene()
+        .texts
+        .iter()
+        .find(|text| text.text == "Wide choice")
+        .unwrap();
+    assert_eq!(text.font_size, 20.0);
+    assert!((text.bounds.width - width).abs() < 0.01);
 }

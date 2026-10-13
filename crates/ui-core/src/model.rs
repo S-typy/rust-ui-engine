@@ -312,6 +312,9 @@ pub struct NodeProps {
     /// Disabled ancestors exclude the whole subtree from hit testing and focus.
     pub enabled: bool,
     pub focusable: bool,
+    /// Participate in keyboard Tab traversal when focusable. False still permits
+    /// pointer and explicit focus, for example within a radio-button group.
+    pub tab_stop: bool,
     pub hit_test: bool,
     pub z_index: i32,
     /// Clip children to this node's border box; the root always clips to the viewport.
@@ -330,6 +333,7 @@ impl Default for NodeProps {
             visible: true,
             enabled: true,
             focusable: false,
+            tab_stop: true,
             hit_test: true,
             z_index: 0,
             clip: false,

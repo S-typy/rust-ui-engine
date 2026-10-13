@@ -1,7 +1,7 @@
 //! A small, explicit XAML profile compiled to a Rust window definition.
 //!
 //! This profile supports a `Window` containing a tree of stack panels, text,
-//! editors, buttons and check boxes. Elements use
+//! editors, buttons, check boxes and radio buttons. Elements use
 //! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. It does not load WPF types,
 //! execute markup extensions, resolve external entities, or implement bindings.
 //! Unknown syntax is an error instead of being silently ignored.
@@ -124,6 +124,7 @@ pub enum ElementKind {
     Button(ButtonDefinition),
     ToggleButton(ToggleButtonDefinition),
     CheckBox(CheckBoxDefinition),
+    RadioButton(RadioButtonDefinition),
 }
 
 impl Default for ElementKind {
@@ -180,6 +181,22 @@ pub struct CheckBoxDefinition {
     pub content: String,
     pub is_checked: bool,
     pub style: ButtonStyleDefinition,
+}
+
+/// A mutually exclusive choice. Named groups belong to one mounted view;
+/// unnamed groups contain only radio buttons with the same immediate parent.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RadioButtonDefinition {
+    pub content: String,
+    pub group_name: Option<String>,
+    pub is_checked: bool,
+    pub style: ButtonStyleDefinition,
+}
+
+#[derive(Eq, Hash, PartialEq)]
+enum RadioGroupKey {
+    Named(String),
+    Parent(usize),
 }
 
 /// Optional metrics and normal-state brushes shared by button-like controls.
@@ -342,6 +359,7 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
     }
     let mut content = None;
     let mut names = HashSet::new();
+    let mut checked_radio_groups = HashSet::new();
     let mut count = 0;
     for child in window.children() {
         if child.is_element() {
@@ -351,7 +369,14 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
                     "Window must contain exactly one root element",
                 ));
             }
-            content = Some(parse_element(child, 1, &mut count, &mut names)?);
+            content = Some(parse_element(
+                child,
+                1,
+                0,
+                &mut count,
+                &mut names,
+                &mut checked_radio_groups,
+            )?);
         } else {
             require_empty_content(child)?;
         }
@@ -364,8 +389,10 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
 fn parse_element(
     node: Node<'_, '_>,
     depth: usize,
+    parent: usize,
     count: &mut usize,
     names: &mut HashSet<String>,
+    checked_radio_groups: &mut HashSet<RadioGroupKey>,
 ) -> Result<ElementDefinition, Diagnostic> {
     if depth > MAX_ELEMENT_DEPTH {
         return Err(at_node(
@@ -374,6 +401,7 @@ fn parse_element(
         ));
     }
     *count += 1;
+    let element_id = *count;
     if *count > MAX_ELEMENTS {
         return Err(at_node(
             node,
@@ -394,6 +422,7 @@ fn parse_element(
         "Button" => ElementKind::Button(ButtonDefinition::default()),
         "ToggleButton" => ElementKind::ToggleButton(ToggleButtonDefinition::default()),
         "CheckBox" => ElementKind::CheckBox(CheckBoxDefinition::default()),
+        "RadioButton" => ElementKind::RadioButton(RadioButtonDefinition::default()),
         name => {
             return Err(at_node(
                 node,
@@ -505,6 +534,22 @@ fn parse_element(
                         }
                         _ => button_style_property(document, attribute, &mut check_box.style)?,
                     },
+                    ElementKind::RadioButton(radio) => match property {
+                        "Content" => {
+                            radio.content = attribute.value().into();
+                            true
+                        }
+                        "GroupName" => {
+                            identifier(document, attribute, "GroupName")?;
+                            radio.group_name = Some(attribute.value().into());
+                            true
+                        }
+                        "IsChecked" => {
+                            radio.is_checked = boolean(document, attribute)?;
+                            true
+                        }
+                        _ => button_style_property(document, attribute, &mut radio.style)?,
+                    },
                     _ => false,
                 };
                 if !supported {
@@ -520,9 +565,14 @@ fn parse_element(
     for child in node.children() {
         if child.is_element() {
             if let ElementKind::StackPanel(panel) = &mut kind {
-                panel
-                    .children
-                    .push(parse_element(child, depth + 1, count, names)?);
+                panel.children.push(parse_element(
+                    child,
+                    depth + 1,
+                    element_id,
+                    count,
+                    names,
+                    checked_radio_groups,
+                )?);
             } else {
                 return Err(at_node(
                     child,
@@ -535,6 +585,22 @@ fn parse_element(
     }
     if let ElementKind::TextBox(editor) = &kind {
         validate_initial_text(node, editor)?;
+    }
+    if let ElementKind::RadioButton(radio) = &kind
+        && radio.is_checked
+    {
+        let group = radio
+            .group_name
+            .as_ref()
+            .map_or(RadioGroupKey::Parent(parent), |name| {
+                RadioGroupKey::Named(name.clone())
+            });
+        if !checked_radio_groups.insert(group) {
+            return Err(at_node(
+                node,
+                "a RadioButton group may have at most one initial IsChecked=True",
+            ));
+        }
     }
     Ok(ElementDefinition { common, kind })
 }

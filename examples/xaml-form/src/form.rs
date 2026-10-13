@@ -86,8 +86,21 @@ impl Form {
             .checks
             .iter()
             .chain(&view.toggles)
+            .chain(&view.radios)
             .filter_map(|id| ui.checked(*id).map(|checked| (*id, checked)))
             .collect();
+        if diagnostics {
+            for id in &view.radios {
+                let name = view
+                    .names
+                    .iter()
+                    .find_map(|(name, widget)| (*widget == *id).then_some(name.as_str()))
+                    .unwrap_or("");
+                if let Some(checked) = ui.checked(*id) {
+                    println!("radio-state={name} checked={checked}");
+                }
+            }
+        }
         ui.drain_text_changes();
         ui.drain_edit_events();
         Ok(Self {
@@ -198,7 +211,13 @@ impl Form {
                 }
             }
         }
-        for id in self.view.checks.iter().chain(&self.view.toggles) {
+        for id in self
+            .view
+            .checks
+            .iter()
+            .chain(&self.view.toggles)
+            .chain(&self.view.radios)
+        {
             let Some(checked) = self.ui.checked(*id) else {
                 continue;
             };
@@ -212,10 +231,10 @@ impl Form {
                 .find_map(|(name, widget)| (*widget == *id).then_some(name.as_str()))
                 .unwrap_or("");
             if self.diagnostics {
-                let prefix = if self.view.roles.get(id) == Some(&Role::ToggleButton) {
-                    "toggle-state"
-                } else {
-                    "checkbox-state"
+                let prefix = match self.view.roles.get(id) {
+                    Some(Role::ToggleButton) => "toggle-state",
+                    Some(Role::RadioButton) => "radio-state",
+                    _ => "checkbox-state",
                 };
                 println!("{prefix}={name} checked={checked}");
             }

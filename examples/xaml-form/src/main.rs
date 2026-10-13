@@ -56,7 +56,16 @@ fn start() -> Result<(), String> {
             "named-editor=Message resolved={}",
             app.find_name("Message").is_some()
         );
-        for name in ["Message", "Option", "Confirm", "Pin", "Disabled"] {
+        for name in [
+            "Message",
+            "Option",
+            "Confirm",
+            "Pin",
+            "Disabled",
+            "AlignLeft",
+            "AlignCenter",
+            "AlignRight",
+        ] {
             println!(
                 "named-control={name} resolved={}",
                 app.find_name(name).is_some()

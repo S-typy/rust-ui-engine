@@ -5,6 +5,7 @@ fn button_style(window: &WindowDefinition) -> &ButtonStyleDefinition {
         ElementKind::Button(button) => &button.style,
         ElementKind::ToggleButton(button) => &button.style,
         ElementKind::CheckBox(button) => &button.style,
+        ElementKind::RadioButton(button) => &button.style,
         _ => panic!("expected a button-like element"),
     }
 }
@@ -629,6 +630,10 @@ fn every_supported_element_can_be_the_single_root_with_default_common_properties
             "CheckBox",
             ElementKind::CheckBox(CheckBoxDefinition::default()),
         ),
+        (
+            "RadioButton",
+            ElementKind::RadioButton(RadioButtonDefinition::default()),
+        ),
     ] {
         let parsed = parse(&form("", &format!("<{tag}/>"))).unwrap();
         assert_eq!(
@@ -733,7 +738,14 @@ fn tree_rejects_events_cross_control_properties_and_nonliteral_commands() {
 
 #[test]
 fn all_leaf_kinds_reject_children_and_text_while_panels_reject_mixed_text() {
-    for tag in ["TextBox", "TextBlock", "Button", "ToggleButton", "CheckBox"] {
+    for tag in [
+        "TextBox",
+        "TextBlock",
+        "Button",
+        "ToggleButton",
+        "CheckBox",
+        "RadioButton",
+    ] {
         for content in ["<TextBox/>", "text", "<![CDATA[text]]>"] {
             assert!(
                 parse(&form("", &format!("<{tag}>{content}</{tag}>"))).is_err(),
@@ -761,6 +773,7 @@ fn common_geometry_and_state_are_validated_for_every_element_kind() {
         "Button",
         "ToggleButton",
         "CheckBox",
+        "RadioButton",
     ] {
         for attributes in [
             "Width='0'",
@@ -892,8 +905,8 @@ fn recursive_codegen_emits_all_variants_and_escapes_every_new_string_field() {
 }
 
 #[test]
-fn button_toggle_and_checkbox_share_optional_metrics_and_argb_brushes() {
-    for tag in ["Button", "ToggleButton", "CheckBox"] {
+fn button_like_controls_share_optional_metrics_and_argb_brushes() {
+    for tag in ["Button", "ToggleButton", "CheckBox", "RadioButton"] {
         let definition = parse(&form("", &format!("<{tag} Content='Action' FontSize='18.5' Padding='1,2,3,4' CornerRadius='6' BorderThickness='2' Background='#112233' Foreground='#80445566' BorderBrush='#00778899' FocusBrush='#ABCDEF'/>"))).unwrap();
         assert_eq!(
             button_style(&definition),
@@ -921,7 +934,7 @@ fn button_toggle_and_checkbox_share_optional_metrics_and_argb_brushes() {
 
 #[test]
 fn button_style_reports_invalid_properties_without_accepting_state_markup() {
-    for tag in ["Button", "ToggleButton", "CheckBox"] {
+    for tag in ["Button", "ToggleButton", "CheckBox", "RadioButton"] {
         for attributes in [
             "FontSize='0'",
             "FontSize='513'",
@@ -1011,4 +1024,88 @@ fn toggle_command_and_checked_are_literals_and_codegen_preserves_all_style_field
             "{attributes}"
         );
     }
+}
+
+#[test]
+fn radio_group_names_and_selection_are_literals_with_typed_codegen() {
+    let source = form(
+        "",
+        "<RadioButton x:Name='Choice' Content='Choose &quot;\\&#10;🌍' GroupName='_Alignment2' IsChecked='True' FontSize='19' Padding='7,3' Background='#80131415'/>",
+    );
+    let definition = parse(&source).unwrap();
+    let ElementKind::RadioButton(radio) = definition.content.kind else {
+        panic!("expected RadioButton");
+    };
+    assert_eq!(radio.group_name.as_deref(), Some("_Alignment2"));
+    assert!(radio.is_checked);
+    assert_eq!(radio.content, "Choose \"\\\n🌍");
+    let generated = compile(&source).unwrap();
+    for literal in [
+        "ElementKind::RadioButton",
+        "RadioButtonDefinition",
+        "group_name: Some(\"_Alignment2\".into())",
+        "is_checked: true",
+        "font_size: Some(19.0)",
+        "padding: Some([7.0, 3.0, 7.0, 3.0])",
+        "background: Some([19, 20, 21, 128])",
+    ] {
+        assert!(generated.contains(literal), "missing {literal}");
+    }
+    assert!(generated.contains(&format!("content: {:?}.into()", radio.content)));
+    assert!(
+        compile(&form("", "<RadioButton/>"))
+            .unwrap()
+            .contains("group_name: None")
+    );
+    for attributes in [
+        "GroupName=''",
+        "GroupName='two words'",
+        "GroupName='2invalid'",
+        "GroupName='Русский'",
+        "GroupName='{Binding Group}'",
+        "GroupName='a.b'",
+        "IsChecked='null'",
+        "Command='Select'",
+        "IsThreeState='True'",
+    ] {
+        let error = parse(&form("", &format!("<RadioButton\n {attributes}/>"))).unwrap_err();
+        assert_eq!(error.line, 3);
+        let expected = if attributes.contains("{Binding") {
+            "markup extensions"
+        } else {
+            attributes.split('=').next().unwrap()
+        };
+        assert!(error.message.contains(expected), "{error}");
+    }
+    for tag in ["Button", "ToggleButton", "CheckBox", "StackPanel"] {
+        assert!(parse(&form("", &format!("<{tag} GroupName='Group'/>"))).is_err());
+    }
+}
+
+#[test]
+fn radio_initial_selection_rejects_conflicts_per_named_or_immediate_parent_group() {
+    for tree in [
+        "<StackPanel><RadioButton IsChecked='True'/><RadioButton IsChecked='True'/></StackPanel>",
+        "<StackPanel><RadioButton GroupName='G' IsChecked='True'/><StackPanel><RadioButton GroupName='G' IsChecked='True'/></StackPanel></StackPanel>",
+        "<StackPanel><RadioButton GroupName='G' IsChecked='True'/><RadioButton GroupName='G' IsChecked='True' IsEnabled='False'/></StackPanel>",
+    ] {
+        let error = parse(&form("", tree)).unwrap_err();
+        assert!(
+            error.message.contains("at most one initial IsChecked=True"),
+            "{error}"
+        );
+        assert!(error.line > 0 && error.column > 0);
+        assert!(compile(&form("", tree)).is_err());
+    }
+    for tree in [
+        "<StackPanel><RadioButton/><RadioButton/></StackPanel>",
+        "<StackPanel><RadioButton IsChecked='True'/><StackPanel><RadioButton IsChecked='True'/></StackPanel></StackPanel>",
+        "<StackPanel><RadioButton IsChecked='True'/><RadioButton GroupName='G' IsChecked='True'/><RadioButton GroupName='g' IsChecked='True'/></StackPanel>",
+        "<StackPanel><RadioButton GroupName='G' IsChecked='True'/><StackPanel><RadioButton GroupName='G'/></StackPanel></StackPanel>",
+    ] {
+        assert!(parse(&form("", tree)).is_ok(), "{tree}");
+        assert!(parse(&form("", tree)).is_ok()); // State belongs to this parse only.
+    }
+    let error = parse(&form("", "<StackPanel>\n<RadioButton IsChecked='True'/>\n<RadioButton IsChecked='True'/>\n</StackPanel>")).unwrap_err();
+    assert_eq!((error.line, error.column), (4, 1));
 }

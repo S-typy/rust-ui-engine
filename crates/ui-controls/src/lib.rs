@@ -19,4 +19,6 @@ mod button_tests;
 #[cfg(test)]
 mod edit_session_tests;
 #[cfg(test)]
+mod radio_tests;
+#[cfg(test)]
 mod tests;

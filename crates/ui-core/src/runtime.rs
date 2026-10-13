@@ -517,26 +517,26 @@ impl UiRuntime {
     }
 
     fn advance_focus(&mut self, backwards: bool) {
-        let candidates = self
-            .tree
-            .preorder()
-            .into_iter()
-            .filter(|id| self.focus_eligible(*id))
-            .collect::<Vec<_>>();
-        if candidates.is_empty() {
-            self.set_focus(None);
-            return;
-        }
-        let next = match self
+        // The focused node may intentionally not be a Tab stop. Keep its
+        // position in the full logical order instead of restarting at an end.
+        let order = self.tree.preorder();
+        let anchor = self
             .focus
-            .and_then(|id| candidates.iter().position(|candidate| *candidate == id))
-        {
-            Some(index) if backwards => (index + candidates.len() - 1) % candidates.len(),
-            Some(index) => (index + 1) % candidates.len(),
-            None if backwards => candidates.len() - 1,
-            None => 0,
-        };
-        self.set_focus(Some(candidates[next]));
+            .and_then(|id| order.iter().position(|node| *node == id));
+        let next = (0..order.len()).find_map(|offset| {
+            let index = match (anchor, backwards) {
+                (Some(index), false) => (index + offset + 1) % order.len(),
+                (Some(index), true) => {
+                    (index + order.len() - (offset + 1) % order.len()) % order.len()
+                }
+                (None, false) => offset,
+                (None, true) => order.len() - offset - 1,
+            };
+            let id = order[index];
+            (self.focus_eligible(id) && self.tree.node(id).is_some_and(|node| node.props.tab_stop))
+                .then_some(id)
+        });
+        self.set_focus(next);
     }
 
     fn validate_snapshot(
@@ -1018,6 +1018,62 @@ mod tests {
         runtime.apply(Mutation::Focus(None)).unwrap();
         runtime.dispatch(tab(true));
         assert_eq!(runtime.focused(), Some(last));
+    }
+
+    #[test]
+    fn non_tab_stops_retain_focus_and_anchor_traversal_in_both_directions() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        let first = tree.insert(root, focusable()).unwrap();
+        let skipped = tree
+            .insert(
+                root,
+                NodeProps {
+                    tab_stop: false,
+                    ..focusable()
+                },
+            )
+            .unwrap();
+        let last = tree.insert(root, focusable()).unwrap();
+        let mut runtime = UiRuntime::new(tree);
+        runtime
+            .update(&mut StubLayout::default(), viewport())
+            .unwrap();
+        runtime.dispatch(tab(false));
+        assert_eq!(runtime.focused(), Some(first));
+        runtime.dispatch(tab(false));
+        assert_eq!(runtime.focused(), Some(last));
+        for (backwards, expected) in [(false, last), (true, first)] {
+            runtime.apply(Mutation::Focus(Some(skipped))).unwrap();
+            assert_eq!(runtime.focused(), Some(skipped));
+            runtime.dispatch(tab(backwards));
+            assert_eq!(runtime.focused(), Some(expected));
+        }
+        runtime.apply(Mutation::Focus(Some(skipped))).unwrap();
+        runtime
+            .on(skipped, |event, context| {
+                if matches!(event.input, InputEvent::KeyDown { key: Key::Tab, .. }) {
+                    context.prevent_default();
+                }
+            })
+            .unwrap();
+        assert!(runtime.dispatch(tab(false)).default_prevented);
+        assert_eq!(runtime.focused(), Some(skipped));
+        // A non-Tab control also remains eligible for pointer focus.
+        let mut props = runtime.tree().node(skipped).unwrap().props.clone();
+        props.z_index = 10;
+        runtime
+            .apply(Mutation::SetProps {
+                node: skipped,
+                props,
+            })
+            .unwrap();
+        runtime
+            .update(&mut StubLayout::default(), viewport())
+            .unwrap();
+        runtime.apply(Mutation::Focus(None)).unwrap();
+        runtime.dispatch(down(25.0, 25.0));
+        assert_eq!(runtime.focused(), Some(skipped));
     }
 
     #[test]
