@@ -45,7 +45,7 @@ cargo run -p xaml-form --locked -- --light --smoke-test
         <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
             <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Icon="Check" Width="160"
                     FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
-            <ToggleButton x:Name="Pin" Content="Закрепить" Icon="Pin" Width="120"
+            <ToggleButton x:Name="Pin" Content="Закрепить" Command="Pin" Icon="Pin" Width="120"
                           FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
             <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
         </StackPanel>
@@ -108,9 +108,18 @@ binding. Его регистрацией и обработчиком управ�
 
 У `ToggleButton` без команды начальное состояние задаёт `IsChecked`.
 Для командного переключателя приложение заранее регистрирует команду и её
-`checked: Some(bool)`: это общее состояние имеет приоритет над `IsChecked`
+`checked: Some(bool)`, например через `register_toggle("Pin", "Закрепить", false)`:
+это общее состояние имеет приоритет над `IsChecked`
 в разметке. Неизвестная команда или отсутствие её checked state отклоняются
 до монтажа дерева. `CheckBox` в этом профиле не принимает `Command`.
+
+После монтажа связанный `Button` также отображает checked state команды:
+вид контрола определяет оформление, а зарегистрированная команда — поведение
+активации. Pointer, Space/Enter и accessibility Click используют одну активацию,
+проверяют доступность команды и меняют её состояние один раз. Все связанные
+представления получают результат. `set_checked(command, None)` снимает toggle-режим
+у уже смонтированных представлений; возврат `Some(bool)` включает его снова.
+Нативная проекция таких кнопок использует AccessKit Button с опциональным Toggled.
 
 `RadioButton` не принимает `Command`. Его `GroupName`, если задан, должен
 соответствовать `[A-Za-z_][A-Za-z0-9_]*`; пустое значение запрещено. Именованная
@@ -325,6 +334,9 @@ Message. При использовании этой команды отсутс�
 таких соглашений не вводит. При создании формы IsReadOnly у Message или IsChecked
 у Option включает режим только чтения и отражается в состоянии флажка;
 дальнейшие переключения Option управляют режимом поля.
+Команда Pin зарегистрирована через `register_toggle` и связана с кнопкой
+«Закрепить». Она демонстрирует общее состояние команды без изменения редактора
+или закрепления окна; прикладное поведение можно подключить в Rust.
 Всё визуальное дерево примера задано XAML: при старой разметке Window/TextBox
 адаптер не добавляет подписи самостоятельно. Escape отменяет изменения активного
 редактора; подтверждение корректного значения при уходе фокуса остаётся включённым.

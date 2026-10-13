@@ -18,7 +18,7 @@
         <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
             <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Icon="Check" Width="160"
                     FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
-            <ToggleButton x:Name="Pin" Content="Закрепить" Icon="Pin" Width="120"
+            <ToggleButton x:Name="Pin" Content="Закрепить" Command="Pin" Icon="Pin" Width="120"
                           FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
             <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
         </StackPanel>

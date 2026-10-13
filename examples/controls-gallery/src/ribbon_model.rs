@@ -14,7 +14,6 @@ pub fn model(ui: &mut Controls) -> RibbonModel {
         ("light", "Светлая"),
         ("dark", "Тёмная"),
         ("compact", "Компактная"),
-        ("pin", "Закрепить"),
         ("restore", "Сброс колонок"),
         ("qat_add", "+ Быстрый доступ"),
         ("qat_remove", "− Быстрый доступ"),
@@ -24,11 +23,13 @@ pub fn model(ui: &mut Controls) -> RibbonModel {
         ("controls", "Компоненты"),
         ("library", "Библиотека"),
         ("about", "О проекте"),
-        ("favorite", "Избранное"),
         ("disabled", "Недоступно"),
     ] {
         ui.commands_mut().register(id, label);
     }
+    ui.commands_mut()
+        .register_toggle("favorite", "Избранное", false);
+    ui.commands_mut().register_toggle("pin", "Закрепить", false);
     ui.commands_mut().set_enabled(&"disabled".into(), false);
     let group = |id: &str, label: &str, priority, items| RibbonGroup {
         id: id.into(),
@@ -38,7 +39,7 @@ pub fn model(ui: &mut Controls) -> RibbonModel {
     };
     let item = |id: &str, kind, tip: &str| RibbonItem::new(id, kind, tip);
     RibbonModel {
-        quick_access: vec!["save".into(), "copy".into()],
+        quick_access: vec!["save".into(), "copy".into(), "favorite".into()],
         tabs: vec![
             RibbonTab {
                 id: "home".into(),

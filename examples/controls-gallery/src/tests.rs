@@ -36,6 +36,177 @@ fn assert_connected(app: &mut Gallery) {
     assert_eq!(visited.len(), nodes.len(), "orphan accessibility nodes");
 }
 
+fn accessible_click(app: &mut Gallery, target: NodeId, viewport: Size) {
+    app.event(PlatformEvent::Accessibility(ActionRequest {
+        action: Action::Click,
+        target_tree: TreeId::ROOT,
+        target_node: target,
+        data: None,
+    }))
+    .unwrap();
+    app.update(viewport, 1.0).unwrap();
+}
+
+#[test]
+fn favorite_accessibility_shares_qat_ribbon_and_ordinary_button_state_live() {
+    use rust_desktop_ui_platform_winit::accesskit::{Role, Toggled};
+    let mut app = gallery();
+    let viewport = Size::new(1200.0, 800.0);
+    app.ui.select_tab(app.tabs.container, 1).unwrap();
+    app.update(viewport, 1.0).unwrap();
+    let favorites = |app: &mut Gallery, checked: Option<Toggled>, disabled: bool| {
+        let tree = app.accessibility(1.0);
+        let nodes: Vec<_> = tree
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.label() == Some("Избранное"))
+            .collect();
+        assert_eq!(nodes.len(), 3, "QAT, main Ribbon and ordinary control");
+        for (_, node) in &nodes {
+            assert_eq!(node.role(), Role::Button);
+            assert_eq!(node.toggled(), checked);
+            assert_eq!(node.is_disabled(), disabled);
+            assert_eq!(node.supports_action(Action::Click), !disabled);
+        }
+        nodes.into_iter().map(|(id, _)| *id).collect::<Vec<_>>()
+    };
+    let nodes = favorites(&mut app, Some(Toggled::False), false);
+    accessible_click(&mut app, nodes[0], viewport);
+    favorites(&mut app, Some(Toggled::True), false);
+    assert_eq!(app.diagnostics.sequence, 1);
+    assert_eq!(app.message, "Избранное: да");
+    accessible_click(&mut app, nodes[1], viewport);
+    favorites(&mut app, Some(Toggled::False), false);
+    assert_eq!(app.diagnostics.sequence, 2);
+    app.ui.commands_mut().set_checked(&"favorite".into(), None);
+    favorites(&mut app, None, false);
+    accessible_click(&mut app, nodes[2], viewport);
+    favorites(&mut app, None, false);
+    assert_eq!(app.diagnostics.sequence, 3);
+    app.ui
+        .commands_mut()
+        .set_checked(&"favorite".into(), Some(true));
+    app.ui.commands_mut().set_enabled(&"favorite".into(), false);
+    accessible_click(&mut app, nodes[0], viewport);
+    favorites(&mut app, Some(Toggled::True), true);
+    assert_eq!(app.diagnostics.sequence, 3);
+    assert_connected(&mut app);
+}
+
+#[test]
+fn favorite_overflow_and_numeric_keytip_use_the_same_command() {
+    use rust_desktop_ui_platform_winit::accesskit::Toggled;
+    let mut app = gallery();
+    let viewport = Size::new(320.0, 800.0);
+    app.update(viewport, 1.0).unwrap();
+    let tree = app.accessibility(1.0);
+    let more = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("More"))
+        .unwrap()
+        .0;
+    accessible_click(&mut app, more, viewport);
+    assert!(app.ui.popup_open());
+    let tree = app.accessibility(1.0);
+    let (favorite, node) = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.label() == Some("Избранное"))
+        .unwrap();
+    assert_eq!(node.toggled(), Some(Toggled::False));
+    accessible_click(&mut app, *favorite, viewport);
+    assert_eq!(app.ui.commands().checked(&"favorite".into()), Some(true));
+    assert_eq!(app.diagnostics.sequence, 1);
+    assert!(!app.ui.popup_open());
+    for pressed in [Key::F10, Key::Character("3".into())] {
+        app.event(PlatformEvent::Input(InputEvent::KeyDown {
+            key: pressed,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        }))
+        .unwrap();
+        app.update(viewport, 1.0).unwrap();
+    }
+    assert_eq!(app.ui.commands().checked(&"favorite".into()), Some(false));
+    assert_eq!(app.diagnostics.sequence, 2);
+    assert_connected(&mut app);
+}
+
+#[test]
+fn pin_command_tracks_focused_column_and_restores_state_when_editing_rejects_it() {
+    use rust_desktop_ui_treegrid::SelectionModifiers;
+    let path = std::env::temp_dir().join(format!(
+        "rust-ui-gallery-pin-command-{}.txt",
+        std::process::id()
+    ));
+    let mut app = Gallery::new(8, path.clone()).unwrap();
+    let viewport = Size::new(1200.0, 800.0);
+    let column = ColumnId(0);
+    app.grid.pin_column(column, false).unwrap();
+    app.grid
+        .focus_cell(
+            &app.source,
+            RowKey(1),
+            column,
+            SelectionModifiers::default(),
+        )
+        .unwrap();
+    app.update(viewport, 1.0).unwrap();
+    assert_eq!(app.ui.commands().checked(&"pin".into()), Some(false));
+    assert!(app.ui.commands_mut().activate(&"pin".into()));
+    app.commands().unwrap();
+    assert!(
+        app.grid
+            .columns()
+            .iter()
+            .find(|entry| entry.id == column)
+            .unwrap()
+            .pinned
+    );
+    assert_eq!(app.ui.commands().checked(&"pin".into()), Some(true));
+    // Raw execution must apply the current value, never invert it a second time.
+    assert!(app.ui.commands_mut().execute(&"pin".into()));
+    app.commands().unwrap();
+    assert!(
+        app.grid
+            .columns()
+            .iter()
+            .find(|entry| entry.id == column)
+            .unwrap()
+            .pinned
+    );
+    app.grid.begin_edit(&app.source, RowKey(1), column).unwrap();
+    app.update(viewport, 1.0).unwrap();
+    assert!(app.ui.commands_mut().activate(&"pin".into()));
+    assert_eq!(app.ui.commands().checked(&"pin".into()), Some(false));
+    app.commands().unwrap();
+    assert!(app.grid.editor().is_some());
+    assert_eq!(app.ui.commands().checked(&"pin".into()), Some(true));
+    assert!(
+        app.grid
+            .columns()
+            .iter()
+            .find(|entry| entry.id == column)
+            .unwrap()
+            .pinned
+    );
+    app.grid.cancel_edit();
+    app.grid.pin_column(ColumnId(2), false).unwrap();
+    app.grid
+        .focus_cell(
+            &app.source,
+            RowKey(1),
+            ColumnId(2),
+            SelectionModifiers::default(),
+        )
+        .unwrap();
+    app.event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+        .unwrap();
+    assert_eq!(app.ui.commands().checked(&"pin".into()), Some(false));
+    std::fs::remove_file(path).unwrap();
+}
+
 #[test]
 fn visible_scene_and_accessibility_stay_bounded_across_pages() {
     let mut app = gallery();

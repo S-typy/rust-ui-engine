@@ -19,6 +19,8 @@ pub use theme::*;
 #[cfg(test)]
 mod button_tests;
 #[cfg(test)]
+mod command_activation_tests;
+#[cfg(test)]
 mod edit_session_tests;
 #[cfg(test)]
 mod primitive_tests;

@@ -49,6 +49,18 @@ impl CommandRegistry {
             },
         );
     }
+    /// Register a toggle command. Like `register`, replacing an ID resets its
+    /// callback and enabled policy. All placements share this checked value.
+    pub fn register_toggle(
+        &mut self,
+        id: impl Into<CommandId>,
+        label: impl Into<String>,
+        checked: bool,
+    ) {
+        let id = id.into();
+        self.register(id.clone(), label);
+        self.set_checked(&id, Some(checked));
+    }
     pub fn contains(&self, id: &CommandId) -> bool {
         self.commands.contains_key(id)
     }
@@ -71,6 +83,8 @@ impl CommandRegistry {
             false
         }
     }
+    /// Set the shared state without invoking the command. `Some` makes it a
+    /// toggle action; `None` makes it an ordinary action at every placement.
     pub fn set_checked(&mut self, id: &CommandId, checked: Option<bool>) -> bool {
         if let Some(command) = self.commands.get_mut(id) {
             command.checked = checked;
@@ -95,14 +109,27 @@ impl CommandRegistry {
             false
         }
     }
-    /// Returns false for missing/disabled commands without emitting an invocation.
+    /// Perform a user action: after one enabled/predicate check, invert a toggle,
+    /// run its callback and emit one invocation containing the resulting state.
+    /// Missing or rejected commands change no state and emit nothing.
+    pub fn activate(&mut self, id: &CommandId) -> bool {
+        self.invoke(id, true)
+    }
+    /// Low-level callback execution, preserving the checked state. User-facing
+    /// controls should use `activate` instead. Both methods apply the same gate.
     pub fn execute(&mut self, id: &CommandId) -> bool {
-        if !self.enabled(id) {
-            return false;
-        }
+        self.invoke(id, false)
+    }
+    fn invoke(&mut self, id: &CommandId, toggle: bool) -> bool {
         let Some(command) = self.commands.get_mut(id) else {
             return false;
         };
+        if !command.enabled || !(command.can_execute)() {
+            return false;
+        }
+        if toggle && let Some(checked) = &mut command.checked {
+            *checked = !*checked;
+        }
         if let Some(action) = &mut command.execute {
             action();
         }

@@ -34,6 +34,7 @@ impl Form {
         let mut ui = Controls::new(theme).map_err(err)?;
         // Application-owned registration; the generic mount never invents handlers.
         ui.commands_mut().register("Confirm", "Подтвердить");
+        ui.commands_mut().register_toggle("Pin", "Закрепить", false);
         ui.runtime
             .apply(Mutation::SetStyle {
                 node: ui.root(),

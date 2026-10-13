@@ -106,6 +106,8 @@ pub struct TextChanged {
 pub struct MenuItem {
     pub label: String,
     pub command: CommandId,
+    /// Initial promotion to a toggle when the command has no checked value.
+    /// After creation the registry determines the item's behavior and state.
     pub toggle: bool,
 }
 impl MenuItem {
@@ -166,9 +168,7 @@ enum Kind {
         group: WidgetId,
         index: usize,
     },
-    MenuItem {
-        toggle: bool,
-    },
+    MenuItem,
 }
 impl Kind {
     fn button_style(&self) -> bool {
@@ -185,7 +185,7 @@ impl Kind {
                 | Self::CheckBox
                 | Self::Radio { .. }
                 | Self::Tab { .. }
-                | Self::MenuItem { .. }
+                | Self::MenuItem
         )
     }
     fn role(&self) -> Role {
@@ -201,7 +201,7 @@ impl Kind {
             Self::TextBox(_) => Role::TextBox,
             Self::Scroll { .. } => Role::ScrollView,
             Self::Tab { .. } => Role::Tab,
-            Self::MenuItem { .. } => Role::MenuItem,
+            Self::MenuItem => Role::MenuItem,
         }
     }
 }
@@ -228,6 +228,20 @@ struct Control {
     default_height: bool,
     transparent_panel: bool,
     caret: TextCaret,
+}
+impl Control {
+    fn check_state(&self, commands: &CommandRegistry) -> Option<bool> {
+        if let Some(command) = &self.command {
+            commands.checked(command)
+        } else if matches!(
+            self.kind,
+            Kind::Toggle | Kind::CheckBox | Kind::Radio { .. }
+        ) {
+            Some(self.checked)
+        } else {
+            None
+        }
+    }
 }
 struct Tabs {
     tabs: Vec<WidgetId>,
@@ -343,6 +357,12 @@ impl Controls {
     pub fn commands_mut(&mut self) -> &mut CommandRegistry {
         self.scene_dirty = true;
         &mut self.commands
+    }
+    /// Command attached to a live placement, independent of its current enabled
+    /// or checked state. Unbound controls and removed IDs return `None`.
+    pub fn command_id(&self, id: WidgetId) -> Option<&CommandId> {
+        self.runtime.tree().node(id)?;
+        self.controls.get(&id)?.command.as_ref()
     }
     pub fn scene(&self) -> &Scene {
         &self.scene
@@ -580,19 +600,13 @@ impl Controls {
             _ => None,
         }
     }
+    /// Current selection for a local toggle/radio or a command-backed placement.
+    /// A bound command's `None` is authoritative; removed IDs return `None`.
     pub fn checked(&self, id: WidgetId) -> Option<bool> {
         self.controls
             .get(&id)
-            .filter(|c| {
-                self.runtime.tree().node(id).is_some()
-                    && matches!(c.kind, Kind::Toggle | Kind::CheckBox | Kind::Radio { .. })
-            })
-            .map(|c| {
-                c.command
-                    .as_ref()
-                    .and_then(|command| self.commands.checked(command))
-                    .unwrap_or(c.checked)
-            })
+            .filter(|_| self.runtime.tree().node(id).is_some())
+            .and_then(|control| control.check_state(&self.commands))
     }
     pub fn set_checked(&mut self, id: WidgetId, checked: bool) -> Result<(), ControlError> {
         if self.runtime.tree().node(id).is_none() || !self.controls.contains_key(&id) {
@@ -1218,6 +1232,9 @@ impl Controls {
     ) -> Result<WidgetId, ControlError> {
         self.add(parent, Kind::Button, label.into(), command, style)
     }
+    /// Create a toggle placement. A bound command keeps its existing checked
+    /// value; if absent, this builder promotes it using the initial value.
+    /// Later command state (including `None`) remains authoritative.
     pub fn toggle(
         &mut self,
         parent: WidgetId,
@@ -1496,9 +1513,7 @@ impl Controls {
             }
             ids.push(self.add(
                 viewer.content,
-                Kind::MenuItem {
-                    toggle: item.toggle,
-                },
+                Kind::MenuItem,
                 item.label.clone(),
                 Some(item.command.clone()),
                 LayoutStyle::default(),
@@ -1544,16 +1559,28 @@ impl Controls {
         self.runtime.apply(Mutation::SetProps { node: id, props })?;
         Ok(())
     }
-    fn is_enabled(&self, id: WidgetId) -> bool {
-        if !self.controls.get(&id).is_some_and(|c| {
-            c.enabled
-                && c.command
-                    .as_ref()
-                    .is_none_or(|id| self.commands.enabled(id))
-        }) {
+    /// Live local, command and ancestor availability, including visibility.
+    /// Missing or removed controls return false. This queries `can_execute`;
+    /// actual activation checks its gate again before changing command state.
+    pub fn is_enabled(&self, id: WidgetId) -> bool {
+        self.controls.contains_key(&id) && self.effective_enabled(id)
+    }
+    fn activation_available(&self, id: WidgetId) -> bool {
+        let Some(control) = self.controls.get(&id) else {
             return false;
-        }
-        self.effective_enabled(id)
+        };
+        let Some(node) = self.runtime.tree().node(id) else {
+            return false;
+        };
+        // The command itself is checked exactly once by CommandRegistry::activate.
+        // Ancestor policies and the placement's own availability remain gates.
+        control.enabled
+            && node.props.visible
+            && self
+                .runtime
+                .tree()
+                .parent(id)
+                .is_none_or(|parent| self.effective_enabled(parent))
     }
     fn effective_enabled(&self, mut id: WidgetId) -> bool {
         loop {
@@ -1723,12 +1750,8 @@ impl Controls {
                 }
                 parent = self.runtime.tree().parent(ancestor);
             }
-            if let Some(checked) = control
-                .command
-                .as_ref()
-                .and_then(|id| self.commands.checked(id))
-            {
-                control.checked = checked;
+            if let Some(command) = &control.command {
+                control.checked = self.commands.checked(command).unwrap_or(false);
             }
             let selected = match control.kind {
                 Kind::Tab { group, index } => {
@@ -2029,8 +2052,15 @@ impl Controls {
         }
         Ok(())
     }
+    /// Activate a live, available placement. Command rejection changes no checked
+    /// state, emits no activation event and leaves an open menu in place.
     pub fn activate(&mut self, id: WidgetId) -> Result<(), ControlError> {
-        if !self.is_enabled(id) {
+        if !self.activation_available(id) || !self.controls[&id].kind.clickable() {
+            return Ok(());
+        }
+        if let Some(command) = self.controls[&id].command.clone()
+            && !self.commands.activate(&command)
+        {
             return Ok(());
         }
         if self.radio_group_of(id).is_some() {
@@ -2039,32 +2069,16 @@ impl Controls {
         let Some(control) = self.controls.get_mut(&id) else {
             return Ok(());
         };
-        if !control.kind.clickable() {
-            return Ok(());
-        }
-        if matches!(
-            control.kind,
-            Kind::Toggle | Kind::CheckBox | Kind::MenuItem { toggle: true }
-        ) {
-            // Several placements can activate before the next repaint. The
-            // registry is the current value; each placement's cache may lag.
-            control.checked = !control
-                .command
-                .as_ref()
-                .and_then(|command| self.commands.checked(command))
-                .unwrap_or(control.checked);
-            if let Some(command) = &control.command {
-                self.commands.set_checked(command, Some(control.checked));
-            }
+        if let Some(command) = &control.command {
+            control.checked = self.commands.checked(command).unwrap_or(false);
+        } else if matches!(control.kind, Kind::Toggle | Kind::CheckBox) {
+            control.checked = !control.checked;
         }
         let tab = match control.kind {
             Kind::Tab { group, index } => Some((group, index)),
             _ => None,
         };
-        let menu = matches!(control.kind, Kind::MenuItem { .. });
-        if let Some(command) = &control.command {
-            self.commands.execute(command);
-        }
+        let menu = matches!(control.kind, Kind::MenuItem);
         self.activated.push(id);
         self.scene_dirty = true;
         if let Some((group, index)) = tab {
@@ -2885,7 +2899,7 @@ impl Controls {
             let mut label = control.label.clone();
             let editable = matches!(control.kind, Kind::TextBox(_));
             let align = if control.kind.clickable()
-                && !matches!(control.kind, Kind::CheckBox | Kind::MenuItem { .. })
+                && !matches!(control.kind, Kind::CheckBox | Kind::MenuItem)
             {
                 TextAlign::Center
             } else {
@@ -2894,10 +2908,10 @@ impl Controls {
             if let Kind::TextBox(document) = &control.kind {
                 label = document.display_text();
             }
-            if matches!(
-                control.kind,
-                Kind::CheckBox | Kind::MenuItem { toggle: true }
-            ) {
+            if matches!(control.kind, Kind::CheckBox)
+                || matches!(control.kind, Kind::MenuItem)
+                    && control.check_state(&self.commands).is_some()
+            {
                 let check = Rect::new(
                     bounds.x + 8.0,
                     bounds.y + (bounds.height - 16.0) * 0.5,
@@ -3127,26 +3141,25 @@ impl Controls {
                         children,
                     });
                 };
-                let role = control.role.unwrap_or_else(|| control.kind.role());
+                let checked = control.check_state(&self.commands);
+                let role = control.role.unwrap_or_else(|| {
+                    if control.command.is_some()
+                        && matches!(control.kind, Kind::Button | Kind::Toggle)
+                    {
+                        if checked.is_some() {
+                            Role::ToggleButton
+                        } else {
+                            Role::Button
+                        }
+                    } else {
+                        control.kind.role()
+                    }
+                });
                 let value = if let Kind::TextBox(document) = &control.kind {
                     Some(document.text().to_owned())
                 } else {
                     None
                 };
-                let checked = matches!(
-                    control.kind,
-                    Kind::Toggle
-                        | Kind::CheckBox
-                        | Kind::Radio { .. }
-                        | Kind::MenuItem { toggle: true }
-                )
-                .then(|| {
-                    control
-                        .command
-                        .as_ref()
-                        .and_then(|command| self.commands.checked(command))
-                        .unwrap_or(control.checked)
-                });
                 let selected = match control.kind {
                     Kind::Tab { group, index } => {
                         self.tabs.get(&group).is_some_and(|t| t.selected == index)
@@ -3198,7 +3211,9 @@ impl Controls {
         value: Option<&str>,
     ) -> Result<(), ControlError> {
         self.synchronize_editor_focus()?;
-        if !self.is_enabled(id) {
+        if !matches!(action, SemanticAction::Activate | SemanticAction::Toggle)
+            && !self.is_enabled(id)
+        {
             return Ok(());
         }
         match action {

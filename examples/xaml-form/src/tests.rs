@@ -1265,7 +1265,7 @@ fn toggle_command_registration_owns_initial_state_and_rejects_missing_checked_co
         matches!(MountedView::mount(&mut ui,root,&definition.content),Err(error) if error.contains("registered checked state"))
     );
     assert_eq!(ui.runtime.tree().len(), before);
-    ui.commands_mut().set_checked(&"Pin".into(), Some(false));
+    ui.commands_mut().register_toggle("Pin", "Pin", false);
     let view = MountedView::mount(&mut ui, root, &definition.content).unwrap();
     let one = view.find_name("One").unwrap();
     let two = view.find_name("Two").unwrap();
@@ -1285,6 +1285,60 @@ fn toggle_command_registration_owns_initial_state_and_rejects_missing_checked_co
     ui.update(Size::new(640.0, 400.0)).unwrap();
     assert_eq!(ui.checked(two), Some(true));
     assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn bound_buttons_share_live_command_state_through_native_accessibility_and_keyboard() {
+    let mut form = markup(
+        r#"<StackPanel><Button x:Name="One" Content="One" Command="Pin"/><ToggleButton x:Name="Two" Content="Two" Command="Pin" IsChecked="True"/></StackPanel>"#,
+    );
+    let ids = [
+        form.find_name("One").unwrap(),
+        form.find_name("Two").unwrap(),
+    ];
+    let assert_nodes = |form: &mut Form, checked: Option<accesskit::Toggled>, disabled: bool| {
+        let tree = form.accessibility(1.0);
+        for widget in ids {
+            let id = form.accessible.id(widget).unwrap();
+            let node = &tree
+                .nodes
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .unwrap()
+                .1;
+            assert_eq!(node.role(), accesskit::Role::Button);
+            assert_eq!(node.toggled(), checked);
+            assert_eq!(node.is_disabled(), disabled);
+            assert_eq!(node.supports_action(accesskit::Action::Click), !disabled);
+        }
+    };
+    assert_nodes(&mut form, Some(accesskit::Toggled::False), false);
+    accessible_action(&mut form, "One", accesskit::Action::Click, None);
+    assert_nodes(&mut form, Some(accesskit::Toggled::True), false);
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(true));
+    form.ui
+        .runtime
+        .apply(Mutation::Focus(Some(ids[1])))
+        .unwrap();
+    key(&mut form, Key::Space, false);
+    assert_nodes(&mut form, Some(accesskit::Toggled::True), false);
+    form.event(PlatformEvent::Input(InputEvent::KeyUp {
+        key: Key::Space,
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+    assert_nodes(&mut form, Some(accesskit::Toggled::False), false);
+    form.ui.commands_mut().set_checked(&"Pin".into(), None);
+    assert_nodes(&mut form, None, false);
+    accessible_action(&mut form, "Two", accesskit::Action::Click, None);
+    assert_nodes(&mut form, None, false);
+    form.ui
+        .commands_mut()
+        .set_checked(&"Pin".into(), Some(true));
+    form.ui.commands_mut().set_enabled(&"Pin".into(), false);
+    accessible_action(&mut form, "One", accesskit::Action::Click, None);
+    assert_nodes(&mut form, Some(accesskit::Toggled::True), true);
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(true));
 }
 
 #[test]

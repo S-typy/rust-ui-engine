@@ -1,4 +1,4 @@
-use crate::{books::BookSource, ribbon_model};
+use crate::{books::BookSource, diagnostics::Diagnostics, ribbon_model};
 use rust_desktop_ui_controls::{Controls, MenuItem, Ribbon, TabControl, Theme};
 use rust_desktop_ui_core::{
     Axis, Color, Edges, InputEvent, Key, LayoutKind, LayoutStyle, Length, Modifiers, Mutation,
@@ -67,6 +67,7 @@ pub struct Gallery {
     suppress_text: bool,
     pub(crate) accessible_widgets: HashMap<WidgetId, u64>,
     pub(crate) next_accessible_id: u64,
+    pub(crate) diagnostics: Diagnostics,
 }
 
 impl Gallery {
@@ -185,7 +186,26 @@ impl Gallery {
             suppress_text: false,
             accessible_widgets: HashMap::new(),
             next_accessible_id: 100,
+            diagnostics: Diagnostics::default(),
         })
+    }
+
+    pub(crate) fn set_diagnostics(&mut self, enabled: bool) {
+        self.diagnostics.enabled = enabled;
+    }
+
+    /// The focused column owns this command's state, including rejected edits.
+    fn sync_pin_command(&mut self) {
+        let column = self.grid.focused_column().unwrap_or(ColumnId(1));
+        let pinned = self
+            .grid
+            .columns()
+            .iter()
+            .any(|c| c.id == column && c.pinned);
+        let command = "pin".into();
+        if self.ui.commands().checked(&command) != Some(pinned) {
+            self.ui.commands_mut().set_checked(&command, Some(pinned));
+        }
     }
 
     fn controls_page(ui: &mut Controls, parent: WidgetId) -> Result<WidgetId> {
@@ -632,7 +652,7 @@ impl Gallery {
                     self.menu_button,
                     &[
                         MenuItem::new("Сохранить", "save"),
-                        MenuItem::new("Избранное", "favorite").toggling(),
+                        MenuItem::new("Избранное", "favorite"),
                         MenuItem::new("Недоступно", "disabled"),
                     ],
                 )
@@ -675,6 +695,7 @@ impl Gallery {
                 "restore" | "pin" | "first" | "last" | "expand" | "collapse"
             ) && !self.editor_finished()?
             {
+                self.sync_pin_command();
                 continue;
             }
             match invocation.id.0.as_str() {
@@ -707,13 +728,11 @@ impl Gallery {
                 }
                 "pin" => {
                     let column = self.grid.focused_column().unwrap_or(ColumnId(1));
-                    let pinned = self
-                        .grid
-                        .columns()
-                        .iter()
-                        .find(|c| c.id == column)
-                        .is_some_and(|c| c.pinned);
-                    self.grid.pin_column(column, !pinned).map_err(err)?;
+                    if let Some(pinned) = invocation.checked {
+                        let result = self.grid.pin_column(column, pinned);
+                        self.sync_pin_command();
+                        result.map_err(err)?;
+                    }
                     self.save_columns();
                 }
                 "first" => self
@@ -752,6 +771,7 @@ impl Gallery {
                 }
                 "copy" => self.copy_cell(),
                 "favorite" => {
+                    self.diagnostics.favorite_activated();
                     self.message = format!(
                         "Избранное: {}",
                         if invocation.checked.unwrap_or(false) {
@@ -766,6 +786,7 @@ impl Gallery {
                 }
                 _ => {}
             }
+            self.sync_pin_command();
         }
         Ok(())
     }
@@ -792,6 +813,7 @@ impl Gallery {
 impl DesktopApp for Gallery {
     fn update(&mut self, viewport: Size, _scale: f32) -> Result<()> {
         self.viewport = viewport;
+        self.sync_pin_command();
         self.ribbon
             .set_context((!self.grid.selected().is_empty()).then_some("book"));
         self.ribbon
@@ -825,6 +847,7 @@ impl DesktopApp for Gallery {
         }
         // This example reads editor values directly when updating its model.
         let _ = self.ui.drain_text_changes();
+        self.diagnostics.emit(&self.ui, &self.ribbon, viewport);
         Ok(())
     }
     fn scene(&self) -> &Scene {
@@ -878,6 +901,7 @@ impl DesktopApp for Gallery {
         }
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse> {
+        self.sync_pin_command();
         let mut redraw = true;
         match event {
             PlatformEvent::Input(input) => self.input(input)?,
@@ -904,6 +928,7 @@ impl DesktopApp for Gallery {
             }
             PlatformEvent::Accessibility(request) => self.accessibility_action(request)?,
         }
+        self.sync_pin_command();
         for request in self.ui.drain_clipboard_requests() {
             self.clipboard.push(match request {
                 rust_desktop_ui_controls::ClipboardRequest::Copy(text) => {

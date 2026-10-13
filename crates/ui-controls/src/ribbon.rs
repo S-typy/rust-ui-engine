@@ -7,10 +7,16 @@ use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RibbonItemKind {
+    /// Large presentation; registered command state determines activation.
     Large,
+    /// Small presentation; also supports a registered toggle command.
     Small,
+    /// Legacy large presentation that initializes an existing command as a
+    /// toggle once, on this Ribbon's first mount, if checked is unspecified.
     Toggle,
-    Split { menu: Vec<CommandId> },
+    Split {
+        menu: Vec<CommandId>,
+    },
 }
 #[derive(Clone, Debug)]
 pub struct RibbonItem {
@@ -150,6 +156,7 @@ pub struct Ribbon {
     width: f32,
     theme: Option<Theme>,
     presentations: Vec<RibbonPresentation>,
+    legacy_toggles_initialized: bool,
 }
 
 impl Ribbon {
@@ -208,6 +215,7 @@ impl Ribbon {
             width: 0.0,
             theme: None,
             presentations: Vec::new(),
+            legacy_toggles_initialized: false,
         })
     }
     pub fn model(&self) -> &RibbonModel {
@@ -258,6 +266,21 @@ impl Ribbon {
         changed
     }
     pub fn mount(&mut self, ui: &mut Controls, parent: WidgetId) -> Result<WidgetId, ControlError> {
+        if ui.runtime.tree().node(parent).is_none() {
+            return Err(ControlError::Invalid("Unknown Ribbon parent".into()));
+        }
+        if let Some(container) = self.container {
+            if ui.runtime.tree().node(container).is_none() {
+                return Err(ControlError::Invalid(
+                    "Ribbon container was removed; create a new Ribbon to mount again".into(),
+                ));
+            }
+            if self.parent != Some(parent) || ui.runtime.tree().parent(container) != Some(parent) {
+                return Err(ControlError::Invalid(
+                    "Ribbon remount requires its original live parent".into(),
+                ));
+            }
+        }
         self.parent = Some(parent);
         self.dirty = true;
         self.update(ui, 800.0)?;
@@ -279,6 +302,28 @@ impl Ribbon {
                 .map_or_else(String::new, |tab| tab.id.clone());
         }
     }
+    fn initialize_legacy_toggles(&mut self, ui: &mut Controls) {
+        if self.legacy_toggles_initialized {
+            return;
+        }
+        // Include hidden contextual tabs before building QAT. Presentation
+        // rebuilds must never undo an application's later Some -> None change.
+        for item in self
+            .model
+            .tabs
+            .iter()
+            .flat_map(|tab| &tab.groups)
+            .flat_map(|group| &group.items)
+        {
+            if matches!(item.kind, RibbonItemKind::Toggle)
+                && ui.commands().contains(&item.command)
+                && ui.commands().checked(&item.command).is_none()
+            {
+                ui.commands_mut().set_checked(&item.command, Some(false));
+            }
+        }
+        self.legacy_toggles_initialized = true;
+    }
     /// Reflows only on width/theme/model changes. Commands retain their identity and checked state.
     pub fn update(&mut self, ui: &mut Controls, width: f32) -> Result<(), ControlError> {
         if !width.is_finite() || width < 0.0 {
@@ -290,6 +335,7 @@ impl Ribbon {
         let Some(parent) = self.parent else {
             return Ok(());
         };
+        self.initialize_legacy_toggles(ui);
         let restore_command = ui
             .runtime
             .focused()
@@ -506,10 +552,10 @@ impl Ribbon {
         self.dirty = false;
         // Focus can be restored before layout because eligibility is a logical tree property.
         if let Some(command) = restore_command
-            && let Some((&id, _)) = self
-                .actions
-                .iter()
-                .find(|(_, action)| matches!(action,Action::Command(id) if *id==command))
+            && let Some(id) = ui.runtime.tree().preorder().into_iter().find(|id| {
+                ui.is_enabled(*id)
+                    && matches!(self.actions.get(id), Some(Action::Command(candidate)) if *candidate == command)
+            })
         {
             let _ = ui.runtime.apply(Mutation::Focus(Some(id)));
         }
@@ -586,13 +632,6 @@ impl Ribbon {
                 ..Default::default()
             };
             let id = match &item.kind {
-                RibbonItemKind::Toggle => ui.toggle(
-                    host,
-                    caption,
-                    Some(item.command.clone()),
-                    ui.commands().checked(&item.command).unwrap_or(false),
-                    style,
-                )?,
                 RibbonItemKind::Split { menu } => {
                     let split = ui.panel(
                         host,
@@ -673,6 +712,14 @@ impl Ribbon {
         ui: &mut Controls,
         event: &InputEvent,
     ) -> Result<bool, ControlError> {
+        if !self.container.is_some_and(|id| ui.is_enabled(id)) {
+            if self.tips != Tips::Hidden || !self.tip_prefix.is_empty() {
+                self.tips = Tips::Hidden;
+                self.tip_prefix.clear();
+                self.dirty = true;
+            }
+            return Ok(false);
+        }
         let InputEvent::KeyDown {
             key,
             repeat,
@@ -721,7 +768,7 @@ impl Ribbon {
                 && index <= 9
                 && let Some(command) = self.model.quick_access.get(index - 1)
             {
-                ui.commands_mut().execute(command);
+                ui.commands_mut().activate(command);
                 self.tips = Tips::Hidden;
                 self.tip_prefix.clear();
                 self.dirty = true;
@@ -748,13 +795,7 @@ impl Ribbon {
                 .iter()
                 .find(|item| item.key_tip.eq_ignore_ascii_case(&self.tip_prefix))
             {
-                if matches!(item.kind, RibbonItemKind::Toggle)
-                    && ui.commands().enabled(&item.command)
-                {
-                    let checked = !ui.commands().checked(&item.command).unwrap_or(false);
-                    ui.commands_mut().set_checked(&item.command, Some(checked));
-                }
-                ui.commands_mut().execute(&item.command);
+                ui.commands_mut().activate(&item.command);
                 self.tips = Tips::Hidden;
                 self.tip_prefix.clear();
                 self.dirty = true;
@@ -835,7 +876,7 @@ fn group_menu(ui: &Controls, group: &RibbonGroup) -> Vec<MenuItem> {
         .items
         .iter()
         .flat_map(|item| {
-            let mut entry = MenuItem::new(
+            let entry = MenuItem::new(
                 format!(
                     "{} / {}",
                     group.label,
@@ -845,9 +886,6 @@ fn group_menu(ui: &Controls, group: &RibbonGroup) -> Vec<MenuItem> {
                 ),
                 item.command.clone(),
             );
-            if matches!(item.kind, RibbonItemKind::Toggle) {
-                entry = entry.toggling();
-            }
             let mut entries = vec![entry];
             if let RibbonItemKind::Split { menu } = &item.kind {
                 entries.extend(menu.iter().map(|id| {
@@ -865,6 +903,10 @@ fn group_menu(ui: &Controls, group: &RibbonGroup) -> Vec<MenuItem> {
         })
         .collect()
 }
+
+#[cfg(test)]
+#[path = "ribbon_command_tests.rs"]
+mod command_tests;
 
 #[cfg(test)]
 mod tests {

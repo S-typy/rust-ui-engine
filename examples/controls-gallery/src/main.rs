@@ -1,6 +1,7 @@
 //! Offline component gallery and application-owned virtual book data source.
 mod accessibility;
 mod books;
+mod diagnostics;
 mod gallery;
 mod ribbon_model;
 #[cfg(test)]
@@ -23,6 +24,7 @@ fn start() -> Result<(), String> {
     let mut rows = 100_000;
     let mut state_file = PathBuf::from("target/gallery-columns.txt");
     let mut options = RunOptions::default();
+    let mut diagnostics = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -37,13 +39,18 @@ fn start() -> Result<(), String> {
                 state_file = PathBuf::from(args.next().ok_or("--state-file requires a path")?)
             }
             "--smoke-test" => options.smoke_test = true,
+            "--diagnostics" => diagnostics = true,
+            "--allow-small-window" => options.min_size = None,
             "--help" | "-h" => {
-                println!("controls-gallery [--rows 0..1000000] [--state-file PATH] [--smoke-test]");
+                println!(
+                    "controls-gallery [--rows 0..1000000] [--state-file PATH] [--smoke-test] [--diagnostics] [--allow-small-window]"
+                );
                 return Ok(());
             }
             _ => return Err(format!("Unknown argument: {arg}")),
         }
     }
-    let app = gallery::Gallery::new(rows, state_file)?;
+    let mut app = gallery::Gallery::new(rows, state_file)?;
+    app.set_diagnostics(diagnostics);
     run(app, options)
 }
