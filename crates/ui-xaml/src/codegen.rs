@@ -1,6 +1,6 @@
 use crate::{
     ButtonStyleDefinition, EditBoxDefinition, ElementDefinition, ElementKind, IconSymbol,
-    WindowDefinition,
+    MenuEntryDefinition, WindowDefinition,
 };
 
 pub(super) fn window(window: &WindowDefinition) -> String {
@@ -43,6 +43,12 @@ fn optional_icon(value: Option<IconSymbol>) -> String {
 fn element(element: &ElementDefinition) -> String {
     let common = &element.common;
     let kind = match &element.kind {
+        ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
+            let kind = if matches!(element.kind, ElementKind::SplitButton(_)) { "SplitButton" } else { "DropDownButton" };
+            let button = &menu.button;
+            format!("rust_desktop_ui_xaml::ElementKind::{kind}(rust_desktop_ui_xaml::MenuButtonDefinition {{ button: rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }}, items: vec![{}] }})",
+                button.content, optional_string(&button.command), button_style(&button.style), optional_icon(button.icon), button.icon_size, button.icon_spacing, menu.items.iter().map(menu_entry).collect::<Vec<_>>().join(","))
+        }
         ElementKind::StackPanel(panel) => format!(
             "rust_desktop_ui_xaml::ElementKind::StackPanel(rust_desktop_ui_xaml::StackPanelDefinition {{
                 orientation: rust_desktop_ui_xaml::Orientation::{orientation:?},
@@ -109,6 +115,7 @@ fn element(element: &ElementDefinition) -> String {
                 margin: {margin:?},
                 is_enabled: {is_enabled},
                 automation_name: {automation_name},
+                tool_tip: {tool_tip},
             }},
             kind: {kind},
         }}",
@@ -118,7 +125,27 @@ fn element(element: &ElementDefinition) -> String {
         margin = common.margin,
         is_enabled = common.is_enabled,
         automation_name = optional_string(&common.automation_name),
+        tool_tip = optional_string(&common.tool_tip),
     )
+}
+
+fn menu_entry(entry: &MenuEntryDefinition) -> String {
+    match entry {
+        MenuEntryDefinition::Separator => {
+            "rust_desktop_ui_xaml::MenuEntryDefinition::Separator".into()
+        }
+        MenuEntryDefinition::Item(item) => format!(
+            "rust_desktop_ui_xaml::MenuEntryDefinition::Item(rust_desktop_ui_xaml::MenuItemDefinition {{ header: {:?}.into(), command: {}, is_enabled: {}, items: vec![{}] }})",
+            item.header,
+            optional_string(&item.command),
+            item.is_enabled,
+            item.items
+                .iter()
+                .map(menu_entry)
+                .collect::<Vec<_>>()
+                .join(",")
+        ),
+    }
 }
 
 fn button_style(style: &ButtonStyleDefinition) -> String {

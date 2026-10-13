@@ -287,7 +287,10 @@ fn activation_uses_one_final_gate_and_rejection_keeps_menu_focus_and_events() {
     ui.drain_activated();
     ui.commands_mut().drain_invocations();
     ui.commands_mut().set_can_execute(&command, || true);
-    ui.popup_menu(button, &[MenuItem::new("Menu Pin", command.clone())])
+    // Keep the anchor independent: disabling an anchor now closes its overlay.
+    let anchor = ui.button(ui.root(), "Menu anchor", None, style()).unwrap();
+    frame(&mut ui);
+    ui.popup_menu(anchor, &[MenuItem::new("Menu Pin", command.clone())])
         .unwrap();
     let menu = ui.runtime.focused().unwrap();
     let gates = Rc::new(Cell::new(0));

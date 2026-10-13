@@ -24,7 +24,7 @@ fn editor_definition(
 
 fn form() -> Form {
     let mut form = Form::new(generated::window_definition(), false).unwrap();
-    form.update(Size::new(640.0, 488.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 512.0), 1.0).unwrap();
     form
 }
 
@@ -1342,6 +1342,205 @@ fn bound_buttons_share_live_command_state_through_native_accessibility_and_keybo
 }
 
 #[test]
+fn popup_preflight_checks_all_commands_and_manual_ast_before_tree_mutation() {
+    use crate::view::MountedView;
+    use rust_desktop_ui_controls::Controls;
+    use rust_desktop_ui_xaml::{ElementKind, MenuEntryDefinition};
+    let source = r#"<Window xmlns="urn:rust-ui-engine:ui"><DropDownButton><MenuItem Header="Sub"><MenuItem Header="Leaf" Command="Unknown"/></MenuItem></DropDownButton></Window>"#;
+    let mut definition = rust_desktop_ui_xaml::parse(source).unwrap();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let count = ui.runtime.tree().len();
+    assert!(
+        matches!(MountedView::mount(&mut ui, root, &definition.content),Err(error) if error.contains("Unregistered"))
+    );
+    assert_eq!(ui.runtime.tree().len(), count);
+    ui.commands_mut().register("Unknown", "Known");
+    definition.content.common.tool_tip = Some("x".repeat(4097));
+    assert!(MountedView::mount(&mut ui, root, &definition.content).is_err());
+    assert_eq!(ui.runtime.tree().len(), count);
+    definition.content.common.tool_tip = None;
+    definition.content.common.width = Some(f32::NAN);
+    assert!(MountedView::mount(&mut ui, root, &definition.content).is_err());
+    assert_eq!(ui.runtime.tree().len(), count);
+    definition.content.common.width = None;
+    let ElementKind::DropDownButton(menu) = &mut definition.content.kind else {
+        unreachable!()
+    };
+    let MenuEntryDefinition::Item(item) = &mut menu.items[0] else {
+        unreachable!()
+    };
+    item.command = Some("Unknown".into());
+    assert!(MountedView::mount(&mut ui, root, &definition.content).is_err());
+    assert_eq!(ui.runtime.tree().len(), count);
+}
+
+#[test]
+fn popup_sample_parts_geometry_accessibility_and_primary_command_are_independent() {
+    let mut form = form();
+    let split = form.find_name("AcceptSplit").unwrap();
+    let parts = &form.view.splits[&split];
+    let (primary, dropdown) = (parts.primary, parts.dropdown);
+    for (name, x, width) in [("ActionMenu", 32.0, 160.0), ("AcceptSplit", 200.0, 240.0)] {
+        let bounds = form
+            .ui
+            .runtime
+            .bounds(form.find_name(name).unwrap())
+            .unwrap();
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (x, 433.0, width, 36.0)
+        );
+    }
+    form.ui.set_text(form.editor(), "accepted").unwrap();
+    form.ui.activate(primary).unwrap();
+    form.update(Size::new(640.0, 512.0), 1.0).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor()), Some("accepted"));
+    assert!(!form.ui.popup_open());
+    form.ui.commands_mut().set_enabled(&"Confirm".into(), false);
+    assert!(!form.ui.is_enabled(primary));
+    assert!(form.ui.is_enabled(dropdown));
+    form.ui
+        .perform_action(
+            dropdown,
+            rust_desktop_ui_controls::SemanticAction::Expand,
+            None,
+        )
+        .unwrap();
+    form.update(Size::new(640.0, 512.0), 1.0).unwrap();
+    assert!(form.ui.popup_open());
+    let tree = form.accessibility(1.0);
+    let arrow = &tree
+        .nodes
+        .iter()
+        .find(|(id, _)| Some(*id) == form.accessible.id(dropdown))
+        .unwrap()
+        .1;
+    assert_eq!(arrow.has_popup(), Some(accesskit::HasPopup::Menu));
+    assert_eq!(arrow.is_expanded(), Some(true));
+    assert_eq!(arrow.tooltip(), Some("Подтвердить или выбрать действие"));
+    assert!(arrow.supports_action(accesskit::Action::Collapse));
+    let disabled = &tree
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.role() == accesskit::Role::MenuItem && node.label() == Some("Недоступно")
+        })
+        .unwrap()
+        .1;
+    assert!(disabled.is_disabled());
+    assert!(!disabled.supports_action(accesskit::Action::Click));
+    form.ui
+        .perform_action(
+            dropdown,
+            rust_desktop_ui_controls::SemanticAction::Collapse,
+            None,
+        )
+        .unwrap();
+    assert!(!form.ui.popup_open());
+}
+
+#[test]
+fn popup_nested_accessibility_actions_activate_shared_pin_and_preserve_connected_tree() {
+    let mut form = form();
+    accessible_action(&mut form, "ActionMenu", accesskit::Action::Expand, None);
+    form.update(Size::new(640.0, 512.0), 1.0).unwrap();
+    let tree = form.accessibility(1.0);
+    let target = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| node.role() == accesskit::Role::MenuItem && node.label() == Some("Режим"))
+        .unwrap()
+        .0;
+    form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
+        action: accesskit::Action::Expand,
+        target_tree: accesskit::TreeId::ROOT,
+        target_node: target,
+        data: None,
+    }))
+    .unwrap();
+    form.update(Size::new(640.0, 512.0), 1.0).unwrap();
+    let tree = form.accessibility(1.0);
+    let menus = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == accesskit::Role::Menu)
+        .count();
+    assert_eq!(menus, 2);
+    let nodes: std::collections::HashMap<_, _> =
+        tree.nodes.iter().map(|(id, node)| (*id, node)).collect();
+    let mut pending = vec![accesskit::NodeId(1)];
+    let mut visited = std::collections::HashSet::new();
+    while let Some(id) = pending.pop() {
+        assert!(visited.insert(id), "cycle or duplicate child");
+        pending.extend_from_slice(nodes.get(&id).expect("dangling child").children());
+    }
+    assert_eq!(
+        visited.len(),
+        nodes.len(),
+        "orphan popup accessibility node"
+    );
+    let target = tree
+        .nodes
+        .iter()
+        .find(|(_, node)| {
+            node.role() == accesskit::Role::MenuItemCheckBox && node.label() == Some("Закрепить")
+        })
+        .unwrap()
+        .0;
+    form.event(PlatformEvent::Accessibility(accesskit::ActionRequest {
+        action: accesskit::Action::Click,
+        target_tree: accesskit::TreeId::ROOT,
+        target_node: target,
+        data: None,
+    }))
+    .unwrap();
+    assert!(!form.ui.popup_open());
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(true));
+    assert_eq!(form.ui.checked(form.find_name("Pin").unwrap()), Some(true));
+    assert_eq!(form.ui.runtime.focused(), form.find_name("ActionMenu"));
+}
+
+#[test]
+fn popup_tooltip_markup_requests_a_wakeup_and_draws_without_taking_focus() {
+    let mut form = markup(
+        r#"<DropDownButton x:Name="Menu" Content="Menu" ToolTip="Choose a command"><MenuItem Header="Pin" Command="Pin"/></DropDownButton>"#,
+    );
+    assert!(form.wake_after().is_none());
+    let id = form.find_name("Menu").unwrap();
+    let bounds = form.ui.runtime.bounds(id).unwrap();
+    let focus = form.ui.runtime.focused();
+    form.event(PlatformEvent::Input(InputEvent::PointerMoved {
+        position: rust_desktop_ui_core::Point::new(bounds.x + 10.0, bounds.y + 10.0),
+    }))
+    .unwrap();
+    let deadline = form.ui.tooltip_deadline().expect("hover schedules tooltip");
+    assert!(form.wake_after().is_some());
+    assert!(form.ui.tooltip_tick(deadline).unwrap());
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    assert!(form.ui.tooltip_bounds().is_some());
+    assert!(
+        form.scene()
+            .texts
+            .iter()
+            .any(|run| run.text == "Choose a command")
+    );
+    assert_eq!(form.ui.runtime.focused(), focus);
+    let tree = form.accessibility(1.0);
+    let owner = &tree
+        .nodes
+        .iter()
+        .find(|(candidate, _)| Some(*candidate) == form.accessible.id(id))
+        .unwrap()
+        .1;
+    assert_eq!(owner.tooltip(), Some("Choose a command"));
+    form.event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+        .unwrap();
+    assert!(form.ui.tooltip_bounds().is_none());
+    assert!(form.wake_after().is_none());
+}
+
+#[test]
 fn sample_button_row_keeps_geometry_and_tab_order_skips_the_disabled_button() {
     let mut form = form();
     let pin = form.find_name("Pin").unwrap();
@@ -1359,11 +1558,24 @@ fn sample_button_row_keeps_geometry_and_tab_order_skips_the_disabled_button() {
         "Confirm",
         "Pin",
         "AlignLeft",
-        "Message",
+        "ActionMenu",
     ] {
         tab(&mut form, false);
         assert_eq!(form.ui.runtime.focused(), form.find_name(name));
     }
+    let split = form.find_name("AcceptSplit").unwrap();
+    let parts = &form.view.splits[&split];
+    let (primary, dropdown) = (parts.primary, parts.dropdown);
+    for target in [primary, dropdown, form.editor()] {
+        tab(&mut form, false);
+        assert_eq!(form.ui.runtime.focused(), Some(target));
+    }
+    tab(&mut form, true);
+    assert_eq!(form.ui.runtime.focused(), Some(dropdown));
+    tab(&mut form, true);
+    assert_eq!(form.ui.runtime.focused(), Some(primary));
+    tab(&mut form, true);
+    assert_eq!(form.ui.runtime.focused(), form.find_name("ActionMenu"));
     tab(&mut form, true);
     assert_eq!(form.ui.runtime.focused(), form.find_name("AlignLeft"));
     tab(&mut form, true);
@@ -1568,7 +1780,7 @@ fn radio_keyboard_navigation_and_accessibility_keep_one_selected_peer() {
 #[test]
 fn radio_sample_geometry_and_auto_width_follow_shared_font_and_indicator_metrics() {
     let form = form();
-    assert_eq!(generated::window_definition().height, 488.0);
+    assert_eq!(generated::window_definition().height, 512.0);
     for (name, x) in [
         ("AlignLeft", 32.0),
         ("AlignCenter", 160.0),

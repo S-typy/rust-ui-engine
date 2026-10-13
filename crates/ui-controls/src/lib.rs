@@ -23,6 +23,8 @@ mod command_activation_tests;
 #[cfg(test)]
 mod edit_session_tests;
 #[cfg(test)]
+mod popup_tests;
+#[cfg(test)]
 mod primitive_tests;
 #[cfg(test)]
 mod radio_tests;

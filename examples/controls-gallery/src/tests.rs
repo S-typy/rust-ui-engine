@@ -95,7 +95,7 @@ fn favorite_accessibility_shares_qat_ribbon_and_ordinary_button_state_live() {
 
 #[test]
 fn favorite_overflow_and_numeric_keytip_use_the_same_command() {
-    use rust_desktop_ui_platform_winit::accesskit::Toggled;
+    use rust_desktop_ui_platform_winit::accesskit::{Role, Toggled};
     let mut app = gallery();
     let viewport = Size::new(320.0, 800.0);
     app.update(viewport, 1.0).unwrap();
@@ -114,7 +114,10 @@ fn favorite_overflow_and_numeric_keytip_use_the_same_command() {
         .iter()
         .find(|(_, node)| node.label() == Some("Избранное"))
         .unwrap();
+    assert_eq!(node.role(), Role::MenuItemCheckBox);
     assert_eq!(node.toggled(), Some(Toggled::False));
+    assert!(!node.is_disabled());
+    assert!(node.supports_action(Action::Click));
     accessible_click(&mut app, *favorite, viewport);
     assert_eq!(app.ui.commands().checked(&"favorite".into()), Some(true));
     assert_eq!(app.diagnostics.sequence, 1);
@@ -300,7 +303,7 @@ fn native_accessibility_actions_share_control_and_grid_models() {
 #[test]
 fn advertised_accessibility_clicks_route_ribbon_menus_and_disabled_commands() {
     use rust_desktop_ui_controls::Theme;
-    use rust_desktop_ui_platform_winit::accesskit::Role;
+    use rust_desktop_ui_platform_winit::accesskit::{Role, Toggled};
 
     fn click(app: &mut Gallery, role: Role, label: &str) {
         let tree = app.accessibility(1.5);
@@ -338,6 +341,8 @@ fn advertised_accessibility_clicks_route_ribbon_menus_and_disabled_commands() {
         .iter()
         .find(|(_, node)| node.role() == Role::MenuItem && node.label() == Some("Недоступно"))
         .unwrap();
+    assert!(node.is_disabled());
+    assert_eq!(node.toggled(), None);
     assert!(!node.supports_action(Action::Click));
     app.event(PlatformEvent::Accessibility(ActionRequest {
         action: Action::Click,
@@ -351,7 +356,17 @@ fn advertised_accessibility_clicks_route_ribbon_menus_and_disabled_commands() {
         "disabled action must not dismiss or execute the menu"
     );
     assert!(app.ui.commands_mut().drain_invocations().is_empty());
-    click(&mut app, Role::MenuItem, "Избранное");
+    let favorites: Vec<_> = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| {
+            node.role() == Role::MenuItemCheckBox && node.label() == Some("Избранное")
+        })
+        .collect();
+    assert_eq!(favorites.len(), 1, "one toggle placement in the open menu");
+    assert_eq!(favorites[0].1.toggled(), Some(Toggled::False));
+    assert!(!favorites[0].1.is_disabled());
+    click(&mut app, Role::MenuItemCheckBox, "Избранное");
     assert!(!app.ui.popup_open());
     assert_eq!(app.ui.commands().checked(&"favorite".into()), Some(true));
     assert_connected(&mut app);

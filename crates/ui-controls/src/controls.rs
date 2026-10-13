@@ -19,6 +19,10 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+mod popup;
+mod tooltip;
+pub use popup::{MAX_MENU_DEPTH, MAX_MENU_ITEMS, MenuEntry, SplitButton};
+
 /// An opaque radio group allocated by one `Controls` instance. Group identities
 /// are process-unique and cannot be used to add members in another instance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -74,6 +78,8 @@ pub enum SemanticAction {
     SetValue,
     Toggle,
     Scroll,
+    Expand,
+    Collapse,
 }
 #[derive(Clone, Debug)]
 pub struct SemanticNode {
@@ -92,6 +98,9 @@ pub struct SemanticNode {
     pub bounds: Rect,
     pub actions: Vec<SemanticAction>,
     pub children: Vec<WidgetId>,
+    pub has_popup: bool,
+    pub expanded: Option<bool>,
+    pub tooltip: Option<String>,
 }
 
 /// One draft string change (IME preedit excluded). Drain after input or updates.
@@ -109,6 +118,7 @@ pub struct MenuItem {
     /// Initial promotion to a toggle when the command has no checked value.
     /// After creation the registry determines the item's behavior and state.
     pub toggle: bool,
+    pub enabled: bool,
 }
 impl MenuItem {
     pub fn new(label: impl Into<String>, command: impl Into<CommandId>) -> Self {
@@ -116,10 +126,15 @@ impl MenuItem {
             label: label.into(),
             command: command.into(),
             toggle: false,
+            enabled: true,
         }
     }
     pub fn toggling(mut self) -> Self {
         self.toggle = true;
+        self
+    }
+    pub fn with_enabled(mut self, enabled: bool) -> Self {
+        self.enabled = enabled;
         self
     }
 }
@@ -213,6 +228,9 @@ struct Control {
     checked: bool,
     role: Option<Role>,
     tooltip: Option<String>,
+    automation_name: Option<String>,
+    menu: Option<Vec<MenuEntry>>,
+    dropdown_target: Option<WidgetId>,
     editor: EditorSettings,
     accepted_value: String,
     validation: EditorValidation,
@@ -248,12 +266,6 @@ struct Tabs {
     pages: Vec<WidgetId>,
     selected: usize,
 }
-struct Popup {
-    container: WidgetId,
-    anchor: WidgetId,
-    items: Vec<WidgetId>,
-}
-
 /// Owns control state while exposing the independent retained runtime for composition.
 /// For registered controls, enabled state belongs to `set_enabled` and the command
 /// registry; runtime node properties are refreshed from those sources on update.
@@ -271,7 +283,9 @@ pub struct Controls {
     pressed: Option<WidgetId>,
     keyboard_pressed: bool,
     selecting: Option<WidgetId>,
-    popup: Option<Popup>,
+    popup: Option<popup::Popup>,
+    window_focused: bool,
+    tooltip_state: tooltip::TooltipState,
     clipboard: Vec<ClipboardRequest>,
     activated: Vec<WidgetId>,
     text_changes: Vec<TextChanged>,
@@ -331,6 +345,8 @@ impl Controls {
             keyboard_pressed: false,
             selecting: None,
             popup: None,
+            window_focused: true,
+            tooltip_state: Default::default(),
             clipboard: Vec::new(),
             activated: Vec::new(),
             text_changes: Vec::new(),
@@ -647,6 +663,8 @@ impl Controls {
         self.refresh_paints()?;
         self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
+        self.sync_popup_availability()?;
+        self.tooltip_sync();
         Ok(())
     }
     /// Apply behavior and presentation text as one validated update. Rejection
@@ -826,10 +844,23 @@ impl Controls {
             control.role = Some(role);
         }
     }
-    pub fn set_tooltip(&mut self, id: WidgetId, text: impl Into<String>) {
-        if let Some(control) = self.controls.get_mut(&id) {
-            control.tooltip = Some(text.into());
+    /// Override the accessible name without changing the visible caption.
+    pub fn set_automation_name(
+        &mut self,
+        id: WidgetId,
+        text: impl Into<String>,
+    ) -> Result<(), ControlError> {
+        let text = text.into();
+        TextLimits::default().validate(&text).map_err(edit_error)?;
+        if self.runtime.tree().node(id).is_none() {
+            return Err(ControlError::Invalid("Unknown control".into()));
         }
+        self.controls
+            .get_mut(&id)
+            .ok_or_else(|| ControlError::Invalid("Unknown control".into()))?
+            .automation_name = Some(text);
+        self.scene_dirty = true;
+        Ok(())
     }
     /// Placeholder is presentation only; it never changes the document or its accessible name.
     pub fn set_placeholder(
@@ -918,6 +949,9 @@ impl Controls {
                 checked: false,
                 role: None,
                 tooltip: None,
+                automation_name: None,
+                menu: None,
+                dropdown_target: None,
                 editor: EditorSettings::default(),
                 accepted_value,
                 validation: EditorValidation::default(),
@@ -1474,74 +1508,10 @@ impl Controls {
             };
             self.runtime.tree().node(id).is_some()
         });
+        self.sync_popup_availability()?;
+        self.tooltip_sync();
         self.scene_dirty = true;
         Ok(())
-    }
-    pub fn popup_menu(
-        &mut self,
-        anchor: WidgetId,
-        items: &[MenuItem],
-    ) -> Result<WidgetId, ControlError> {
-        self.close_popup()?;
-        let bounds = self
-            .runtime
-            .bounds(anchor)
-            .ok_or_else(|| ControlError::Invalid("Popup anchor is not laid out".into()))?;
-        let height = (items.len() as f32 * self.theme.tokens().control_height + 12.0)
-            .min(self.viewport.height.max(1.0));
-        let width = 240.0_f32.min(self.viewport.width.max(1.0));
-        let viewer = self.scroll_view(
-            self.overlay,
-            LayoutStyle {
-                width: Length::Px(width),
-                height: Length::Px(height),
-                offset: Point::new(
-                    bounds.x.min((self.viewport.width - width).max(0.0)),
-                    (bounds.y + bounds.height).min((self.viewport.height - height).max(0.0)),
-                ),
-                ..Default::default()
-            },
-            items.len() as f32 * self.theme.tokens().control_height + 12.0,
-        )?;
-        self.edit_props(viewer.viewport, |props| props.z_index = 1000)?;
-        self.set_role(viewer.viewport, Role::Menu);
-        self.edit_props(viewer.content, |props| props.style.gap = 0.0)?;
-        let mut ids = Vec::new();
-        for item in items {
-            if item.toggle && self.commands.checked(&item.command).is_none() {
-                self.commands.set_checked(&item.command, Some(false));
-            }
-            ids.push(self.add(
-                viewer.content,
-                Kind::MenuItem,
-                item.label.clone(),
-                Some(item.command.clone()),
-                LayoutStyle::default(),
-            )?);
-        }
-        self.popup = Some(Popup {
-            container: viewer.viewport,
-            anchor,
-            items: ids.clone(),
-        });
-        self.update(self.viewport)?;
-        if let Some(id) = ids.into_iter().find(|&id| self.is_enabled(id)) {
-            self.runtime.apply(Mutation::Focus(Some(id)))?;
-        }
-        self.scene_dirty = true;
-        Ok(viewer.viewport)
-    }
-    pub fn close_popup(&mut self) -> Result<(), ControlError> {
-        if let Some(popup) = self.popup.take() {
-            self.remove(popup.container)?;
-            if self.runtime.tree().node(popup.anchor).is_some() && self.is_enabled(popup.anchor) {
-                self.runtime.apply(Mutation::Focus(Some(popup.anchor)))?;
-            }
-        }
-        Ok(())
-    }
-    pub fn popup_open(&self) -> bool {
-        self.popup.is_some()
     }
     fn edit_props(
         &mut self,
@@ -1835,6 +1805,8 @@ impl Controls {
         if self.runtime.needs_update() {
             add_stats(&mut delta, self.runtime.update(&mut self.layout, viewport)?);
         }
+        add_stats(&mut delta, self.sync_popup_layout()?);
+        self.tooltip_sync();
         if delta.paint_passes > 0 || self.scene_dirty {
             self.rebuild_scene()?;
             if delta.paint_passes == 0 {
@@ -1847,6 +1819,10 @@ impl Controls {
         Ok(delta)
     }
     pub fn dispatch(&mut self, event: InputEvent) -> Result<(), ControlError> {
+        self.tooltip_before_input(&event);
+        if let InputEvent::WindowFocused(focused) = &event {
+            self.window_focused = *focused;
+        }
         self.update(self.viewport)?;
         self.caret_visible = true;
         if let InputEvent::KeyDown {
@@ -1864,7 +1840,7 @@ impl Controls {
                 self.scene_dirty = true;
             }
             if self.popup.is_some() {
-                self.close_popup()?;
+                self.popup_escape()?;
             } else if let Some(id) = self
                 .runtime
                 .focused()
@@ -1884,14 +1860,8 @@ impl Controls {
         if self.popup.is_some() && self.popup_key(&event)? {
             return Ok(());
         }
-        if let InputEvent::PointerDown { position, .. } = &event
-            && let Some(popup) = &self.popup
-            && !self
-                .runtime
-                .bounds(popup.container)
-                .is_some_and(|r| r.contains(position.x, position.y))
-        {
-            self.close_popup()?;
+        if let InputEvent::PointerDown { position, .. } = &event {
+            self.popup_pointer_down(*position)?;
             self.update(self.viewport)?;
         }
         let hit = match &event {
@@ -1915,6 +1885,7 @@ impl Controls {
         }
         self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
+        let tooltip_event = event.clone();
         match event {
             InputEvent::PointerDown {
                 position,
@@ -1971,10 +1942,19 @@ impl Controls {
                     ) {
                         self.edit_key(id, &key, modifiers, repeat)?;
                     } else if self.controls.get(&id).is_some_and(|c| c.kind.clickable()) {
-                        if key == Key::Enter && !repeat {
+                        if matches!(key, Key::ArrowDown | Key::ArrowUp)
+                            && !repeat
+                            && !report.default_prevented
+                            && !modifiers.control
+                            && !modifiers.super_key
+                            && self.popup_expanded(id).is_some()
+                        {
+                            self.expand_popup(id)?;
+                        }
+                        if key == Key::Enter && !repeat && !report.default_prevented {
                             self.activate(id)?;
                         }
-                        if key == Key::Space && !repeat {
+                        if key == Key::Space && !repeat && !report.default_prevented {
                             self.pressed = Some(id);
                             self.keyboard_pressed = true;
                             self.scene_dirty = true;
@@ -2045,18 +2025,26 @@ impl Controls {
                 self.selecting = None;
                 self.keyboard_pressed = false;
                 self.cancel_preedit();
-                self.close_popup()?;
+                self.close_popup_from(0, popup::CloseReason::Unavailable)?;
                 self.scene_dirty = true;
             }
             _ => {}
         }
+        self.tooltip_after_input(&tooltip_event);
         Ok(())
     }
     /// Activate a live, available placement. Command rejection changes no checked
     /// state, emits no activation event and leaves an open menu in place.
     pub fn activate(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.sync_popup_availability()?;
         if !self.activation_available(id) || !self.controls[&id].kind.clickable() {
             return Ok(());
+        }
+        if self.controls[&id].menu.is_some() {
+            if self.popup_expanded(id) == Some(true) {
+                return self.collapse_popup(id);
+            }
+            return self.expand_popup(id);
         }
         if let Some(command) = self.controls[&id].command.clone()
             && !self.commands.activate(&command)
@@ -2130,61 +2118,6 @@ impl Controls {
         self.select_tab(group, next)?;
         self.runtime.apply(Mutation::Focus(Some(next_id)))?;
         Ok(())
-    }
-    fn popup_key(&mut self, event: &InputEvent) -> Result<bool, ControlError> {
-        let InputEvent::KeyDown { key, .. } = event else {
-            return Ok(false);
-        };
-        if *key == Key::Tab {
-            self.close_popup()?;
-            return Ok(false);
-        }
-        if !matches!(key, Key::ArrowDown | Key::ArrowUp | Key::Home | Key::End) {
-            return Ok(false);
-        }
-        let Some(popup) = &self.popup else {
-            return Ok(false);
-        };
-        let items: Vec<_> = popup
-            .items
-            .iter()
-            .copied()
-            .filter(|&id| self.is_enabled(id))
-            .collect();
-        if items.is_empty() {
-            return Ok(true);
-        }
-        let current = items
-            .iter()
-            .position(|id| Some(*id) == self.runtime.focused())
-            .unwrap_or(0);
-        let next = match key {
-            Key::Home => 0,
-            Key::End => items.len() - 1,
-            Key::ArrowDown => (current + 1) % items.len(),
-            _ => (current + items.len() - 1) % items.len(),
-        };
-        let id = items[next];
-        let viewport = popup.container;
-        self.runtime.apply(Mutation::Focus(Some(id)))?;
-        if let (Some(bounds), Some(clip)) = (self.runtime.bounds(id), self.runtime.bounds(viewport))
-        {
-            let current = self
-                .runtime
-                .tree()
-                .node(viewport)
-                .map_or(0.0, |n| n.props.scroll.y);
-            if bounds.y < clip.y {
-                self.scroll_to(viewport, current + bounds.y - clip.y)?;
-            } else if bounds.y + bounds.height > clip.y + clip.height {
-                self.scroll_to(
-                    viewport,
-                    current + bounds.y + bounds.height - clip.y - clip.height,
-                )?;
-            }
-        }
-        self.scene_dirty = true;
-        Ok(true)
     }
     fn scroll_ancestor(&self, mut id: WidgetId) -> Option<WidgetId> {
         loop {
@@ -2443,6 +2376,7 @@ impl Controls {
     }
     /// Insert user text or paste. Over-limit input is rejected as a whole.
     pub fn text_input(&mut self, text: &str) -> Result<(), ControlError> {
+        self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
         if let Some(id) = self
@@ -2483,6 +2417,7 @@ impl Controls {
         text: &str,
         cursor: Option<(usize, usize)>,
     ) -> Result<(), ControlError> {
+        self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
         if let Some(id) = self
@@ -2508,6 +2443,7 @@ impl Controls {
         Ok(())
     }
     pub fn ime_commit(&mut self, text: &str) -> Result<(), ControlError> {
+        self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
         if let Some(id) = self
@@ -2742,6 +2678,13 @@ impl Controls {
                     indicator,
                     radio,
                 );
+                let text_bounds = popup::paint_indicator(
+                    &mut self.scene,
+                    control,
+                    text_bounds,
+                    clip,
+                    style.foreground,
+                );
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
                 }
@@ -2895,6 +2838,13 @@ impl Controls {
                 bounds.y + padding.top.min(bounds.height),
                 (bounds.width - padding.horizontal()).max(0.0),
                 (bounds.height - padding.vertical()).max(0.0),
+            );
+            text_bounds = popup::paint_indicator(
+                &mut self.scene,
+                control,
+                text_bounds,
+                clip,
+                if enabled { tokens.text } else { tokens.muted },
             );
             let mut label = control.label.clone();
             let editable = matches!(control.kind, Kind::TextBox(_));
@@ -3103,6 +3053,7 @@ impl Controls {
                 self.scene.text(run);
             }
         }
+        self.paint_tooltip()?;
         Ok(())
     }
     pub fn semantics(&self) -> Vec<SemanticNode> {
@@ -3135,6 +3086,9 @@ impl Controls {
                         disabled: !self.effective_enabled(id),
                         read_only: false,
                         validation_error: None,
+                        has_popup: false,
+                        expanded: None,
+                        tooltip: None,
                         focused: self.runtime.focused() == Some(id),
                         bounds,
                         actions: Vec::new(),
@@ -3169,6 +3123,13 @@ impl Controls {
                 let mut actions = Vec::new();
                 let enabled = self.is_enabled(id);
                 if enabled && !matches!(control.kind, Kind::Icon { .. } | Kind::Separator { .. }) {
+                    if let Some(expanded) = self.popup_expanded(id) {
+                        actions.push(if expanded {
+                            SemanticAction::Collapse
+                        } else {
+                            SemanticAction::Expand
+                        });
+                    }
                     if props.focusable {
                         actions.push(SemanticAction::Focus);
                     }
@@ -3189,13 +3150,20 @@ impl Controls {
                     id,
                     parent: self.runtime.tree().parent(id),
                     role,
-                    label: control.label.clone(),
+                    label: control
+                        .automation_name
+                        .as_ref()
+                        .unwrap_or(&control.label)
+                        .clone(),
                     value,
                     checked,
                     selected,
                     disabled: !enabled,
                     read_only: control.editor.is_read_only,
                     validation_error: control.validation_error.clone(),
+                    has_popup: self.popup_expanded(id).is_some(),
+                    expanded: self.popup_expanded(id),
+                    tooltip: control.tooltip.clone(),
                     focused: self.runtime.focused() == Some(id),
                     bounds,
                     actions,
@@ -3219,6 +3187,8 @@ impl Controls {
         match action {
             SemanticAction::Focus => self.runtime.apply(Mutation::Focus(Some(id)))?,
             SemanticAction::Activate | SemanticAction::Toggle => self.activate(id)?,
+            SemanticAction::Expand => self.expand_popup(id)?,
+            SemanticAction::Collapse => self.collapse_popup(id)?,
             SemanticAction::SetValue => {
                 if self.is_text_editable(id) {
                     // Accessibility is a user route: rejecting input must not close the host.

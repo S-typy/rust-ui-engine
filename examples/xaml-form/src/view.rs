@@ -1,7 +1,8 @@
 //! Mount compiled elements without attaching application-specific behavior.
 use rust_desktop_ui_controls::{
     ButtonAppearance, ButtonIcon, ButtonStyle, Controls, EditBoxAppearance, EditBoxStyle,
-    EditorSettings, EditorValidation, IconStyle, IconSymbol, RadioGroupId, Role, SeparatorSettings,
+    EditorSettings, EditorValidation, IconStyle, IconSymbol, MenuEntry, MenuItem, RadioGroupId,
+    Role, SeparatorSettings, SplitButton,
 };
 use rust_desktop_ui_core::{Axis, Color, Edges, LayoutKind, LayoutStyle, Length, WidgetId};
 use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind, Orientation};
@@ -17,6 +18,7 @@ pub(crate) struct MountedView {
     pub(crate) radios: Vec<WidgetId>,
     pub(crate) commands: Vec<String>,
     pub(crate) roles: HashMap<WidgetId, Role>,
+    pub(crate) splits: HashMap<WidgetId, SplitButton>,
     radio_groups: HashMap<RadioGroupKey<WidgetId>, RadioGroupId>,
 }
 
@@ -64,9 +66,11 @@ impl MountedView {
         let height = common.height.map_or_else(
             || match &element.kind {
                 ElementKind::StackPanel(_) => Length::Auto,
-                ElementKind::TextBox(_) | ElementKind::Button(_) | ElementKind::ToggleButton(_) => {
-                    Length::Px(36.0)
-                }
+                ElementKind::TextBox(_)
+                | ElementKind::Button(_)
+                | ElementKind::ToggleButton(_)
+                | ElementKind::DropDownButton(_)
+                | ElementKind::SplitButton(_) => Length::Px(36.0),
                 ElementKind::CheckBox(_) | ElementKind::RadioButton(_) => Length::Px(32.0),
                 ElementKind::TextBlock(_) => Length::Px(24.0),
                 ElementKind::Icon(_) => Length::Px(16.0),
@@ -86,6 +90,54 @@ impl MountedView {
             ..Default::default()
         };
         let id = match &element.kind {
+            ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
+                let entries = menu_entries(&menu.items, &mut self.commands);
+                let button = &menu.button;
+                if let Some(command) = &button.command {
+                    self.commands.push(command.clone());
+                }
+                if matches!(element.kind, ElementKind::SplitButton(_)) {
+                    let parts = ui
+                        .split_button(
+                            parent,
+                            &button.content,
+                            button.command.as_deref().map(Into::into),
+                            &entries,
+                            style,
+                        )
+                        .map_err(err)?;
+                    for part in [parts.primary, parts.dropdown] {
+                        ui.set_button_style(part, button_style(&button.style))
+                            .map_err(err)?;
+                        if let Some(tip) = &common.tool_tip {
+                            ui.set_tooltip(part, tip).map_err(err)?;
+                        }
+                    }
+                    ui.set_button_icon(
+                        parts.primary,
+                        button_icon(button.icon, button.icon_size, button.icon_spacing),
+                    )
+                    .map_err(err)?;
+                    if let Some(name) = &common.automation_name {
+                        self.automation_names.insert(parts.primary, name.clone());
+                    }
+                    let id = parts.container;
+                    self.splits.insert(id, parts);
+                    id
+                } else {
+                    let id = ui
+                        .dropdown_button(parent, &button.content, &entries, style)
+                        .map_err(err)?;
+                    ui.set_button_style(id, button_style(&button.style))
+                        .map_err(err)?;
+                    ui.set_button_icon(
+                        id,
+                        button_icon(button.icon, button.icon_size, button.icon_spacing),
+                    )
+                    .map_err(err)?;
+                    id
+                }
+            }
             ElementKind::StackPanel(panel) => {
                 let axis = axis(panel.orientation);
                 let id = ui
@@ -268,6 +320,11 @@ impl MountedView {
             }
         };
         ui.set_enabled(id, common.is_enabled).map_err(err)?;
+        if let Some(tip) = &common.tool_tip
+            && !matches!(element.kind, ElementKind::SplitButton(_))
+        {
+            ui.set_tooltip(id, tip).map_err(err)?;
+        }
         self.roles.insert(
             id,
             match &element.kind {
@@ -276,6 +333,8 @@ impl MountedView {
                 ElementKind::TextBlock(_) => Role::Label,
                 ElementKind::Button(_) => Role::Button,
                 ElementKind::ToggleButton(_) => Role::ToggleButton,
+                ElementKind::DropDownButton(_) => Role::Button,
+                ElementKind::SplitButton(_) => Role::Group,
                 ElementKind::CheckBox(_) => Role::CheckBox,
                 ElementKind::RadioButton(_) => Role::RadioButton,
                 ElementKind::Icon(_) => Role::Image,
@@ -301,6 +360,22 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         return Ok(width);
     }
     match &element.kind {
+        ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
+            let button = &menu.button;
+            let arrow = if matches!(element.kind, ElementKind::SplitButton(_)) {
+                32.0
+            } else {
+                20.0
+            };
+            Ok(button_content_width(
+                ui,
+                &button.content,
+                &button.style,
+                button.icon,
+                button.icon_size,
+                button.icon_spacing,
+            )? + arrow)
+        }
         ElementKind::TextBox(_) => Ok(240.0),
         ElementKind::TextBlock(text) => Ok(ui
             .measure_text(&text.text, 16384.0, false)
@@ -369,7 +444,35 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
         {
             return Err(format!("Duplicate XAML name '{name}'"));
         }
+        if element
+            .common
+            .tool_tip
+            .as_ref()
+            .is_some_and(|tip| tip.len() > rust_desktop_ui_xaml::MAX_TOOLTIP_BYTES)
+        {
+            return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
+        }
         match &element.kind {
+            ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
+                let button = &menu.button;
+                validate_menu_button_metrics(&element.common, &button.style)?;
+                validate_button_icon(
+                    &button.content,
+                    button.icon,
+                    button.icon_size,
+                    button.icon_spacing,
+                    element.common.automation_name.as_deref(),
+                )?;
+                if matches!(element.kind, ElementKind::SplitButton(_)) != button.command.is_some() {
+                    return Err(
+                        "SplitButton requires Command; DropDownButton forbids Command".into(),
+                    );
+                }
+                if let Some(command) = &button.command {
+                    validate_command(ui, command)?;
+                }
+                validate_menu(ui, &menu.items, depth, &mut count)?;
+            }
             ElementKind::StackPanel(panel) => {
                 if panel.children.len() > rust_desktop_ui_xaml::MAX_ELEMENTS {
                     return Err("XAML content exceeds the element count limit".into());
@@ -462,6 +565,124 @@ fn button_width(
         .map_err(err)?;
     let extra = if checkbox { 26.0 } else { 0.0 };
     Ok((text.width + padding[0] + padding[2] + extra).max(if checkbox { extra } else { 80.0 }))
+}
+
+fn validate_command(ui: &Controls, command: &str) -> Result<(), String> {
+    let mut chars = command.chars();
+    if !chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        || !chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        return Err("Command must match [A-Za-z_][A-Za-z0-9_]*".into());
+    }
+    if !ui.commands().contains(&command.into()) {
+        return Err(format!("Unregistered XAML command '{command}'"));
+    }
+    Ok(())
+}
+
+fn validate_menu_button_metrics(
+    common: &rust_desktop_ui_xaml::CommonProperties,
+    style: &ButtonStyleDefinition,
+) -> Result<(), String> {
+    let metric = |value: f32, positive: bool, maximum: f32| {
+        value.is_finite() && value <= maximum && if positive { value > 0.0 } else { value >= 0.0 }
+    };
+    if common
+        .width
+        .into_iter()
+        .chain(common.height)
+        .any(|value| !metric(value, true, 16384.0))
+        || common
+            .margin
+            .iter()
+            .any(|value| !metric(*value, false, 16384.0))
+        || style
+            .font_size
+            .is_some_and(|value| !metric(value, true, 512.0))
+        || style
+            .corner_radius
+            .into_iter()
+            .chain(style.border_thickness)
+            .any(|value| !metric(value, false, 16384.0))
+        || style.padding.is_some_and(|values| {
+            values
+                .into_iter()
+                .any(|value| !metric(value, false, 16384.0))
+        })
+    {
+        return Err("Menu button metrics must be finite and within the XAML ranges".into());
+    }
+    Ok(())
+}
+
+fn validate_menu(
+    ui: &Controls,
+    entries: &[rust_desktop_ui_xaml::MenuEntryDefinition],
+    owner_depth: usize,
+    count: &mut usize,
+) -> Result<(), String> {
+    use rust_desktop_ui_xaml::{
+        MAX_ELEMENT_DEPTH, MAX_ELEMENTS, MAX_MENU_DEPTH, MAX_MENU_TEXT_BYTES, MenuEntryDefinition,
+    };
+    if entries.is_empty() || entries.len() > MAX_ELEMENTS {
+        return Err("Menu requires nonempty bounded items".into());
+    }
+    let mut pending: Vec<_> = entries.iter().map(|entry| (entry, 1)).collect();
+    let mut text_bytes = 0;
+    while let Some((entry, depth)) = pending.pop() {
+        *count += 1;
+        if *count > MAX_ELEMENTS
+            || depth > MAX_MENU_DEPTH
+            || owner_depth + depth > MAX_ELEMENT_DEPTH
+        {
+            return Err("Menu exceeds the element count or depth limit".into());
+        }
+        if let MenuEntryDefinition::Item(item) = entry {
+            if item.header.trim().is_empty() || item.command.is_some() != item.items.is_empty() {
+                return Err(
+                    "MenuItem requires Header and either Command or nonempty submenu, exclusively"
+                        .into(),
+                );
+            }
+            text_bytes += item.header.len() + item.command.as_ref().map_or(0, String::len);
+            if text_bytes > MAX_MENU_TEXT_BYTES || item.items.len() > MAX_ELEMENTS {
+                return Err("Menu exceeds the text or element count limit".into());
+            }
+            if let Some(command) = &item.command {
+                validate_command(ui, command)?;
+            }
+            pending.extend(item.items.iter().map(|child| (child, depth + 1)));
+        }
+    }
+    Ok(())
+}
+
+fn menu_entries(
+    entries: &[rust_desktop_ui_xaml::MenuEntryDefinition],
+    commands: &mut Vec<String>,
+) -> Vec<MenuEntry> {
+    entries
+        .iter()
+        .map(|entry| match entry {
+            rust_desktop_ui_xaml::MenuEntryDefinition::Separator => MenuEntry::Separator,
+            rust_desktop_ui_xaml::MenuEntryDefinition::Item(item) => {
+                if let Some(command) = &item.command {
+                    commands.push(command.clone());
+                    MenuEntry::Item(
+                        MenuItem::new(&item.header, command.as_str()).with_enabled(item.is_enabled),
+                    )
+                } else {
+                    MenuEntry::Submenu {
+                        label: item.header.clone(),
+                        items: menu_entries(&item.items, commands),
+                        enabled: item.is_enabled,
+                    }
+                }
+            }
+        })
+        .collect()
 }
 
 fn button_content_width(

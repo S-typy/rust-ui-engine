@@ -1,7 +1,7 @@
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Форма · Rust UI"
-        Width="640" Height="488"
+        Width="640" Height="512"
         Padding="32" Theme="Light">
     <StackPanel x:Name="Form" Spacing="8">
         <TextBlock Text="Форма с несколькими элементами" Height="32" />
@@ -42,5 +42,23 @@
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />
         <TextBlock x:Name="Status" Height="56" Text="Изменений нет." />
+        <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
+            <DropDownButton x:Name="ActionMenu" Content="Действия" Width="160"
+                            ToolTip="Открыть меню действий">
+                <MenuItem Header="Режим">
+                    <MenuItem Header="Закрепить" Command="Pin" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="Недоступно" Command="Confirm" IsEnabled="False" />
+            </DropDownButton>
+            <SplitButton x:Name="AcceptSplit" Content="Подтвердить" Command="Confirm" Width="240"
+                         Icon="Check" ToolTip="Подтвердить или выбрать действие">
+                <MenuItem Header="Режим">
+                    <MenuItem Header="Закрепить" Command="Pin" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="Недоступно" Command="Confirm" IsEnabled="False" />
+            </SplitButton>
+        </StackPanel>
     </StackPanel>
 </Window>

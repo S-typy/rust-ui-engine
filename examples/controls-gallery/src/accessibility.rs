@@ -3,8 +3,8 @@ use crate::gallery::Gallery;
 use rust_desktop_ui_controls::{Role as ControlRole, SemanticAction};
 use rust_desktop_ui_core::{Mutation, Rect};
 use rust_desktop_ui_platform_winit::accesskit::{
-    Action, ActionData, ActionRequest, Invalid, Node, NodeId, Role, Toggled, TreeId, TreeInfo,
-    TreeUpdate,
+    Action, ActionData, ActionRequest, HasPopup, Invalid, Node, NodeId, Role, Toggled, TreeId,
+    TreeInfo, TreeUpdate,
 };
 use rust_desktop_ui_treegrid::{ColumnId, RowKey, SelectionModifiers};
 use std::collections::HashSet;
@@ -54,11 +54,22 @@ impl Gallery {
             let id = NodeId(self.accessible_widgets[&item.id]);
             let mut node = Node::new(if item.id == self.grid_node {
                 Role::TreeGrid
+            } else if item.role == ControlRole::MenuItem && item.checked.is_some() {
+                Role::MenuItemCheckBox
             } else {
                 role(item.role)
             });
             node.set_label(item.label);
             node.set_bounds(bounds(item.bounds, scale));
+            if item.has_popup {
+                node.set_has_popup(HasPopup::Menu);
+            }
+            if let Some(expanded) = item.expanded {
+                node.set_expanded(expanded);
+            }
+            if let Some(tooltip) = item.tooltip {
+                node.set_tooltip(tooltip);
+            }
             if let Some(value) = item.value {
                 node.set_value(value);
             }
@@ -89,6 +100,8 @@ impl Gallery {
                         node.add_action(Action::Click)
                     }
                     SemanticAction::SetValue => node.add_action(Action::SetValue),
+                    SemanticAction::Expand => node.add_action(Action::Expand),
+                    SemanticAction::Collapse => node.add_action(Action::Collapse),
                     SemanticAction::Scroll => {
                         node.add_action(Action::ScrollDown);
                         node.add_action(Action::ScrollUp);
@@ -279,6 +292,8 @@ impl Gallery {
                     Action::Focus => Some(SemanticAction::Focus),
                     Action::Click => Some(SemanticAction::Activate),
                     Action::SetValue => Some(SemanticAction::SetValue),
+                    Action::Expand => Some(SemanticAction::Expand),
+                    Action::Collapse => Some(SemanticAction::Collapse),
                     Action::ScrollDown | Action::ScrollUp => Some(SemanticAction::Scroll),
                     _ => None,
                 };

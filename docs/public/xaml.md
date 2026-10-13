@@ -4,7 +4,7 @@
 Профиль описывает нативное окно `Window`, вложенные `StackPanel`, подписи
 `TextBlock`, однострочные `TextBox`, кнопки `Button`, переключатели `ToggleButton`,
 флажки `CheckBox`, переключатели группы `RadioButton`, векторные `Icon`
-и разделители `Separator`.
+и разделители `Separator`, а также `DropDownButton` и `SplitButton` со статическими меню.
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -28,7 +28,7 @@ cargo run -p xaml-form --locked -- --light --smoke-test
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Форма · Rust UI"
-        Width="640" Height="488"
+        Width="640" Height="512"
         Padding="32" Theme="Light">
     <StackPanel x:Name="Form" Spacing="8">
         <TextBlock Text="Форма с несколькими элементами" Height="32" />
@@ -69,6 +69,24 @@ cargo run -p xaml-form --locked -- --light --smoke-test
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />
         <TextBlock x:Name="Status" Height="56" Text="Изменений нет." />
+        <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
+            <DropDownButton x:Name="ActionMenu" Content="Действия" Width="160"
+                            ToolTip="Открыть меню действий">
+                <MenuItem Header="Режим">
+                    <MenuItem Header="Закрепить" Command="Pin" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="Недоступно" Command="Confirm" IsEnabled="False" />
+            </DropDownButton>
+            <SplitButton x:Name="AcceptSplit" Content="Подтвердить" Command="Confirm" Width="240"
+                         Icon="Check" ToolTip="Подтвердить или выбрать действие">
+                <MenuItem Header="Режим">
+                    <MenuItem Header="Закрепить" Command="Pin" />
+                </MenuItem>
+                <Separator />
+                <MenuItem Header="Недоступно" Command="Confirm" IsEnabled="False" />
+            </SplitButton>
+        </StackPanel>
     </StackPanel>
 </Window>
 ```
@@ -89,13 +107,15 @@ URI пространства имён. Пространство имён WPF pre
 | TextBlock | `Text=""` | Видимая подпись |
 | Button | `Content=""`, необязательный `Command` | Кнопка, которую приложение связывает с командой Rust |
 | ToggleButton | `Content=""`, `IsChecked="False"`, необязательный `Command` | Кнопка с выбранным состоянием |
+| DropDownButton | `Content=""`, вложенные пункты меню | Открытие меню; свойство Command запрещено |
+| SplitButton | `Content=""`, обязательный `Command`, вложенные пункты меню | Основное действие и отдельная кнопка открытия меню |
 | CheckBox | `Content=""`, `IsChecked="False"` | Двухсостоянийный флажок |
 | RadioButton | `Content=""`, `IsChecked="False"`, необязательный `GroupName` | Взаимоисключающий выбор в группе |
 | Icon | обязательный `Symbol`, необязательный `Foreground` | Самостоятельная векторная пиктограмма |
 | Separator | `Orientation="Horizontal"`, `Thickness="1"`, необязательный `Foreground` | Неинтерактивная линия |
 
 Для каждого элемента содержимого доступны `x:Name`, `Width`, `Height`, `Margin`,
-`IsEnabled` и `AutomationName`. Имена уникальны во всём дереве окна.
+`IsEnabled`, `AutomationName` и буквальный `ToolTip`. Имена уникальны во всём дереве окна.
 Отключённая панель блокирует ввод и фокус своих потомков, сохраняя их собственные
 настройки `IsEnabled`. После включения панели локально отключённый контрол остаётся
 отключённым. Вкладочный порядок соответствует порядку интерактивных элементов
@@ -192,7 +212,7 @@ icon_size/icon_spacing должны сохранять defaults 16/8.
 панели. В горизонтальной панели при монтаже он вычисляет желаемую ширину подписи и кнопки
 по тексту, флажка — по тексту и индикатору; поле получает ширину 240. Минимальная
 желаемая ширина кнопки — 80. Для кнопок и флажков измерение учитывает FontSize
-и горизонтальный Padding. Высота по умолчанию: TextBox, Button и ToggleButton — 36,
+и горизонтальный Padding. Высота по умолчанию: TextBox, Button, ToggleButton, DropDownButton и SplitButton — 36,
 CheckBox и RadioButton — 32, TextBlock — 24. Автоматический размер вложенной панели учитывает
 её детей, отступы и интервалы. Явные Width/Height задают фиксированный размер.
 Это ограниченная компоновка примера; полноценный WPF measure/arrange здесь не реализован.
@@ -342,6 +362,68 @@ Message. При использовании этой команды отсутс�
 редактора; подтверждение корректного значения при уходе фокуса остаётся включённым.
 При нажатии Confirm с некорректным текстом возможны две попытки проверки:
 из-за ухода фокуса и из-за явной команды.
+
+## Статические меню и подсказки
+
+DropDownButton открывает меню. SplitButton содержит основную кнопку и отдельную
+стрелку: основной Command не вызывается при открытии меню. Отключение этой
+команды не отключает стрелку; IsEnabled=False у самого SplitButton отключает
+обе части. SplitButton имеет два последовательных Tab stops. Его x:Name
+обозначает стабильный контейнер; адаптер хранит идентификаторы primary/dropdown
+в MountedView.splits. ButtonStyle применяется к обеим частям, Icon — к основной.
+AutomationName переименовывает основную часть, ToolTip назначается обеим.
+
+Внутри меню разрешены только MenuItem и Separator. MenuItem требует непустую
+Header и либо Command, либо вложенное непустое подменю. Совмещать действие
+и подменю запрещено. IsEnabled=False отключает пункт независимо от состояния
+команды. Checked state определяется зарегистрированной командой; отдельного
+IsChecked у MenuItem нет. Separator внутри меню не принимает свойств или детей,
+не получает фокус и не выполняет действий. Обычный Separator в layout сохраняет
+свои прежние свойства. MenuItem не является layout-контролом, не принимает
+x:Name, размеры, стили или обработчики событий.
+
+Компилятор проверяет синтаксис и границы дерева, а MountedView до создания
+первого контрола проверяет регистрацию всех команд, включая глубоко вложенные
+пункты и основной Command SplitButton. Ограничения меню: глубина до 8 от первого
+уровня пунктов, не более 256 элементов, суммарный текст Header/Command до 1 MiB.
+Пункты и разделители также учитываются в общем лимите 256 элементов и глубине
+32 для окна. Эти проверки применяются и к вручную созданному AST.
+
+ToolTip — строка до 4096 UTF-8 bytes, без ресурсов, bindings и markup extensions.
+Пустое или пробельное значение убирает подсказку. Подсказка появляется после
+задержки наведения, рисуется поверх содержимого и не получает фокус или hit test.
+Уход указателя, ввод, потеря фокуса окна и открытие меню скрывают её. Пример
+планирует timer через tooltip_deadline и обрабатывает tooltip_tick на Tick;
+постоянный polling для подсказки не требуется.
+В этом профиле визуальная подсказка работает у hit-testable владельца или его
+предка. У самостоятельных TextBlock, Icon и Separator ToolTip передаётся как
+accessibility metadata; эти неинтерактивные элементы не становятся hover target.
+
+Accessibility передаёт HasPopup=Menu, expanded и действия Expand/Collapse
+для открываемых меню, ToolTip — на владельце. Переключаемые пункты представлены как
+MenuItemCheckBox с Toggled. Пункты меню остаются связанными
+с общей командой. Программная проверка этой проекции не заменяет проверку
+конкретным screen reader.
+
+В примере новый ряд «Действия»/SplitButton находится под Status, начиная с y=433;
+прежние контролы сохраняют координаты. Оба меню показывают вложенный «Режим»
+с общей командой Pin, разделитель и отключённое действие. Основная часть
+SplitButton подтверждает Message той же командой Confirm.
+
+При запуске с `--diagnostics` пример дополнительно пишет `popup-state ` с JSON:
+menus, controls, focused, pin_checked, tooltip_bounds, tooltip_pending и hovered. Это состояния меню,
+доступные действия и logical bounds; текст поля в этот snapshot не включён.
+Остальные диагностические строки примера по-прежнему могут содержать ввод.
+Windows-сценарий меню запускается отдельно:
+
+```powershell
+$env:WGPU_BACKEND = 'dx12'
+python tests/windows_popup_smoke.py --exe target/release/xaml-form.exe --output-dir target/popup-dx12
+python tests/windows_popup_smoke.py --exe target/release/xaml-form.exe --output-dir target/popup-dark-dx12 --dark
+```
+
+Для Vulkan задайте WGPU_BACKEND='vulkan' и другую output-dir. Наличие сценария
+не означает успешного прохождения на конкретной ОС, GPU или с screen reader.
 
 ## Поведение поля
 

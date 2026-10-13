@@ -63,6 +63,8 @@ impl Accessibility {
             let status = view.find_name("Status") == Some(widget);
             let mut node = Node::new(if status {
                 Role::Status
+            } else if semantic.role == ControlRole::MenuItem && semantic.checked.is_some() {
+                Role::MenuItemCheckBox
             } else {
                 role(semantic.role)
             });
@@ -85,6 +87,15 @@ impl Accessibility {
                 } else {
                     accesskit::Toggled::False
                 });
+            }
+            if semantic.has_popup {
+                node.set_has_popup(accesskit::HasPopup::Menu);
+            }
+            if let Some(expanded) = semantic.expanded {
+                node.set_expanded(expanded);
+            }
+            if let Some(tooltip) = semantic.tooltip {
+                node.set_tooltip(tooltip);
             }
             if semantic.disabled {
                 node.set_disabled();
@@ -138,6 +149,8 @@ impl Accessibility {
                         node.add_action(Action::Click)
                     }
                     SemanticAction::SetValue => node.add_action(Action::SetValue),
+                    SemanticAction::Expand => node.add_action(Action::Expand),
+                    SemanticAction::Collapse => node.add_action(Action::Collapse),
                     SemanticAction::Scroll => {
                         node.add_action(Action::ScrollDown);
                         node.add_action(Action::ScrollUp);
@@ -177,6 +190,8 @@ impl Accessibility {
             Action::Focus => SemanticAction::Focus,
             Action::Click => SemanticAction::Activate,
             Action::SetValue => SemanticAction::SetValue,
+            Action::Expand => SemanticAction::Expand,
+            Action::Collapse => SemanticAction::Collapse,
             _ => return Ok(()),
         };
         // Ignore stale/hidden nodes and unsupported actions, including labels.

@@ -1,6 +1,7 @@
 //! A native form whose structure and initial properties are compiled from XAML.
 mod accessibility;
 mod form;
+mod popup_diagnostics;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -75,6 +76,8 @@ fn start() -> Result<(), String> {
             "DisabledIcon",
             "VRule",
             "HRule",
+            "ActionMenu",
+            "AcceptSplit",
         ] {
             println!(
                 "named-control={name} resolved={}",

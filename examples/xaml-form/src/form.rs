@@ -10,7 +10,10 @@ use rust_desktop_ui_platform_winit::{
     ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, accesskit,
 };
 use rust_desktop_ui_xaml::WindowDefinition;
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 /// The mounted XAML tree plus the example's explicit Message/Confirm behavior.
 pub(crate) struct Form {
@@ -23,6 +26,7 @@ pub(crate) struct Form {
     checked: HashMap<WidgetId, bool>,
     last_focus: Option<WidgetId>,
     diagnostics: bool,
+    last_popup_diagnostic: String,
 }
 
 impl Form {
@@ -114,6 +118,7 @@ impl Form {
             checked,
             last_focus: None,
             diagnostics,
+            last_popup_diagnostic: String::new(),
         })
     }
     pub(crate) fn find_name(&self, name: &str) -> Option<WidgetId> {
@@ -284,6 +289,13 @@ impl DesktopApp for Form {
         if self.refresh_status()? {
             self.ui.update(viewport).map_err(err)?;
         }
+        if self.diagnostics {
+            let snapshot = crate::popup_diagnostics::snapshot(&self.ui);
+            if snapshot != self.last_popup_diagnostic {
+                println!("popup-state {snapshot}");
+                self.last_popup_diagnostic = snapshot;
+            }
+        }
         Ok(())
     }
     fn scene(&self) -> &Scene {
@@ -300,6 +312,8 @@ impl DesktopApp for Form {
                     rust_desktop_ui_core::InputEvent::KeyDown { .. }
                         | rust_desktop_ui_core::InputEvent::KeyUp { .. }
                         | rust_desktop_ui_core::InputEvent::WindowFocused(_)
+                        | rust_desktop_ui_core::InputEvent::PointerMoved { .. }
+                        | rust_desktop_ui_core::InputEvent::PointerLeft
                 ) | PlatformEvent::Text(_)
                     | PlatformEvent::Paste(_)
                     | PlatformEvent::ImePreedit(..)
@@ -323,7 +337,10 @@ impl DesktopApp for Form {
             }
             PlatformEvent::ImeCommit(text) => self.ui.ime_commit(&text).map_err(err)?,
             PlatformEvent::ImeCancel => self.ui.cancel_preedit(),
-            PlatformEvent::Tick => redraw = self.ui.blink_caret(),
+            PlatformEvent::Tick => {
+                redraw = self.ui.blink_caret();
+                redraw |= self.ui.tooltip_tick(Instant::now()).map_err(err)?;
+            }
             PlatformEvent::Accessibility(request) => {
                 self.accessible.action(&mut self.ui, request)?
             }
@@ -368,7 +385,16 @@ impl DesktopApp for Form {
             .map(|doc| doc.composition().is_some())
     }
     fn wake_after(&self) -> Option<Duration> {
-        self.ui.caret_bounds().map(|_| Duration::from_millis(500))
+        self.ui
+            .caret_bounds()
+            .map(|_| Duration::from_millis(500))
+            .into_iter()
+            .chain(
+                self.ui
+                    .tooltip_deadline()
+                    .map(|deadline| deadline.saturating_duration_since(Instant::now())),
+            )
+            .min()
     }
     fn accessibility(&mut self, scale: f32) -> accesskit::TreeUpdate {
         self.accessible

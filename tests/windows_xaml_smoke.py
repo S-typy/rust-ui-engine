@@ -420,6 +420,24 @@ class FormSession(RetainedSession):
     def wait_focus(self, name: str, description: str) -> None:
         self.wait_edit_diagnostic("focus-name", name, description)
 
+    def tab_from_radio_to_message(self) -> None:
+        self.key(VK_TAB)
+        self.wait_focus("ActionMenu", "Tab leaves radio group for DropDownButton")
+        for popup in (False, True):
+            before = self.log().count("popup-state ")
+            self.key(VK_TAB)
+            def focused_part():
+                snapshots = [json.loads(line.removeprefix("popup-state "))
+                             for line in self.log().splitlines(keepends=True)
+                             if line.startswith("popup-state ") and line.endswith("\n")]
+                return len(snapshots) > before and any(
+                    item["focused"] and item["has_popup"] == popup
+                    and item["bounds"][0] >= 195 and item["bounds"][1] >= 430
+                    for item in snapshots[-1]["controls"])
+            self.wait("Tab focuses the separate SplitButton part", focused_part)
+        self.key(VK_TAB)
+        self.wait_focus("Message", "Tab leaves SplitButton and wraps to Message")
+
     def wait_checkbox(self, checked: bool, description: str, after: int) -> None:
         def matches():
             log = self.log()
@@ -519,8 +537,7 @@ class FormSession(RetainedSession):
         self.key(VK_RETURN)
         self.wait_pin(False, toggles, "Enter clears Pin")
         self.run_radios(output, scale)
-        self.key(VK_TAB)
-        self.wait_focus("Message", "Tab leaves radio group and wraps to Message")
+        self.tab_from_radio_to_message()
         for name, x, y in (("SaveIcon", 236, 288), ("HRule", 400, 312),
                             ("VRule", 256, 280)):
             commands = self.log().count("command=")
@@ -541,9 +558,10 @@ class FormSession(RetainedSession):
         toggles = self.log().count("checkbox-state=Option checked=")
         self.key(VK_SPACE)
         self.wait_checkbox(True, "Space checks Option and makes editor read-only", toggles)
-        for name in ("Confirm", "Pin", "AlignLeft", "Message"):
+        for name in ("Confirm", "Pin", "AlignLeft"):
             self.key(VK_TAB)
             self.wait_focus(name, "Tab reaches " + name)
+        self.tab_from_radio_to_message()
         self.capture(output, "check-checked", focused=True, invalid=True, read_only=True,
                      buttons={"checked": False, "phase": "normal", "focused": False})
 
@@ -596,8 +614,7 @@ class FormSession(RetainedSession):
         self.capture(output, "radio-center-space", focused=False, invalid=True,
                      radios={"selected": "AlignCenter", "focused": "AlignCenter"})
         self.wait_radio("AlignCenter", "Space preserves an already selected radio")
-        self.key(VK_TAB)
-        self.wait_focus("Message", "Tab exits the selected second radio in one step")
+        self.tab_from_radio_to_message()
         self.click_control(340, 248, scale)
         self.capture(output, "radio-disabled", focused=False, invalid=True,
                      radios={"selected": "AlignCenter", "focused": None})
@@ -637,9 +654,9 @@ class FormSession(RetainedSession):
         scale = dpi / 96.0
         self.report["dpi"] = dpi
         actual = self.windows.client_size(self.hwnd)
-        expected = (round(640 * scale), round(488 * scale))
+        expected = (round(640 * scale), round(512 * scale))
         if any(abs(a - b) > 1 for a, b in zip(actual, expected, strict=True)):
-            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x488 at DPI {dpi}: {expected}")
+            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x512 at DPI {dpi}: {expected}")
         self.report["checks"].append({"check": "initial client dimensions match compiled XAML",
                                       "actual_physical": actual, "expected_physical": expected,
                                       "rounding_tolerance_pixels": 1})
@@ -697,8 +714,7 @@ class FormSession(RetainedSession):
         self.wait_focus("Pin", "Tab moves from Confirm to Pin")
         self.key(VK_TAB)
         self.wait_focus("AlignLeft", "Tab skips Disabled and enters the radio group")
-        self.key(VK_TAB)
-        self.wait_focus("Message", "Tab leaves the radio group for read-only Message")
+        self.tab_from_radio_to_message()
         changes_before = self.log().count("edit-value=")
         text_before = self.log().count('edit-input=Text("READONLY")')
         self.type_text("READONLY")

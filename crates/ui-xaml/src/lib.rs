@@ -1,7 +1,8 @@
 //! A small, explicit XAML profile compiled to a Rust window definition.
 //!
 //! This profile supports a `Window` containing a tree of stack panels, text,
-//! editors, buttons, check boxes, radio buttons, icons and separators. Elements use
+//! editors, buttons, check boxes, radio buttons, icons, separators and static
+//! dropdown/split menus. Elements use
 //! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. It does not load WPF types,
 //! execute markup extensions, resolve external entities, or implement bindings.
 //! Unknown syntax is an error instead of being silently ignored.
@@ -45,6 +46,12 @@ pub const MAX_ELEMENT_DEPTH: usize = 32;
 pub const MAX_ELEMENTS: usize = 256;
 /// Maximum XML nodes, including comments and whitespace text nodes.
 pub const MAX_XML_NODES: u32 = 4_096;
+/// Maximum nested menu entry depth; top-level entries have depth one.
+pub const MAX_MENU_DEPTH: usize = 8;
+/// Maximum aggregate UTF-8 menu labels and command identifiers per button.
+pub const MAX_MENU_TEXT_BYTES: usize = 1_048_576;
+/// Maximum UTF-8 text for a plain tooltip.
+pub const MAX_TOOLTIP_BYTES: usize = 4_096;
 
 /// Initial form appearance, independent of the platform and control renderer.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -93,6 +100,8 @@ pub struct CommonProperties {
     pub is_enabled: bool,
     /// Optional accessible name, supplied by `AutomationName`.
     pub automation_name: Option<String>,
+    /// Plain text shown by the control's tooltip, supplied by `ToolTip`.
+    pub tool_tip: Option<String>,
 }
 
 impl Default for CommonProperties {
@@ -104,6 +113,7 @@ impl Default for CommonProperties {
             margin: [0.0; 4],
             is_enabled: true,
             automation_name: None,
+            tool_tip: None,
         }
     }
 }
@@ -115,7 +125,7 @@ pub struct ElementDefinition {
     pub kind: ElementKind,
 }
 
-/// Supported content elements. Only stack panels may contain children.
+/// Supported layout elements. Menu buttons own static menu entries separately.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
     StackPanel(StackPanelDefinition),
@@ -123,6 +133,8 @@ pub enum ElementKind {
     TextBlock(TextBlockDefinition),
     Button(ButtonDefinition),
     ToggleButton(ToggleButtonDefinition),
+    DropDownButton(MenuButtonDefinition),
+    SplitButton(MenuButtonDefinition),
     CheckBox(CheckBoxDefinition),
     RadioButton(RadioButtonDefinition),
     Icon(IconDefinition),
@@ -181,6 +193,29 @@ impl Default for ButtonDefinition {
             icon_spacing: 8.0,
         }
     }
+}
+
+/// A styled button with a static menu. SplitButton requires a primary command;
+/// DropDownButton forbids one. Menu children are not layout children.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MenuButtonDefinition {
+    pub button: ButtonDefinition,
+    pub items: Vec<MenuEntryDefinition>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum MenuEntryDefinition {
+    Item(MenuItemDefinition),
+    Separator,
+}
+
+/// A leaf has a command; a submenu instead has nonempty items.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MenuItemDefinition {
+    pub header: String,
+    pub command: Option<String>,
+    pub is_enabled: bool,
+    pub items: Vec<MenuEntryDefinition>,
 }
 
 /// A two-state button. A bound command's registered checked state takes
@@ -495,6 +530,8 @@ fn parse_element(
         "TextBlock" => ElementKind::TextBlock(TextBlockDefinition::default()),
         "Button" => ElementKind::Button(ButtonDefinition::default()),
         "ToggleButton" => ElementKind::ToggleButton(ToggleButtonDefinition::default()),
+        "DropDownButton" => ElementKind::DropDownButton(MenuButtonDefinition::default()),
+        "SplitButton" => ElementKind::SplitButton(MenuButtonDefinition::default()),
         "CheckBox" => ElementKind::CheckBox(CheckBoxDefinition::default()),
         "RadioButton" => ElementKind::RadioButton(RadioButtonDefinition::default()),
         "Icon" => ElementKind::Icon(IconDefinition::default()),
@@ -534,12 +571,29 @@ fn parse_element(
         }
         match attribute.name() {
             "AutomationName" => common.automation_name = Some(attribute.value().into()),
+            "ToolTip" => {
+                if attribute.value().len() > MAX_TOOLTIP_BYTES {
+                    return Err(at_attribute(
+                        document,
+                        attribute,
+                        "ToolTip exceeds the 4096-byte UTF-8 limit",
+                    ));
+                }
+                common.tool_tip = Some(attribute.value().into());
+            }
             "Width" => common.width = Some(editor_dimension(document, attribute)?),
             "Height" => common.height = Some(editor_dimension(document, attribute)?),
             "Margin" => common.margin = thickness(document, attribute)?,
             "IsEnabled" => common.is_enabled = boolean(document, attribute)?,
             property => {
                 let supported = match &mut kind {
+                    ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
+                        if property == "Command" && element_name == "DropDownButton" {
+                            false
+                        } else {
+                            menu_button_property(document, attribute, &mut menu.button)?
+                        }
+                    }
                     ElementKind::TextBox(editor) => editor_property(document, attribute, editor)?,
                     ElementKind::StackPanel(panel) => match property {
                         "Orientation" => {
@@ -703,6 +757,7 @@ fn parse_element(
             }
         }
     }
+    let mut menu_text_bytes = 0;
     for child in node.children() {
         if child.is_element() {
             if let ElementKind::StackPanel(panel) = &mut kind {
@@ -713,6 +768,16 @@ fn parse_element(
                     count,
                     names,
                     checked_radio_groups,
+                )?);
+            } else if let ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) =
+                &mut kind
+            {
+                menu.items.push(parse_menu_entry(
+                    child,
+                    depth + 1,
+                    1,
+                    count,
+                    &mut menu_text_bytes,
                 )?);
             } else {
                 return Err(at_node(
@@ -731,10 +796,21 @@ fn parse_element(
         return Err(at_node(node, "Icon requires a Symbol attribute"));
     }
     let button_icon = match &kind {
+        ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
+            Some((&menu.button.content, menu.button.icon))
+        }
         ElementKind::Button(button) => Some((&button.content, button.icon)),
         ElementKind::ToggleButton(button) => Some((&button.content, button.icon)),
         _ => None,
     };
+    if let ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) = &kind {
+        if menu.items.is_empty() {
+            return Err(at_node(node, "A menu button requires nonempty menu items"));
+        }
+        if matches!(kind, ElementKind::SplitButton(_)) && menu.button.command.is_none() {
+            return Err(at_node(node, "SplitButton requires a Command"));
+        }
+    }
     if let Some((content, icon)) = button_icon {
         if icon.is_none()
             && let Some(attribute) = node
@@ -797,6 +873,117 @@ fn identifier(
         ));
     }
     Ok(())
+}
+
+fn menu_button_property(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+    button: &mut ButtonDefinition,
+) -> Result<bool, Diagnostic> {
+    match attribute.name() {
+        "Content" => button.content = attribute.value().into(),
+        "Command" => {
+            identifier(document, attribute, "Command")?;
+            button.command = Some(attribute.value().into());
+        }
+        "Icon" => button.icon = Some(icon_symbol(document, attribute)?),
+        "IconSize" => button.icon_size = editor_metric(document, attribute, MAX_FONT_SIZE, false)?,
+        "IconSpacing" => {
+            button.icon_spacing = editor_metric(document, attribute, MAX_DIMENSION, true)?
+        }
+        _ => return button_style_property(document, attribute, &mut button.style),
+    }
+    Ok(true)
+}
+
+fn parse_menu_entry(
+    node: Node<'_, '_>,
+    depth: usize,
+    menu_depth: usize,
+    count: &mut usize,
+    text_bytes: &mut usize,
+) -> Result<MenuEntryDefinition, Diagnostic> {
+    *count += 1;
+    if depth > MAX_ELEMENT_DEPTH || menu_depth > MAX_MENU_DEPTH || *count > MAX_ELEMENTS {
+        return Err(at_node(
+            node,
+            "Menu exceeds the element count or depth limit",
+        ));
+    }
+    if node.tag_name().namespace() != Some(UI_NAMESPACE) {
+        return Err(at_node(node, "Menu entries require the UI namespace"));
+    }
+    if node.tag_name().name() == "Separator" {
+        if node.attributes().len() != 0 {
+            return Err(at_node(node, "A menu Separator accepts no attributes"));
+        }
+        for child in node.children() {
+            if child.is_element() {
+                return Err(at_node(child, "A menu Separator accepts no children"));
+            }
+            require_empty_content(child)?;
+        }
+        return Ok(MenuEntryDefinition::Separator);
+    }
+    require_element(node, "MenuItem")?;
+    let mut item = MenuItemDefinition {
+        header: String::new(),
+        command: None,
+        is_enabled: true,
+        items: Vec::new(),
+    };
+    for attribute in node.attributes() {
+        reject_extension(node.document(), attribute)?;
+        if attribute.namespace().is_some() {
+            return Err(at_attribute(
+                node.document(),
+                attribute,
+                "MenuItem accepts no namespaced properties",
+            ));
+        }
+        match attribute.name() {
+            "Header" => item.header = attribute.value().into(),
+            "Command" => {
+                identifier(node.document(), attribute, "Command")?;
+                item.command = Some(attribute.value().into());
+            }
+            "IsEnabled" => item.is_enabled = boolean(node.document(), attribute)?,
+            _ => {
+                return Err(at_attribute(
+                    node.document(),
+                    attribute,
+                    "Unsupported MenuItem property",
+                ));
+            }
+        }
+    }
+    if item.header.trim().is_empty() {
+        return Err(at_node(node, "MenuItem requires a nonempty Header"));
+    }
+    *text_bytes += item.header.len() + item.command.as_ref().map_or(0, String::len);
+    if *text_bytes > MAX_MENU_TEXT_BYTES {
+        return Err(at_node(node, "Menu text exceeds the 1 MiB UTF-8 limit"));
+    }
+    for child in node.children() {
+        if child.is_element() {
+            item.items.push(parse_menu_entry(
+                child,
+                depth + 1,
+                menu_depth + 1,
+                count,
+                text_bytes,
+            )?);
+        } else {
+            require_empty_content(child)?;
+        }
+    }
+    if item.command.is_some() != item.items.is_empty() {
+        return Err(at_node(
+            node,
+            "MenuItem requires either a Command or nonempty submenu, exclusively",
+        ));
+    }
+    Ok(MenuEntryDefinition::Item(item))
 }
 
 fn icon_symbol(

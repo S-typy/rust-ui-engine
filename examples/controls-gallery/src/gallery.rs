@@ -497,6 +497,15 @@ impl Gallery {
     }
 
     fn input(&mut self, event: InputEvent) -> Result<()> {
+        // Some inputs are consumed by Ribbon or the custom grid before Controls.
+        if self.grid.pointer_captured()
+            || !matches!(
+                event,
+                InputEvent::PointerMoved { .. } | InputEvent::WindowFocused(true)
+            )
+        {
+            self.ui.dismiss_tooltip();
+        }
         self.suppress_text = self.ribbon.key_tips_visible();
         if self
             .ribbon
@@ -892,13 +901,21 @@ impl DesktopApp for Gallery {
             .map(|document| document.composition().is_some())
     }
     fn wake_after(&self) -> Option<Duration> {
-        if self.source.has_pending() {
+        let existing = if self.source.has_pending() {
             Some(Duration::from_millis(16))
         } else if self.ui.caret_bounds().is_some() {
             Some(Duration::from_millis(500))
         } else {
             None
-        }
+        };
+        existing
+            .into_iter()
+            .chain(
+                self.ui
+                    .tooltip_deadline()
+                    .map(|deadline| deadline.saturating_duration_since(Instant::now())),
+            )
+            .min()
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse> {
         self.sync_pin_command();
@@ -921,6 +938,7 @@ impl DesktopApp for Gallery {
             PlatformEvent::ImeCancel => self.ui.cancel_preedit(),
             PlatformEvent::Tick => {
                 redraw = self.source.poll(&mut self.grid).map_err(err)?;
+                redraw |= self.ui.tooltip_tick(Instant::now()).map_err(err)?;
                 if self.last_blink.elapsed() >= Duration::from_millis(500) {
                     redraw |= self.ui.blink_caret();
                     self.last_blink = Instant::now();

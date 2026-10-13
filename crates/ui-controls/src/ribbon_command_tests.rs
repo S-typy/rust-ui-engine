@@ -69,17 +69,29 @@ fn placements(ui: &Controls, ribbon: &Ribbon, command: &str) -> Vec<WidgetId> {
         matches!(ribbon.actions.get(id), Some(Action::Command(candidate)) if candidate.0 == command)
     }).collect()
 }
-fn menu_anchor(ui: &Controls, ribbon: &Ribbon, label: &str) -> WidgetId {
-    ui.runtime.tree().preorder().into_iter().find(|id| {
-        matches!(ribbon.actions.get(id), Some(Action::Menu(items)) if items.iter().any(|item| item.label == label))
-    }).expect("matching menu anchor")
-}
 fn open_menu(ui: &mut Controls, ribbon: &mut Ribbon, label: &str) {
     ui.drain_activated();
-    let anchor = menu_anchor(ui, ribbon, label);
-    ui.activate(anchor).unwrap();
-    assert!(ribbon.process(ui).unwrap().is_empty());
-    assert!(ui.popup_open());
+    let anchors: Vec<_> = ui
+        .runtime
+        .tree()
+        .preorder()
+        .into_iter()
+        .filter(|id| matches!(ribbon.actions.get(id), Some(Action::Dropdown)))
+        .collect();
+    for anchor in anchors {
+        ui.activate(anchor).unwrap();
+        assert!(ribbon.process(ui).unwrap().is_empty());
+        assert!(ui.popup_open());
+        if ui
+            .semantics()
+            .iter()
+            .any(|node| node.role == Role::MenuItem && node.label == label)
+        {
+            return;
+        }
+        ui.close_popup().unwrap();
+    }
+    panic!("no dropdown contains {label}");
 }
 fn menu_item(ui: &Controls, label: &str) -> WidgetId {
     ui.semantics()
@@ -555,4 +567,100 @@ fn rejected_remount_preserves_the_live_ribbon_and_initialization_policy() {
     assert_eq!(fresh.container(), None);
     assert!(!fresh.legacy_toggles_initialized);
     assert_eq!(ui.commands().checked(&"flag".into()), None);
+}
+
+#[test]
+fn empty_split_and_empty_group_keep_disabled_buttons_without_empty_popups() {
+    let (mut ui, mut ribbon, _) = fixture();
+    if let RibbonItemKind::Split { menu } = &mut ribbon.model.tabs[0].groups[0].items[1].kind {
+        menu.clear();
+    }
+    ribbon.model.tabs[0].groups.push(RibbonGroup {
+        id: "empty".into(),
+        label: "Empty".into(),
+        collapse_priority: 0,
+        items: Vec::new(),
+    });
+    ribbon.dirty = true;
+    frame(&mut ui, &mut ribbon, 900.0);
+    let empty_split = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.label == "More" && node.disabled && !node.has_popup)
+        .expect("empty Split secondary remains present and disabled");
+    ui.activate(empty_split.id).unwrap();
+    assert!(!ui.popup_open());
+    let primary = placements(&ui, &ribbon, "primary")[0];
+    ui.activate(primary).unwrap();
+    assert_invocation(&mut ui, "primary", Some(true));
+    // An empty-only model can also collapse below its normal group width.
+    let mut empty = Ribbon::new(RibbonModel {
+        tabs: vec![RibbonTab {
+            id: "empty-tab".into(),
+            label: "Empty".into(),
+            key_tip: "E".into(),
+            context: None,
+            groups: vec![ribbon.model.tabs[0].groups.last().unwrap().clone()],
+        }],
+        quick_access: Vec::new(),
+    })
+    .unwrap();
+    let root = ui.root();
+    empty.mount(&mut ui, root).unwrap();
+    empty.update(&mut ui, 19.0).unwrap();
+    ui.update(Size::new(900.0, 600.0)).unwrap();
+    let all = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.label == "All commands")
+        .unwrap();
+    assert!(all.disabled);
+    assert!(!all.has_popup);
+}
+
+#[test]
+fn menu_count_rejection_preserves_tree_popup_and_command_state_before_rebuild() {
+    let (mut ui, mut ribbon, _) = fixture();
+    ribbon.model.quick_access = (0..260)
+        .map(|index| format!("qat-{index}").into())
+        .collect();
+    ribbon.dirty = true;
+    frame(&mut ui, &mut ribbon, 900.0);
+    let anchor = ui
+        .runtime
+        .tree()
+        .preorder()
+        .into_iter()
+        .find(|id| matches!(ribbon.actions.get(id), Some(Action::Dropdown)))
+        .unwrap();
+    ui.activate(anchor).unwrap();
+    ribbon.process(&mut ui).unwrap();
+    assert!(ui.popup_open());
+    let ids = ui.runtime.tree().preorder();
+    let width = ribbon.width;
+    let presentations = ribbon.presentations().to_vec();
+    let error = ribbon.update(&mut ui, 20.0).unwrap_err();
+    assert!(error.to_string().contains("QAT overflow"));
+    assert!(error.to_string().contains("256"));
+    assert_eq!(ui.runtime.tree().preorder(), ids);
+    assert!(ui.popup_open());
+    assert_eq!(ribbon.width, width);
+    assert_eq!(ribbon.presentations(), presentations);
+    // A model edit is retained for correction, while its failed rebuild leaves
+    // the currently usable visual tree and command values untouched.
+    ribbon.add_quick_access("over-limit-1".into());
+    ribbon.add_quick_access("over-limit-2".into());
+    ribbon.add_quick_access("over-limit-3".into());
+    ribbon.add_quick_access("over-limit-4".into());
+    assert!(ribbon.update(&mut ui, 900.0).is_err());
+    assert_eq!(ui.runtime.tree().preorder(), ids);
+    ui.commands_mut().set_checked(&"flag".into(), None);
+    let mut fresh = Ribbon::new(ribbon.model().clone()).unwrap();
+    let root = ui.root();
+    assert!(fresh.mount(&mut ui, root).is_err());
+    assert_eq!(fresh.parent, None);
+    assert_eq!(fresh.container(), None);
+    assert!(!fresh.legacy_toggles_initialized);
+    assert_eq!(ui.commands().checked(&"flag".into()), None);
+    assert_eq!(ui.runtime.tree().preorder(), ids);
 }

@@ -1,5 +1,110 @@
 use super::*;
 
+#[test]
+fn popup_buttons_compile_nested_items_separators_and_plain_tooltips() {
+    let source = form(
+        "",
+        r#"<SplitButton Content="Accept" Command="Confirm" Icon="Check" ToolTip="Подсказка &quot;\&#10;🌍" FontSize="18"><MenuItem Header="Режим"><MenuItem Header="Pin" Command="Pin"/></MenuItem><Separator/><MenuItem Header="Disabled" Command="Confirm" IsEnabled="False"/></SplitButton>"#,
+    );
+    let parsed = parse(&source).unwrap();
+    assert_eq!(
+        parsed.content.common.tool_tip.as_deref(),
+        Some("Подсказка \"\\\n🌍")
+    );
+    let ElementKind::SplitButton(menu) = parsed.content.kind else {
+        panic!("split");
+    };
+    assert_eq!(menu.button.command.as_deref(), Some("Confirm"));
+    assert_eq!(menu.button.style.font_size, Some(18.0));
+    assert_eq!(menu.items.len(), 3);
+    assert_eq!(menu.items[1], MenuEntryDefinition::Separator);
+    let MenuEntryDefinition::Item(submenu) = &menu.items[0] else {
+        panic!("submenu");
+    };
+    assert!(submenu.command.is_none());
+    assert_eq!(submenu.items.len(), 1);
+    let generated = compile(&source).unwrap();
+    for part in [
+        "ElementKind::SplitButton",
+        "MenuEntryDefinition::Separator",
+        "MenuItemDefinition",
+        "command: Some(\"Pin\".into())",
+        "is_enabled: false",
+        "tool_tip: Some(\"Подсказка \\\"\\\\\\n🌍\".into())",
+    ] {
+        assert!(generated.contains(part), "{part}");
+    }
+    assert!(
+        parse(&form(
+            "",
+            "<DropDownButton Content='Menu'><MenuItem Header='Do' Command='Do'/></DropDownButton>"
+        ))
+        .is_ok()
+    );
+}
+
+#[test]
+fn popup_markup_rejects_ambiguous_actions_unknown_contexts_and_menu_geometry() {
+    for markup in [
+        "<DropDownButton/>",
+        "<SplitButton><MenuItem Header='Do' Command='Do'/></SplitButton>",
+        "<DropDownButton Command='Do'><MenuItem Header='Do' Command='Do'/></DropDownButton>",
+        "<MenuItem Header='Do' Command='Do'/>",
+        "<DropDownButton><MenuItem Command='Do'/></DropDownButton>",
+        "<DropDownButton><MenuItem Header=' '/></DropDownButton>",
+        "<DropDownButton><MenuItem Header='Do'/></DropDownButton>",
+        "<DropDownButton><MenuItem Header='Do' Command='Do'><MenuItem Header='Nested' Command='Other'/></MenuItem></DropDownButton>",
+        "<DropDownButton><MenuItem Header='Do' Command='A.B'/></DropDownButton>",
+        "<DropDownButton><MenuItem Header='Do' Command='{Binding Do}'/></DropDownButton>",
+        "<DropDownButton><MenuItem Header='Do' Command='Do' x:Name='Transient'/></DropDownButton>",
+        "<DropDownButton><Separator Thickness='2'/></DropDownButton>",
+        "<DropDownButton><Separator><MenuItem Header='Do' Command='Do'/></Separator></DropDownButton>",
+        "<DropDownButton><Button Content='Do'/></DropDownButton>",
+        "<DropDownButton><MenuItem Header='Do' Command='Do'>text</MenuItem></DropDownButton>",
+        "<DropDownButton ToolTip='{Binding Tip}'><Separator/></DropDownButton>",
+    ] {
+        assert!(parse(&form("", markup)).is_err(), "{markup}");
+    }
+}
+
+#[test]
+fn popup_depth_and_count_include_entries_in_the_bounded_content_tree() {
+    let wrap = |entries: &str| form("", &format!("<DropDownButton>{entries}</DropDownButton>"));
+    let mut nested = "<MenuItem Header='Leaf' Command='Do'/>".to_string();
+    for _ in 1..MAX_MENU_DEPTH {
+        nested = format!("<MenuItem Header='Sub'>{nested}</MenuItem>");
+    }
+    assert!(parse(&wrap(&nested)).is_ok());
+    assert!(
+        parse(&wrap(&format!(
+            "<MenuItem Header='Extra'>{nested}</MenuItem>"
+        )))
+        .unwrap_err()
+        .message
+        .contains("depth")
+    );
+    let item = "<MenuItem Header='Do' Command='Do'/>";
+    assert!(parse(&wrap(&item.repeat(MAX_ELEMENTS - 1))).is_ok());
+    assert!(parse(&wrap(&item.repeat(MAX_ELEMENTS))).is_err());
+}
+
+#[test]
+fn tooltip_limit_counts_utf8_bytes_and_is_common_to_layout_elements() {
+    let boundary = "Я".repeat(MAX_TOOLTIP_BYTES / 2);
+    assert!(parse(&form("", &format!("<StackPanel ToolTip='{boundary}'/>"))).is_ok());
+    let error = parse(&form("", &format!("<Button ToolTip='{boundary}a'/>"))).unwrap_err();
+    assert!(error.message.contains("ToolTip"));
+    assert_eq!(
+        parse(&form("", "<TextBox ToolTip=''/>"))
+            .unwrap()
+            .content
+            .common
+            .tool_tip
+            .as_deref(),
+        Some("")
+    );
+}
+
 fn button_style(window: &WindowDefinition) -> &ButtonStyleDefinition {
     match &window.content.kind {
         ElementKind::Button(button) => &button.style,
