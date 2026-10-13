@@ -24,7 +24,7 @@ fn editor_definition(
 
 fn form() -> Form {
     let mut form = Form::new(generated::window_definition(), false).unwrap();
-    form.update(Size::new(640.0, 440.0), 1.0).unwrap();
+    form.update(Size::new(640.0, 488.0), 1.0).unwrap();
     form
 }
 
@@ -559,12 +559,12 @@ fn validation_status_wraps_and_clips_long_message_and_tracks_live_required_rules
     let message = "Ошибка ".repeat(200);
     editor_definition(&mut definition).validation_message = message.clone();
     let mut form = Form::new(definition, false).unwrap();
-    form.update(Size::new(320.0, 400.0), 1.0).unwrap();
+    form.update(Size::new(320.0, 448.0), 1.0).unwrap();
     assert!(matches!(
         form.ui.commit_edit(form.editor()).unwrap(),
         CommitOutcome::Invalid(_)
     ));
-    form.update(Size::new(320.0, 400.0), 1.0).unwrap();
+    form.update(Size::new(320.0, 448.0), 1.0).unwrap();
     let run = form
         .scene()
         .texts
@@ -572,7 +572,8 @@ fn validation_status_wraps_and_clips_long_message_and_tracks_live_required_rules
         .find(|run| run.text == message)
         .unwrap();
     assert!(run.wrap);
-    assert!(run.clip.width <= 256.0 && run.clip.height <= 56.0);
+    assert!(run.clip.width > 0.0 && run.clip.width <= 256.0);
+    assert!(run.clip.height > 0.0 && run.clip.height <= 56.0);
     assert!(run.is_valid());
     let tree = form.accessibility(1.0);
     let edit = &tree
@@ -1513,7 +1514,7 @@ fn radio_keyboard_navigation_and_accessibility_keep_one_selected_peer() {
 #[test]
 fn radio_sample_geometry_and_auto_width_follow_shared_font_and_indicator_metrics() {
     let form = form();
-    assert_eq!(generated::window_definition().height, 440.0);
+    assert_eq!(generated::window_definition().height, 488.0);
     for (name, x) in [
         ("AlignLeft", 32.0),
         ("AlignCenter", 160.0),
@@ -1535,7 +1536,7 @@ fn radio_sample_geometry_and_auto_width_follow_shared_font_and_indicator_metrics
             .bounds(form.find_name("Help").unwrap())
             .unwrap()
             .y,
-        272.0
+        321.0
     );
     assert_eq!(
         form.ui
@@ -1543,7 +1544,7 @@ fn radio_sample_geometry_and_auto_width_follow_shared_font_and_indicator_metrics
             .bounds(form.find_name("Status").unwrap())
             .unwrap()
             .y,
-        320.0
+        369.0
     );
     let mut auto = markup(
         r#"<StackPanel Orientation="Horizontal"><RadioButton x:Name="Auto" Content="Wide choice" FontSize="20" Padding="9,5,17,5" Height="50"/></StackPanel>"#,
@@ -1563,4 +1564,310 @@ fn radio_sample_geometry_and_auto_width_follow_shared_font_and_indicator_metrics
         .unwrap();
     assert_eq!(text.font_size, 20.0);
     assert!((text.bounds.width - width).abs() < 0.01);
+}
+
+#[test]
+fn icon_and_separator_sample_geometry_preserves_existing_controls() {
+    use rust_desktop_ui_controls::IconSymbol;
+    let form = form();
+    for (name, x, symbol) in [
+        ("CheckIcon", 32.0, IconSymbol::Check),
+        ("CloseIcon", 64.0, IconSymbol::Close),
+        ("AddIcon", 96.0, IconSymbol::Add),
+        ("RemoveIcon", 128.0, IconSymbol::Remove),
+        ("ChevronDownIcon", 160.0, IconSymbol::ChevronDown),
+        ("ChevronRightIcon", 192.0, IconSymbol::ChevronRight),
+        ("SaveIcon", 224.0, IconSymbol::Save),
+        ("DisabledIcon", 265.0, IconSymbol::Pin),
+    ] {
+        let id = form.find_name(name).unwrap();
+        let bounds = form.ui.runtime.bounds(id).unwrap();
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            (x, 276.0, 24.0, 24.0),
+            "{name}"
+        );
+        assert_eq!(form.ui.icon_symbol(id), Some(symbol));
+        assert!(form.ui.runtime.tree().children(id).unwrap().is_empty());
+    }
+    for (name, expected) in [
+        ("VRule", (256.0, 272.0, 1.0, 32.0)),
+        ("HRule", (32.0, 312.0, 576.0, 1.0)),
+    ] {
+        let bounds = form
+            .ui
+            .runtime
+            .bounds(form.find_name(name).unwrap())
+            .unwrap();
+        assert_eq!(
+            (bounds.x, bounds.y, bounds.width, bounds.height),
+            expected,
+            "{name}"
+        );
+    }
+    for (name, symbol) in [("Confirm", IconSymbol::Check), ("Pin", IconSymbol::Pin)] {
+        let id = form.find_name(name).unwrap();
+        let icon = form.ui.button_icon(id).unwrap();
+        assert_eq!((icon.symbol, icon.size, icon.spacing), (symbol, 16.0, 8.0));
+        assert_eq!(form.ui.runtime.bounds(id).unwrap().y, 188.0);
+        assert!(form.ui.runtime.tree().children(id).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn icon_separator_defaults_follow_container_axis_and_explicit_bounds() {
+    let form = markup(
+        r#"<StackPanel>
+        <Icon x:Name="Default" Symbol="Check"/>
+        <Icon x:Name="Wide" Symbol="Save" Width="48" Height="20"/>
+        <Separator x:Name="Horizontal" Thickness="2"/>
+        <Separator x:Name="VerticalFallback" Orientation="Vertical" Thickness="3"/>
+        <StackPanel Orientation="Horizontal" Height="40">
+            <Separator x:Name="VerticalStretch" Orientation="Vertical" Thickness="2"/>
+            <Separator x:Name="HorizontalFallback"/>
+            <Separator x:Name="Explicit" Orientation="Vertical" Width="10" Height="25"/>
+        </StackPanel>
+    </StackPanel>"#,
+    );
+    for (name, expected) in [
+        ("Default", (16.0, 16.0)),
+        ("Wide", (48.0, 20.0)),
+        ("Horizontal", (576.0, 2.0)),
+        ("VerticalFallback", (3.0, 16.0)),
+        ("VerticalStretch", (2.0, 40.0)),
+        ("HorizontalFallback", (16.0, 1.0)),
+        ("Explicit", (10.0, 25.0)),
+    ] {
+        let bounds = form
+            .ui
+            .runtime
+            .bounds(form.find_name(name).unwrap())
+            .unwrap();
+        assert_eq!((bounds.width, bounds.height), expected, "{name}");
+    }
+}
+
+#[test]
+fn separator_thickness_updates_omitted_short_axis_and_keeps_explicit_dimensions() {
+    let mut form = markup(
+        r#"<StackPanel>
+        <Separator x:Name="AutoHorizontal"/>
+        <Separator x:Name="FixedHorizontal" Height="3"/>
+        <StackPanel Orientation="Horizontal" Height="40">
+            <Separator x:Name="AutoVertical" Orientation="Vertical"/>
+            <Separator x:Name="FixedVertical" Orientation="Vertical" Width="3"/>
+        </StackPanel>
+    </StackPanel>"#,
+    );
+    for name in [
+        "AutoHorizontal",
+        "FixedHorizontal",
+        "AutoVertical",
+        "FixedVertical",
+    ] {
+        let id = form.find_name(name).unwrap();
+        let mut settings = *form.ui.separator_settings(id).unwrap();
+        settings.thickness = 4.0;
+        form.ui.set_separator_settings(id, settings).unwrap();
+    }
+    form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+    for (name, expected) in [
+        ("AutoHorizontal", (576.0, 4.0)),
+        ("FixedHorizontal", (576.0, 3.0)),
+        ("AutoVertical", (4.0, 40.0)),
+        ("FixedVertical", (3.0, 40.0)),
+    ] {
+        let bounds = form
+            .ui
+            .runtime
+            .bounds(form.find_name(name).unwrap())
+            .unwrap();
+        assert_eq!((bounds.width, bounds.height), expected, "{name}");
+    }
+}
+
+#[test]
+fn icon_button_auto_width_includes_only_real_caption_gap_and_accessible_actions() {
+    let mut form = markup(
+        r#"<StackPanel Orientation="Horizontal">
+        <Button x:Name="Caption" Content="Save document" Icon="Save" IconSize="24" IconSpacing="7" FontSize="20" Padding="9,5,17,5" Height="48"/>
+        <Icon x:Name="Decoration" Symbol="Add" AutomationName="Available"/>
+        <Separator x:Name="Rule" Orientation="Vertical"/>
+        <Button x:Name="Only" Icon="Close" IconSpacing="100" AutomationName="Close document"/>
+        <ToggleButton x:Name="Toggle" Icon="Pin" AutomationName="Keep pinned"/>
+    </StackPanel>"#,
+    );
+    let caption = form.find_name("Caption").unwrap();
+    let measured = form
+        .ui
+        .measure_text_with_font_size("Save document", 16384.0, false, 20.0)
+        .unwrap()
+        .width;
+    assert!(
+        (form.ui.runtime.bounds(caption).unwrap().width - (measured + 26.0 + 24.0 + 7.0)).abs()
+            < 0.01
+    );
+    for name in ["Only", "Toggle"] {
+        let id = form.find_name(name).unwrap();
+        let bounds = form.ui.runtime.bounds(id).unwrap();
+        assert_eq!((bounds.width, bounds.height), (36.0, 36.0));
+        assert!(form.ui.runtime.tree().children(id).unwrap().is_empty());
+    }
+    for name in ["Caption", "Only", "Toggle", "Caption"] {
+        tab(&mut form, false);
+        assert_eq!(form.ui.runtime.focused(), form.find_name(name));
+    }
+    accessible_action(&mut form, "Toggle", accesskit::Action::Click, None);
+    assert_eq!(
+        form.ui.checked(form.find_name("Toggle").unwrap()),
+        Some(true)
+    );
+    let tree = form.accessibility(1.0);
+    for (name, label) in [("Only", "Close document"), ("Toggle", "Keep pinned")] {
+        let widget = form.find_name(name).unwrap();
+        let node = &tree
+            .nodes
+            .iter()
+            .find(|(id, _)| Some(*id) == form.accessible.id(widget))
+            .unwrap()
+            .1;
+        assert_eq!(node.role(), accesskit::Role::Button);
+        assert_eq!(node.label(), Some(label));
+        assert!(node.supports_action(accesskit::Action::Click));
+        assert!(node.children().is_empty());
+    }
+}
+
+#[test]
+fn icon_and_separator_semantics_are_noninteractive_and_names_do_not_draw_text() {
+    let mut form = markup(
+        r##"<StackPanel>
+        <Icon x:Name="Image" Symbol="Save" AutomationName="Saved document" Foreground="#80112233"/>
+        <Icon x:Name="DisabledImage" Symbol="Pin" AutomationName="Pinned" IsEnabled="False"/>
+        <Separator x:Name="Rule" Foreground="#405060"/>
+        <Button x:Name="Action" Content="Action"/>
+    </StackPanel>"##,
+    );
+    let image = form.find_name("Image").unwrap();
+    let foreground = Color {
+        r: 17.0 / 255.0,
+        g: 34.0 / 255.0,
+        b: 51.0 / 255.0,
+        a: 128.0 / 255.0,
+    };
+    assert_eq!(
+        form.ui.icon_style(image).unwrap().foreground,
+        Some(foreground)
+    );
+    assert_eq!(
+        form.ui
+            .separator_settings(form.find_name("Rule").unwrap())
+            .unwrap()
+            .foreground,
+        Some(Color::rgb(64, 80, 96))
+    );
+    for theme in [Theme::FluentDark, Theme::FluentLight] {
+        form.ui.set_theme(theme).unwrap();
+        form.update(Size::new(640.0, 400.0), 1.0).unwrap();
+        assert_eq!(
+            form.ui.icon_style(image).unwrap().foreground,
+            Some(foreground)
+        );
+        let tree = form.accessibility(1.0);
+        for (name, role) in [
+            ("Image", accesskit::Role::Image),
+            ("DisabledImage", accesskit::Role::Image),
+            ("Rule", accesskit::Role::Splitter),
+        ] {
+            let widget = form.find_name(name).unwrap();
+            let node = &tree
+                .nodes
+                .iter()
+                .find(|(id, _)| Some(*id) == form.accessible.id(widget))
+                .unwrap()
+                .1;
+            assert_eq!(node.role(), role);
+            assert!(!node.supports_action(accesskit::Action::Click));
+            assert!(!node.supports_action(accesskit::Action::Focus));
+            assert!(!node.supports_action(accesskit::Action::SetValue));
+            assert_eq!(node.is_disabled(), name == "DisabledImage");
+            if name == "Image" {
+                assert_eq!(node.label(), Some("Saved document"));
+            }
+            let bounds = form.ui.runtime.bounds(widget).unwrap();
+            assert_ne!(
+                form.ui.runtime.hit_test(rust_desktop_ui_core::Point::new(
+                    bounds.x + bounds.width / 2.0,
+                    bounds.y + bounds.height / 2.0
+                )),
+                Some(widget)
+            );
+        }
+        assert!(
+            !form
+                .scene()
+                .texts
+                .iter()
+                .any(|run| matches!(run.text.as_str(), "Saved document" | "Pinned"))
+        );
+    }
+    tab(&mut form, false);
+    assert_eq!(form.ui.runtime.focused(), form.find_name("Action"));
+}
+
+#[test]
+fn icon_manual_ast_preflight_rejects_invalid_metrics_names_and_separator_before_mutation() {
+    use crate::view::MountedView;
+    use rust_desktop_ui_controls::Controls;
+    use rust_desktop_ui_xaml::{
+        ButtonDefinition, ElementDefinition, ElementKind, IconSymbol, SeparatorDefinition,
+        ToggleButtonDefinition,
+    };
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let mut invalid = vec![
+        ElementKind::Button(ButtonDefinition {
+            icon: Some(IconSymbol::Save),
+            ..Default::default()
+        }),
+        ElementKind::ToggleButton(ToggleButtonDefinition {
+            icon: Some(IconSymbol::Pin),
+            ..Default::default()
+        }),
+        ElementKind::Button(ButtonDefinition {
+            icon_size: 20.0,
+            ..Default::default()
+        }),
+    ];
+    for size in [0.0, 513.0, f32::NAN] {
+        invalid.push(ElementKind::Button(ButtonDefinition {
+            content: "Caption".into(),
+            icon: Some(IconSymbol::Add),
+            icon_size: size,
+            ..Default::default()
+        }));
+    }
+    for spacing in [-1.0, 16385.0, f32::INFINITY] {
+        invalid.push(ElementKind::ToggleButton(ToggleButtonDefinition {
+            content: "Caption".into(),
+            icon: Some(IconSymbol::Add),
+            icon_spacing: spacing,
+            ..Default::default()
+        }));
+    }
+    for thickness in [0.0, -1.0, 16385.0, f32::NAN] {
+        invalid.push(ElementKind::Separator(SeparatorDefinition {
+            thickness,
+            ..Default::default()
+        }));
+    }
+    for kind in invalid {
+        let definition = ElementDefinition {
+            kind,
+            ..Default::default()
+        };
+        let count = ui.runtime.tree().len();
+        assert!(MountedView::mount(&mut ui, root, &definition).is_err());
+        assert_eq!(ui.runtime.tree().len(), count);
+    }
 }

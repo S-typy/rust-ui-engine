@@ -163,7 +163,7 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
         # The example places its validation status after the fixed-height help
         # label. Check readable message glyphs separately from the field chrome.
         # This is coverage, not OCR; the exact text is checked in diagnostics.
-        for y in range(round(320 * scale), min(height, round(356 * scale))):
+        for y in range(round(369 * scale), min(height, round(405 * scale))):
             for x in range(round(40 * scale), min(width, round(420 * scale))):
                 color = pixel(x, y)
                 if near(color, foreground, 10) or near(color, error, 10):
@@ -268,6 +268,67 @@ def radio_capture_checkpoints(pixels: bytes, width: int, height: int, scale: flo
     return samples
 
 
+def primitives_capture_checkpoints(pixels: bytes, width: int, height: int,
+                                  scale: float, dark: bool) -> dict:
+    """Check visible vector silhouettes and thin rules at independent fixture bounds."""
+    if (not math.isfinite(scale) or scale <= 0 or width < 440 * scale
+            or height < 316 * scale or len(pixels) != width * height * 4):
+        raise SmokeFailure("Invalid primitive capture dimensions or DPI")
+    canvas = (32, 32, 32) if dark else (243, 243, 243)
+    foreground = (245, 245, 245) if dark else (27, 27, 27)
+    muted = (170, 170, 170) if dark else (105, 105, 105)
+    border = (85, 85, 85) if dark else (205, 205, 205)
+
+    def pixel(x, y):
+        offset = ((height - 1 - y) * width + x) * 4
+        blue, green, red = pixels[offset:offset + 3]
+        return red, green, blue
+
+    def near(actual, expected):
+        return all(abs(a - b) <= 3 for a, b in zip(actual, expected, strict=True))
+
+    def require(x, y, expected, description):
+        actual = pixel(math.floor(x * scale), math.floor(y * scale))
+        if not near(actual, expected):
+            raise SmokeFailure(f"Unexpected {description}: {actual}, expected {expected}")
+
+    icons, masks = {}, set()
+    for name, left in (("Check", 32), ("Close", 64), ("Add", 96), ("Remove", 128),
+                       ("ChevronDown", 160), ("ChevronRight", 192), ("Save", 224),
+                       ("DisabledPin", 265)):
+        expected = muted if name == "DisabledPin" else foreground
+        colors = [pixel(x, y)
+                  for y in range(round(276 * scale), round(300 * scale))
+                  for x in range(round(left * scale), round((left + 24) * scale))]
+        ink = sum(near(color, expected) for color in colors)
+        shades = {color for color in colors
+                  if not near(color, expected) and not near(color, canvas)}
+        if ink < 12 * scale * scale:
+            raise SmokeFailure(f"Missing {name} vector silhouette: ink={ink}")
+        if name in ("Check", "Close", "ChevronDown", "ChevronRight") and len(shades) < 2:
+            raise SmokeFailure(f"{name} diagonal lacks antialiased coverage")
+        if name == "DisabledPin" and any(near(color, foreground) for color in colors):
+            raise SmokeFailure("Disabled icon contains enabled foreground")
+        for x in (left, left + 23):
+            for y in (276, 299):
+                require(x, y, canvas, name + " transparent corner")
+        mask = bytes(not near(color, canvas) for color in colors)
+        digest = hashlib.sha256(mask).hexdigest()
+        if digest in masks:
+            raise SmokeFailure(f"{name} repeats another icon silhouette")
+        masks.add(digest)
+        icons[name] = {"ink_pixels": ink, "edge_shades": len(shades), "mask_sha256": digest}
+    for x in (40, 100, 200, 300, 400):
+        require(x, 312, border, "horizontal separator")
+        for y in (310, 314):
+            require(x, y, canvas, "horizontal separator outside")
+    for y in (280, 288, 296):
+        require(256, y, border, "vertical separator")
+        for x in (254, 259):
+            require(x, y, canvas, "vertical separator outside")
+    return {"icons": icons, "horizontal_separator": True, "vertical_separator": True}
+
+
 class FormWindows(GalleryWindows):
     def __init__(self, dark: bool, focused: bool = False, invalid: bool = False,
                  read_only: bool = False, buttons: dict | None = None,
@@ -304,6 +365,8 @@ class FormWindows(GalleryWindows):
             raise SmokeFailure("Form reported missing glyphs")
         result = capture_checkpoints(pixels, width, height, scale, self.dark, self.focused,
                                      self.invalid, self.read_only)
+        result["primitives"] = primitives_capture_checkpoints(pixels, width, height,
+                                                             scale, self.dark)
         if self.buttons is not None:
             result["buttons"] = button_capture_checkpoints(pixels, width, height, scale,
                                                           self.dark, option_checked=self.read_only,
@@ -324,6 +387,10 @@ def form_capture_worker(hwnd: int, pid: int, destination: Path, result_queue,
 
 
 class FormSession(RetainedSession):
+    def pointer(self, message: int, x: int, y: int, scale: float, held: bool = False) -> None:
+        super().pointer(message, x, y, scale, held)
+        self.expected_cursor = self.windows.cursor_position()
+
     def wait_state(self, description: str, predicate) -> dict:
         def matches():
             state = parse_state(self.windows.title(self.hwnd))
@@ -396,10 +463,18 @@ class FormSession(RetainedSession):
         # valid settling condition. Require a live frame and allow queued input.
         self.wait_state("live frame before " + name, lambda s: s["frames"] > 0)
         time.sleep(0.15)
+        cursor_before = self.windows.cursor_position()
         result = capture_client(self.hwnd, self.process.pid, output / f"{name}.bmp",
                                 self.timeout, worker_target=form_capture_worker,
                                 worker_args=(self.windows.dark, focused, invalid, read_only, buttons, radios))
+        result["cursor"] = {"expected": list(self.expected_cursor),
+                            "before": list(cursor_before),
+                            "after": list(self.windows.cursor_position())}
         self.report["captures"][name] = result
+        if buttons is not None and buttons["phase"] in ("hover", "pressed"):
+            if any(result["cursor"][phase] != result["cursor"]["expected"]
+                   for phase in ("before", "after")):
+                raise SmokeFailure(f"Pointer moved during required {name} state: {result['cursor']}")
         if result["status"] != "available":
             raise SmokeFailure(f"Required {name} capture unavailable: {result.get('reason')}")
 
@@ -446,6 +521,15 @@ class FormSession(RetainedSession):
         self.run_radios(output, scale)
         self.key(VK_TAB)
         self.wait_focus("Message", "Tab leaves radio group and wraps to Message")
+        for name, x, y in (("SaveIcon", 236, 288), ("HRule", 400, 312),
+                            ("VRule", 256, 280)):
+            commands = self.log().count("command=")
+            self.click_control(x, y, scale)
+            self.wait_focus("", name + " does not accept pointer focus")
+            self.key(VK_TAB)
+            self.wait_focus("Message", "Tab skips " + name + " and starts at Message")
+            if self.log().count("command=") != commands:
+                raise SmokeFailure(name + " activated a command")
         self.click_control(380, 206, scale)
         time.sleep(0.15)
         if last_edit_diagnostic(self.log(), "focus-name") == "Disabled":
@@ -468,7 +552,7 @@ class FormSession(RetainedSession):
         self.wait_checkbox(False, "pointer clears Option", toggles)
         self.click_editor(scale)
         before = parse_state(self.windows.title(self.hwnd))["frames"]
-        target = (round(480 * scale), round(400 * scale))
+        target = (round(480 * scale), round(448 * scale))
         self.windows.resize_client(self.hwnd, *target)
         self.wait("client resize", lambda: self.windows.client_size(self.hwnd) == target)
         self.wait_state("resize redraw", lambda state: state["frames"] > before)
@@ -539,7 +623,9 @@ class FormSession(RetainedSession):
                   "named-editor=Message resolved=true" in self.log())
         self.report["checks"].append({"check": "compiled x:Name Message resolves"})
         names = ("Message", "Option", "Confirm", "Pin", "Disabled",
-                 "AlignLeft", "AlignCenter", "AlignRight")
+                 "AlignLeft", "AlignCenter", "AlignRight", "CheckIcon", "CloseIcon",
+                 "AddIcon", "RemoveIcon", "ChevronDownIcon", "ChevronRightIcon",
+                 "SaveIcon", "DisabledIcon", "VRule", "HRule")
         for name in names:
             self.wait("compiled nested x:Name " + name + " resolves", lambda name=name:
                       f"named-control={name} resolved=true" in self.log())
@@ -551,9 +637,9 @@ class FormSession(RetainedSession):
         scale = dpi / 96.0
         self.report["dpi"] = dpi
         actual = self.windows.client_size(self.hwnd)
-        expected = (round(640 * scale), round(440 * scale))
+        expected = (round(640 * scale), round(488 * scale))
         if any(abs(a - b) > 1 for a, b in zip(actual, expected, strict=True)):
-            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x440 at DPI {dpi}: {expected}")
+            raise SmokeFailure(f"Initial client size {actual} differs from XAML 640x488 at DPI {dpi}: {expected}")
         self.report["checks"].append({"check": "initial client dimensions match compiled XAML",
                                       "actual_physical": actual, "expected_physical": expected,
                                       "rounding_tolerance_pixels": 1})
@@ -666,7 +752,7 @@ class FormSession(RetainedSession):
         self.wait_value(TEXT[:-1], "Backspace removes final grapheme")
 
         before = parse_state(self.windows.title(self.hwnd))["frames"]
-        target = (round(480 * scale), round(400 * scale))
+        target = (round(480 * scale), round(448 * scale))
         self.windows.resize_client(self.hwnd, *target)
         self.wait("native client resize", lambda: self.windows.client_size(self.hwnd) == target)
         self.wait_state("resized form redraw", lambda s: s["frames"] > before)
@@ -756,7 +842,7 @@ def self_test() -> None:
         pass
     else:
         raise AssertionError("Diagnostic expressions must be rejected")
-    width, height = 640, 440
+    width, height = 640, 488
     for dark in (False, True):
         canvas = 32 if dark else 243
         surface = 45 if dark else 255
@@ -811,7 +897,7 @@ def self_test() -> None:
         error = (255, 153, 164) if dark else (196, 43, 28)
         set_rgb(200, 104, error)
         set_rgb(200, 138, error)
-        for y in range(324, 329):
+        for y in range(373, 378):
             for x in range(45, 80):
                 set_rgb(x, y, (foreground,) * 3)
         invalid_fixture = bytes(pixels)
@@ -825,7 +911,7 @@ def self_test() -> None:
         else:
             raise AssertionError("A normal border must not pass as invalid appearance")
         pixels[:] = invalid_fixture
-        for y in range(320, 356):
+        for y in range(369, 405):
             for x in range(40, 420):
                 set_rgb(x, y, (canvas,) * 3)
         try:
@@ -878,6 +964,49 @@ def self_test() -> None:
             else:
                 raise AssertionError("Missing dot/focus, square indicator or duplicate selection must fail")
         pixels[:] = direct
+        # Independent masks exercise missing/wrong-color/placeholder/rule
+        # rejection without duplicating the vector path implementation.
+        for index, left in enumerate((32, 64, 96, 128, 160, 192, 224, 265)):
+            color = muted if index == 7 else (foreground,) * 3
+            for y in range(281, 285 + index):
+                for x in range(left + 5, left + 10):
+                    set_rgb(x, y, color)
+            set_rgb(left + 12, 290, (120, 120, 120))
+            set_rgb(left + 13, 290, (140, 140, 140))
+        for x in range(32, 608):
+            set_rgb(x, 312, (border,) * 3)
+        for y in range(272, 304):
+            set_rgb(256, y, (border,) * 3)
+        primitive_fixture = bytes(pixels)
+        primitives_capture_checkpoints(pixels, width, height, 1.0, dark)
+        for damage in ("missing-icon", "enabled-disabled-icon", "opaque-corner",
+                       "missing-horizontal-rule", "missing-vertical-rule", "duplicate-icon"):
+            pixels[:] = primitive_fixture
+            if damage == "missing-icon":
+                for y in range(276, 300):
+                    for x in range(32, 56):
+                        set_rgb(x, y, (canvas,) * 3)
+            elif damage == "enabled-disabled-icon":
+                set_rgb(270, 282, (foreground,) * 3)
+            elif damage == "opaque-corner":
+                set_rgb(32, 276, (foreground,) * 3)
+            elif damage == "missing-horizontal-rule":
+                set_rgb(100, 312, (canvas,) * 3)
+            elif damage == "missing-vertical-rule":
+                set_rgb(256, 288, (canvas,) * 3)
+            else:
+                for y in range(276, 300):
+                    for x in range(24):
+                        source = ((height - 1 - y) * width + 32 + x) * 4
+                        target = ((height - 1 - y) * width + 64 + x) * 4
+                        pixels[target:target + 4] = pixels[source:source + 4]
+            try:
+                primitives_capture_checkpoints(pixels, width, height, 1.0, dark)
+            except SmokeFailure:
+                pass
+            else:
+                raise AssertionError("Primitive checker accepted " + damage)
+        pixels[:] = direct
         # Reproduce the previous accidental linear->sRGB palette encoding.
         for x, y in ((8, 8), (32, 104)):
             wrong = round(255 * (1.055 * (canvas / 255) ** (1 / 2.4) - 0.055))
@@ -894,7 +1023,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("Invalid scale must be rejected")
-    print("PASS: XAML tree diagnostics, direct-sRGB, nested controls, read-only/invalid palettes, radio exclusivity/dot/focus/circle and corner/glyph fixtures")
+    print("PASS: XAML tree diagnostics, direct-sRGB, nested controls, read-only/invalid palettes, radio states, vector icons/separators and corner/glyph fixtures")
 
 
 def main() -> int:

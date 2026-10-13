@@ -4,6 +4,7 @@ mod button;
 mod commands;
 mod controls;
 mod editor;
+mod primitives;
 mod ribbon;
 mod theme;
 
@@ -11,6 +12,7 @@ pub use button::*;
 pub use commands::*;
 pub use controls::*;
 pub use editor::*;
+pub use primitives::*;
 pub use ribbon::*;
 pub use theme::*;
 
@@ -18,6 +20,8 @@ pub use theme::*;
 mod button_tests;
 #[cfg(test)]
 mod edit_session_tests;
+#[cfg(test)]
+mod primitive_tests;
 #[cfg(test)]
 mod radio_tests;
 #[cfg(test)]

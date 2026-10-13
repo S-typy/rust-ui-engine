@@ -1,7 +1,7 @@
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Форма · Rust UI"
-        Width="640" Height="440"
+        Width="640" Height="488"
         Padding="32" Theme="Light">
     <StackPanel x:Name="Form" Spacing="8">
         <TextBlock Text="Форма с несколькими элементами" Height="32" />
@@ -16,9 +16,9 @@
                  PlaceholderText="Введите текст…" />
         <CheckBox x:Name="Option" Content="Только чтение" FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
         <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
-            <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Width="160"
+            <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Icon="Check" Width="160"
                     FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
-            <ToggleButton x:Name="Pin" Content="Закрепить" Width="120"
+            <ToggleButton x:Name="Pin" Content="Закрепить" Icon="Pin" Width="120"
                           FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
             <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
         </StackPanel>
@@ -27,6 +27,18 @@
             <RadioButton x:Name="AlignCenter" Content="По центру" GroupName="Alignment" Width="120" />
             <RadioButton x:Name="AlignRight" Content="Справа" GroupName="Alignment" IsEnabled="False" Width="120" />
         </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8" Height="32">
+            <Icon x:Name="CheckIcon" Symbol="Check" AutomationName="Готово" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="CloseIcon" Symbol="Close" AutomationName="Закрыть" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="AddIcon" Symbol="Add" AutomationName="Добавить" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="RemoveIcon" Symbol="Remove" AutomationName="Убрать" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="ChevronDownIcon" Symbol="ChevronDown" AutomationName="Вниз" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="ChevronRightIcon" Symbol="ChevronRight" AutomationName="Вправо" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="SaveIcon" Symbol="Save" AutomationName="Сохранить" Width="24" Height="24" Margin="0,4" />
+            <Separator x:Name="VRule" Orientation="Vertical" />
+            <Icon x:Name="DisabledIcon" Symbol="Pin" AutomationName="Закреплено" IsEnabled="False" Width="24" Height="24" Margin="0,4" />
+        </StackPanel>
+        <Separator x:Name="HRule" />
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />
         <TextBlock x:Name="Status" Height="56" Text="Изменений нет." />

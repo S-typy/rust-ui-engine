@@ -634,6 +634,14 @@ fn every_supported_element_can_be_the_single_root_with_default_common_properties
             "RadioButton",
             ElementKind::RadioButton(RadioButtonDefinition::default()),
         ),
+        (
+            "Icon Symbol='Check'",
+            ElementKind::Icon(IconDefinition::default()),
+        ),
+        (
+            "Separator",
+            ElementKind::Separator(SeparatorDefinition::default()),
+        ),
     ] {
         let parsed = parse(&form("", &format!("<{tag}/>"))).unwrap();
         assert_eq!(
@@ -745,6 +753,7 @@ fn all_leaf_kinds_reject_children_and_text_while_panels_reject_mixed_text() {
         "ToggleButton",
         "CheckBox",
         "RadioButton",
+        "Separator",
     ] {
         for content in ["<TextBox/>", "text", "<![CDATA[text]]>"] {
             assert!(
@@ -774,6 +783,7 @@ fn common_geometry_and_state_are_validated_for_every_element_kind() {
         "ToggleButton",
         "CheckBox",
         "RadioButton",
+        "Separator",
     ] {
         for attributes in [
             "Width='0'",
@@ -1108,4 +1118,168 @@ fn radio_initial_selection_rejects_conflicts_per_named_or_immediate_parent_group
     }
     let error = parse(&form("", "<StackPanel>\n<RadioButton IsChecked='True'/>\n<RadioButton IsChecked='True'/>\n</StackPanel>")).unwrap_err();
     assert_eq!((error.line, error.column), (4, 1));
+}
+
+#[test]
+fn icon_symbols_and_separator_settings_parse_and_generate_typed_values() {
+    for (name, symbol) in [
+        ("Check", IconSymbol::Check),
+        ("Close", IconSymbol::Close),
+        ("Add", IconSymbol::Add),
+        ("Remove", IconSymbol::Remove),
+        ("ChevronDown", IconSymbol::ChevronDown),
+        ("ChevronRight", IconSymbol::ChevronRight),
+        ("Save", IconSymbol::Save),
+        ("Pin", IconSymbol::Pin),
+    ] {
+        let source = form(
+            "",
+            &format!(
+                "<Icon Symbol='{name}' Foreground='#80112233' Width='48' Height='16' AutomationName='Icon &quot;\\&#10;🌍'/>"
+            ),
+        );
+        let definition = parse(&source).unwrap();
+        assert_eq!(
+            definition.content.kind,
+            ElementKind::Icon(IconDefinition {
+                symbol,
+                foreground: Some([17, 34, 51, 128])
+            })
+        );
+        assert_eq!(definition.content.common.width, Some(48.0));
+        assert_eq!(definition.content.common.height, Some(16.0));
+        let generated = compile(&source).unwrap();
+        assert!(generated.contains(&format!("symbol: rust_desktop_ui_xaml::IconSymbol::{name}")));
+        assert!(generated.contains("foreground: Some([17, 34, 51, 128])"));
+        assert!(generated.contains("automation_name: Some(\"Icon \\\"\\\\\\n🌍\".into())"));
+    }
+    let source = form(
+        "",
+        "<Separator Orientation='Vertical' Thickness='2.5' Foreground='#405060'/>",
+    );
+    assert_eq!(
+        parse(&source).unwrap().content.kind,
+        ElementKind::Separator(SeparatorDefinition {
+            orientation: Orientation::Vertical,
+            thickness: 2.5,
+            foreground: Some([64, 80, 96, 255]),
+        })
+    );
+    let generated = compile(&source).unwrap();
+    assert!(generated.contains("orientation: rust_desktop_ui_xaml::Orientation::Vertical"));
+    assert!(generated.contains("thickness: 2.5"));
+    assert!(
+        compile(&form("", "<Separator/>"))
+            .unwrap()
+            .contains("orientation: rust_desktop_ui_xaml::Orientation::Horizontal")
+    );
+}
+
+#[test]
+fn icon_button_metrics_require_an_icon_and_icon_only_actions_require_a_name() {
+    for tag in ["Button", "ToggleButton"] {
+        let source = form(
+            "",
+            &format!(
+                "<{tag} Icon='Save' IconSize='24' IconSpacing='5' AutomationName='Save document'/>"
+            ),
+        );
+        let parsed = parse(&source).unwrap();
+        let (icon, size, spacing) = match parsed.content.kind {
+            ElementKind::Button(button) => (button.icon, button.icon_size, button.icon_spacing),
+            ElementKind::ToggleButton(button) => {
+                (button.icon, button.icon_size, button.icon_spacing)
+            }
+            _ => unreachable!(),
+        };
+        assert_eq!((icon, size, spacing), (Some(IconSymbol::Save), 24.0, 5.0));
+        let generated = compile(&source).unwrap();
+        for literal in [
+            "icon: Some(rust_desktop_ui_xaml::IconSymbol::Save)",
+            "icon_size: 24.0",
+            "icon_spacing: 5.0",
+        ] {
+            assert!(generated.contains(literal), "{literal}");
+        }
+        for attrs in [
+            "IconSize='16'",
+            "IconSpacing='8'",
+            "Content='Caption' IconSize='20'",
+        ] {
+            assert!(
+                parse(&form("", &format!("<{tag} {attrs}/>")))
+                    .unwrap_err()
+                    .message
+                    .contains("require Icon")
+            );
+        }
+        for attrs in [
+            "Icon='Check'",
+            "Icon='Check' AutomationName=''",
+            "Icon='Check' AutomationName='   '",
+            "Icon='Check' Content='  '",
+        ] {
+            assert!(
+                parse(&form("", &format!("<{tag} {attrs}/>")))
+                    .unwrap_err()
+                    .message
+                    .contains("AutomationName")
+            );
+        }
+        assert!(
+            parse(&form(
+                "",
+                &format!("<{tag} Icon='Check' Content='Accept'/>")
+            ))
+            .is_ok()
+        );
+        assert!(parse(&form("", &format!("<{tag} Icon='Check' IconSize='512' IconSpacing='16384' AutomationName='Action'/>"))).is_ok());
+    }
+}
+
+#[test]
+fn icon_separator_and_embedded_metrics_reject_unknown_or_invalid_markup() {
+    for element in [
+        "<Icon/>",
+        "<Icon Symbol='Unknown'/>",
+        "<Icon Symbol='check'/>",
+        "<Icon Symbol='{Binding Icon}'/>",
+        "<Icon Symbol='Check' Content='caption'/>",
+        "<Icon Symbol='Check' Source='icon.svg'/>",
+        "<Icon Symbol='Check' Foreground='Red'/>",
+        "<Icon Symbol='Check'><Button/></Icon>",
+        "<Icon Symbol='Check'>caption</Icon>",
+        "<Icon Symbol='Check' Width='0'/>",
+        "<Separator Orientation='Diagonal'/>",
+        "<Separator Symbol='Check'/>",
+        "<Separator Foreground='#00000'/>",
+        "<CheckBox Icon='Check'/>",
+        "<RadioButton Icon='Pin'/>",
+        "<TextBlock IconSize='16'/>",
+    ] {
+        assert!(parse(&form("", element)).is_err(), "{element}");
+    }
+    for value in ["0", "-1", "NaN", "inf", "1e-300", "16385"] {
+        assert!(
+            parse(&form("", &format!("<Separator Thickness='{value}'/>"))).is_err(),
+            "{value}"
+        );
+    }
+    for tag in ["Button", "ToggleButton"] {
+        for (attribute, values) in [
+            ("IconSize", &["0", "-1", "NaN", "inf", "1e-300", "513"][..]),
+            ("IconSpacing", &["-1", "NaN", "inf", "16385"][..]),
+        ] {
+            for value in values {
+                let error = parse(&form(
+                    "",
+                    &format!("<{tag} Icon='Check' Content='Action'\n {attribute}='{value}'/>"),
+                ))
+                .unwrap_err();
+                assert_eq!(error.line, 3);
+                assert!(error.message.contains(attribute), "{error}");
+            }
+        }
+    }
+    assert!(parse(&form("", "<Separator Thickness='16384'/>")).is_ok());
 }

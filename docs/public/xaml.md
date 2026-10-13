@@ -3,7 +3,8 @@
 `rust-desktop-ui-xaml` компилирует собственный ограниченный профиль XAML в Rust.
 Профиль описывает нативное окно `Window`, вложенные `StackPanel`, подписи
 `TextBlock`, однострочные `TextBox`, кнопки `Button`, переключатели `ToggleButton`,
-флажки `CheckBox` и переключатели группы `RadioButton`.
+флажки `CheckBox`, переключатели группы `RadioButton`, векторные `Icon`
+и разделители `Separator`.
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -27,20 +28,25 @@ cargo run -p xaml-form --locked -- --light --smoke-test
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Форма · Rust UI"
-        Width="640" Height="440"
+        Width="640" Height="488"
         Padding="32" Theme="Light">
     <StackPanel x:Name="Form" Spacing="8">
         <TextBlock Text="Форма с несколькими элементами" Height="32" />
         <TextBlock Text="Текст сообщения" />
-        <TextBox x:Name="Message" Height="36"
+        <TextBox x:Name="Message"
+                 Height="36"
                  FontSize="14" Padding="12,5" CornerRadius="4" BorderThickness="1"
-                 MaxLength="64" IsRequired="True" CommitOnLostFocus="True"
+                 IsReadOnly="False" MaxLength="64"
+                 IsRequired="True" CommitOnLostFocus="True"
                  ValidationMessage="Введите текст перед подтверждением."
-                 AutomationName="Текст" PlaceholderText="Введите текст…" />
-        <CheckBox x:Name="Option" Content="Только чтение" />
+                 AutomationName="Текст"
+                 PlaceholderText="Введите текст…" />
+        <CheckBox x:Name="Option" Content="Только чтение" FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
         <StackPanel Orientation="Horizontal" Spacing="8" Height="36">
-            <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Width="160" />
-            <ToggleButton x:Name="Pin" Content="Закрепить" Width="120" />
+            <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Icon="Check" Width="160"
+                    FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
+            <ToggleButton x:Name="Pin" Content="Закрепить" Icon="Pin" Width="120"
+                          FontSize="14" Padding="8,5" CornerRadius="4" BorderThickness="1" />
             <Button x:Name="Disabled" Content="Недоступно" Width="112" IsEnabled="False" />
         </StackPanel>
         <StackPanel Orientation="Horizontal" Spacing="8" Height="32">
@@ -48,6 +54,18 @@ cargo run -p xaml-form --locked -- --light --smoke-test
             <RadioButton x:Name="AlignCenter" Content="По центру" GroupName="Alignment" Width="120" />
             <RadioButton x:Name="AlignRight" Content="Справа" GroupName="Alignment" IsEnabled="False" Width="120" />
         </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="8" Height="32">
+            <Icon x:Name="CheckIcon" Symbol="Check" AutomationName="Готово" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="CloseIcon" Symbol="Close" AutomationName="Закрыть" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="AddIcon" Symbol="Add" AutomationName="Добавить" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="RemoveIcon" Symbol="Remove" AutomationName="Убрать" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="ChevronDownIcon" Symbol="ChevronDown" AutomationName="Вниз" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="ChevronRightIcon" Symbol="ChevronRight" AutomationName="Вправо" Width="24" Height="24" Margin="0,4" />
+            <Icon x:Name="SaveIcon" Symbol="Save" AutomationName="Сохранить" Width="24" Height="24" Margin="0,4" />
+            <Separator x:Name="VRule" Orientation="Vertical" />
+            <Icon x:Name="DisabledIcon" Symbol="Pin" AutomationName="Закреплено" IsEnabled="False" Width="24" Height="24" Margin="0,4" />
+        </StackPanel>
+        <Separator x:Name="HRule" />
         <TextBlock x:Name="Help" Height="40"
                    Text="Enter — подтвердить · Escape — отменить изменения" />
         <TextBlock x:Name="Status" Height="56" Text="Изменений нет." />
@@ -73,6 +91,8 @@ URI пространства имён. Пространство имён WPF pre
 | ToggleButton | `Content=""`, `IsChecked="False"`, необязательный `Command` | Кнопка с выбранным состоянием |
 | CheckBox | `Content=""`, `IsChecked="False"` | Двухсостоянийный флажок |
 | RadioButton | `Content=""`, `IsChecked="False"`, необязательный `GroupName` | Взаимоисключающий выбор в группе |
+| Icon | обязательный `Symbol`, необязательный `Foreground` | Самостоятельная векторная пиктограмма |
+| Separator | `Orientation="Horizontal"`, `Thickness="1"`, необязательный `Foreground` | Неинтерактивная линия |
 
 Для каждого элемента содержимого доступны `x:Name`, `Width`, `Height`, `Margin`,
 `IsEnabled` и `AutomationName`. Имена уникальны во всём дереве окна.
@@ -121,6 +141,43 @@ RadioButton также имеет прозрачную строку и круг�
 задаёт скругление кольца фокуса всей строки.
 Настройка отдельных состояний доступна в Rust через `ButtonStyle`;
 XAML styles, triggers и templates пока не поддерживаются.
+
+`Icon.Symbol` принимает только `Check`, `Close`, `Add`, `Remove`, `ChevronDown`,
+`ChevronRight`, `Save` или `Pin`. Это собственные векторные символы в координатах
+16×16; пути файлов, SVG, шрифтовые имена и внешние ресурсы не загружаются. Разметка
+без Symbol отклоняется. По умолчанию Icon занимает 16×16 logical pixels; явные
+Width/Height задают область, внутри которой символ равномерно масштабируется
+и центрируется. Foreground наследует цвет текста темы, а отключённый Icon получает
+приглушённый цвет темы. AutomationName задаёт смысл самостоятельной пиктограммы
+для accessibility и не рисуется как подпись.
+
+`Separator` принимает Horizontal/Vertical. Thickness должна быть конечной,
+положительной и не больше 16384 logical pixels. Foreground наследует цвет границы
+темы. Линия центрируется внутри своих границ и обрезается ими. В вертикальном
+StackPanel горизонтальный разделитель без размеров растягивается по ширине,
+его высота равна Thickness. В горизонтальном StackPanel вертикальный разделитель
+растягивается по высоте, его ширина равна Thickness. В противоположном направлении
+длина по умолчанию равна 16. Явные Width/Height имеют приоритет. Icon и Separator
+не участвуют в Tab, pointer hit testing или действиях accessibility. В нативном
+дереве они представлены как Image и Splitter соответственно; это не интерактивный
+разделитель с изменением размеров.
+
+Button и ToggleButton дополнительно принимают `Icon`, `IconSize="16"` и
+`IconSpacing="8"`. Имена символов те же, что у Icon. IconSize должна быть конечной
+и принадлежать `(0, 512]`, IconSpacing — `[0, 16384]`. Метрики без Icon отклоняются.
+Пиктограмма и подпись центрируются вместе; промежуток появляется только при
+непустой подписи. Цвет пиктограммы следует текущему foreground кнопки, включая
+hover, checked и disabled. CheckBox и RadioButton эти свойства не принимают.
+Пиктограмма внутри кнопки не создаёт отдельный accessibility node.
+
+Кнопка с Icon и пустой либо пробельной Content требует непустую AutomationName:
+это имя её действия. В горизонтальной панели желаемая ширина учитывает размер
+пиктограммы, подпись, промежуток и padding; минимальная ширина кнопки только с
+пиктограммой — 36 вместо 80. Высота по умолчанию остаётся 36, вертикальная Auto
+ширина растягивается по прежним правилам. Для крупного IconSize можно задать
+Width/Height; иначе содержимое обрезается. Ручной AST проходит тот же preflight
+метрик и доступного имени до монтажа; при отсутствии icon его числовые поля
+icon_size/icon_spacing должны сохранять defaults 16/8.
 
 Если размер не задан, адаптер примера растягивает элемент по ширине вертикальной
 панели. В горизонтальной панели при монтаже он вычисляет желаемую ширину подписи и кнопки
@@ -437,6 +494,9 @@ python tests/windows_xaml_smoke.py --exe target/release/xaml-form.exe --controls
 Для RadioButton дополнительно проверяются исключительный выбор мышью и четырьмя
 стрелками, круглый индикатор с точкой и независимый фокус, пропуск disabled,
 сохранение выбранного состояния после Space/Enter и выход из группы по Tab.
+Для Icon/Separator снимки проверяют восемь разных векторных силуэтов, сглаживание
+диагоналей, muted-цвет отключённого символа и тонкие линии обеих ориентаций.
+Клики по иконке и разделителям не активируют команды и не создают Tab stops.
 Этот режим не вводит текст и не проверяет accepted value или отмену редактора.
 2026-10-12 этот сценарий прошёл на NVIDIA RTX 3090 с DX12 и Vulkan в обеих
 темах при DPI 144: по 30 проверок и 8 снимков на сочетание. Проверены пиксельные
@@ -447,6 +507,8 @@ DX12/Vulkan, Light/Dark, DPI 144 — по 53 проверки и 12 снимко
 Нативный сценарий проверяет обычный Tab и возврат к первому контролу. Shift+Tab
 проверяется на уровне модели ввода; posted Win32-сообщения не устанавливают
 реальное состояние Shift, которое читает host.
+Версия с Icon/Separator проверена 2026-10-13 на DX12/Vulkan в обеих темах,
+DPI 144: по 59 проверок и 12 снимков; resize 640×488 → 480×448 logical pixels.
 Последовательность синтетических KEYDOWN/CHAR не атомарна: если winit обработал
 KEYDOWN до появления CHAR в очереди, текст может не попасть в событие ввода.
 Такой тайм-аут сценария требует разбора журнала и не доказывает неисправность
@@ -467,10 +529,14 @@ KEYDOWN до появления CHAR в очереди, текст может н
 
 ```text
 cargo test -p rust-desktop-ui-render-wgpu --locked rounded_stroke_gpu -- --ignored --nocapture
+cargo test -p rust-desktop-ui-render-wgpu --locked stroke_path_gpu_union -- --ignored --nocapture
 ```
 
 Backend выбирается через `WGPU_BACKEND`. Такой тест подтверждает композицию
 пикселей, но не заменяет оконные сценарии ввода и accessibility.
+Тест StrokePath проверяет пересечения с одним alpha blend, круглые концы,
+диагонали, clipping и painter order при масштабе 1/1.5/2. Оба теста прошли
+2026-10-13 на DX12 и Vulkan с NVIDIA RTX 3090.
 
 ## Происхождение и лицензии
 

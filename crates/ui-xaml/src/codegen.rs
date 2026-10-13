@@ -1,5 +1,6 @@
 use crate::{
-    ButtonStyleDefinition, EditBoxDefinition, ElementDefinition, ElementKind, WindowDefinition,
+    ButtonStyleDefinition, EditBoxDefinition, ElementDefinition, ElementKind, IconSymbol,
+    WindowDefinition,
 };
 
 pub(super) fn window(window: &WindowDefinition) -> String {
@@ -32,6 +33,13 @@ fn optional_string(value: &Option<String>) -> String {
     }
 }
 
+fn optional_icon(value: Option<IconSymbol>) -> String {
+    match value {
+        Some(symbol) => format!("Some(rust_desktop_ui_xaml::IconSymbol::{symbol:?})"),
+        None => "None".into(),
+    }
+}
+
 fn element(element: &ElementDefinition) -> String {
     let common = &element.common;
     let kind = match &element.kind {
@@ -56,17 +64,19 @@ fn element(element: &ElementDefinition) -> String {
             text.text,
         ),
         ElementKind::Button(button) => format!(
-            "rust_desktop_ui_xaml::ElementKind::Button(rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {} }})",
+            "rust_desktop_ui_xaml::ElementKind::Button(rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }})",
             button.content,
             optional_string(&button.command),
             button_style(&button.style),
+            optional_icon(button.icon), button.icon_size, button.icon_spacing,
         ),
         ElementKind::ToggleButton(button) => format!(
-            "rust_desktop_ui_xaml::ElementKind::ToggleButton(rust_desktop_ui_xaml::ToggleButtonDefinition {{ content: {:?}.into(), command: {}, is_checked: {}, style: {} }})",
+            "rust_desktop_ui_xaml::ElementKind::ToggleButton(rust_desktop_ui_xaml::ToggleButtonDefinition {{ content: {:?}.into(), command: {}, is_checked: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }})",
             button.content,
             optional_string(&button.command),
             button.is_checked,
             button_style(&button.style),
+            optional_icon(button.icon), button.icon_size, button.icon_spacing,
         ),
         ElementKind::CheckBox(check_box) => format!(
             "rust_desktop_ui_xaml::ElementKind::CheckBox(rust_desktop_ui_xaml::CheckBoxDefinition {{ content: {:?}.into(), is_checked: {}, style: {} }})",
@@ -80,6 +90,14 @@ fn element(element: &ElementDefinition) -> String {
             optional_string(&radio.group_name),
             radio.is_checked,
             button_style(&radio.style),
+        ),
+        ElementKind::Icon(icon) => format!(
+            "rust_desktop_ui_xaml::ElementKind::Icon(rust_desktop_ui_xaml::IconDefinition {{ symbol: rust_desktop_ui_xaml::IconSymbol::{:?}, foreground: {:?} }})",
+            icon.symbol, icon.foreground,
+        ),
+        ElementKind::Separator(separator) => format!(
+            "rust_desktop_ui_xaml::ElementKind::Separator(rust_desktop_ui_xaml::SeparatorDefinition {{ orientation: rust_desktop_ui_xaml::Orientation::{:?}, thickness: {:?}, foreground: {:?} }})",
+            separator.orientation, separator.thickness, separator.foreground,
         ),
     };
     format!(

@@ -214,6 +214,8 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Button | ControlRole::ToggleButton => Role::Button,
         ControlRole::CheckBox => Role::CheckBox,
         ControlRole::RadioButton => Role::RadioButton,
+        ControlRole::Image => Role::Image,
+        ControlRole::Separator => Role::Splitter,
         ControlRole::TextBox => Role::TextInput,
         ControlRole::ScrollView => Role::ScrollView,
         ControlRole::TabList => Role::TabList,

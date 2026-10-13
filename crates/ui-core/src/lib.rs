@@ -1,4 +1,4 @@
-//! Platform-independent retained UI foundation and rectangle scene.
+//! Platform-independent retained UI foundation and ordered primitive scene.
 //! All coordinates are logical pixels. The native shell applies DPI scaling.
 
 mod arena;
@@ -6,6 +6,7 @@ mod dirty;
 mod input;
 mod model;
 mod runtime;
+mod scene_stroke;
 mod scene_text;
 mod tree;
 
@@ -14,6 +15,7 @@ pub use dirty::DirtyFlags;
 pub use input::*;
 pub use model::*;
 pub use runtime::*;
+pub use scene_stroke::*;
 pub use scene_text::*;
 pub use tree::{Node, TreeError, UiTree};
 
@@ -128,11 +130,43 @@ impl RoundedRect {
 pub struct Scene {
     pub rectangles: Vec<SolidRect>,
     pub rounded_rectangles: Vec<RoundedRect>,
+    pub stroke_paths: Vec<StrokePath>,
     pub texts: Vec<TextRun>,
     commands: Vec<DrawCommand>,
 }
 
 impl Scene {
+    /// Add a bounded union of straight, round-ended strokes in painter order.
+    /// Overlapping segments blend once, including joins and crossings. Geometry
+    /// stays unchanged under the rectangular clip. Invalid/empty/over-capacity
+    /// input and fully clipped paths are ignored; no curves or fills are implied.
+    pub fn stroke_path(
+        &mut self,
+        segments: &[StrokeSegment],
+        clip: Rect,
+        width: f32,
+        color: Color,
+    ) {
+        if segments.is_empty() || segments.len() > MAX_STROKE_SEGMENTS {
+            return;
+        }
+        let path = StrokePath {
+            segments: segments.to_vec(),
+            clip,
+            width,
+            color,
+        };
+        if path.is_valid()
+            && path
+                .bounds()
+                .and_then(|bounds| bounds.intersection(clip))
+                .is_some()
+        {
+            self.commands
+                .push(DrawCommand::StrokePath(self.stroke_paths.len()));
+            self.stroke_paths.push(path);
+        }
+    }
     /// Add an antialiased rounded fill in painter order. Oversized radii are
     /// clamped to half the smaller dimension; negative/non-finite radii, invalid
     /// colors/geometry and entirely clipped fills are ignored.
@@ -212,6 +246,7 @@ impl Scene {
     pub fn clear(&mut self) {
         self.rectangles.clear();
         self.rounded_rectangles.clear();
+        self.stroke_paths.clear();
         self.texts.clear();
         self.commands.clear();
     }
@@ -219,10 +254,12 @@ impl Scene {
     pub fn append(&mut self, other: &Scene) {
         let rectangles = self.rectangles.len();
         let rounded_rectangles = self.rounded_rectangles.len();
+        let stroke_paths = self.stroke_paths.len();
         let texts = self.texts.len();
         self.rectangles.extend_from_slice(&other.rectangles);
         self.rounded_rectangles
             .extend_from_slice(&other.rounded_rectangles);
+        self.stroke_paths.extend_from_slice(&other.stroke_paths);
         self.texts.extend_from_slice(&other.texts);
         self.commands
             .extend(other.commands.iter().map(|command| match command {
@@ -230,6 +267,7 @@ impl Scene {
                 DrawCommand::RoundedRectangle(index) => {
                     DrawCommand::RoundedRectangle(rounded_rectangles + index)
                 }
+                DrawCommand::StrokePath(index) => DrawCommand::StrokePath(stroke_paths + index),
                 DrawCommand::Text(index) => DrawCommand::Text(texts + index),
             }));
     }

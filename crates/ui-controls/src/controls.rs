@@ -1,6 +1,7 @@
 use crate::{
-    ButtonStyle, ButtonVisualState, CommandId, CommandRegistry, CommitOutcome, EditBoxStyle,
-    EditBoxVisualState, EditEvent, EditorSettings, EditorValidation, EditorValidator, Theme,
+    ButtonIcon, ButtonStyle, ButtonVisualState, CommandId, CommandRegistry, CommitOutcome,
+    EditBoxStyle, EditBoxVisualState, EditEvent, EditorSettings, EditorValidation, EditorValidator,
+    IconStyle, IconSymbol, SeparatorSettings, Theme,
 };
 use rust_desktop_ui_core::{
     Axis, Border, Color, Edges, FrameStats, InputEvent, Key, LayoutKind, LayoutStyle, Length,
@@ -56,6 +57,8 @@ pub enum Role {
     ToggleButton,
     CheckBox,
     RadioButton,
+    Image,
+    Separator,
     TextBox,
     ScrollView,
     TabList,
@@ -142,11 +145,30 @@ enum Kind {
     Button,
     Toggle,
     CheckBox,
-    Radio { group: RadioGroupId },
+    Radio {
+        group: RadioGroupId,
+    },
+    Icon {
+        symbol: IconSymbol,
+        style: IconStyle,
+    },
+    Separator {
+        settings: SeparatorSettings,
+        auto_width: bool,
+        auto_height: bool,
+    },
     TextBox(TextDocument),
-    Scroll { content: WidgetId, extent: f32 },
-    Tab { group: WidgetId, index: usize },
-    MenuItem { toggle: bool },
+    Scroll {
+        content: WidgetId,
+        extent: f32,
+    },
+    Tab {
+        group: WidgetId,
+        index: usize,
+    },
+    MenuItem {
+        toggle: bool,
+    },
 }
 impl Kind {
     fn button_style(&self) -> bool {
@@ -174,6 +196,8 @@ impl Kind {
             Self::Toggle => Role::ToggleButton,
             Self::CheckBox => Role::CheckBox,
             Self::Radio { .. } => Role::RadioButton,
+            Self::Icon { .. } => Role::Image,
+            Self::Separator { .. } => Role::Separator,
             Self::TextBox(_) => Role::TextBox,
             Self::Scroll { .. } => Role::ScrollView,
             Self::Tab { .. } => Role::Tab,
@@ -196,6 +220,7 @@ struct Control {
     validation_error: Option<String>,
     edit_box_style: EditBoxStyle,
     button_style: ButtonStyle,
+    button_icon: Option<ButtonIcon>,
     explicit_button_style: bool,
     single_line: bool,
     text_scroll_x: f32,
@@ -843,8 +868,11 @@ impl Controls {
         mut style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
         let interactive = kind.clickable() || matches!(kind, Kind::TextBox(_));
-        let default_height =
-            style.height == Length::Auto && !matches!(kind, Kind::Panel | Kind::Scroll { .. });
+        let default_height = style.height == Length::Auto
+            && !matches!(
+                kind,
+                Kind::Panel | Kind::Scroll { .. } | Kind::Icon { .. } | Kind::Separator { .. }
+            );
         if default_height {
             style.height = Length::Px(self.theme.tokens().control_height);
             style.flex_shrink = 0.0;
@@ -854,7 +882,10 @@ impl Controls {
             NodeProps {
                 style,
                 focusable: interactive,
-                hit_test: !matches!(kind, Kind::Label),
+                hit_test: !matches!(
+                    kind,
+                    Kind::Label | Kind::Icon { .. } | Kind::Separator { .. }
+                ),
                 clip: matches!(kind, Kind::Panel | Kind::TextBox(_)),
                 ..Default::default()
             },
@@ -880,6 +911,7 @@ impl Controls {
                 validation_error: None,
                 edit_box_style: EditBoxStyle::default(),
                 button_style: ButtonStyle::default(),
+                button_icon: None,
                 explicit_button_style: false,
                 single_line: false,
                 text_scroll_x: 0.0,
@@ -930,6 +962,206 @@ impl Controls {
         style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
         self.add(parent, Kind::Label, label.into(), None, style)
+    }
+    /// A noninteractive symbol. Auto dimensions default to 16 logical pixels;
+    /// explicit rectangles center a uniformly scaled icon. Its label is empty
+    /// until set by the application for meaningful standalone content.
+    pub fn icon(
+        &mut self,
+        parent: WidgetId,
+        symbol: IconSymbol,
+        mut layout: LayoutStyle,
+    ) -> Result<WidgetId, ControlError> {
+        if layout.width == Length::Auto {
+            layout.width = Length::Px(16.0);
+        }
+        if layout.height == Length::Auto {
+            layout.height = Length::Px(16.0);
+        }
+        self.add(
+            parent,
+            Kind::Icon {
+                symbol,
+                style: IconStyle::default(),
+            },
+            String::new(),
+            None,
+            layout,
+        )
+    }
+    pub fn icon_symbol(&self, id: WidgetId) -> Option<IconSymbol> {
+        self.runtime.tree().node(id)?;
+        match self.controls.get(&id)?.kind {
+            Kind::Icon { symbol, .. } => Some(symbol),
+            _ => None,
+        }
+    }
+    pub fn set_icon_symbol(&mut self, id: WidgetId, value: IconSymbol) -> Result<(), ControlError> {
+        self.icon_symbol(id)
+            .ok_or_else(|| ControlError::Invalid("Control is not an Icon".into()))?;
+        let Kind::Icon { symbol, .. } = &mut self.controls.get_mut(&id).unwrap().kind else {
+            unreachable!()
+        };
+        if *symbol != value {
+            *symbol = value;
+            self.scene_dirty = true;
+        }
+        Ok(())
+    }
+    pub fn icon_style(&self, id: WidgetId) -> Option<&IconStyle> {
+        self.runtime.tree().node(id)?;
+        match &self.controls.get(&id)?.kind {
+            Kind::Icon { style, .. } => Some(style),
+            _ => None,
+        }
+    }
+    pub fn set_icon_style(&mut self, id: WidgetId, value: IconStyle) -> Result<(), ControlError> {
+        self.icon_style(id)
+            .ok_or_else(|| ControlError::Invalid("Control is not an Icon".into()))?;
+        value.validate()?;
+        let Kind::Icon { style, .. } = &mut self.controls.get_mut(&id).unwrap().kind else {
+            unreachable!()
+        };
+        if *style != value {
+            *style = value;
+            self.scene_dirty = true;
+        }
+        Ok(())
+    }
+    /// Add or remove a leading icon without replacing the label, command or ID.
+    /// Supported only by Button and ToggleButton. Colors follow ButtonStyle.
+    pub fn set_button_icon(
+        &mut self,
+        id: WidgetId,
+        icon: Option<ButtonIcon>,
+    ) -> Result<(), ControlError> {
+        if self.runtime.tree().node(id).is_none()
+            || !self
+                .controls
+                .get(&id)
+                .is_some_and(|control| matches!(control.kind, Kind::Button | Kind::Toggle))
+        {
+            return Err(ControlError::Invalid(
+                "Icon content requires a Button or ToggleButton".into(),
+            ));
+        }
+        if let Some(icon) = icon {
+            icon.validate()?;
+        }
+        let control = self.controls.get_mut(&id).unwrap();
+        if control.button_icon != icon {
+            control.button_icon = icon;
+            self.scene_dirty = true;
+        }
+        Ok(())
+    }
+    pub fn button_icon(&self, id: WidgetId) -> Option<&ButtonIcon> {
+        self.runtime.tree().node(id)?;
+        self.controls.get(&id)?.button_icon.as_ref()
+    }
+    /// A decorative rule. Auto short-axis dimensions follow thickness; layout
+    /// supplies the long-axis extent. Explicit dimensions remain unchanged.
+    pub fn separator(
+        &mut self,
+        parent: WidgetId,
+        settings: SeparatorSettings,
+        mut layout: LayoutStyle,
+    ) -> Result<WidgetId, ControlError> {
+        settings.validate()?;
+        let auto_width = layout.width == Length::Auto;
+        let auto_height = layout.height == Length::Auto;
+        if settings.orientation == Axis::Horizontal && auto_height {
+            layout.height = Length::Px(settings.thickness);
+        }
+        if settings.orientation == Axis::Vertical && auto_width {
+            layout.width = Length::Px(settings.thickness);
+        }
+        self.add(
+            parent,
+            Kind::Separator {
+                settings,
+                auto_width,
+                auto_height,
+            },
+            String::new(),
+            None,
+            layout,
+        )
+    }
+    pub fn separator_settings(&self, id: WidgetId) -> Option<&SeparatorSettings> {
+        self.runtime.tree().node(id)?;
+        match &self.controls.get(&id)?.kind {
+            Kind::Separator { settings, .. } => Some(settings),
+            _ => None,
+        }
+    }
+    pub fn set_separator_settings(
+        &mut self,
+        id: WidgetId,
+        value: SeparatorSettings,
+    ) -> Result<(), ControlError> {
+        let old = *self
+            .separator_settings(id)
+            .ok_or_else(|| ControlError::Invalid("Control is not a Separator".into()))?;
+        value.validate()?;
+        if old == value {
+            return Ok(());
+        }
+        let Kind::Separator {
+            mut auto_width,
+            mut auto_height,
+            ..
+        } = self.controls[&id].kind
+        else {
+            unreachable!()
+        };
+        let mut layout = self.runtime.tree().node(id).unwrap().props.style.clone();
+        // A later low-level SetStyle may take ownership of an Auto axis.
+        // Equal values have no observable provenance, so only differences can
+        // release that axis from the separator's thickness management.
+        let previous_width = if old.orientation == Axis::Vertical {
+            Length::Px(old.thickness)
+        } else {
+            Length::Auto
+        };
+        let previous_height = if old.orientation == Axis::Horizontal {
+            Length::Px(old.thickness)
+        } else {
+            Length::Auto
+        };
+        auto_width &= layout.width == previous_width;
+        auto_height &= layout.height == previous_height;
+        if auto_width {
+            layout.width = if value.orientation == Axis::Vertical {
+                Length::Px(value.thickness)
+            } else {
+                Length::Auto
+            };
+        }
+        if auto_height {
+            layout.height = if value.orientation == Axis::Horizontal {
+                Length::Px(value.thickness)
+            } else {
+                Length::Auto
+            };
+        }
+        self.runtime.apply(Mutation::SetStyle {
+            node: id,
+            style: layout,
+        })?;
+        let Kind::Separator {
+            settings,
+            auto_width: stored_width,
+            auto_height: stored_height,
+        } = &mut self.controls.get_mut(&id).unwrap().kind
+        else {
+            unreachable!()
+        };
+        *settings = value;
+        *stored_width = auto_width;
+        *stored_height = auto_height;
+        self.scene_dirty = true;
+        Ok(())
     }
     /// Measures themed text content in logical pixels, using the same system-font
     /// shaping and limits as painting. Width excludes any control padding.
@@ -1505,7 +1737,11 @@ impl Controls {
                 _ => control.checked,
             };
             let interactive = control.kind.clickable() || matches!(control.kind, Kind::TextBox(_));
-            let paint = if matches!(control.kind, Kind::Label) || control.transparent_panel {
+            let paint = if matches!(
+                control.kind,
+                Kind::Label | Kind::Icon { .. } | Kind::Separator { .. }
+            ) || control.transparent_panel
+            {
                 Paint::default()
             } else {
                 Paint {
@@ -2426,10 +2662,58 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            if let Some(control) = self.controls.get(&id) {
+                match control.kind {
+                    Kind::Icon { symbol, style } => {
+                        let color = if self.is_enabled(id) {
+                            style.foreground.unwrap_or(tokens.text)
+                        } else {
+                            style.disabled_foreground.unwrap_or(tokens.muted)
+                        };
+                        crate::primitives::paint_icon(&mut self.scene, symbol, bounds, clip, color);
+                    }
+                    Kind::Separator { settings, .. } => {
+                        let rule = match settings.orientation {
+                            Axis::Horizontal => {
+                                let width = settings.thickness.min(bounds.height);
+                                Rect::new(
+                                    bounds.x,
+                                    bounds.y + (bounds.height - width) * 0.5,
+                                    bounds.width,
+                                    width,
+                                )
+                            }
+                            Axis::Vertical => {
+                                let width = settings.thickness.min(bounds.width);
+                                Rect::new(
+                                    bounds.x + (bounds.width - width) * 0.5,
+                                    bounds.y,
+                                    width,
+                                    bounds.height,
+                                )
+                            }
+                        };
+                        fill_clipped(
+                            &mut self.scene,
+                            rule,
+                            clip,
+                            settings.foreground.unwrap_or(tokens.border),
+                        );
+                    }
+                    _ => {}
+                }
+                if matches!(control.kind, Kind::Icon { .. } | Kind::Separator { .. }) {
+                    if let Some(custom) = self.custom_scenes.get(&id) {
+                        append_clipped(&mut self.scene, custom, clip);
+                    }
+                    continue;
+                }
+            }
             if let Some(state) = self.button_visual_state(id)
                 && let Some(control) = self.controls.get(&id)
                 && (self.theme.is_fluent()
                     || control.explicit_button_style
+                    || control.button_icon.is_some()
                     || matches!(control.kind, Kind::Radio { .. }))
             {
                 let indicator = matches!(control.kind, Kind::CheckBox | Kind::Radio { .. });
@@ -2447,7 +2731,19 @@ impl Controls {
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
                 }
-                if !control.label.is_empty() && text_bounds.width > 0.0 && text_bounds.height > 0.0
+                if let Some(icon) = control.button_icon {
+                    paint_button_icon_content(
+                        &mut self.scene,
+                        &mut self.engine,
+                        text_bounds,
+                        clip,
+                        &control.label,
+                        style,
+                        icon,
+                    )?;
+                } else if !control.label.is_empty()
+                    && text_bounds.width > 0.0
+                    && text_bounds.height > 0.0
                 {
                     let mut run = TextRun {
                         bounds: text_bounds,
@@ -2859,7 +3155,7 @@ impl Controls {
                 };
                 let mut actions = Vec::new();
                 let enabled = self.is_enabled(id);
-                if enabled {
+                if enabled && !matches!(control.kind, Kind::Icon { .. } | Kind::Separator { .. }) {
                     if props.focusable {
                         actions.push(SemanticAction::Focus);
                     }
@@ -3020,6 +3316,77 @@ fn paint_button(
         );
     }
     content
+}
+
+fn paint_button_icon_content(
+    scene: &mut Scene,
+    engine: &mut TextEngine,
+    content: Rect,
+    ancestor_clip: Rect,
+    label: &str,
+    style: crate::button::ResolvedButtonStyle,
+    icon: ButtonIcon,
+) -> Result<(), ControlError> {
+    if content.width <= 0.0 || content.height <= 0.0 {
+        return Ok(());
+    }
+    let Some(clip) = content.intersection(ancestor_clip) else {
+        return Ok(());
+    };
+    let mut run = TextRun {
+        bounds: content,
+        clip,
+        text: label.to_owned(),
+        font_size: style.font_size,
+        color: style.foreground,
+        weight: 400,
+        align: TextAlign::Start,
+        wrap: false,
+    };
+    let text_size = if label.is_empty() {
+        Size::ZERO
+    } else {
+        let text = engine
+            .prepare(&run, 1.0)
+            .map_err(|error| ControlError::Text(error.to_string()))?;
+        Size::new(text.width, text.height)
+    };
+    let size = icon.size.min(content.width).min(content.height);
+    let gap = if label.is_empty() {
+        0.0
+    } else {
+        icon.spacing.min((content.width - size).max(0.0))
+    };
+    let text_width = text_size.width.min((content.width - size - gap).max(0.0));
+    let width = size + gap + text_width;
+    let origin_x = content.x + (content.width - width) * 0.5;
+    crate::primitives::paint_icon(
+        scene,
+        icon.symbol,
+        Rect::new(
+            origin_x,
+            content.y + (content.height - size) * 0.5,
+            size,
+            size,
+        ),
+        clip,
+        style.foreground,
+    );
+    if !label.is_empty() && text_width > 0.0 {
+        let top = ((content.height - text_size.height) * 0.5).max(0.0);
+        run.bounds = Rect::new(
+            origin_x + size + gap,
+            content.y + top,
+            text_width,
+            (content.height - top).max(0.0),
+        );
+        run.clip = run
+            .bounds
+            .intersection(clip)
+            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+        scene.text(run);
+    }
+    Ok(())
 }
 
 fn shape_border(
@@ -3188,6 +3555,13 @@ fn append_clipped(target: &mut Scene, source: &Scene, clip: Rect) {
                             rounded.color,
                         );
                     }
+                }
+            }
+            rust_desktop_ui_core::DrawCommand::StrokePath(index) => {
+                if let Some(path) = source.stroke_paths.get(index)
+                    && let Some(effective) = path.clip.intersection(clip)
+                {
+                    target.stroke_path(&path.segments, effective, path.width, path.color);
                 }
             }
         }

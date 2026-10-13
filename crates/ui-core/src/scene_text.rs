@@ -55,5 +55,6 @@ impl TextRun {
 pub enum DrawCommand {
     Rectangle(usize),
     RoundedRectangle(usize),
+    StrokePath(usize),
     Text(usize),
 }

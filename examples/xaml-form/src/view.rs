@@ -1,7 +1,7 @@
 //! Mount compiled elements without attaching application-specific behavior.
 use rust_desktop_ui_controls::{
-    ButtonAppearance, ButtonStyle, Controls, EditBoxAppearance, EditBoxStyle, EditorSettings,
-    EditorValidation, RadioGroupId, Role,
+    ButtonAppearance, ButtonIcon, ButtonStyle, Controls, EditBoxAppearance, EditBoxStyle,
+    EditorSettings, EditorValidation, IconStyle, IconSymbol, RadioGroupId, Role, SeparatorSettings,
 };
 use rust_desktop_ui_core::{Axis, Color, Edges, LayoutKind, LayoutStyle, Length, WidgetId};
 use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind, Orientation};
@@ -50,10 +50,16 @@ impl MountedView {
         parent_axis: Axis,
     ) -> Result<WidgetId, String> {
         let common = &element.common;
-        let width = match common.width {
-            Some(width) => Length::Px(width),
-            None if parent_axis == Axis::Horizontal => Length::Px(desired_width(ui, element)?),
-            None => Length::Auto,
+        let width = match (common.width, &element.kind) {
+            (Some(width), _) => Length::Px(width),
+            (None, ElementKind::Icon(_)) => Length::Px(16.0),
+            (None, ElementKind::Separator(separator))
+                if separator.orientation == Orientation::Vertical =>
+            {
+                Length::Auto
+            }
+            (None, _) if parent_axis == Axis::Horizontal => Length::Px(desired_width(ui, element)?),
+            (None, _) => Length::Auto,
         };
         let height = common.height.map_or_else(
             || match &element.kind {
@@ -63,6 +69,12 @@ impl MountedView {
                 }
                 ElementKind::CheckBox(_) | ElementKind::RadioButton(_) => Length::Px(32.0),
                 ElementKind::TextBlock(_) => Length::Px(24.0),
+                ElementKind::Icon(_) => Length::Px(16.0),
+                ElementKind::Separator(separator) => match separator.orientation {
+                    Orientation::Horizontal => Length::Auto,
+                    Orientation::Vertical if parent_axis == Axis::Horizontal => Length::Auto,
+                    Orientation::Vertical => Length::Px(16.0),
+                },
             },
             Length::Px,
         );
@@ -93,6 +105,34 @@ impl MountedView {
                 id
             }
             ElementKind::TextBlock(text) => ui.label(parent, &text.text, style).map_err(err)?,
+            ElementKind::Icon(icon) => {
+                let id = ui
+                    .icon(parent, icon_symbol(icon.symbol), style)
+                    .map_err(err)?;
+                ui.set_icon_style(
+                    id,
+                    IconStyle {
+                        foreground: icon.foreground.map(color),
+                        ..Default::default()
+                    },
+                )
+                .map_err(err)?;
+                if let Some(name) = &common.automation_name {
+                    ui.set_label(id, name).map_err(err)?;
+                }
+                id
+            }
+            ElementKind::Separator(separator) => ui
+                .separator(
+                    parent,
+                    SeparatorSettings {
+                        orientation: axis(separator.orientation),
+                        thickness: separator.thickness,
+                        foreground: separator.foreground.map(color),
+                    },
+                    style,
+                )
+                .map_err(err)?,
             ElementKind::Button(button) => {
                 let command = button.command.as_ref().map(|name| name.as_str().into());
                 if let Some(command) = &command
@@ -108,6 +148,11 @@ impl MountedView {
                     .map_err(err)?;
                 ui.set_button_style(id, button_style(&button.style))
                     .map_err(err)?;
+                ui.set_button_icon(
+                    id,
+                    button_icon(button.icon, button.icon_size, button.icon_spacing),
+                )
+                .map_err(err)?;
                 id
             }
             ElementKind::ToggleButton(button) => {
@@ -131,6 +176,11 @@ impl MountedView {
                     .map_err(err)?;
                 ui.set_button_style(id, button_style(&button.style))
                     .map_err(err)?;
+                ui.set_button_icon(
+                    id,
+                    button_icon(button.icon, button.icon_size, button.icon_spacing),
+                )
+                .map_err(err)?;
                 self.toggles.push(id);
                 id
             }
@@ -228,6 +278,8 @@ impl MountedView {
                 ElementKind::ToggleButton(_) => Role::ToggleButton,
                 ElementKind::CheckBox(_) => Role::CheckBox,
                 ElementKind::RadioButton(_) => Role::RadioButton,
+                ElementKind::Icon(_) => Role::Image,
+                ElementKind::Separator(_) => Role::Separator,
             },
         );
         if let Some(name) = &common.name
@@ -255,12 +307,32 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             .map_err(err)?
             .width
             + 16.0),
-        ElementKind::Button(button) => button_width(ui, &button.content, &button.style, false),
-        ElementKind::ToggleButton(button) => {
-            button_width(ui, &button.content, &button.style, false)
-        }
+        ElementKind::Button(button) => button_content_width(
+            ui,
+            &button.content,
+            &button.style,
+            button.icon,
+            button.icon_size,
+            button.icon_spacing,
+        ),
+        ElementKind::ToggleButton(button) => button_content_width(
+            ui,
+            &button.content,
+            &button.style,
+            button.icon,
+            button.icon_size,
+            button.icon_spacing,
+        ),
         ElementKind::CheckBox(check) => button_width(ui, &check.content, &check.style, true),
         ElementKind::RadioButton(radio) => button_width(ui, &radio.content, &radio.style, true),
+        ElementKind::Icon(_) => Ok(16.0),
+        ElementKind::Separator(separator) => {
+            Ok(if separator.orientation == Orientation::Vertical {
+                separator.thickness
+            } else {
+                16.0
+            })
+        }
         ElementKind::StackPanel(panel) => {
             let mut widths = Vec::with_capacity(panel.children.len());
             for child in &panel.children {
@@ -305,6 +377,13 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
                 pending.extend(panel.children.iter().map(|child| (child, depth + 1, count)));
             }
             ElementKind::Button(button) => {
+                validate_button_icon(
+                    &button.content,
+                    button.icon,
+                    button.icon_size,
+                    button.icon_spacing,
+                    element.common.automation_name.as_deref(),
+                )?;
                 if let Some(command) = &button.command
                     && !ui.commands().contains(&command.as_str().into())
                 {
@@ -312,6 +391,13 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
                 }
             }
             ElementKind::ToggleButton(button) => {
+                validate_button_icon(
+                    &button.content,
+                    button.icon,
+                    button.icon_size,
+                    button.icon_spacing,
+                    element.common.automation_name.as_deref(),
+                )?;
                 if let Some(command) = &button.command {
                     let id = command.as_str().into();
                     if !ui.commands().contains(&id) {
@@ -350,6 +436,13 @@ fn validate_tree(ui: &Controls, root: &ElementDefinition) -> Result<(), String> 
                     }
                 }
             }
+            ElementKind::Separator(separator)
+                if !separator.thickness.is_finite()
+                    || separator.thickness <= 0.0
+                    || separator.thickness > 16384.0 =>
+            {
+                return Err("Separator Thickness must be finite and in (0, 16384]".into());
+            }
             _ => {}
         }
     }
@@ -369,6 +462,77 @@ fn button_width(
         .map_err(err)?;
     let extra = if checkbox { 26.0 } else { 0.0 };
     Ok((text.width + padding[0] + padding[2] + extra).max(if checkbox { extra } else { 80.0 }))
+}
+
+fn button_content_width(
+    ui: &mut Controls,
+    content: &str,
+    style: &ButtonStyleDefinition,
+    icon: Option<rust_desktop_ui_xaml::IconSymbol>,
+    size: f32,
+    spacing: f32,
+) -> Result<f32, String> {
+    if icon.is_none() {
+        return button_width(ui, content, style, false);
+    }
+    let font_size = style.font_size.unwrap_or(ui.theme().tokens().font_size);
+    let padding = style.padding.unwrap_or([8.0, 5.0, 8.0, 5.0]);
+    let text = ui
+        .measure_text_with_font_size(content, 16384.0, false, font_size)
+        .map_err(err)?;
+    let gap = if content.is_empty() { 0.0 } else { spacing };
+    let minimum = if content.is_empty() { 36.0 } else { 80.0 };
+    Ok((text.width + padding[0] + padding[2] + size + gap).max(minimum))
+}
+
+fn validate_button_icon(
+    content: &str,
+    icon: Option<rust_desktop_ui_xaml::IconSymbol>,
+    size: f32,
+    spacing: f32,
+    automation_name: Option<&str>,
+) -> Result<(), String> {
+    if !size.is_finite() || size <= 0.0 || size > 512.0 {
+        return Err("IconSize must be finite and in (0, 512]".into());
+    }
+    if !spacing.is_finite() || !(0.0..=16384.0).contains(&spacing) {
+        return Err("IconSpacing must be finite and in [0, 16384]".into());
+    }
+    if icon.is_none() && (size != 16.0 || spacing != 8.0) {
+        return Err("IconSize and IconSpacing require Icon".into());
+    }
+    if icon.is_some()
+        && content.trim().is_empty()
+        && automation_name.is_none_or(|name| name.trim().is_empty())
+    {
+        return Err("An icon-only button requires a nonempty AutomationName".into());
+    }
+    Ok(())
+}
+
+fn button_icon(
+    symbol: Option<rust_desktop_ui_xaml::IconSymbol>,
+    size: f32,
+    spacing: f32,
+) -> Option<ButtonIcon> {
+    symbol.map(|symbol| ButtonIcon {
+        symbol: icon_symbol(symbol),
+        size,
+        spacing,
+    })
+}
+
+fn icon_symbol(symbol: rust_desktop_ui_xaml::IconSymbol) -> IconSymbol {
+    match symbol {
+        rust_desktop_ui_xaml::IconSymbol::Check => IconSymbol::Check,
+        rust_desktop_ui_xaml::IconSymbol::Close => IconSymbol::Close,
+        rust_desktop_ui_xaml::IconSymbol::Add => IconSymbol::Add,
+        rust_desktop_ui_xaml::IconSymbol::Remove => IconSymbol::Remove,
+        rust_desktop_ui_xaml::IconSymbol::ChevronDown => IconSymbol::ChevronDown,
+        rust_desktop_ui_xaml::IconSymbol::ChevronRight => IconSymbol::ChevronRight,
+        rust_desktop_ui_xaml::IconSymbol::Save => IconSymbol::Save,
+        rust_desktop_ui_xaml::IconSymbol::Pin => IconSymbol::Pin,
+    }
 }
 
 fn button_style(style: &ButtonStyleDefinition) -> ButtonStyle {

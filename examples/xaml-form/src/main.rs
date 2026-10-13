@@ -65,6 +65,16 @@ fn start() -> Result<(), String> {
             "AlignLeft",
             "AlignCenter",
             "AlignRight",
+            "CheckIcon",
+            "CloseIcon",
+            "AddIcon",
+            "RemoveIcon",
+            "ChevronDownIcon",
+            "ChevronRightIcon",
+            "SaveIcon",
+            "DisabledIcon",
+            "VRule",
+            "HRule",
         ] {
             println!(
                 "named-control={name} resolved={}",

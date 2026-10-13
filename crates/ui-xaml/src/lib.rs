@@ -1,7 +1,7 @@
 //! A small, explicit XAML profile compiled to a Rust window definition.
 //!
 //! This profile supports a `Window` containing a tree of stack panels, text,
-//! editors, buttons, check boxes and radio buttons. Elements use
+//! editors, buttons, check boxes, radio buttons, icons and separators. Elements use
 //! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. It does not load WPF types,
 //! execute markup extensions, resolve external entities, or implement bindings.
 //! Unknown syntax is an error instead of being silently ignored.
@@ -125,6 +125,8 @@ pub enum ElementKind {
     ToggleButton(ToggleButtonDefinition),
     CheckBox(CheckBoxDefinition),
     RadioButton(RadioButtonDefinition),
+    Icon(IconDefinition),
+    Separator(SeparatorDefinition),
 }
 
 impl Default for ElementKind {
@@ -158,21 +160,93 @@ pub struct TextBlockDefinition {
 }
 
 /// A button with literal content and an optional application command name.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ButtonDefinition {
     pub content: String,
     pub command: Option<String>,
     pub style: ButtonStyleDefinition,
+    pub icon: Option<IconSymbol>,
+    pub icon_size: f32,
+    pub icon_spacing: f32,
+}
+
+impl Default for ButtonDefinition {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            command: None,
+            style: ButtonStyleDefinition::default(),
+            icon: None,
+            icon_size: 16.0,
+            icon_spacing: 8.0,
+        }
+    }
 }
 
 /// A two-state button. A bound command's registered checked state takes
 /// precedence over `is_checked` when the example mounts the definition.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ToggleButtonDefinition {
     pub content: String,
     pub command: Option<String>,
     pub is_checked: bool,
     pub style: ButtonStyleDefinition,
+    pub icon: Option<IconSymbol>,
+    pub icon_size: f32,
+    pub icon_spacing: f32,
+}
+
+impl Default for ToggleButtonDefinition {
+    fn default() -> Self {
+        Self {
+            content: String::new(),
+            command: None,
+            is_checked: false,
+            style: ButtonStyleDefinition::default(),
+            icon: None,
+            icon_size: 16.0,
+            icon_spacing: 8.0,
+        }
+    }
+}
+
+/// Built-in vector symbols; these do not refer to fonts, files or resources.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IconSymbol {
+    #[default]
+    Check,
+    Close,
+    Add,
+    Remove,
+    ChevronDown,
+    ChevronRight,
+    Save,
+    Pin,
+}
+
+/// A standalone symbol; the XAML `Symbol` attribute is required.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IconDefinition {
+    pub symbol: IconSymbol,
+    pub foreground: Option<[u8; 4]>,
+}
+
+/// A noninteractive rule with a positive thickness, in logical pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SeparatorDefinition {
+    pub orientation: Orientation,
+    pub thickness: f32,
+    pub foreground: Option<[u8; 4]>,
+}
+
+impl Default for SeparatorDefinition {
+    fn default() -> Self {
+        Self {
+            orientation: Orientation::Horizontal,
+            thickness: 1.0,
+            foreground: None,
+        }
+    }
 }
 
 /// A two-state check box with literal content.
@@ -423,6 +497,8 @@ fn parse_element(
         "ToggleButton" => ElementKind::ToggleButton(ToggleButtonDefinition::default()),
         "CheckBox" => ElementKind::CheckBox(CheckBoxDefinition::default()),
         "RadioButton" => ElementKind::RadioButton(RadioButtonDefinition::default()),
+        "Icon" => ElementKind::Icon(IconDefinition::default()),
+        "Separator" => ElementKind::Separator(SeparatorDefinition::default()),
         name => {
             return Err(at_node(
                 node,
@@ -496,6 +572,20 @@ fn parse_element(
                         true
                     }
                     ElementKind::Button(button) => match property {
+                        "Icon" => {
+                            button.icon = Some(icon_symbol(document, attribute)?);
+                            true
+                        }
+                        "IconSize" => {
+                            button.icon_size =
+                                editor_metric(document, attribute, MAX_FONT_SIZE, false)?;
+                            true
+                        }
+                        "IconSpacing" => {
+                            button.icon_spacing =
+                                editor_metric(document, attribute, MAX_DIMENSION, true)?;
+                            true
+                        }
                         "Content" => {
                             button.content = attribute.value().into();
                             true
@@ -508,6 +598,20 @@ fn parse_element(
                         _ => button_style_property(document, attribute, &mut button.style)?,
                     },
                     ElementKind::ToggleButton(button) => match property {
+                        "Icon" => {
+                            button.icon = Some(icon_symbol(document, attribute)?);
+                            true
+                        }
+                        "IconSize" => {
+                            button.icon_size =
+                                editor_metric(document, attribute, MAX_FONT_SIZE, false)?;
+                            true
+                        }
+                        "IconSpacing" => {
+                            button.icon_spacing =
+                                editor_metric(document, attribute, MAX_DIMENSION, true)?;
+                            true
+                        }
                         "Content" => {
                             button.content = attribute.value().into();
                             true
@@ -550,6 +654,43 @@ fn parse_element(
                         }
                         _ => button_style_property(document, attribute, &mut radio.style)?,
                     },
+                    ElementKind::Icon(icon) => match property {
+                        "Symbol" => {
+                            icon.symbol = icon_symbol(document, attribute)?;
+                            true
+                        }
+                        "Foreground" => {
+                            icon.foreground = Some(color(document, attribute)?);
+                            true
+                        }
+                        _ => false,
+                    },
+                    ElementKind::Separator(separator) => match property {
+                        "Orientation" => {
+                            separator.orientation = match attribute.value() {
+                                "Horizontal" => Orientation::Horizontal,
+                                "Vertical" => Orientation::Vertical,
+                                _ => {
+                                    return Err(at_attribute(
+                                        document,
+                                        attribute,
+                                        "Orientation must be Horizontal or Vertical",
+                                    ));
+                                }
+                            };
+                            true
+                        }
+                        "Thickness" => {
+                            separator.thickness =
+                                editor_metric(document, attribute, MAX_DIMENSION, false)?;
+                            true
+                        }
+                        "Foreground" => {
+                            separator.foreground = Some(color(document, attribute)?);
+                            true
+                        }
+                        _ => false,
+                    },
                     _ => false,
                 };
                 if !supported {
@@ -585,6 +726,39 @@ fn parse_element(
     }
     if let ElementKind::TextBox(editor) = &kind {
         validate_initial_text(node, editor)?;
+    }
+    if matches!(kind, ElementKind::Icon(_)) && node.attribute("Symbol").is_none() {
+        return Err(at_node(node, "Icon requires a Symbol attribute"));
+    }
+    let button_icon = match &kind {
+        ElementKind::Button(button) => Some((&button.content, button.icon)),
+        ElementKind::ToggleButton(button) => Some((&button.content, button.icon)),
+        _ => None,
+    };
+    if let Some((content, icon)) = button_icon {
+        if icon.is_none()
+            && let Some(attribute) = node
+                .attributes()
+                .find(|attribute| matches!(attribute.name(), "IconSize" | "IconSpacing"))
+        {
+            return Err(at_attribute(
+                document,
+                attribute,
+                "IconSize and IconSpacing require Icon",
+            ));
+        }
+        if icon.is_some()
+            && content.trim().is_empty()
+            && common
+                .automation_name
+                .as_deref()
+                .is_none_or(|name| name.trim().is_empty())
+        {
+            return Err(at_node(
+                node,
+                "an icon-only button requires a nonempty AutomationName",
+            ));
+        }
     }
     if let ElementKind::RadioButton(radio) = &kind
         && radio.is_checked
@@ -623,6 +797,30 @@ fn identifier(
         ));
     }
     Ok(())
+}
+
+fn icon_symbol(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+) -> Result<IconSymbol, Diagnostic> {
+    match attribute.value() {
+        "Check" => Ok(IconSymbol::Check),
+        "Close" => Ok(IconSymbol::Close),
+        "Add" => Ok(IconSymbol::Add),
+        "Remove" => Ok(IconSymbol::Remove),
+        "ChevronDown" => Ok(IconSymbol::ChevronDown),
+        "ChevronRight" => Ok(IconSymbol::ChevronRight),
+        "Save" => Ok(IconSymbol::Save),
+        "Pin" => Ok(IconSymbol::Pin),
+        _ => Err(at_attribute(
+            document,
+            attribute,
+            format!(
+                "{} must be Check, Close, Add, Remove, ChevronDown, ChevronRight, Save or Pin",
+                attribute.name()
+            ),
+        )),
+    }
 }
 
 fn editor_property(

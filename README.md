@@ -17,6 +17,8 @@ The compiled XAML profile provides a native window with nested stack panels,
 labels, single-line edit boxes, buttons, toggle buttons, checkboxes and radio groups. Buttons
 share theme-relative styling and Fluent hover, press, checked and focus states.
 Radio groups use one Tab stop; arrow keys select a visible, enabled option.
+Own vector icons work alone or inside buttons; horizontal and vertical separators
+divide groups without entering the keyboard focus order.
 Editors support light/dark
 Fluent styling, placeholder text, Unicode editing and value validation.
 Edit [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) and rebuild:

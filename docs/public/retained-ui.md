@@ -265,7 +265,8 @@ Scene остаётся доступной, pending изменения не по�
 кадр. Приложение должно обработать ошибку и исправить состояние или остановить
 операцию. Неконечные координаты входного события отвергаются без routing.
 
-Scene поддерживает упорядоченные rectangles и `TextRun`: методы `fill`, `text`
+Scene поддерживает упорядоченные rectangles, rounded rectangles, `StrokePath`
+и `TextRun`: методы `fill`, `rounded_fill`, `rounded_stroke`, `stroke_path`, `text`
 и `append` сохраняют их общий порядок. Сам UiRuntime рисует backgrounds/borders;
 Controls и TreeGrid дополняют сцену текстом и содержимым. Текстовая подготовка и
 GPU glyph atlas находятся в отдельных пакетах. Поля `FrameStats` runtime не

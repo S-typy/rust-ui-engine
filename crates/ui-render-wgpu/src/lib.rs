@@ -9,6 +9,7 @@
 
 use bytemuck::{Pod, Zeroable};
 mod glyphs;
+mod strokes;
 use glyphs::GlyphRenderer;
 use rust_desktop_ui_core::{Color, DrawCommand, Rect, RoundedRect, Scene};
 use std::{
@@ -17,6 +18,7 @@ use std::{
     ops::Range,
     sync::{Arc, Mutex},
 };
+use strokes::StrokeRenderer;
 use wgpu::util::DeviceExt;
 use winit::{dpi::PhysicalSize, window::Window};
 
@@ -413,6 +415,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
         .rectangles
         .len()
         .checked_add(scene.rounded_rectangles.len())
+        .and_then(|count| count.checked_add(scene.stroke_paths.len()))
         .ok_or(GpuError::InvalidScene)?;
     check_frame_inputs(rectangle_count, scale)?;
     if scene.texts.len() > MAX_TEXT_RUNS {
@@ -421,7 +424,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
     if scene.commands().len() != rectangle_count + scene.texts.len() {
         return Err(GpuError::InvalidScene);
     }
-    let (mut rectangle, mut rounded_rectangle, mut text) = (0, 0, 0);
+    let (mut rectangle, mut rounded_rectangle, mut stroke_path, mut text) = (0, 0, 0, 0);
     for command in scene.commands() {
         match *command {
             DrawCommand::Rectangle(index) if index == rectangle => rectangle += 1,
@@ -429,11 +432,13 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
                 rounded_rectangle += 1;
             }
             DrawCommand::Text(index) if index == text => text += 1,
+            DrawCommand::StrokePath(index) if index == stroke_path => stroke_path += 1,
             _ => return Err(GpuError::InvalidScene),
         }
     }
     if rectangle != scene.rectangles.len()
         || rounded_rectangle != scene.rounded_rectangles.len()
+        || stroke_path != scene.stroke_paths.len()
         || text != scene.texts.len()
     {
         return Err(GpuError::InvalidScene);
@@ -464,6 +469,13 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
             return Err(GpuError::InvalidScene);
         }
     }
+    if !scene
+        .stroke_paths
+        .iter()
+        .all(|path| strokes::valid_physical_path(path, scale))
+    {
+        return Err(GpuError::InvalidScene);
+    }
     let mut text_bytes = 0usize;
     for text in &scene.texts {
         if !text.is_valid()
@@ -486,6 +498,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
 enum DrawBatch {
     Rectangles(Range<u32>),
     RoundedRectangles(Range<u32>),
+    StrokePaths(Range<u32>),
     Text(Range<u32>),
 }
 
@@ -517,6 +530,17 @@ fn next_batch(
                 end = end.checked_add(1).ok_or(GpuError::InvalidScene)?;
             }
             DrawBatch::RoundedRectangles(
+                u32::try_from(start).map_err(|_| GpuError::InvalidScene)?
+                    ..u32::try_from(end).map_err(|_| GpuError::InvalidScene)?,
+            )
+        }
+        DrawCommand::StrokePath(start) => {
+            let mut end = start.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            while commands.peek() == Some(&DrawCommand::StrokePath(end)) {
+                commands.next();
+                end = end.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            }
+            DrawBatch::StrokePaths(
                 u32::try_from(start).map_err(|_| GpuError::InvalidScene)?
                     ..u32::try_from(end).map_err(|_| GpuError::InvalidScene)?,
             )
@@ -561,12 +585,14 @@ pub struct GpuRenderer {
     state: SurfaceState,
     health: Arc<Mutex<DeviceHealth>>,
     glyphs: GlyphRenderer,
+    strokes: StrokeRenderer,
     stats: RendererStats,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RendererStats {
     pub rectangles: usize,
+    pub stroke_paths: usize,
     pub glyphs: usize,
     pub text_runs: usize,
     pub cached_glyphs: usize,
@@ -666,6 +692,7 @@ impl GpuRenderer {
             mapped_at_creation: false,
         });
         let glyphs = GlyphRenderer::new(&device, config.format, &viewport_layout);
+        let strokes = StrokeRenderer::new(&device, config.format, &viewport_layout);
         let renderer = Self {
             window,
             surface,
@@ -680,6 +707,7 @@ impl GpuRenderer {
             state,
             health,
             glyphs,
+            strokes,
             stats: RendererStats::default(),
         };
         renderer.check_device()?;
@@ -757,6 +785,8 @@ impl GpuRenderer {
         );
         self.glyphs
             .prepare(&scene.texts, scale_factor, viewport, &self.queue)?;
+        self.strokes
+            .prepare(&scene.stroke_paths, scale_factor, viewport, &self.queue)?;
         let (frame, suboptimal) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
@@ -856,6 +886,10 @@ impl GpuRenderer {
                         pass.draw(0..6, range.start + offset..range.end + offset);
                         draw_calls += 1;
                     }
+                    DrawBatch::StrokePaths(range) => {
+                        self.strokes.draw(&mut pass, range);
+                        draw_calls += 1;
+                    }
                     DrawBatch::Text(range) => {
                         if !range.is_empty() {
                             self.glyphs.draw(&mut pass, range);
@@ -866,6 +900,7 @@ impl GpuRenderer {
             }
             self.stats = RendererStats {
                 rectangles: instances.len(),
+                stroke_paths: scene.stroke_paths.len(),
                 glyphs: self.glyphs.len(),
                 text_runs: scene.texts.len(),
                 cached_glyphs: self.glyphs.cached(),
@@ -1291,6 +1326,82 @@ mod tests {
             check_scene(&original, 1.0),
             Err(GpuError::SceneTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn stroke_paths_share_primitive_capacity_and_reject_corrupted_public_data() {
+        use rust_desktop_ui_core::{MAX_STROKE_SEGMENTS, Point, StrokeSegment};
+        let clip = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let segment = StrokeSegment {
+            start: Point::new(10.0, 10.0),
+            end: Point::new(20.0, 20.0),
+        };
+        let mut scene = Scene::default();
+        scene.stroke_path(&[segment], clip, 2.0, Color::rgb(0, 0, 0));
+        assert!(check_scene(&scene, 2.0).is_ok());
+        for mutation in 0..7 {
+            let mut broken = scene.clone();
+            let path = &mut broken.stroke_paths[0];
+            match mutation {
+                0 => path.segments.clear(),
+                1 => path.segments = vec![segment; MAX_STROKE_SEGMENTS + 1],
+                2 => path.width = f32::NAN,
+                3 => path.segments[0].start.x = f32::INFINITY,
+                4 => path.color.a = -0.1,
+                5 => path.clip.width = -1.0,
+                6 => path.segments[0].end.x = 1.0e20,
+                _ => unreachable!(),
+            }
+            assert!(matches!(
+                check_scene(&broken, 1.0),
+                Err(GpuError::InvalidScene)
+            ));
+        }
+        let mut broken_order = scene.clone();
+        broken_order.stroke_paths.clear();
+        assert!(matches!(
+            check_scene(&broken_order, 1.0),
+            Err(GpuError::InvalidScene)
+        ));
+        for _ in 1..MAX_RECTANGLES {
+            scene.fill(clip, Color::rgb(0, 0, 0));
+        }
+        assert!(check_scene(&scene, 1.0).is_ok());
+        scene.rounded_fill(clip, clip, 1.0, Color::rgb(0, 0, 0));
+        assert!(matches!(
+            check_scene(&scene, 1.0),
+            Err(GpuError::SceneTooLarge { .. })
+        ));
+    }
+
+    #[test]
+    fn stroke_batches_preserve_text_rectangles_and_path_union_boundaries() {
+        let mut commands = [
+            DrawCommand::StrokePath(0),
+            DrawCommand::StrokePath(1),
+            DrawCommand::Rectangle(0),
+            DrawCommand::StrokePath(2),
+            DrawCommand::Text(0),
+            DrawCommand::StrokePath(3),
+            DrawCommand::RoundedRectangle(0),
+        ]
+        .into_iter()
+        .peekable();
+        let mut batches = Vec::new();
+        while let Some(batch) = next_batch(&mut commands, |_| Some(0..1)).unwrap() {
+            batches.push(batch);
+        }
+        assert_eq!(
+            batches,
+            [
+                DrawBatch::StrokePaths(0..2),
+                DrawBatch::Rectangles(0..1),
+                DrawBatch::StrokePaths(2..3),
+                DrawBatch::Text(0..1),
+                DrawBatch::StrokePaths(3..4),
+                DrawBatch::RoundedRectangles(0..1),
+            ]
+        );
     }
 
     #[test]
