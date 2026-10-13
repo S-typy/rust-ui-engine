@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+from ctypes import wintypes as wt
 from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import os
 from pathlib import Path
+import re
 import struct
 import subprocess
 import sys
@@ -19,6 +22,23 @@ from windows_retained_smoke import WM_MOUSEMOVE, WM_LBUTTONDOWN, WM_LBUTTONUP
 from windows_smoke import SmokeFailure, WM_CLOSE
 from windows_xaml_smoke import (FormSession, FormWindows, parse_state, VK_RETURN,
                                 VK_ESCAPE, VK_RIGHT, VK_LEFT, VK_DOWN, VK_TAB)
+
+
+POINTER_MOVED = re.compile(
+    r"^edit-input=Input\(PointerMoved \{ position: Point \{ x: ([-+0-9.eE]+), y: ([-+0-9.eE]+) \}")
+
+
+def latest_pointer(log: str) -> tuple[float, float] | None:
+    """Read the last complete native pointer diagnostic, respecting leave."""
+    for line in reversed(log.splitlines(keepends=True)):
+        if not line.endswith("\n"):
+            continue
+        if line.startswith("edit-input=Input(PointerLeft)"):
+            return None
+        match = POINTER_MOVED.match(line)
+        if match:
+            return float(match[1]), float(match[2])
+    return None
 
 
 def latest_snapshot(path: Path) -> dict | None:
@@ -47,6 +67,43 @@ def popup_capture_worker(hwnd, pid, destination, result_queue, dark):
 
 
 class PopupSession(FormSession):
+    def pointer(self, message, x, y, scale, held=False):
+        if message != WM_MOUSEMOVE:
+            return super().pointer(message, x, y, scale, held)
+        self.alive()
+        physical_x, physical_y = round(x * scale), round(y * scale)
+        width, height = self.windows.client_size(self.hwnd)
+        if not (0 <= physical_x < width and 0 <= physical_y < height):
+            raise SmokeFailure("Pointer coordinate is outside the child client area")
+        screen = wt.POINT(physical_x, physical_y)
+        self.windows.require(self.windows.user.ClientToScreen(self.hwnd, ctypes.byref(screen)), "ClientToScreen")
+        self.wait("child window exposed at pointer coordinates",
+                  lambda: self.windows.point_is_owned(self.hwnd, self.process.pid, screen))
+        self.windows.move_cursor(screen.x, screen.y)
+        self.expected_cursor = (screen.x, screen.y)
+        # SetCursorPos already queues a native move. Posting another WM_MOUSEMOVE
+        # can race native leave tracking; button messages must also wait until
+        # the application has consumed the new pointer position.
+        expected = (physical_x / scale, physical_y / scale)
+
+        def delivered():
+            position = latest_pointer(self.log())
+            return (position is not None
+                    and all(abs(a - b) < 0.001 for a, b in zip(position, expected))
+                    and self.windows.cursor_position() == self.expected_cursor)
+
+        try:
+            self.wait("native pointer position delivered", delivered)
+        except SmokeFailure:
+            self.report["pointer_delivery_failure"] = {
+                "expected_screen": list(self.expected_cursor),
+                "actual_screen": list(self.windows.cursor_position()),
+                "expected_logical": list(expected),
+                "last_logical": latest_pointer(self.log()),
+                "expected_point_owned": self.windows.point_is_owned(self.hwnd, self.process.pid, screen),
+            }
+            raise
+
     def snapshot(self, description, predicate=lambda _: True):
         def matches():
             state = latest_snapshot(self.stdout_path)
@@ -239,13 +296,31 @@ class PopupSession(FormSession):
         self.report["checks"].append({"check": "native close", "exit_code": code})
 
 
+def self_test():
+    moved = "edit-input=Input(PointerMoved { position: Point { x: 112.0, y: 450.66666 } }) focused=false\n"
+    left = "edit-input=Input(PointerLeft) focused=false\n"
+    assert latest_pointer("") is None
+    assert latest_pointer(moved) == (112.0, 450.66666)
+    assert latest_pointer(moved + left) is None
+    assert latest_pointer(left + moved) == (112.0, 450.66666)
+    assert latest_pointer(moved + "popup-state {}\n") == (112.0, 450.66666)
+    assert latest_pointer(left + moved.rstrip("\n")) is None
+    print("PASS: native pointer acknowledgement diagnostics")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--exe", type=Path, required=True)
-    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--exe", type=Path)
+    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--dark", action="store_true")
     parser.add_argument("--timeout", type=float, default=20)
     args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if args.exe is None or args.output_dir is None:
+        parser.error("--exe and --output-dir are required for a window test")
     if sys.platform != "win32" or not math.isfinite(args.timeout) or not 0 < args.timeout <= 60:
         parser.error("Windows and a finite timeout in (0,60] are required")
     executable = args.exe.resolve()
@@ -256,7 +331,8 @@ def main():
     report = {"status": "failed", "started_utc": datetime.now(timezone.utc).isoformat(),
               "executable": str(executable), "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
               "theme": "dark" if args.dark else "light", "backend_environment": os.environ.get("WGPU_BACKEND"),
-              "checks": [], "captures": {}, "limits": ["Posted child-only input; no physical keyboard, native IME or screen reader",
+              "checks": [], "captures": {}, "input_method": "Native cursor moves acknowledged before posted child-only clicks and keys",
+              "limits": ["No physical keyboard, native IME or screen reader",
               "No multi-monitor DPI verification; captures require visual review"]}
     session = None
     try:
