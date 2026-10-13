@@ -3,6 +3,10 @@ use crate::{CommandInvocation, SemanticAction};
 use rust_desktop_ui_core::{Modifiers, Point, PointerButton, Size};
 use std::{cell::Cell, rc::Rc};
 
+// Global-to-local clip subtraction can lose a few f32 ULPs. Permit only a
+// thousandth of a logical pixel; actual visible glyph clipping still fails.
+const TEXT_GEOMETRY_EPSILON: f32 = 0.001;
+
 fn group(id: &str, items: Vec<RibbonItem>) -> RibbonGroup {
     RibbonGroup {
         id: id.into(),
@@ -1044,7 +1048,7 @@ fn measured_icon_captions_fit_qat_small_and_split_text_clips_in_each_theme_and_k
             for run in runs {
                 let measured = ui.measure_text(&run.text, 4096.0, false).unwrap();
                 assert!(
-                    measured.width <= run.clip.width,
+                    measured.width <= run.clip.width + TEXT_GEOMETRY_EPSILON,
                     "{theme:?}/{tips:?} {:?}: shaped {} exceeds actual text clip {}",
                     run.text,
                     measured.width,
@@ -1187,14 +1191,17 @@ fn measured_collapsed_russian_headers_and_commands_fit_their_actual_dropdown_tex
         for run in runs {
             let shaped = ui.measure_text(&run.text, 4096.0, false).unwrap();
             assert!(
-                shaped.width <= run.clip.width,
+                shaped.width <= run.clip.width + TEXT_GEOMETRY_EPSILON,
                 "{theme:?} {:?}: {}px text exceeds {}px dropdown clip",
                 run.text,
                 shaped.width,
                 run.clip.width
             );
-            assert!(shaped.height <= run.clip.height);
-            assert!(run.clip.x >= 0.0 && run.clip.x + run.clip.width <= 328.0);
+            assert!(shaped.height <= run.clip.height + TEXT_GEOMETRY_EPSILON);
+            assert!(
+                run.clip.x >= -TEXT_GEOMETRY_EPSILON
+                    && run.clip.x + run.clip.width <= 328.0 + TEXT_GEOMETRY_EPSILON
+            );
         }
         frame(&mut ui, &mut ribbon, 148.0);
         assert!(matches!(
