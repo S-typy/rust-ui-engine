@@ -28,6 +28,11 @@ The minimize button leaves quick access and tabs visible; selecting a tab opens
 the commands temporarily, and Escape closes them. `MinSize` keeps selected commands
 from reducing past their declared size.
 
+Light and dark themes distinguish the window, Ribbon, cards, editors and popup
+surfaces. Subtle hover and pressed states, aligned small commands and restrained
+icon accents keep the Ribbon readable. Text blocks support font size, weight,
+secondary text and wrapping; panels can use a theme-relative card surface.
+
 The compiled profile also provides nested stack panels,
 labels, single-line edit boxes, buttons, toggle buttons, checkboxes and radio groups. Buttons
 share theme-relative styling and Fluent hover, press, checked and focus states.

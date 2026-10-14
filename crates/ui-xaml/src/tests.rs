@@ -1,6 +1,207 @@
 use super::*;
 
 #[test]
+fn text_block_typography_defaults_and_supported_weights_are_explicit() {
+    let plain = parse(&form("", "<TextBlock Text='Title'/>")).unwrap();
+    assert_eq!(
+        plain.content.kind,
+        ElementKind::TextBlock(TextBlockDefinition {
+            text: "Title".into(),
+            ..Default::default()
+        })
+    );
+    for (source, weight) in [
+        ("Normal", 400),
+        ("SemiBold", 600),
+        ("Bold", 700),
+        ("1", 1),
+        ("525", 525),
+        ("1000", 1000),
+    ] {
+        let window = parse(&form("", &format!("<TextBlock Text='Title &amp; detail' FontSize='18.5' FontWeight='{source}' Foreground='#80445566' TextTone='Secondary' TextWrapping='NoWrap'/>"))).unwrap();
+        let ElementKind::TextBlock(text) = window.content.kind else {
+            panic!("text block")
+        };
+        assert_eq!(
+            text,
+            TextBlockDefinition {
+                text: "Title & detail".into(),
+                font_size: Some(18.5),
+                font_weight: Some(weight),
+                foreground: Some([68, 85, 102, 128]),
+                tone: TextToneDefinition::Secondary,
+                wrap: false,
+            }
+        );
+        validate_text_block(&text).unwrap();
+    }
+    let boundary = parse(&form(
+        "",
+        "<TextBlock FontSize='512' Foreground='#123456' TextTone='Primary' TextWrapping='Wrap'/>",
+    ))
+    .unwrap();
+    let ElementKind::TextBlock(text) = boundary.content.kind else {
+        panic!("text block")
+    };
+    assert_eq!(text.foreground, Some([18, 52, 86, 255]));
+    assert_eq!(text.font_size, Some(512.0));
+    assert!(text.wrap);
+    assert_eq!(text.tone, TextToneDefinition::Primary);
+}
+
+#[test]
+fn text_block_typography_rejects_invalid_scalars_and_preserves_text_content_rules() {
+    for attributes in [
+        "FontSize='0'",
+        "FontSize='-1'",
+        "FontSize='512.1'",
+        "FontSize='NaN'",
+        "FontSize='inf'",
+        "FontSize='1e-300'",
+        "FontWeight='0'",
+        "FontWeight='1001'",
+        "FontWeight='65536'",
+        "FontWeight='-1'",
+        "FontWeight='400.0'",
+        "FontWeight='+400'",
+        "FontWeight='normal'",
+        "FontWeight='Semibold'",
+        "FontWeight=' 600 '",
+        "FontWeight='６００'",
+        "FontWeight=''",
+        "Foreground='Red'",
+        "Foreground='#123'",
+        "Foreground='#GG112233'",
+        "TextTone='Muted'",
+        "TextTone='secondary'",
+        "TextWrapping='true'",
+        "TextWrapping='WrapWithOverflow'",
+    ] {
+        let error = parse(&form("", &format!("<TextBlock\n {attributes}/>"))).unwrap_err();
+        assert!(error.line > 1 && error.column > 0, "{attributes}: {error}");
+        assert!(
+            error
+                .message
+                .contains(attributes.split('=').next().unwrap()),
+            "{attributes}: {error}"
+        );
+    }
+    for content in [
+        "<TextBlock FontSize='18'>inline text</TextBlock>",
+        "<TextBlock FontWeight='Bold'><Button/></TextBlock>",
+        "<TextBlock Text='{Binding Title}' FontSize='18'/>",
+        "<TextBlock Foreground='{StaticResource Text}'/>",
+        "<TextBlock xmlns:p='urn:other' p:TextTone='Secondary'/>",
+        "<Button TextTone='Secondary'/>",
+        "<Button TextWrapping='NoWrap'/>",
+    ] {
+        assert!(parse(&form("", content)).is_err(), "{content}");
+    }
+}
+
+#[test]
+fn stack_panel_surface_is_typed_and_local_to_panels() {
+    for (attribute, expected) in [
+        ("", SurfaceKindDefinition::Transparent),
+        ("Surface='Transparent'", SurfaceKindDefinition::Transparent),
+        ("Surface='Card'", SurfaceKindDefinition::Card),
+    ] {
+        let window = parse(&form(
+            "",
+            &format!(
+                "<StackPanel {attribute} Padding='16'><TextBlock Text='Content'/></StackPanel>"
+            ),
+        ))
+        .unwrap();
+        let ElementKind::StackPanel(panel) = window.content.kind else {
+            panic!("panel")
+        };
+        assert_eq!(panel.surface, expected);
+        assert_eq!(panel.padding, [16.0; 4]);
+        assert_eq!(panel.children.len(), 1);
+    }
+    for content in [
+        "<StackPanel Surface='card'/>",
+        "<StackPanel Surface='Solid'/>",
+        "<StackPanel Surface=' Card '/>",
+        "<StackPanel Surface='{Binding Surface}'/>",
+        "<StackPanel Background='#FFFFFF'/>",
+        "<TextBlock Surface='Card'/>",
+        "<Button Surface='Card'/>",
+    ] {
+        assert!(parse(&form("", content)).is_err(), "{content}");
+    }
+}
+
+#[test]
+fn text_block_manual_preflight_rejects_invalid_font_metrics() {
+    for font_size in [
+        0.0,
+        -1.0,
+        512.01,
+        f32::NAN,
+        f32::INFINITY,
+        f32::NEG_INFINITY,
+    ] {
+        let text = TextBlockDefinition {
+            font_size: Some(font_size),
+            ..Default::default()
+        };
+        assert!(validate_text_block(&text).unwrap_err().contains("FontSize"));
+    }
+    for font_weight in [0, 1001, u16::MAX] {
+        let text = TextBlockDefinition {
+            font_weight: Some(font_weight),
+            ..Default::default()
+        };
+        assert!(
+            validate_text_block(&text)
+                .unwrap_err()
+                .contains("FontWeight")
+        );
+    }
+    for (font_size, font_weight) in [(f32::MIN_POSITIVE, 1), (512.0, 1000)] {
+        validate_text_block(&TextBlockDefinition {
+            font_size: Some(font_size),
+            font_weight: Some(font_weight),
+            ..Default::default()
+        })
+        .unwrap();
+    }
+    validate_text_block(&TextBlockDefinition::default()).unwrap();
+}
+
+#[test]
+fn typography_and_card_codegen_preserves_every_field_and_escaped_text() {
+    let source = form(
+        "",
+        r##"<StackPanel Surface="Card" Padding="16">
+        <TextBlock Text="Title &quot;\&#10;🌍" FontSize="24.5" FontWeight="SemiBold" Foreground="#80445566" TextTone="Secondary" TextWrapping="NoWrap"/>
+        <StackPanel><TextBlock Text="Default"/></StackPanel>
+    </StackPanel>"##,
+    );
+    let generated = compile(&source).unwrap();
+    for expected in [
+        "surface: rust_desktop_ui_xaml::SurfaceKindDefinition::Card",
+        "surface: rust_desktop_ui_xaml::SurfaceKindDefinition::Transparent",
+        "text: \"Title \\\"\\\\\\n🌍\".into()",
+        "font_size: Some(24.5)",
+        "font_weight: Some(600)",
+        "foreground: Some([68, 85, 102, 128])",
+        "tone: rust_desktop_ui_xaml::TextToneDefinition::Secondary, wrap: false",
+        "font_size: None, font_weight: None, foreground: None, tone: rust_desktop_ui_xaml::TextToneDefinition::Primary, wrap: true",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected}\n{generated}"
+        );
+    }
+    let equivalent = source.replace("FontWeight=\"SemiBold\"", "FontWeight=\"600\"");
+    assert_eq!(parse(&source).unwrap(), parse(&equivalent).unwrap());
+    assert_eq!(compile(&source).unwrap(), compile(&equivalent).unwrap());
+}
+
+#[test]
 fn popup_buttons_compile_nested_items_separators_and_plain_tooltips() {
     let source = form(
         "",
@@ -665,7 +866,8 @@ fn nested_tree_preserves_common_properties_content_and_child_order() {
     assert_eq!(
         root.children[0].kind,
         ElementKind::TextBlock(TextBlockDefinition {
-            text: "Name & title".into()
+            text: "Name & title".into(),
+            ..Default::default()
         })
     );
     assert_eq!(root.children[1].common.width, Some(320.0));
@@ -1091,7 +1293,7 @@ fn button_style_reports_invalid_properties_without_accepting_state_markup() {
             .is_ok()
         );
     }
-    assert!(parse(&form("", "<TextBlock FontSize='18'/>")).is_err());
+    assert!(parse(&form("", "<TextBlock CornerRadius='6'/>")).is_err());
     assert!(parse(&form("", "<StackPanel Background='#FFFFFF'/>")).is_err());
 }
 

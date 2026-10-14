@@ -223,11 +223,15 @@ impl Controls {
         let bounds = super::popup::place_overlay(anchor_bounds, desired, self.viewport, false);
         let clip = Rect::new(0.0, 0.0, self.viewport.width, self.viewport.height);
         let tokens = self.theme.tokens();
-        let radius = 4.0_f32.min(bounds.width.min(bounds.height) * 0.5);
-        self.scene
-            .rounded_fill(bounds, clip, radius, tokens.surface);
-        self.scene
-            .rounded_stroke(bounds, clip, radius, 1.0, tokens.border);
+        if self.theme.is_fluent() {
+            super::appearance::paint_flyout(&mut self.scene, bounds, clip, self.theme);
+        } else {
+            let radius = 4.0_f32.min(bounds.width.min(bounds.height) * 0.5);
+            self.scene
+                .rounded_fill(bounds, clip, radius, tokens.surface);
+            self.scene
+                .rounded_stroke(bounds, clip, radius, 1.0, tokens.border);
+        }
         let padding_x = PADDING.min(bounds.width * 0.5);
         let padding_y = PADDING.min(bounds.height * 0.5);
         let content = Rect::new(

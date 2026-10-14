@@ -248,21 +248,24 @@ fn flat_and_tab_chrome_are_opt_in_and_follow_the_current_theme() {
         ui.set_button_chrome(tab, ButtonChrome::Tab).unwrap();
         frame(&mut ui);
         assert_eq!(ui.button_chrome(standard), Some(ButtonChrome::Standard));
-        assert_eq!(body_color(&ui, standard), theme.tokens().surface);
+        assert_eq!(body_color(&ui, standard), theme.chrome().control_fill);
         assert_eq!(body_color(&ui, flat).a, 0.0);
+        assert_eq!(body_color(&ui, tab).a, 0.0);
+        assert_eq!(text(&ui, "Home").color, theme.tokens().text);
+        assert_eq!(text(&ui, "Home").weight, 600);
         let bounds = ui.runtime.bounds(tab).unwrap();
-        assert!(
-            ui.scene()
-                .rectangles
-                .iter()
-                .any(|shape| shape.color == theme.tokens().focus
-                    && shape.bounds.y >= bounds.y + bounds.height - 3.001
-                    && shape.bounds.height <= 3.001)
-        );
+        assert!(ui.scene().rounded_rectangles.iter().any(|shape| shape.color
+            == theme.tokens().focus
+            && shape.stroke_width.is_none()
+            && shape.radius == 1.5
+            && shape.bounds.x == bounds.x + 8.0
+            && shape.bounds.width == bounds.width - 16.0
+            && shape.bounds.y >= bounds.y + bounds.height - 3.001
+            && (shape.bounds.height - 3.0).abs() <= 0.001));
         let position = center(&ui, flat);
         move_pointer(&mut ui, position);
         frame(&mut ui);
-        assert_eq!(body_color(&ui, flat), theme.tokens().hover);
+        assert_eq!(body_color(&ui, flat), theme.chrome().subtle_hover);
         ui.set_enabled(flat, false).unwrap();
         frame(&mut ui);
         assert_eq!(body_color(&ui, flat).a, 0.0);
@@ -682,7 +685,7 @@ fn button_overrides_survive_theme_changes_and_reset_to_current_defaults() {
         assert_eq!(body_color(&ui, id), background);
         assert_eq!(text(&ui, "Themed").color, foreground);
         assert_eq!(text(&ui, "Themed").font_size, theme.tokens().font_size);
-        assert!(has_shape_color(&ui, theme.tokens().border));
+        assert!(has_shape_color(&ui, theme.chrome().control_border));
         assert_eq!(ui.button_style(id), Some(&style));
     }
     ui.set_button_style(id, ButtonStyle::default()).unwrap();
@@ -757,7 +760,7 @@ fn checked_hover_pressed_and_focus_are_independent_and_disabled_has_priority() {
     assert!(!state.enabled && !state.hovered && !state.pressed && !state.focused);
     assert!(state.checked);
     assert_eq!(body_color(&ui, id), disabled);
-    assert_eq!(text(&ui, "States").color, ui.theme().tokens().muted);
+    assert_eq!(text(&ui, "States").color, ui.theme().chrome().disabled_text);
     assert!(!has_shape_color(&ui, accent));
     pointer(&mut ui, point, false);
     assert!(ui.drain_activated().is_empty());
@@ -791,7 +794,7 @@ fn command_and_ancestor_disabling_cancel_the_press_without_latching_local_state(
         let node = semantics.iter().find(|node| node.id == button).unwrap();
         assert!(node.disabled && node.actions.is_empty());
         assert_eq!(body_color(&ui, button), ui.theme().tokens().canvas);
-        assert_eq!(text(&ui, "Run").color, ui.theme().tokens().muted);
+        assert_eq!(text(&ui, "Run").color, ui.theme().chrome().disabled_text);
         pointer(&mut ui, point, false);
         ui.perform_action(button, SemanticAction::Activate, None)
             .unwrap();

@@ -815,7 +815,7 @@ fn validation_error_affects_scene_and_semantics_without_overriding_disabled_pale
             .find(|r| r.text == "Ada")
             .unwrap()
             .color,
-        Theme::FluentLight.tokens().muted
+        Theme::FluentLight.chrome().disabled_text
     );
     let semantic = ui
         .semantics()

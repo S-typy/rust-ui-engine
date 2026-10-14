@@ -31,8 +31,8 @@ from windows_smoke import SmokeFailure, WM_CLOSE
 from windows_xaml_smoke import last_edit_value, VK_LEFT, VK_END
 
 
-TITLE_PREFIX = "Форма · XAML Ribbon"
-TITLE = re.compile(r"^Форма · XAML Ribbon \| frames=(\d+) glyphs=(\d+) missing=(\d+)$")
+TITLE_PREFIX = "Документ · Rust UI"
+TITLE = re.compile(r"^Документ · Rust UI \| frames=(\d+) glyphs=(\d+) missing=(\d+)$")
 VK_HOME = 0x24
 VK_F10 = 0x79
 VK_ESCAPE = 0x1B
@@ -180,7 +180,7 @@ def capture_ink(bitmap: bytes, width: int, height: int, scale: float,
         shades = set()
         is_tab = name.endswith("_tab")
         palette = (foreground, muted, *accent_shades) if is_tab else (foreground, muted)
-        # Selected tab captions use the accent color. Exclude the entire
+        # Tab captions can use primary text or an accent. Exclude the entire
         # underline so a colored rule alone cannot pass the text-coverage check.
         bottom_inset = 4 if is_tab else 2
         for py in range(max(0, math.ceil((y + 2) * scale)),
@@ -686,7 +686,7 @@ class RibbonSession(PopupSession):
 
 
 def self_test():
-    assert parse_render_state("Форма · XAML Ribbon | frames=12 glyphs=340 missing=0") == {
+    assert parse_render_state("Документ · Rust UI | frames=12 glyphs=340 missing=0") == {
         "frames": 12, "glyphs": 340, "missing": 0}
     assert parse_render_state("Форма · Rust UI | frames=12 glyphs=340 missing=0") is None
     assert latest_diagnostic('ribbon-state {"active_tab":"Home"}\n', "ribbon-state ") == {"active_tab": "Home"}

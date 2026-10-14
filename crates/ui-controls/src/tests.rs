@@ -912,11 +912,11 @@ fn fluent_editbox_uses_rounded_skin_and_bottom_focus_without_changing_identity()
         assert_eq!(rounded.len(), 2);
         assert_eq!(rounded[0].bounds, bounds);
         assert_eq!(rounded[0].radius, 4.0);
-        assert_eq!(rounded[0].color, theme.tokens().surface);
+        assert_eq!(rounded[0].color, theme.chrome().editor_fill);
         assert_eq!(rounded[0].stroke_width, None);
         assert_eq!(rounded[1].bounds, bounds);
         assert_eq!(rounded[1].radius, 4.0);
-        assert_eq!(rounded[1].color, theme.tokens().border);
+        assert_eq!(rounded[1].color, theme.chrome().control_border);
         assert_eq!(rounded[1].stroke_width, Some(1.0));
         let rounded_commands: Vec<_> = ui
             .scene()
@@ -1812,9 +1812,9 @@ fn editor_style_partial_overrides_follow_theme_and_reset_to_theme_defaults() {
         assert_editor_colors(
             &ui,
             id,
-            theme.tokens().surface,
+            theme.chrome().editor_fill,
             foreground,
-            theme.tokens().border,
+            theme.chrome().control_border,
         );
         let run = ui.scene().texts.iter().find(|r| r.text == "Ada").unwrap();
         assert_eq!(run.font_size, 20.0);
@@ -1824,18 +1824,18 @@ fn editor_style_partial_overrides_follow_theme_and_reset_to_theme_defaults() {
         assert_editor_colors(
             &ui,
             id,
-            theme.tokens().canvas,
+            theme.chrome().editor_read_only,
             foreground,
-            theme.tokens().border,
+            theme.chrome().control_border,
         );
         ui.set_enabled(id, false).unwrap();
         frame(&mut ui);
         assert_editor_colors(
             &ui,
             id,
-            theme.tokens().canvas,
-            theme.tokens().muted,
-            theme.tokens().border,
+            theme.chrome().editor_read_only,
+            theme.chrome().disabled_text,
+            theme.chrome().control_border,
         );
         ui.set_enabled(id, true).unwrap();
         ui.set_read_only(id, false).unwrap();
@@ -1843,7 +1843,14 @@ fn editor_style_partial_overrides_follow_theme_and_reset_to_theme_defaults() {
     ui.set_edit_box_style(id, EditBoxStyle::default()).unwrap();
     frame(&mut ui);
     let tokens = Theme::FluentDark.tokens();
-    assert_editor_colors(&ui, id, tokens.surface, tokens.text, tokens.border);
+    let chrome = Theme::FluentDark.chrome();
+    assert_editor_colors(
+        &ui,
+        id,
+        chrome.editor_fill,
+        tokens.text,
+        chrome.control_border,
+    );
     let run = ui.scene().texts.iter().find(|r| r.text == "Ada").unwrap();
     assert_eq!(run.font_size, tokens.font_size);
     assert_eq!(run.clip.x, ui.runtime.bounds(id).unwrap().x + 12.0);

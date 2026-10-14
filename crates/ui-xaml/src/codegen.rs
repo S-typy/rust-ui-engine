@@ -58,11 +58,13 @@ fn element(element: &ElementDefinition) -> String {
                 orientation: rust_desktop_ui_xaml::Orientation::{orientation:?},
                 spacing: {spacing:?},
                 padding: {padding:?},
+                surface: rust_desktop_ui_xaml::SurfaceKindDefinition::{surface:?},
                 children: vec![{children}],
             }})",
             orientation = panel.orientation,
             spacing = panel.spacing,
             padding = panel.padding,
+            surface = panel.surface,
             children = panel.children.iter().map(self::element).collect::<Vec<_>>().join(",\n"),
         ),
         ElementKind::TextBox(editor) => format!(
@@ -70,8 +72,8 @@ fn element(element: &ElementDefinition) -> String {
             edit_box(editor),
         ),
         ElementKind::TextBlock(text) => format!(
-            "rust_desktop_ui_xaml::ElementKind::TextBlock(rust_desktop_ui_xaml::TextBlockDefinition {{ text: {:?}.into() }})",
-            text.text,
+            "rust_desktop_ui_xaml::ElementKind::TextBlock(rust_desktop_ui_xaml::TextBlockDefinition {{ text: {:?}.into(), font_size: {:?}, font_weight: {:?}, foreground: {:?}, tone: rust_desktop_ui_xaml::TextToneDefinition::{:?}, wrap: {} }})",
+            text.text, text.font_size, text.font_weight, text.foreground, text.tone, text.wrap,
         ),
         ElementKind::Button(button) => format!(
             "rust_desktop_ui_xaml::ElementKind::Button(rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }})",

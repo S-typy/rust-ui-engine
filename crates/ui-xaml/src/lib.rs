@@ -162,6 +162,14 @@ pub enum Orientation {
     Horizontal,
 }
 
+/// Theme-relative presentation of a stack panel's background.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SurfaceKindDefinition {
+    #[default]
+    Transparent,
+    Card,
+}
+
 /// Sequential layout with spacing and content padding.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StackPanelDefinition {
@@ -169,13 +177,61 @@ pub struct StackPanelDefinition {
     pub spacing: f32,
     /// Left, top, right, bottom padding in logical pixels.
     pub padding: [f32; 4],
+    pub surface: SurfaceKindDefinition,
     pub children: Vec<ElementDefinition>,
 }
 
+/// Theme-relative text color when no explicit foreground is supplied.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TextToneDefinition {
+    #[default]
+    Primary,
+    Secondary,
+}
+
 /// Non-editable text content.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextBlockDefinition {
     pub text: String,
+    /// `None` uses the current control theme's font size.
+    pub font_size: Option<f32>,
+    /// OpenType weight in 1..=1000; `None` uses the renderer's default.
+    pub font_weight: Option<u16>,
+    /// Optional straight-alpha sRGB color in red/green/blue/alpha byte order.
+    /// An explicit foreground takes precedence over the text tone.
+    pub foreground: Option<[u8; 4]>,
+    pub tone: TextToneDefinition,
+    pub wrap: bool,
+}
+
+impl Default for TextBlockDefinition {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            font_size: None,
+            font_weight: None,
+            foreground: None,
+            tone: TextToneDefinition::Primary,
+            wrap: true,
+        }
+    }
+}
+
+/// Validate typography before mounting a manually constructed text block.
+pub fn validate_text_block(text: &TextBlockDefinition) -> Result<(), String> {
+    if text
+        .font_size
+        .is_some_and(|size| !size.is_finite() || size <= 0.0 || size > MAX_FONT_SIZE as f32)
+    {
+        return Err("TextBlock FontSize must be finite and in (0, 512]".into());
+    }
+    if text
+        .font_weight
+        .is_some_and(|weight| !(1..=1000).contains(&weight))
+    {
+        return Err("TextBlock FontWeight must be in [1, 1000]".into());
+    }
+    Ok(())
 }
 
 /// A button with literal content and an optional application command name.
@@ -646,12 +702,23 @@ fn parse_element(
                             panel.padding = thickness(document, attribute)?;
                             true
                         }
+                        "Surface" => {
+                            panel.surface = match attribute.value() {
+                                "Transparent" => SurfaceKindDefinition::Transparent,
+                                "Card" => SurfaceKindDefinition::Card,
+                                _ => {
+                                    return Err(at_attribute(
+                                        document,
+                                        attribute,
+                                        "Surface must be Transparent or Card",
+                                    ));
+                                }
+                            };
+                            true
+                        }
                         _ => false,
                     },
-                    ElementKind::TextBlock(text) if property == "Text" => {
-                        text.text = attribute.value().into();
-                        true
-                    }
+                    ElementKind::TextBlock(text) => text_block_property(document, attribute, text)?,
                     ElementKind::Button(button) => match property {
                         "Icon" => {
                             button.icon = Some(icon_symbol(document, attribute)?);
@@ -904,6 +971,71 @@ fn identifier(
         ));
     }
     Ok(())
+}
+
+fn text_block_property(
+    document: &Document<'_>,
+    attribute: Attribute<'_, '_>,
+    text: &mut TextBlockDefinition,
+) -> Result<bool, Diagnostic> {
+    match attribute.name() {
+        "Text" => text.text = attribute.value().into(),
+        "FontSize" => {
+            text.font_size = Some(editor_metric(document, attribute, MAX_FONT_SIZE, false)?)
+        }
+        "FontWeight" => {
+            let value = attribute.value();
+            let weight = match value {
+                "Normal" => Some(400),
+                "SemiBold" => Some(600),
+                "Bold" => Some(700),
+                _ if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
+                    value.parse::<u16>().ok()
+                }
+                _ => None,
+            };
+            text.font_weight = Some(
+                weight
+                    .filter(|weight| (1..=1000).contains(weight))
+                    .ok_or_else(|| {
+                        at_attribute(
+                            document,
+                            attribute,
+                            "FontWeight must be Normal, SemiBold, Bold or an integer in [1, 1000]",
+                        )
+                    })?,
+            );
+        }
+        "Foreground" => text.foreground = Some(color(document, attribute)?),
+        "TextTone" => {
+            text.tone = match attribute.value() {
+                "Primary" => TextToneDefinition::Primary,
+                "Secondary" => TextToneDefinition::Secondary,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attribute,
+                        "TextTone must be Primary or Secondary",
+                    ));
+                }
+            };
+        }
+        "TextWrapping" => {
+            text.wrap = match attribute.value() {
+                "Wrap" => true,
+                "NoWrap" => false,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attribute,
+                        "TextWrapping must be Wrap or NoWrap",
+                    ));
+                }
+            };
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 fn menu_button_property(

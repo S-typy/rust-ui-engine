@@ -19,9 +19,13 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+mod appearance;
+#[cfg(test)]
+mod appearance_tests;
 mod button_presentation;
 mod popup;
 mod tooltip;
+pub use appearance::{SurfaceKind, TextStyle, TextTone};
 pub use popup::{MAX_MENU_DEPTH, MAX_MENU_ITEMS, MenuEntry, SplitButton};
 
 /// An opaque radio group allocated by one `Controls` instance. Group identities
@@ -249,6 +253,10 @@ struct Control {
     ribbon_surface: bool,
     ribbon_command: bool,
     ribbon_caption: bool,
+    surface: Option<SurfaceKind>,
+    popup_surface: bool,
+    text_style: TextStyle,
+    text_auto_height: bool,
     explicit_button_style: bool,
     single_line: bool,
     text_scroll_x: f32,
@@ -266,6 +274,17 @@ impl Control {
             .as_ref()
             .and_then(|command| commands.label(command))
             .unwrap_or(&self.label)
+    }
+    fn has_foreground_override(&self) -> bool {
+        [
+            self.button_style.normal,
+            self.button_style.hovered,
+            self.button_style.pressed,
+            self.button_style.checked,
+            self.button_style.disabled,
+        ]
+        .iter()
+        .any(|appearance| appearance.foreground.is_some())
     }
     fn check_state(&self, commands: &CommandRegistry) -> Option<bool> {
         if let Some(command) = &self.command {
@@ -988,6 +1007,10 @@ impl Controls {
                 ribbon_surface: false,
                 ribbon_command: false,
                 ribbon_caption: false,
+                surface: None,
+                popup_surface: false,
+                text_style: TextStyle::default(),
+                text_auto_height: false,
                 explicit_button_style: false,
                 single_line: false,
                 text_scroll_x: 0.0,
@@ -1819,6 +1842,9 @@ impl Controls {
         self.cancel_inactive_preedit();
         let mut delta = self.runtime.update(&mut self.layout, viewport)?;
         self.viewport = viewport;
+        if delta.layout_passes > 0 || self.scene_dirty {
+            self.sync_text_heights()?;
+        }
         let scrolls: Vec<_> = self
             .controls
             .iter()
@@ -2651,9 +2677,33 @@ impl Controls {
                 continue;
             }
             if let Some(control) = self.controls.get(&id) {
+                if control.popup_surface && self.theme.is_fluent() {
+                    appearance::paint_flyout(
+                        &mut self.scene,
+                        bounds,
+                        Rect::new(0.0, 0.0, self.viewport.width, self.viewport.height),
+                        self.theme,
+                    );
+                    continue;
+                }
                 if control.ribbon_surface {
-                    editor_fill(&mut self.scene, bounds, clip, 8.0, tokens.surface);
-                    shape_border(&mut self.scene, bounds, clip, 8.0, 1.0, tokens.border);
+                    let chrome = self.theme.chrome();
+                    editor_fill(&mut self.scene, bounds, clip, 8.0, chrome.ribbon_surface);
+                    shape_border(
+                        &mut self.scene,
+                        bounds,
+                        clip,
+                        8.0,
+                        1.0,
+                        chrome.surface_border,
+                    );
+                    continue;
+                }
+                if control.surface == Some(SurfaceKind::Card) {
+                    appearance::paint_card(&mut self.scene, bounds, clip, self.theme);
+                    if let Some(custom) = self.custom_scenes.get(&id) {
+                        append_clipped(&mut self.scene, custom, clip);
+                    }
                     continue;
                 }
                 if control.ribbon_caption {
@@ -2701,7 +2751,7 @@ impl Controls {
                             &mut self.scene,
                             rule,
                             clip,
-                            settings.foreground.unwrap_or(tokens.border),
+                            settings.foreground.unwrap_or(self.theme.chrome().divider),
                         );
                     }
                     _ => {}
@@ -2751,8 +2801,7 @@ impl Controls {
                 );
                 if control.button_chrome == ButtonChrome::Tab && state.checked {
                     let inset = 8.0_f32.min(bounds.width * 0.5);
-                    fill_clipped(
-                        &mut self.scene,
+                    self.scene.rounded_fill(
                         Rect::new(
                             bounds.x + inset,
                             bounds.y + (bounds.height - 3.0).max(0.0),
@@ -2760,6 +2809,7 @@ impl Controls {
                             3.0_f32.min(bounds.height),
                         ),
                         clip,
+                        1.5,
                         if state.enabled {
                             style.accent
                         } else {
@@ -2777,7 +2827,9 @@ impl Controls {
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
                 }
-                if control.button_content_layout != ButtonContentLayout::Leading {
+                if control.button_content_layout != ButtonContentLayout::Leading
+                    || control.ribbon_command
+                {
                     let label = if control.ribbon_command {
                         self.button_paint_label(id)
                             .split_whitespace()
@@ -2796,6 +2848,12 @@ impl Controls {
                         button_presentation::ContentPresentation {
                             icon: control.button_icon,
                             layout: control.button_content_layout,
+                            start_aligned: control.ribbon_command,
+                            icon_theme: (control.ribbon_command
+                                && state.enabled
+                                && !control.has_foreground_override()
+                                && style.foreground == tokens.text)
+                                .then_some(self.theme),
                             top_aligned: control.split_owner.is_some_and(|owner| {
                                 self.controls
                                     .get(&owner)
@@ -2826,7 +2884,11 @@ impl Controls {
                         text: control.display_label(&self.commands).to_owned(),
                         font_size: style.font_size,
                         color: style.foreground,
-                        weight: 400,
+                        weight: if control.button_chrome == ButtonChrome::Tab && state.checked {
+                            600
+                        } else {
+                            400
+                        },
                         align: if indicator {
                             TextAlign::Start
                         } else {
@@ -2912,13 +2974,36 @@ impl Controls {
                     );
                 }
             } else {
-                if let Some(color) = color {
+                let fluent_menu = self.theme.is_fluent()
+                    && self
+                        .controls
+                        .get(&id)
+                        .is_some_and(|control| matches!(control.kind, Kind::MenuItem));
+                if fluent_menu {
+                    let hovered =
+                        self.runtime.hovered() == Some(id) || self.runtime.focused() == Some(id);
+                    if hovered && self.is_enabled(id) {
+                        editor_fill(
+                            &mut self.scene,
+                            Rect::new(
+                                bounds.x + 2.0,
+                                bounds.y + 1.0,
+                                (bounds.width - 4.0).max(0.0),
+                                (bounds.height - 2.0).max(0.0),
+                            ),
+                            clip,
+                            4.0,
+                            self.theme.chrome().subtle_hover,
+                        );
+                    }
+                } else if let Some(color) = color {
                     fill_clipped(&mut self.scene, bounds, clip, color);
                 }
-                if let Some(border) = paint.border {
+                if let Some(border) = paint.border.filter(|_| !fluent_menu) {
                     draw_border(&mut self.scene, bounds, clip, border);
                 }
-                if self.runtime.focused() == Some(id)
+                if !fluent_menu
+                    && self.runtime.focused() == Some(id)
                     && let Some(border) = paint.focus_border
                 {
                     draw_border(&mut self.scene, bounds, clip, border);
@@ -3010,18 +3095,34 @@ impl Controls {
                     .intersection(clip)
                     .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
                 text: label,
-                font_size: editor_style.map_or(tokens.font_size, |style| style.font_size),
-                color: editor_style
-                    .map_or(if enabled { tokens.text } else { tokens.muted }, |style| {
-                        style.foreground
-                    }),
-                weight: if matches!(control.kind, Kind::Tab { .. }) {
+                font_size: if matches!(control.kind, Kind::Label) {
+                    control.text_style.font_size.unwrap_or(tokens.font_size)
+                } else {
+                    editor_style.map_or(tokens.font_size, |style| style.font_size)
+                },
+                color: editor_style.map_or(
+                    if matches!(control.kind, Kind::Label) {
+                        control.text_style.color(self.theme, enabled)
+                    } else if enabled {
+                        tokens.text
+                    } else {
+                        tokens.muted
+                    },
+                    |style| style.foreground,
+                ),
+                weight: if matches!(control.kind, Kind::Label) {
+                    control.text_style.font_weight.unwrap_or(400)
+                } else if matches!(control.kind, Kind::Tab { .. }) {
                     600
                 } else {
                     400
                 },
                 align,
-                wrap: !control.kind.clickable() && !control.single_line,
+                wrap: if matches!(control.kind, Kind::Label) {
+                    control.text_style.wrap
+                } else {
+                    !control.kind.clickable() && !control.single_line
+                },
             };
             if editable {
                 if text_bounds.width <= 0.0 || text_bounds.height <= 0.0 {
@@ -3381,6 +3482,20 @@ fn paint_button(
     };
     editor_fill(scene, shape, clip, radius, style.background);
     shape_border(scene, shape, clip, radius, style.border_width, style.border);
+    if !indicator && style.border_width > 0.0 && style.bottom_border.a > 0.0 {
+        let edge = style.border_width.min(1.0).min(shape.height);
+        fill_clipped(
+            scene,
+            Rect::new(
+                shape.x + radius,
+                shape.y + shape.height - edge,
+                (shape.width - radius * 2.0).max(0.0),
+                edge,
+            ),
+            clip,
+            style.bottom_border,
+        );
+    }
     if indicator {
         if checked {
             if radio {

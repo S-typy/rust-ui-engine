@@ -572,7 +572,7 @@ fn icon_only_buttons_center_without_gap_and_disabled_icon_matches_text_palette()
     frame(&mut ui);
     assert_eq!(
         ui.scene().stroke_paths[0].color,
-        Theme::FluentLight.tokens().muted
+        Theme::FluentLight.chrome().disabled_text
     );
     // A deliberately oversized gap can consume the text allocation without changing its label.
     assert_eq!(
@@ -705,4 +705,223 @@ fn tiny_button_and_icon_geometries_remain_valid_and_clip_to_their_content() {
     frame(&mut ui);
     assert!(ui.scene().stroke_paths.iter().all(|path| path.is_valid()));
     assert!(ui.scene().texts.iter().all(|run| run.is_valid()));
+}
+
+#[test]
+fn themed_icons_preserve_geometry_center_and_clip_with_lighter_strokes() {
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        for symbol in [
+            IconSymbol::Check,
+            IconSymbol::Close,
+            IconSymbol::Add,
+            IconSymbol::Remove,
+            IconSymbol::ChevronDown,
+            IconSymbol::ChevronRight,
+            IconSymbol::Save,
+            IconSymbol::Pin,
+            IconSymbol::FolderOpen,
+            IconSymbol::Copy,
+            IconSymbol::Edit,
+            IconSymbol::Eraser,
+            IconSymbol::Sun,
+            IconSymbol::Moon,
+            IconSymbol::Lock,
+        ] {
+            for (width, height) in [(32.0, 16.0), (16.0, 32.0), (32.0, 32.0)] {
+                let bounds = Rect::new(10.0, 20.0, width, height);
+                let clip = Rect::new(12.0, 22.0, width - 4.0, height - 4.0);
+                let mut monochrome = Scene::default();
+                crate::primitives::paint_icon(
+                    &mut monochrome,
+                    symbol,
+                    bounds,
+                    clip,
+                    theme.tokens().text,
+                );
+                let mut themed = Scene::default();
+                crate::primitives::paint_icon_themed(
+                    &mut themed,
+                    symbol,
+                    bounds,
+                    clip,
+                    theme.tokens().text,
+                    theme,
+                );
+                let segments: Vec<_> = themed
+                    .stroke_paths
+                    .iter()
+                    .flat_map(|path| path.segments.iter().copied())
+                    .collect();
+                assert_eq!(segments, monochrome.stroke_paths[0].segments);
+                assert!((1..=2).contains(&themed.stroke_paths.len()));
+                for path in &themed.stroke_paths {
+                    assert!(path.is_valid());
+                    assert_eq!(path.clip, clip);
+                    assert_eq!(path.width, 1.3 * width.min(height) / 16.0);
+                    assert!(path.width < monochrome.stroke_paths[0].width);
+                    let painted = path.bounds().unwrap();
+                    let tolerance = 0.0001;
+                    assert!(painted.x >= bounds.x - tolerance);
+                    assert!(painted.y >= bounds.y - tolerance);
+                    assert!(painted.x + painted.width <= bounds.x + bounds.width + tolerance);
+                    assert!(painted.y + painted.height <= bounds.y + bounds.height + tolerance);
+                }
+                assert_eq!(themed.commands().len(), themed.stroke_paths.len());
+                assert!(themed.texts.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
+fn themed_icons_separate_accents_from_neutral_details_in_both_fluent_themes() {
+    fn luminance(color: Color) -> f32 {
+        let linear = |channel: f32| {
+            if channel <= 0.04045 {
+                channel / 12.92
+            } else {
+                ((channel + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b)
+    }
+    let bounds = Rect::new(0.0, 0.0, 16.0, 16.0);
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        let tokens = theme.tokens();
+        for symbol in [
+            IconSymbol::Save,
+            IconSymbol::Pin,
+            IconSymbol::FolderOpen,
+            IconSymbol::Copy,
+            IconSymbol::Edit,
+            IconSymbol::Eraser,
+            IconSymbol::Check,
+            IconSymbol::Sun,
+            IconSymbol::Moon,
+        ] {
+            let mut scene = Scene::default();
+            crate::primitives::paint_icon_themed(
+                &mut scene,
+                symbol,
+                bounds,
+                bounds,
+                tokens.text,
+                theme,
+            );
+            let accents: Vec<_> = scene
+                .stroke_paths
+                .iter()
+                .filter(|path| path.color != tokens.text)
+                .collect();
+            assert_eq!(accents.len(), 1, "{symbol:?} in {theme:?}");
+            if !matches!(
+                symbol,
+                IconSymbol::Check | IconSymbol::Sun | IconSymbol::Moon
+            ) {
+                assert_eq!(scene.stroke_paths.len(), 2);
+                assert!(
+                    scene
+                        .stroke_paths
+                        .iter()
+                        .any(|path| path.color == tokens.text)
+                );
+            }
+            for background in [tokens.canvas, tokens.surface] {
+                let icon = luminance(accents[0].color);
+                let background = luminance(background);
+                let contrast = (icon.max(background) + 0.05) / (icon.min(background) + 0.05);
+                assert!(contrast >= 3.0, "{symbol:?} in {theme:?}: {contrast}");
+            }
+        }
+        for symbol in [
+            IconSymbol::Close,
+            IconSymbol::Add,
+            IconSymbol::Remove,
+            IconSymbol::ChevronDown,
+            IconSymbol::ChevronRight,
+            IconSymbol::Lock,
+        ] {
+            let mut scene = Scene::default();
+            crate::primitives::paint_icon_themed(
+                &mut scene,
+                symbol,
+                bounds,
+                bounds,
+                tokens.text,
+                theme,
+            );
+            assert_eq!(scene.stroke_paths.len(), 1);
+            assert_eq!(scene.stroke_paths[0].color, tokens.text);
+        }
+    }
+}
+
+#[test]
+fn themed_icon_legacy_fallback_and_monochrome_entrypoint_preserve_color_and_coverage() {
+    let bounds = Rect::new(4.0, 8.0, 32.0, 32.0);
+    for symbol in [IconSymbol::Check, IconSymbol::Pin, IconSymbol::FolderOpen] {
+        for theme in [Theme::Light, Theme::Dark, Theme::Compact] {
+            let mut monochrome = Scene::default();
+            crate::primitives::paint_icon(&mut monochrome, symbol, bounds, bounds, translucent());
+            let mut themed = Scene::default();
+            crate::primitives::paint_icon_themed(
+                &mut themed,
+                symbol,
+                bounds,
+                bounds,
+                translucent(),
+                theme,
+            );
+            assert_eq!(themed, monochrome);
+        }
+        for theme in [Theme::FluentLight, Theme::FluentDark] {
+            let disabled = theme.tokens().muted;
+            let mut scene = Scene::default();
+            crate::primitives::paint_icon(&mut scene, symbol, bounds, bounds, disabled);
+            assert_eq!(scene.stroke_paths.len(), 1);
+            assert_eq!(scene.stroke_paths[0].color, disabled);
+            assert_eq!(scene.stroke_paths[0].width, 3.0);
+        }
+    }
+}
+
+#[test]
+fn themed_icon_opacity_and_empty_clips_do_not_create_visible_accents() {
+    let bounds = Rect::new(10.0, 20.0, 16.0, 16.0);
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        let mut scene = Scene::default();
+        crate::primitives::paint_icon_themed(
+            &mut scene,
+            IconSymbol::Pin,
+            bounds,
+            bounds,
+            translucent(),
+            theme,
+        );
+        assert_eq!(scene.stroke_paths.len(), 2);
+        assert!(scene.stroke_paths.iter().all(|path| path.color.a == 0.4));
+        for (bounds, clip, foreground) in [
+            (
+                bounds,
+                bounds,
+                Color {
+                    a: 0.0,
+                    ..translucent()
+                },
+            ),
+            (bounds, Rect::new(0.0, 0.0, 1.0, 1.0), translucent()),
+            (Rect::new(10.0, 20.0, 0.0, 16.0), bounds, translucent()),
+        ] {
+            let mut scene = Scene::default();
+            crate::primitives::paint_icon_themed(
+                &mut scene,
+                IconSymbol::Pin,
+                bounds,
+                clip,
+                foreground,
+                theme,
+            );
+            assert!(scene.commands().is_empty());
+        }
+    }
 }

@@ -1,4 +1,4 @@
-use crate::ControlError;
+use crate::{ControlError, Theme};
 use rust_desktop_ui_core::{Axis, Color, Point, Rect, Scene, StrokeSegment};
 
 /// Small built-in symbols defined by this crate's own 16 by 16 line geometry.
@@ -311,4 +311,84 @@ pub(crate) fn paint_icon(
         })
         .collect();
     scene.stroke_path(&segments, clip, 1.5 * scale, color);
+}
+
+/// Ribbon-only Fluent presentation of the crate's own symbol geometry.
+/// Callers retain the monochrome path for disabled or explicitly colored icons.
+pub(crate) fn paint_icon_themed(
+    scene: &mut Scene,
+    symbol: IconSymbol,
+    bounds: Rect,
+    clip: Rect,
+    foreground: Color,
+    theme: Theme,
+) {
+    if !theme.is_fluent() {
+        paint_icon(scene, symbol, bounds, clip, foreground);
+        return;
+    }
+    let size = bounds.width.min(bounds.height);
+    if size <= 0.0 || foreground.a == 0.0 {
+        return;
+    }
+    let Some(clip) = bounds.intersection(clip) else {
+        return;
+    };
+    // These are independently chosen accent colors, separate from the text
+    // palette. Preserve opacity, including a fully transparent foreground.
+    let tone = |light: Color, dark: Color| Color {
+        a: foreground.a,
+        ..if theme == Theme::FluentDark {
+            dark
+        } else {
+            light
+        }
+    };
+    let blue = tone(Color::rgb(49, 103, 164), Color::rgb(139, 184, 232));
+    let green = tone(Color::rgb(57, 115, 79), Color::rgb(145, 195, 161));
+    let amber = tone(Color::rgb(158, 100, 27), Color::rgb(225, 181, 107));
+    let violet = tone(Color::rgb(119, 86, 168), Color::rgb(188, 164, 223));
+    let geometry = symbol.segments();
+    // Partition existing segments without redrawing either part. Each color
+    // has a single coverage operation, including crossings within that part.
+    let (first_color, split, last_color) = match symbol {
+        IconSymbol::Check => (green, geometry.len(), green),
+        IconSymbol::Sun => (amber, geometry.len(), amber),
+        IconSymbol::Moon => (blue, geometry.len(), blue),
+        IconSymbol::Save => (blue, 5, foreground),
+        IconSymbol::Pin => (blue, 6, foreground),
+        IconSymbol::Copy => (blue, 4, foreground),
+        IconSymbol::Edit => (blue, 5, foreground),
+        IconSymbol::Eraser => (violet, 3, foreground),
+        IconSymbol::FolderOpen => (foreground, 5, amber),
+        IconSymbol::Close
+        | IconSymbol::Add
+        | IconSymbol::Remove
+        | IconSymbol::ChevronDown
+        | IconSymbol::ChevronRight
+        | IconSymbol::Lock => (foreground, geometry.len(), foreground),
+    };
+    let scale = size / 16.0;
+    let origin = Point::new(
+        bounds.x + (bounds.width - size) * 0.5,
+        bounds.y + (bounds.height - size) * 0.5,
+    );
+    let transform =
+        |point: Point| Point::new(origin.x + point.x * scale, origin.y + point.y * scale);
+    for (part, color) in [
+        (&geometry[..split], first_color),
+        (&geometry[split..], last_color),
+    ] {
+        if part.is_empty() {
+            continue;
+        }
+        let segments: Vec<_> = part
+            .iter()
+            .map(|line| StrokeSegment {
+                start: transform(line.start),
+                end: transform(line.end),
+            })
+            .collect();
+        scene.stroke_path(&segments, clip, 1.3 * scale, color);
+    }
 }

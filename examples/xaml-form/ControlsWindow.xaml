@@ -5,7 +5,7 @@
         Padding="32" Theme="Light">
     <StackPanel x:Name="Form" Spacing="8">
         <TextBlock Text="Форма с несколькими элементами" Height="32" />
-        <TextBlock Text="Текст сообщения" />
+        <TextBlock Text="Текст сообщения" Height="24" />
         <TextBox x:Name="Message"
                  Height="36"
                  FontSize="14" Padding="12,5" CornerRadius="4" BorderThickness="1"

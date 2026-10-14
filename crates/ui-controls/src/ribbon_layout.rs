@@ -191,7 +191,15 @@ impl RibbonWidths {
         }
         let mut tabs = HashMap::new();
         for tab in &model.tabs {
-            let text = ui.measure_text(&tab.label, 4096.0, false)?;
+            let text = ui.measure_styled_text(
+                &tab.label,
+                4096.0,
+                crate::TextStyle {
+                    font_weight: Some(600),
+                    wrap: false,
+                    ..Default::default()
+                },
+            )?;
             tabs.insert(
                 tab.id.clone(),
                 (text.width.ceil() + 28.0).clamp(48.0, 240.0),

@@ -5,6 +5,80 @@ use rust_desktop_ui_controls::{
 use rust_desktop_ui_core::{Color, Edges, InputEvent, Key, Modifiers, Mutation, Size};
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent, accesskit};
 
+#[test]
+fn xaml_card_typography_measures_current_width_and_keeps_editor_on_theme_changes() {
+    let source = r#"<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Padding="12">
+        <StackPanel x:Name="Card" Surface="Card" Padding="16" Spacing="8">
+            <TextBlock x:Name="Heading" Text="Документ" FontSize="22" FontWeight="SemiBold" />
+            <TextBlock x:Name="Description" Text="A longer description that wraps into several lines when its container becomes narrow." FontSize="13" TextTone="Secondary" />
+            <TextBox x:Name="Message" Text="Draft" Height="36" />
+        </StackPanel></Window>"#;
+    let mut form = Form::new(rust_desktop_ui_xaml::parse(source).unwrap(), false).unwrap();
+    form.update(Size::new(640.0, 480.0), 1.0).unwrap();
+    let card = form.find_name("Card").unwrap();
+    let description = form.find_name("Description").unwrap();
+    let editor = form.editor();
+    let nodes = form.ui.runtime.tree().preorder();
+    let wide_height = form.ui.runtime.bounds(description).unwrap().height;
+    assert_eq!(
+        form.ui.surface(card),
+        Some(rust_desktop_ui_controls::SurfaceKind::Card)
+    );
+    let heading = form
+        .ui
+        .scene()
+        .texts
+        .iter()
+        .find(|text| text.text == "Документ")
+        .unwrap();
+    assert_eq!((heading.font_size, heading.weight), (22.0, 600));
+    for theme in [Theme::FluentDark, Theme::FluentLight] {
+        form.ui.set_theme(theme).unwrap();
+        form.update(Size::new(240.0, 480.0), 1.0).unwrap();
+        assert!(form.ui.runtime.bounds(description).unwrap().height > wide_height);
+        let text = form
+            .ui
+            .scene()
+            .texts
+            .iter()
+            .find(|text| text.text.starts_with("A longer"))
+            .unwrap();
+        assert_eq!(text.color, theme.tokens().muted);
+        assert!(text.bounds.height <= form.ui.runtime.bounds(description).unwrap().height);
+        assert_eq!(form.editor(), editor);
+        assert_eq!(form.text(), "Draft");
+        assert_eq!(form.ui.runtime.tree().preorder(), nodes);
+    }
+    form.update(Size::new(640.0, 480.0), 1.0).unwrap();
+    assert_eq!(
+        form.ui.runtime.bounds(description).unwrap().height,
+        wide_height
+    );
+}
+
+#[test]
+fn invalid_manual_textblock_style_fails_before_mounting_card_or_siblings() {
+    use crate::view::MountedView;
+    use rust_desktop_ui_controls::Controls;
+    use rust_desktop_ui_xaml::ElementKind;
+    let mut definition = rust_desktop_ui_xaml::parse(r#"<Window xmlns="urn:rust-ui-engine:ui"><StackPanel Surface="Card"><Button Content="First"/><TextBlock Text="Invalid" /></StackPanel></Window>"#).unwrap();
+    let ElementKind::StackPanel(panel) = &mut definition.content.kind else {
+        panic!()
+    };
+    let ElementKind::TextBlock(text) = &mut panel.children[1].kind else {
+        panic!()
+    };
+    text.font_size = Some(f32::NAN);
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    ui.update(Size::new(400.0, 300.0)).unwrap();
+    let before = ui.runtime.tree().preorder();
+    let scene = ui.scene().clone();
+    let root = ui.root();
+    assert!(MountedView::mount(&mut ui, root, &definition.content).is_err());
+    assert_eq!(ui.runtime.tree().preorder(), before);
+    assert_eq!(ui.scene(), &scene);
+}
+
 fn editor_definition(
     definition: &mut rust_desktop_ui_xaml::WindowDefinition,
 ) -> &mut rust_desktop_ui_xaml::EditBoxDefinition {
@@ -1098,9 +1172,9 @@ fn xaml_layout_panels_leave_the_canvas_visible_behind_rounded_editors_in_both_th
             assert_eq!(
                 editor_fill.color,
                 if enabled {
-                    theme.tokens().surface
+                    theme.chrome().editor_fill
                 } else {
-                    theme.tokens().canvas
+                    theme.chrome().editor_read_only
                 }
             );
         }

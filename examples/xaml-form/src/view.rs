@@ -2,7 +2,7 @@
 use rust_desktop_ui_controls::{
     ButtonAppearance, ButtonIcon, ButtonStyle, Controls, EditBoxAppearance, EditBoxStyle,
     EditorSettings, EditorValidation, IconStyle, IconSymbol, MenuEntry, MenuItem, RadioGroupId,
-    Role, SeparatorSettings, SplitButton,
+    Role, SeparatorSettings, SplitButton, SurfaceKind, TextStyle, TextTone,
 };
 use rust_desktop_ui_core::{Axis, Color, Edges, LayoutKind, LayoutStyle, Length, WidgetId};
 use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind, Orientation};
@@ -181,12 +181,28 @@ impl MountedView {
                         },
                     )
                     .map_err(err)?;
+                ui.set_surface(
+                    id,
+                    match panel.surface {
+                        rust_desktop_ui_xaml::SurfaceKindDefinition::Transparent => {
+                            SurfaceKind::Transparent
+                        }
+                        rust_desktop_ui_xaml::SurfaceKindDefinition::Card => SurfaceKind::Card,
+                    },
+                )
+                .map_err(err)?;
                 for child in &panel.children {
                     self.mount_element(ui, id, child, axis, child_width)?;
                 }
                 id
             }
-            ElementKind::TextBlock(text) => ui.label(parent, &text.text, style).map_err(err)?,
+            ElementKind::TextBlock(text) => {
+                let id = ui.label(parent, &text.text, style).map_err(err)?;
+                ui.set_text_style(id, text_style(text)).map_err(err)?;
+                ui.set_text_auto_height(id, common.height.is_none())
+                    .map_err(err)?;
+                id
+            }
             ElementKind::Icon(icon) => {
                 let id = ui
                     .icon(parent, icon_symbol(icon.symbol), style)
@@ -410,7 +426,14 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         }
         ElementKind::TextBox(_) => Ok(240.0),
         ElementKind::TextBlock(text) => Ok(ui
-            .measure_text(&text.text, 16384.0, false)
+            .measure_styled_text(
+                &text.text,
+                16384.0,
+                TextStyle {
+                    wrap: false,
+                    ..text_style(text)
+                },
+            )
             .map_err(err)?
             .width
             + 16.0),
@@ -536,6 +559,13 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         match &element.kind {
+            ElementKind::TextBlock(text) => {
+                rust_desktop_ui_xaml::validate_text_block(text)?;
+                text_style(text).validate().map_err(err)?;
+                if text.text.len() > 1024 * 1024 {
+                    return Err("TextBlock text exceeds the one-MiB limit".into());
+                }
+            }
             ElementKind::Ribbon(definition) => {
                 if has_ribbon {
                     return Err("Only one Ribbon is supported per Window".into());
@@ -857,6 +887,19 @@ pub(crate) fn icon_symbol(symbol: rust_desktop_ui_xaml::IconSymbol) -> IconSymbo
         rust_desktop_ui_xaml::IconSymbol::Sun => IconSymbol::Sun,
         rust_desktop_ui_xaml::IconSymbol::Moon => IconSymbol::Moon,
         rust_desktop_ui_xaml::IconSymbol::Lock => IconSymbol::Lock,
+    }
+}
+
+fn text_style(text: &rust_desktop_ui_xaml::TextBlockDefinition) -> TextStyle {
+    TextStyle {
+        font_size: text.font_size,
+        font_weight: text.font_weight,
+        foreground: text.foreground.map(color),
+        tone: match text.tone {
+            rust_desktop_ui_xaml::TextToneDefinition::Primary => TextTone::Primary,
+            rust_desktop_ui_xaml::TextToneDefinition::Secondary => TextTone::Secondary,
+        },
+        wrap: text.wrap,
     }
 }
 

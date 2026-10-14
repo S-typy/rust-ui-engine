@@ -270,6 +270,7 @@ impl EditBoxStyle {
 
     pub(crate) fn resolve(self, theme: Theme, state: EditBoxVisualState) -> ResolvedEditBoxStyle {
         let tokens = theme.tokens();
+        let colors = theme.chrome();
         let horizontal_padding = if theme.is_fluent() { 12.0 } else { 8.0 };
         let mut resolved = ResolvedEditBoxStyle {
             font_size: self.font_size.unwrap_or(tokens.font_size),
@@ -283,10 +284,10 @@ impl EditBoxStyle {
                 .corner_radius
                 .unwrap_or(if theme.is_fluent() { 4.0 } else { 0.0 }),
             border_width: self.border_width.unwrap_or(1.0),
-            background: tokens.surface,
+            background: colors.editor_fill,
             foreground: tokens.text,
             placeholder: tokens.muted,
-            border: tokens.border,
+            border: colors.control_border,
             accent: tokens.focus,
             selection: tokens.selected,
             focus_visible: matches!(
@@ -298,18 +299,18 @@ impl EditBoxStyle {
         let appearance = match state {
             EditBoxVisualState::Normal => EditBoxAppearance::default(),
             EditBoxVisualState::Hovered => {
-                resolved.background = tokens.hover;
+                resolved.background = colors.editor_hover;
                 self.hovered
             }
             EditBoxVisualState::Focused => self.focused,
             EditBoxVisualState::ReadOnly | EditBoxVisualState::ReadOnlyFocused => {
-                resolved.background = tokens.canvas;
+                resolved.background = colors.editor_read_only;
                 self.read_only
             }
             EditBoxVisualState::Disabled => {
-                resolved.background = tokens.canvas;
-                resolved.foreground = tokens.muted;
-                resolved.placeholder = tokens.muted;
+                resolved.background = colors.editor_read_only;
+                resolved.foreground = colors.disabled_text;
+                resolved.placeholder = colors.disabled_text;
                 self.disabled
             }
         };
@@ -512,7 +513,7 @@ mod tests {
             Theme::FluentDark,
         ] {
             let normal = style.resolve(theme, EditBoxVisualState::Normal);
-            assert_eq!(normal.background, theme.tokens().surface);
+            assert_eq!(normal.background, theme.chrome().editor_fill);
             assert_eq!(normal.font_size, theme.tokens().font_size);
             assert_eq!(normal.foreground, theme.tokens().text);
             assert_eq!(normal.accent, theme.tokens().focus);
@@ -567,25 +568,25 @@ mod tests {
         let normal = style.resolve(theme, EditBoxVisualState::Normal);
         assert_eq!(normal.background, background);
         let hovered = style.resolve(theme, EditBoxVisualState::Hovered);
-        assert_eq!(hovered.background, theme.tokens().hover);
+        assert_eq!(hovered.background, theme.chrome().editor_hover);
         assert_eq!(hovered.border, hover_border);
         assert_eq!(hovered.foreground, foreground);
         let focused = style.resolve(theme, EditBoxVisualState::Focused);
         assert_eq!(focused.background, focused_background);
-        assert_eq!(focused.border, theme.tokens().border);
+        assert_eq!(focused.border, theme.chrome().control_border);
         assert_eq!(focused.accent, accent);
         let read_only = style.resolve(theme, EditBoxVisualState::ReadOnly);
         let read_only_focused = style.resolve(theme, EditBoxVisualState::ReadOnlyFocused);
-        assert_eq!(read_only.background, theme.tokens().canvas);
+        assert_eq!(read_only.background, theme.chrome().editor_read_only);
         assert_eq!(read_only.foreground, foreground);
         assert_eq!(read_only_focused.background, read_only.background);
         assert_eq!(read_only_focused.accent, accent);
         assert!(read_only_focused.focus_visible);
         assert!(!read_only.focus_visible);
         let disabled = style.resolve(theme, EditBoxVisualState::Disabled);
-        assert_eq!(disabled.background, theme.tokens().canvas);
-        assert_eq!(disabled.foreground, theme.tokens().muted);
-        assert_eq!(disabled.placeholder, theme.tokens().muted);
+        assert_eq!(disabled.background, theme.chrome().editor_read_only);
+        assert_eq!(disabled.foreground, theme.chrome().disabled_text);
+        assert_eq!(disabled.placeholder, theme.chrome().disabled_text);
         assert!(!disabled.focus_visible);
     }
 

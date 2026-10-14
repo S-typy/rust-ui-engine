@@ -602,6 +602,8 @@ pub(super) struct ContentPresentation {
     pub icon: Option<ButtonIcon>,
     pub layout: ButtonContentLayout,
     pub top_aligned: bool,
+    pub start_aligned: bool,
+    pub icon_theme: Option<Theme>,
 }
 
 pub(super) fn paint_content(
@@ -623,31 +625,41 @@ pub(super) fn paint_content(
         icon,
         layout,
         top_aligned,
+        start_aligned,
+        icon_theme,
     } = presentation;
     let plan = content_plan(engine, label, icon, layout, content.width, style.font_size)?;
     let above = layout == ButtonContentLayout::Above;
     let icon_size = plan.icon_size.min(content.height);
     if let Some(icon) = icon {
-        crate::primitives::paint_icon(
-            scene,
-            icon.symbol,
-            Rect::new(
-                if above || layout == ButtonContentLayout::IconOnly {
-                    content.x + (content.width - icon_size) * 0.5
-                } else {
-                    content.x + (content.width - plan.size.width) * 0.5
-                },
-                if above {
-                    content.y
-                } else {
-                    content.y + (content.height - icon_size) * 0.5
-                },
-                icon_size,
-                icon_size,
-            ),
-            clip,
-            style.foreground,
+        let icon_bounds = Rect::new(
+            if above || layout == ButtonContentLayout::IconOnly {
+                content.x + (content.width - icon_size) * 0.5
+            } else if start_aligned {
+                content.x
+            } else {
+                content.x + (content.width - plan.size.width) * 0.5
+            },
+            if above {
+                content.y
+            } else {
+                content.y + (content.height - icon_size) * 0.5
+            },
+            icon_size,
+            icon_size,
         );
+        if let Some(theme) = icon_theme {
+            crate::primitives::paint_icon_themed(
+                scene,
+                icon.symbol,
+                icon_bounds,
+                clip,
+                style.foreground,
+                theme,
+            );
+        } else {
+            crate::primitives::paint_icon(scene, icon.symbol, icon_bounds, clip, style.foreground);
+        }
     }
     if !plan.caption.is_empty() {
         let bounds = if above {
@@ -669,7 +681,14 @@ pub(super) fn paint_content(
         } else {
             let top = ((content.height - plan.caption_size.height) * 0.5).max(0.0);
             Rect::new(
-                content.x + (content.width - plan.size.width) * 0.5 + icon_size + plan.gap,
+                content.x
+                    + if start_aligned {
+                        0.0
+                    } else {
+                        (content.width - plan.size.width) * 0.5
+                    }
+                    + icon_size
+                    + plan.gap,
                 content.y + top,
                 plan.caption_size.width,
                 (content.height - top).max(0.0),
@@ -704,7 +723,12 @@ pub(super) fn paint_group_caption(
     theme: Theme,
 ) -> Result<(), ControlError> {
     let width = (bounds.width - 8.0).max(0.0);
-    let (caption, size) = limited_caption(engine, label, width, theme.tokens().font_size, 1)?;
+    let font_size = if theme.is_fluent() {
+        12.0
+    } else {
+        theme.tokens().font_size
+    };
+    let (caption, size) = limited_caption(engine, label, width, font_size, 1)?;
     if !caption.is_empty() {
         let text_bounds = Rect::new(
             bounds.x + 4.0,
@@ -718,7 +742,7 @@ pub(super) fn paint_group_caption(
                 .intersection(clip)
                 .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
             text: caption,
-            font_size: theme.tokens().font_size,
+            font_size,
             color: theme.tokens().muted,
             weight: 400,
             align: TextAlign::Center,

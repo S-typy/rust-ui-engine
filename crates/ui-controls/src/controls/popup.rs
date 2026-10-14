@@ -550,6 +550,10 @@ impl Controls {
                 props.tab_stop = false;
             })?;
             self.set_role(viewer.viewport, Role::Menu);
+            self.controls
+                .get_mut(&viewer.viewport)
+                .unwrap()
+                .popup_surface = true;
             self.edit_props(viewer.content, |props| props.style.gap = 0.0)?;
             let mut ids = Vec::new();
             for entry in entries {

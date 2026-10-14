@@ -227,7 +227,7 @@ fn tooltip_uses_theme_palette_and_clamps_wrapped_text_to_small_viewport() {
                 .iter()
                 .any(|rect| rect.bounds == bounds
                     && rect.stroke_width.is_none()
-                    && rect.color == theme.tokens().surface)
+                    && rect.color == theme.chrome().flyout_surface)
         );
         let text = ui.scene().texts.last().unwrap();
         assert!(text.wrap);

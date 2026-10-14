@@ -100,8 +100,12 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
         return all(abs(a - b) <= tolerance for a, b in zip(actual, expected, strict=True))
 
     canvas = (32, 32, 32) if dark else (243, 243, 243)
-    surface = (45, 45, 45) if dark else (255, 255, 255)
-    border = (85, 85, 85) if dark else (205, 205, 205)
+    # Editors and ordinary buttons resolve different opaque chrome roles.
+    editor_surface = (39, 39, 39) if dark else (255, 255, 255)
+    editor_read_only = (35, 35, 35) if dark else (246, 246, 246)
+    editor_background = editor_read_only if read_only else editor_surface
+    control_surface = (49, 49, 49) if dark else (255, 255, 255)
+    border = (68, 68, 68) if dark else (220, 220, 220)
     foreground = (245, 245, 245) if dark else (27, 27, 27)
     muted = (170, 170, 170) if dark else (105, 105, 105)
     accent = (96, 205, 255) if dark else (0, 95, 184)
@@ -111,13 +115,13 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
         border = accent = error
     samples = {
         "canvas_rgb": (rgb(8, 8), canvas),
-        "surface_rgb": (rgb(280, 122), canvas if read_only else surface),
+        "surface_rgb": (rgb(280, 122), editor_background),
         "rounded_corner_rgb": (rgb(32, 104), canvas),
         "top_border_rgb": (rgb(200, 104), border),
-        "confirm_surface_rgb": (rgb(180, 210), surface),
+        "confirm_surface_rgb": (rgb(180, 210), control_surface),
         "confirm_border_rgb": (rgb(112, 188), control_border),
         "checkbox_surface_rgb": (rgb(300, 164), canvas),
-        "checkbox_indicator_rgb": (rgb(42, 159), check_mark if read_only else surface),
+        "checkbox_indicator_rgb": (rgb(42, 159), check_mark if read_only else control_surface),
         "confirm_rounded_corner_rgb": (rgb(32, 188), canvas),
     }
     if focused:
@@ -139,7 +143,7 @@ def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float,
     for y in range(round(104 * scale), round(109 * scale)):
         for x in range(round(32 * scale), round(37 * scale)):
             color = pixel(x, y)
-            if color not in (canvas, surface, border):
+            if color not in (canvas, editor_background, border):
                 corner_shades.add(color)
     if len(corner_shades) < 2:
         raise SmokeFailure("Rounded corner lacks antialiased coverage")
@@ -194,14 +198,17 @@ def button_capture_checkpoints(pixels: bytes, width: int, height: int, scale: fl
         return all(abs(a - b) <= 3 for a, b in zip(actual, expected, strict=True))
 
     canvas = (32, 32, 32) if dark else (243, 243, 243)
-    surface = (45, 45, 45) if dark else (255, 255, 255)
-    hover = (50, 50, 50) if dark else (250, 250, 250)
-    pressed = (40, 40, 40) if dark else (235, 235, 235)
+    surface = (49, 49, 49) if dark else (255, 255, 255)
+    hover = (57, 57, 57) if dark else (248, 248, 248)
+    pressed = (43, 43, 43) if dark else (239, 239, 239)
     selected = (35, 75, 105) if dark else (196, 225, 245)
+    checked_hover = (39, 86, 119) if dark else (183, 217, 241)
+    checked_pressed = (29, 67, 96) if dark else (168, 207, 234)
     accent = (96, 205, 255) if dark else (0, 95, 184)
-    muted = (170, 170, 170) if dark else (105, 105, 105)
+    disabled_text = (118, 118, 118) if dark else (151, 151, 151)
     background = {"normal": selected if checked else surface,
-                  "hover": hover, "pressed": pressed}[phase]
+                  "hover": checked_hover if checked else hover,
+                  "pressed": checked_pressed if checked else pressed}[phase]
     samples = {
         "pin_background": (rgb(308, 214), background),
         "pin_corner": (rgb(200, 188), canvas),
@@ -212,7 +219,7 @@ def button_capture_checkpoints(pixels: bytes, width: int, height: int, scale: fl
     for name, (actual, expected) in samples.items():
         if not near(actual, expected):
             raise SmokeFailure(f"Unexpected {name}: {actual}, expected {expected}")
-    disabled_ink = sum(near(pixel(x, y), muted)
+    disabled_ink = sum(near(pixel(x, y), disabled_text)
                        for y in range(round(194 * scale), round(220 * scale))
                        for x in range(round(338 * scale), round(431 * scale)))
     if disabled_ink < 30:
@@ -243,7 +250,7 @@ def radio_capture_checkpoints(pixels: bytes, width: int, height: int, scale: flo
     if selected not in ("AlignLeft", "AlignCenter"):
         raise SmokeFailure("Invalid radio fixture selection")
     canvas = (32, 32, 32) if dark else (243, 243, 243)
-    surface = (45, 45, 45) if dark else (255, 255, 255)
+    surface = (49, 49, 49) if dark else (255, 255, 255)
     accent = (96, 205, 255) if dark else (0, 95, 184)
     dot = canvas if dark else (255, 255, 255)
     samples = {}
@@ -277,7 +284,7 @@ def primitives_capture_checkpoints(pixels: bytes, width: int, height: int,
     canvas = (32, 32, 32) if dark else (243, 243, 243)
     foreground = (245, 245, 245) if dark else (27, 27, 27)
     muted = (170, 170, 170) if dark else (105, 105, 105)
-    border = (85, 85, 85) if dark else (205, 205, 205)
+    divider = (66, 66, 66) if dark else (219, 219, 219)
 
     def pixel(x, y):
         offset = ((height - 1 - y) * width + x) * 4
@@ -319,11 +326,11 @@ def primitives_capture_checkpoints(pixels: bytes, width: int, height: int,
         masks.add(digest)
         icons[name] = {"ink_pixels": ink, "edge_shades": len(shades), "mask_sha256": digest}
     for x in (40, 100, 200, 300, 400):
-        require(x, 312, border, "horizontal separator")
+        require(x, 312, divider, "horizontal separator")
         for y in (310, 314):
             require(x, y, canvas, "horizontal separator outside")
     for y in (280, 288, 296):
-        require(256, y, border, "vertical separator")
+        require(256, y, divider, "vertical separator")
         for x in (254, 259):
             require(x, y, canvas, "vertical separator outside")
     return {"icons": icons, "horizontal_separator": True, "vertical_separator": True}
@@ -861,8 +868,10 @@ def self_test() -> None:
     width, height = 640, 488
     for dark in (False, True):
         canvas = 32 if dark else 243
-        surface = 45 if dark else 255
-        border = 85 if dark else 205
+        editor_surface = 39 if dark else 255
+        editor_read_only = 35 if dark else 246
+        surface = 49 if dark else 255
+        border = 68 if dark else 220
         foreground = 245 if dark else 27
         pixels = bytearray(bytes((canvas, canvas, canvas, 255)) * width * height)
 
@@ -870,7 +879,7 @@ def self_test() -> None:
             offset = ((height - 1 - y) * width + x) * 4
             pixels[offset:offset + 4] = bytes((*reversed(color), 255))
 
-        set_rgb(280, 122, (surface,) * 3)
+        set_rgb(280, 122, (editor_surface,) * 3)
         set_rgb(200, 104, (border,) * 3)
         set_rgb(33, 104, (border + 1,) * 3)
         set_rgb(34, 104, (border + 2,) * 3)
@@ -897,7 +906,7 @@ def self_test() -> None:
             raise AssertionError("Missing nested button glyphs must be rejected")
         pixels[:] = direct
         accent = (96, 205, 255) if dark else (0, 95, 184)
-        set_rgb(280, 122, (canvas,) * 3)
+        set_rgb(280, 122, (editor_read_only,) * 3)
         set_rgb(42, 159, accent)
         set_rgb(200, 138, accent)
         assert capture_checkpoints(pixels, width, height, 1.0, dark, True,
@@ -940,10 +949,10 @@ def self_test() -> None:
         # The button checker must reject a wrong state palette and missing
         # focus ring independently of otherwise valid editor pixels.
         selected = (35, 75, 105) if dark else (196, 225, 245)
-        muted = (170, 170, 170) if dark else (105, 105, 105)
+        disabled_text = (118, 118, 118) if dark else (151, 151, 151)
         for y in range(199, 205):
             for x in range(350, 385):
-                set_rgb(x, y, muted)
+                set_rgb(x, y, disabled_text)
             for x in range(230, 270):
                 set_rgb(x, y, (foreground,) * 3)
         set_rgb(308, 214, selected)
@@ -960,6 +969,29 @@ def self_test() -> None:
             else:
                 raise AssertionError("Wrong checked/focus palette must fail")
             set_rgb(*damaged, selected if damaged[0] == 308 else accent)
+        # Checked hover/press have their own opaque colors; they must not fall
+        # back to either the unchecked state or the canvas behind the button.
+        hover = (57, 57, 57) if dark else (248, 248, 248)
+        pressed = (43, 43, 43) if dark else (239, 239, 239)
+        checked_hover = (39, 86, 119) if dark else (183, 217, 241)
+        checked_pressed = (29, 67, 96) if dark else (168, 207, 234)
+        for checked in (False, True):
+            for phase, expected in (
+                    ("normal", selected if checked else (surface,) * 3),
+                    ("hover", checked_hover if checked else hover),
+                    ("pressed", checked_pressed if checked else pressed)):
+                set_rgb(308, 214, expected)
+                set_rgb(203, 206, expected)
+                button_capture_checkpoints(pixels, width, height, 1.0, dark,
+                                           checked, phase, False)
+                set_rgb(308, 214, (canvas,) * 3)
+                try:
+                    button_capture_checkpoints(pixels, width, height, 1.0, dark,
+                                               checked, phase, False)
+                except SmokeFailure:
+                    pass
+                else:
+                    raise AssertionError(f"Missing {checked=} {phase=} button fill must fail")
         pixels[:] = direct
         dot = (canvas,) * 3 if dark else (255, 255, 255)
         for left in (32, 160, 288):
@@ -982,6 +1014,10 @@ def self_test() -> None:
         pixels[:] = direct
         # Independent masks exercise missing/wrong-color/placeholder/rule
         # rejection without duplicating the vector path implementation.
+        # Standalone Icon still uses tokens.muted; button disabled text has its
+        # own role. Separators use chrome.divider rather than a control border.
+        muted = (170, 170, 170) if dark else (105, 105, 105)
+        divider = (66, 66, 66) if dark else (219, 219, 219)
         for index, left in enumerate((32, 64, 96, 128, 160, 192, 224, 265)):
             color = muted if index == 7 else (foreground,) * 3
             for y in range(281, 285 + index):
@@ -990,9 +1026,9 @@ def self_test() -> None:
             set_rgb(left + 12, 290, (120, 120, 120))
             set_rgb(left + 13, 290, (140, 140, 140))
         for x in range(32, 608):
-            set_rgb(x, 312, (border,) * 3)
+            set_rgb(x, 312, divider)
         for y in range(272, 304):
-            set_rgb(256, y, (border,) * 3)
+            set_rgb(256, y, divider)
         primitive_fixture = bytes(pixels)
         primitives_capture_checkpoints(pixels, width, height, 1.0, dark)
         for damage in ("missing-icon", "enabled-disabled-icon", "opaque-corner",

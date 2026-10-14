@@ -76,13 +76,43 @@ TextEngine. Явные размеры controls автоматически не �
 `measure_text_with_font_size(text, width, wrap, font_size)` позволяет измерить
 тот же текст с явно заданным размером шрифта в `(0, 512]` logical pixels.
 
+### Текст и поверхности
+
+`set_text_style(id, TextStyle)` оформляет живой `Label`; `text_style(id)` читает
+настройки. `font_size: Option<f32>` наследует размер темы при `None`,
+`font_weight: Option<u16>` — начертание 400. Допустимы конечный размер `(0, 512]`
+и вес `1..=1000`. `wrap` включает переносы и по умолчанию равен `true`.
+`TextTone::Primary` использует основной текст темы, `Secondary` — приглушённый;
+явный `foreground` имеет приоритет над tone и сохраняется при смене темы.
+Отключённый Label, включая отключение предка, использует `chrome().disabled_text`.
+Проверка типа контрола, метрик и RGBA выполняется до изменения стиля.
+
+`measure_styled_text(text, width, style)` измеряет тот же размер, вес и переносы,
+которые используются при рисовании Label. Width — ширина самого текста,
+без левого и правого отступов Label по 8 logical pixels; допустим диапазон
+`[0, 16384]` и не более 1 MiB UTF-8 текста. Сам метод не изменяет layout.
+`set_text_auto_height(id, true)` отдельно включает высоту по измеренному тексту
+и текущей ширине. Она пересчитывается при `update` после изменения текста,
+стиля, темы или layout. Без этой настройки явно заданная высота сохраняется.
+Передача `false` прекращает пересчёт, оставляя последнюю вычисленную высоту;
+приложение может затем назначить собственный LayoutStyle.
+
+`set_surface(id, SurfaceKind::Card)` добавляет существующему Panel заливку
+`card_surface` и рамку `surface_border` текущей темы. В Fluent радиус равен
+8 logical pixels; Light/Dark/Compact используют прямые углы.
+`SurfaceKind::Transparent` убирает оформление поверхности.
+`surface(id)` возвращает явную настройку, а `None` означает исходное оформление
+контейнера. Настройка не создаёт дополнительных semantic nodes, не меняет
+размеры и не скругляет clip дочерних элементов. Без `set_surface` прежнее
+поведение `panel` и `transparent_panel` сохраняется.
+
+### ButtonStyle и Fluent-состояния
+
 Pointer down у Button ещё не выполняет команду. Увод указателя и release снаружи
 отменяют активацию; blur также отменяет pressed/capture state. Enter активирует
 сфокусированный Button однократно на keydown. Space показывает pressed state и
 активирует на keyup, если focus остался на том же control. Disabled controls и
 disabled ancestors блокируют pointer, keyboard и semantic activation.
-
-### ButtonStyle и Fluent-состояния
 
 `Button`, `ToggleButton`, `CheckBox` и `RadioButton` используют общий `ButtonStyle`.
 `set_button_style(id, style)` проверяет все метрики и цвета до применения;
@@ -105,6 +135,15 @@ checked/hover/press. Disabled подавляет hover, press и focus, сохр
 внутри кнопки; release снаружи отменяет действие.
 
 Fluent-темы используют скруглённые кнопки и внутреннее кольцо фокуса.
+У Standard-кнопки заливка и рамка берутся из `ChromeTokens::control_fill` и
+`control_border`, нижний край слегка выделен через `control_bottom_border`.
+Явный `border` соответствующего appearance меняет и рамку, и нижний край;
+прозрачный border скрывает оба, а `border_width = 0` отключает их отрисовку.
+У Flat/Tab и индикаторов CheckBox/RadioButton отдельного нижнего края нет.
+Выбранная Fluent-кнопка сохраняет отдельный selected fill при hover и press;
+явные `hovered`/`pressed` brushes по-прежнему имеют приоритет.
+Disabled подставляет canvas, `disabled_text` и `control_border`, затем применяет
+явный `disabled` appearance. Отключённая Flat/Tab по умолчанию прозрачна.
 Для существующих Button/ToggleButton/CheckBox в Light/Dark/Compact прежнее оформление сохраняется до явного
 `set_button_style`, который включает общий renderer для этого контрола.
 У флажка строка прозрачна, а `background`/`border`/`corner_radius` задают отдельный
@@ -146,7 +185,12 @@ Above центрирует значок над подписью с перено�
 `set_button_chrome` выбирает `ButtonChrome::Standard`, `Flat` или `Tab`.
 Standard сохраняет обычную поверхность кнопки. Flat прозрачен в покое,
 сохраняет обратную связь hover/press/checked и кольцо клавиатурного фокуса.
-Tab добавляет акцентную линию под выбранной вкладкой. Ribbon выбирает эти
+В Fluent его hover/press используют полупрозрачные `subtle_hover`/`subtle_pressed`;
+у выбранной команды вместо них остаются отдельные `checked_hover`/`checked_pressed`.
+Tab добавляет акцентное подчёркивание с округлёнными концами под выбранной
+вкладкой. В Fluent выбранный текст имеет основной цвет темы, начертание 600
+и прозрачный фон в покое. Явные state overrides сохраняют приоритет.
+Ribbon выбирает эти
 представления для своих размещений; обычные кнопки формы сохраняют defaults.
 
 `set_key_tip(id, Some(text))` задаёт отдельную визуальную метку; `None` её убирает.
@@ -184,13 +228,17 @@ ToggleButton, сохраняя подпись, ID, команду и checked sta
 gap применяется только при непустой подписи. Цвет обоих берётся из resolved
 ButtonStyle foreground, включая disabled и state overrides. Доступное место
 ограничивает размер иконки и clip текста; явные bounds кнопки не увеличиваются.
+Fluent Ribbon отдельно использует собственные акценты для enabled icons,
+если ни один appearance кнопки не задаёт явный foreground. Некоторые символы
+имеют два тона, остальные сохраняют однотонную геометрию. Disabled и явно
+окрашенные значки Ribbon используют resolved foreground целиком.
 В Light/Dark/Compact добавление иконки включает общий renderer этой кнопки.
 После удаления иконки прежнее оформление возвращается, если явный ButtonStyle
 не был установлен и сохранены Leading + Standard.
 
 `separator(parent, settings, layout)` принимает `SeparatorSettings`:
 `orientation: Axis` (по умолчанию Horizontal), `thickness` (1) и необязательный
-`foreground` (theme border). Толщина конечна в `(0, 16384]`, RGBA — в `[0, 1]`.
+`foreground` (`Theme::chrome().divider`). Толщина конечна в `(0, 16384]`, RGBA — в `[0, 1]`.
 Линия центрируется в прозрачном layout box и ограничивается его короткой стороной
 и clip предка. Отключение не меняет декоративный цвет. Роль — Separator, без
 pointer hit, focus и semantic actions; AccessKit отображает её как Splitter без
@@ -562,8 +610,12 @@ Accent используется для индикации фокуса, каре
 
 Палитра вычисляется последовательно: обычная тема → `normal` overrides →
 подстановки темы для состояния → overrides этого состояния. Hover заменяет фон
-на theme hover; read-only — на canvas; disabled — фон на canvas, текст и placeholder
-на muted. Чтобы переопределить эти цвета, задайте соответствующий state appearance.
+на `chrome().editor_hover`; read-only и disabled — на `editor_read_only`.
+Disabled также заменяет текст и placeholder на `disabled_text`. Обычный фон —
+`editor_fill`, рамка — `control_border`; focus и validation сохраняют отдельные
+accent/error цвета. В Light/Dark/Compact эти роли соответствуют прежним
+surface/hover/canvas/border/muted. Чтобы переопределить подставляемые цвета,
+задайте соответствующий state appearance.
 Остальные явно заданные цвета сохраняются при переключении состояния и темы.
 
 `edit_box_visual_state(id)` возвращает Normal, Hovered, Focused, ReadOnly,
@@ -594,6 +646,28 @@ Light, Dark, Compact, FluentLight и FluentDark задают собственн�
 controls. `set_theme`
 меняет оформление без пересоздания control IDs и checked/document state.
 Compact уменьшает default heights; явные размеры приложения сохраняются.
+
+`Theme::chrome()` возвращает дополнительный `ChromeTokens` для оформления
+поверхностей и состояний. `ThemeTokens` сохраняет прежние поля и размеры.
+
+| Роли `ChromeTokens` | Назначение |
+|---|---|
+| `ribbon_surface`, `card_surface`, `surface_border` | Командная область, карточки и их тонкая рамка |
+| `divider` | Декоративные разделители |
+| `control_fill`, `control_hover`, `control_pressed` | Обычные кнопки и их взаимодействия |
+| `control_border`, `control_bottom_border` | Контур контрола и нижний край Standard-кнопки |
+| `subtle_hover`, `subtle_pressed` | Фон наведённой/нажатой плоской команды |
+| `checked_hover`, `checked_pressed` | Сохранение выбранного оформления при наведении/нажатии |
+| `disabled_text` | Приглушённый текст Button, Label и Editor |
+| `flyout_surface`, `flyout_border`, `shadow` | Popup/ToolTip и их тень |
+| `editor_fill`, `editor_hover`, `editor_read_only` | Состояния поверхности редактора |
+
+FluentLight/FluentDark различают фон окна, командную область, карточку, редактор
+и всплывающую поверхность. Полупрозрачные subtle overlays смешиваются с
+лежащим под ними фоном в linear light; их RGBA не является итоговым цветом пикселя.
+Light/Dark/Compact используют соответствующие прежние tokens и не добавляют
+тень. Основной и вторичный текст, accent, selection и error остаются в
+`ThemeTokens`. Смена темы не заменяет controls и не сбрасывает их состояние.
 
 `semantics()` возвращает независимые `SemanticNode`: role, label, value,
 checked/selected/disabled/read_only/focused, validation_error, bounds, children
