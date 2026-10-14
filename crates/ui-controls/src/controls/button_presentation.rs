@@ -1,5 +1,30 @@
 use super::*;
 
+const SPLIT_PRIMARY_HEIGHT: f32 = 40.0;
+const SPLIT_ARROW_HEIGHT: f32 = 20.0;
+const SPLIT_ARROW_WIDTH: f32 = 24.0;
+const SPLIT_CAPTION_ARROW_WIDTH: f32 = 20.0;
+const SPLIT_PADDING: f32 = 4.0;
+
+fn validate_content_measure(
+    label: &str,
+    style: &ButtonStyle,
+    icon: Option<ButtonIcon>,
+    available_width: f32,
+) -> Result<(), ControlError> {
+    style.validate()?;
+    if let Some(icon) = icon {
+        icon.validate()?;
+    }
+    TextLimits::default().validate(label).map_err(edit_error)?;
+    if !available_width.is_finite() || !(0.0..=16_384.0).contains(&available_width) {
+        return Err(ControlError::Invalid(
+            "Button measure width must be finite and in [0, 16384]".into(),
+        ));
+    }
+    Ok(())
+}
+
 impl Controls {
     fn require_content_button(&self, id: WidgetId) -> Result<(), ControlError> {
         if self.runtime.tree().node(id).is_some()
@@ -93,16 +118,7 @@ impl Controls {
         layout: ButtonContentLayout,
         available_width: f32,
     ) -> Result<Size, ControlError> {
-        style.validate()?;
-        if let Some(icon) = icon {
-            icon.validate()?;
-        }
-        TextLimits::default().validate(label).map_err(edit_error)?;
-        if !available_width.is_finite() || !(0.0..=16_384.0).contains(&available_width) {
-            return Err(ControlError::Invalid(
-                "Button measure width must be finite and in [0, 16384]".into(),
-            ));
-        }
+        validate_content_measure(label, style, icon, available_width)?;
         let style = style.resolve(self.theme, ButtonVisualState::default(), false);
         let content_width = (available_width - style.padding.horizontal()).max(0.0);
         let plan = content_plan(
@@ -121,6 +137,64 @@ impl Controls {
             },
             plan.size.height + style.padding.vertical(),
         ))
+    }
+
+    /// Measures the two areas installed by `set_split_button_presentation`.
+    /// The caption footer has its own padding and reserves the popup indicator
+    /// width; measuring it as an ordinary Above button can lose a wrapped line.
+    pub(crate) fn measure_split_button_content(
+        &mut self,
+        label: &str,
+        style: &ButtonStyle,
+        icon: Option<ButtonIcon>,
+        layout: ButtonContentLayout,
+        available_width: f32,
+    ) -> Result<Size, ControlError> {
+        validate_content_measure(label, style, icon, available_width)?;
+        let style = ButtonStyle {
+            padding: Some(Edges::all(SPLIT_PADDING)),
+            ..*style
+        };
+        match layout {
+            ButtonContentLayout::Above => {
+                let caption_width = if icon.is_some() {
+                    (available_width - SPLIT_CAPTION_ARROW_WIDTH).max(0.0)
+                } else {
+                    available_width
+                };
+                let caption = self.measure_button_content(
+                    label,
+                    &style,
+                    None,
+                    ButtonContentLayout::Above,
+                    caption_width,
+                )?;
+                Ok(Size::new(
+                    available_width,
+                    if icon.is_some() {
+                        SPLIT_PRIMARY_HEIGHT + caption.height.max(SPLIT_ARROW_WIDTH)
+                    } else {
+                        caption.height + SPLIT_ARROW_HEIGHT
+                    },
+                ))
+            }
+            ButtonContentLayout::Leading => {
+                let primary = self.measure_button_content(
+                    label,
+                    &style,
+                    icon,
+                    layout,
+                    (available_width - SPLIT_ARROW_WIDTH).max(0.0),
+                )?;
+                Ok(Size::new(
+                    (primary.width + SPLIT_ARROW_WIDTH).min(available_width),
+                    primary.height.max(SPLIT_ARROW_WIDTH),
+                ))
+            }
+            ButtonContentLayout::IconOnly => Err(ControlError::Invalid(
+                "Split presentation requires Leading or Above layout".into(),
+            )),
+        }
     }
 
     pub(crate) fn set_ribbon_surface(&mut self, id: WidgetId) -> Result<(), ControlError> {
@@ -192,7 +266,7 @@ impl Controls {
                 Length::Px(0.0)
             };
             props.style.height = if above {
-                Length::Px(if has_icon { 40.0 } else { 0.0 })
+                Length::Px(if has_icon { SPLIT_PRIMARY_HEIGHT } else { 0.0 })
             } else {
                 Length::Percent(1.0)
             };
@@ -203,10 +277,10 @@ impl Controls {
             props.style.width = if above {
                 Length::Percent(1.0)
             } else {
-                Length::Px(24.0)
+                Length::Px(SPLIT_ARROW_WIDTH)
             };
             props.style.height = if above {
-                Length::Px(if has_icon { 0.0 } else { 20.0 })
+                Length::Px(if has_icon { 0.0 } else { SPLIT_ARROW_HEIGHT })
             } else {
                 Length::Percent(1.0)
             };
@@ -218,7 +292,7 @@ impl Controls {
             let control = self.controls.get_mut(&id).unwrap();
             control.split_owner = Some(split.container);
             control.button_chrome = ButtonChrome::Flat;
-            control.button_style.padding = Some(Edges::all(4.0));
+            control.button_style.padding = Some(Edges::all(SPLIT_PADDING));
         }
         self.controls
             .get_mut(&split.primary)

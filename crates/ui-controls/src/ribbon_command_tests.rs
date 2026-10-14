@@ -1081,7 +1081,15 @@ fn measured_visual_captions_fit_small_and_split_text_clips_in_each_theme_and_key
                     run.clip.width
                 );
                 assert!(run.clip.x >= run.bounds.x - 0.01);
-                assert!(measured.height <= run.clip.height + TEXT_GEOMETRY_EPSILON);
+                assert!(
+                    measured.height <= run.clip.height + TEXT_GEOMETRY_EPSILON,
+                    "{theme:?}/{tips:?} {:?}: shaped height {} exceeds clip {}; bounds {:?}, clip {:?}",
+                    run.text,
+                    measured.height,
+                    run.clip.height,
+                    run.bounds,
+                    run.clip
+                );
             }
         }
     }
@@ -1573,4 +1581,58 @@ fn multiline_large_caption_has_bounded_height_and_does_not_enlarge_other_rows() 
     let mut engine = rust_desktop_ui_text::TextEngine::new();
     let shaped = engine.prepare(caption, 1.0).unwrap();
     assert!(shaped.height <= caption.clip.height + TEXT_GEOMETRY_EPSILON);
+}
+
+#[test]
+fn compact_split_reserves_two_complete_caption_lines_in_its_independent_menu_area() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let label = "Подтвердить значение";
+    ui.commands_mut().register("primary", label);
+    ribbon
+        .set_command_appearance(
+            "primary",
+            RibbonCommandAppearance {
+                icon: Some(ButtonIcon::new(crate::IconSymbol::Save)),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    ui.set_theme(Theme::Compact).unwrap();
+    frame(&mut ui, &mut ribbon, 900.0);
+    let primary = placements(&ui, &ribbon, "primary")[0];
+    let split = ui.runtime.tree().parent(primary).unwrap();
+    let dropdown = ui.runtime.tree().children(split).unwrap()[1];
+    let menu_bounds = ui.runtime.bounds(dropdown).unwrap();
+    let padding = ui.button_style(dropdown).unwrap().padding.unwrap();
+    let caption = ui
+        .scene()
+        .texts
+        .iter()
+        .find(|run| run.text == label && run.bounds.intersection(menu_bounds).is_some())
+        .expect("the complete caption belongs to the separate menu hit area");
+    let mut engine = rust_desktop_ui_text::TextEngine::new();
+    let shaped = engine.prepare(caption, 1.0).unwrap();
+    let mut rows: Vec<_> = shaped
+        .selection_rects(0..label.len())
+        .into_iter()
+        .map(|rect| rect.y)
+        .collect();
+    rows.sort_by(f32::total_cmp);
+    rows.dedup_by(|left, right| (*left - *right).abs() < 0.01);
+    assert_eq!(rows.len(), 2, "exercise a complete two-line caption");
+    assert!(
+        shaped.height + padding.vertical() <= menu_bounds.height + TEXT_GEOMETRY_EPSILON,
+        "Compact Split menu area {} must reserve shaped caption {} plus padding {}",
+        menu_bounds.height,
+        shaped.height,
+        padding.vertical(),
+    );
+    assert!(shaped.height <= caption.clip.height + TEXT_GEOMETRY_EPSILON);
+    let small = placements(&ui, &ribbon, "flag")[1];
+    let row_height = ui.runtime.bounds(small).unwrap().height;
+    assert_eq!(
+        ui.runtime.bounds(split).unwrap().height,
+        row_height * 3.0 + 4.0
+    );
+    assert!(ui.commands_mut().drain_invocations().is_empty());
 }

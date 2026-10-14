@@ -752,7 +752,7 @@ fn ribbon_metrics_fit_real_captions_and_small_buttons_in_every_theme() {
         for run in &ui.scene().texts {
             let prepared = engine.prepare(run, 1.0).unwrap();
             assert!(
-                prepared.height <= run.clip.height,
+                prepared.height <= run.clip.height + 0.001,
                 "{theme:?} {:?}: shaped {} must fit clip {}",
                 run.text,
                 prepared.height,

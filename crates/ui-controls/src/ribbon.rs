@@ -149,13 +149,24 @@ impl RibbonMetrics {
                         .label(&item.command)
                         .unwrap_or(&item.command.0)
                         .to_owned();
-                    let size = ui.measure_button_content(
-                        &label,
-                        &ribbon_button_style(),
-                        icon,
-                        layout,
-                        widths.group(&tab.id, &group.id).items[index],
-                    )?;
+                    let width = widths.group(&tab.id, &group.id).items[index];
+                    let size = if matches!(item.kind, RibbonItemKind::Split { .. }) {
+                        ui.measure_split_button_content(
+                            &label,
+                            &ribbon_button_style(),
+                            icon,
+                            layout,
+                            width,
+                        )?
+                    } else {
+                        ui.measure_button_content(
+                            &label,
+                            &ribbon_button_style(),
+                            icon,
+                            layout,
+                            width,
+                        )?
+                    };
                     if layout == ButtonContentLayout::Leading {
                         small = small.max(size.height.ceil());
                     } else {
@@ -188,7 +199,11 @@ impl RibbonMetrics {
                 .ceil(),
             );
         }
-        let large = large.max(small * 3.0 + 4.0);
+        // Split's primary and caption are independent padded hit areas. Its
+        // required height can exceed ordinary Above on fonts with taller lines.
+        // Grow the shared row pitch so Large still spans exactly three rows.
+        small = small.max(((large - 4.0).max(0.0) / 3.0).ceil());
+        let large = small * 3.0 + 4.0;
         let caption = 22.0_f32.max(text_height);
         Ok(Self {
             caption,
