@@ -52,6 +52,13 @@
 
 ## Этапы готовности
 
+С 2026-10-14 GitHub Actions временно приостановлены. Текущие изменения
+разрабатываются и проверяются локально на Windows: fmt, clippy, тесты,
+release build и rustdoc с запретом предупреждений; GPU runtime проверяется
+отдельно. Этапы ниже сохраняют долгосрочные требования к выпуску на
+Windows/Linux/macOS. Исторические результаты относятся к проверенным версиям;
+для новых выпусков на других ОС требуются отдельные проверки.
+
 1. Воспроизводимый GPU shell: совместимые зависимости, fmt/clippy/test/build, CI Windows/macOS/Linux и фактический runtime report.
 2. Retained core, события, focus, layout и независимая Scene.
 3. GPU text, Unicode/IME, основные controls, темы и accessibility.

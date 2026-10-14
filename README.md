@@ -93,7 +93,7 @@ Smoke opens a real window, presents frames, requests native resize and exits.
 It checks presentation/lifecycle, not native text entry, screen-reader behavior or
 visual correctness. See the [runtime matrix](docs/public/runtime-matrix.md).
 
-Ubuntu 24.04 dependencies used by the build workflow:
+Reference dependencies for Ubuntu 24.04 builds:
 
 ```sh
 sudo apt-get update
@@ -141,18 +141,24 @@ CPU frame construction, not GPU FPS.
 
 ## Development and verification
 
-```sh
+As of 2026-10-14, GitHub Actions are temporarily paused. Development and
+verification currently run locally on Windows with Rust 1.96.0. Run the following
+commands in PowerShell; rustdoc warnings remain errors:
+
+```powershell
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --workspace --locked
 cargo build --workspace --release --locked
+$env:RUSTDOCFLAGS = "-D warnings"
 cargo doc --workspace --no-deps --locked
 cargo bench -p rust-desktop-ui-treegrid --bench viewport --locked
 ```
 
-CI uses Rust 1.96.0 on Windows/Linux/macOS and treats rustdoc warnings as errors.
-A configured workflow is not a test result; compilation does not demonstrate
-GPU, IME or accessibility behavior. Dependency versions are locked; the latest
+Windows, Linux and macOS remain target platforms, with separate validation
+required for releases on each platform. Historical cross-platform results remain
+recorded for their source revisions. Compilation does not demonstrate GPU, IME
+or accessibility behavior. Dependency versions are locked; the latest
 recorded audit and distribution limitations are in [dependencies](docs/public/dependencies.md).
 
 Earlier diagnostic examples remain available:

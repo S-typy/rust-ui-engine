@@ -1,9 +1,7 @@
 name: Rust CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
+  # Hosted execution is paused. Re-enable it explicitly before a manual run.
   workflow_dispatch:
 
 permissions:
