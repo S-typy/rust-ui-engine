@@ -13,6 +13,13 @@ pub enum IconSymbol {
     ChevronRight,
     Save,
     Pin,
+    FolderOpen,
+    Copy,
+    Edit,
+    Eraser,
+    Sun,
+    Moon,
+    Lock,
 }
 
 /// Standalone icon colors. Unspecified values follow the current theme.
@@ -28,14 +35,14 @@ impl IconStyle {
     }
 }
 
-/// Leading icon embedded in a Button or ToggleButton, without a separate
+/// Icon embedded in a Button or ToggleButton, without a separate
 /// semantic node. Its color follows the resolved button foreground.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ButtonIcon {
     pub symbol: IconSymbol,
     /// Logical pixel size in `(0, 512]`.
     pub size: f32,
-    /// Gap before nonempty text in logical pixels, in `[0, 16384]`.
+    /// Gap between the icon and nonempty text in logical pixels, in `[0, 16384]`.
     pub spacing: f32,
 }
 
@@ -157,6 +164,116 @@ impl IconSymbol {
                         segment(3.5, 10.0, 12.5, 10.0),
                         segment(12.5, 10.0, 10.0, 7.0),
                         segment(8.0, 10.0, 8.0, 14.0),
+                    ]
+                }
+            }
+            Self::FolderOpen => {
+                const {
+                    &[
+                        segment(2.0, 12.5, 2.0, 3.0),
+                        segment(2.0, 3.0, 6.0, 3.0),
+                        segment(6.0, 3.0, 8.0, 5.0),
+                        segment(8.0, 5.0, 13.0, 5.0),
+                        segment(13.0, 5.0, 13.0, 7.0),
+                        segment(2.0, 12.5, 5.0, 7.0),
+                        segment(5.0, 7.0, 14.0, 7.0),
+                        segment(14.0, 7.0, 11.0, 12.5),
+                        segment(11.0, 12.5, 2.0, 12.5),
+                    ]
+                }
+            }
+            Self::Copy => {
+                const {
+                    &[
+                        segment(5.0, 5.0, 13.0, 5.0),
+                        segment(13.0, 5.0, 13.0, 14.0),
+                        segment(13.0, 14.0, 5.0, 14.0),
+                        segment(5.0, 14.0, 5.0, 5.0),
+                        segment(3.0, 11.0, 2.0, 11.0),
+                        segment(2.0, 11.0, 2.0, 2.0),
+                        segment(2.0, 2.0, 10.0, 2.0),
+                        segment(10.0, 2.0, 10.0, 3.0),
+                    ]
+                }
+            }
+            Self::Edit => {
+                const {
+                    &[
+                        segment(2.0, 14.0, 3.0, 10.0),
+                        segment(3.0, 10.0, 11.0, 2.0),
+                        segment(11.0, 2.0, 14.0, 5.0),
+                        segment(14.0, 5.0, 6.0, 13.0),
+                        segment(6.0, 13.0, 2.0, 14.0),
+                        segment(9.0, 4.0, 12.0, 7.0),
+                        segment(3.0, 10.0, 6.0, 13.0),
+                    ]
+                }
+            }
+            Self::Eraser => {
+                const {
+                    &[
+                        segment(2.0, 10.0, 9.0, 3.0),
+                        segment(9.0, 3.0, 14.0, 8.0),
+                        segment(14.0, 8.0, 9.0, 13.0),
+                        segment(9.0, 13.0, 5.0, 13.0),
+                        segment(5.0, 13.0, 2.0, 10.0),
+                        segment(5.0, 7.0, 10.0, 12.0),
+                        segment(9.0, 13.0, 14.0, 13.0),
+                    ]
+                }
+            }
+            Self::Sun => {
+                const {
+                    &[
+                        segment(6.5, 4.5, 9.5, 4.5),
+                        segment(9.5, 4.5, 11.5, 6.5),
+                        segment(11.5, 6.5, 11.5, 9.5),
+                        segment(11.5, 9.5, 9.5, 11.5),
+                        segment(9.5, 11.5, 6.5, 11.5),
+                        segment(6.5, 11.5, 4.5, 9.5),
+                        segment(4.5, 9.5, 4.5, 6.5),
+                        segment(4.5, 6.5, 6.5, 4.5),
+                        segment(8.0, 1.0, 8.0, 2.0),
+                        segment(8.0, 14.0, 8.0, 15.0),
+                        segment(1.0, 8.0, 2.0, 8.0),
+                        segment(14.0, 8.0, 15.0, 8.0),
+                        segment(3.0, 3.0, 3.7, 3.7),
+                        segment(12.3, 12.3, 13.0, 13.0),
+                        segment(3.0, 13.0, 3.7, 12.3),
+                        segment(12.3, 3.7, 13.0, 3.0),
+                    ]
+                }
+            }
+            Self::Moon => {
+                const {
+                    &[
+                        segment(9.0, 2.0, 5.0, 3.0),
+                        segment(5.0, 3.0, 2.5, 6.0),
+                        segment(2.5, 6.0, 2.5, 10.0),
+                        segment(2.5, 10.0, 5.0, 13.0),
+                        segment(5.0, 13.0, 9.0, 14.0),
+                        segment(9.0, 14.0, 12.0, 12.5),
+                        segment(12.0, 12.5, 14.0, 9.0),
+                        segment(14.0, 9.0, 10.0, 10.0),
+                        segment(10.0, 10.0, 7.0, 8.0),
+                        segment(7.0, 8.0, 7.0, 5.0),
+                        segment(7.0, 5.0, 9.0, 2.0),
+                    ]
+                }
+            }
+            Self::Lock => {
+                const {
+                    &[
+                        segment(3.0, 7.0, 13.0, 7.0),
+                        segment(13.0, 7.0, 13.0, 14.0),
+                        segment(13.0, 14.0, 3.0, 14.0),
+                        segment(3.0, 14.0, 3.0, 7.0),
+                        segment(5.0, 7.0, 5.0, 4.0),
+                        segment(5.0, 4.0, 6.5, 2.0),
+                        segment(6.5, 2.0, 9.5, 2.0),
+                        segment(9.5, 2.0, 11.0, 4.0),
+                        segment(11.0, 4.0, 11.0, 7.0),
+                        segment(8.0, 10.0, 8.0, 11.5),
                     ]
                 }
             }

@@ -67,8 +67,34 @@ def command_invocations(log: str) -> list[str]:
 
 def pin_placements(state: dict) -> list[dict]:
     return [item for item in state["controls"]
-            if item["label"] == "Закрепить" or item["label"].startswith("Закрепить [")
-            or item["label"].endswith(" / Закрепить")]
+            if item["label"] == "Закрепить" or item["label"].endswith(" / Закрепить")]
+
+
+def control_geometry(state: dict) -> list[tuple]:
+    """Compare semantic names and layout without transient focus/check state."""
+    return sorted((item["role"], item["label"], *item["bounds"])
+                  for item in state["controls"] if item["role"] != "MenuItem")
+
+
+def verify_geometry(before: list[tuple], after: list[tuple]) -> None:
+    if len(before) != len(after):
+        raise SmokeFailure(f"KeyTips changed control count: {len(before)} -> {len(after)}")
+    for old, new in zip(before, after, strict=True):
+        if old[:2] != new[:2] or any(abs(a - b) > 0.001 for a, b in zip(old[2:], new[2:], strict=True)):
+            raise SmokeFailure(f"KeyTips changed a control name or geometry: {old} -> {new}")
+
+
+def split_primary(controls: list[dict], arrow: dict) -> dict:
+    """Resolve the adjacent primary hit area of a unified vertical SplitButton."""
+    x, y, width, _height = arrow["bounds"]
+    matches = [item for item in controls if item["role"] in ("Button", "ToggleButton")
+               and item["command"] is not None and arrow["label"] == item["label"] + " menu"
+               and abs(item["bounds"][0] - x) < 0.001
+               and abs(item["bounds"][2] - width) < 0.001
+               and abs(item["bounds"][1] + item["bounds"][3] - y) < 0.001]
+    if len(matches) != 1:
+        raise SmokeFailure(f"Expected the adjacent Split primary, found {matches} for {arrow}")
+    return matches[0]
 
 
 def verify_shared_pin(state: dict, expected: bool) -> None:
@@ -104,6 +130,22 @@ def capture_ink(bitmap: bytes, width: int, height: int, scale: float,
         raise SmokeFailure("Truncated native client capture")
     foreground = (245, 245, 245) if dark else (27, 27, 27)
     muted = (170, 170, 170) if dark else (105, 105, 105)
+    accent = (96, 205, 255) if dark else (0, 95, 184)
+    canvas = (32, 32, 32) if dark else (243, 243, 243)
+
+    def linear(channel):
+        value = channel / 255
+        return value / 12.92 if value <= 0.04045 else ((value + 0.055) / 1.055) ** 2.4
+
+    def srgb(value):
+        return round(255 * (12.92 * value if value <= 0.0031308 else 1.055 * value ** (1 / 2.4) - 0.055))
+
+    # Coverage is blended in linear color space. Counting only near-solid
+    # accent pixels discards legitimate antialiased glyph edges, especially
+    # when the light accent's red channel starts at zero. Require >=25% ink.
+    accent_shades = tuple(tuple(srgb(linear(fg) * (step / 20) + linear(bg) * (1 - step / 20))
+                                for fg, bg in zip(accent, canvas, strict=True))
+                          for step in range(5, 21))
     samples = {}
     for name, bounds in regions.items():
         x, y, w, h = visible_rectangle(bounds, None, (width / scale, height / scale))
@@ -111,20 +153,26 @@ def capture_ink(bitmap: bytes, width: int, height: int, scale: float,
             raise SmokeFailure(f"Capture region exceeds the native client: {name}: {bounds}")
         ink = 0
         shades = set()
+        is_tab = name.endswith("_tab")
+        palette = (foreground, muted, *accent_shades) if is_tab else (foreground, muted)
+        # Selected tab captions use the accent color. Exclude the entire
+        # underline so a colored rule alone cannot pass the text-coverage check.
+        bottom_inset = 4 if is_tab else 2
         for py in range(max(0, math.ceil((y + 2) * scale)),
-                        min(height, math.floor((y + h - 2) * scale))):
+                        min(height, math.floor((y + h - bottom_inset) * scale))):
             for px in range(max(0, math.ceil((x + 2) * scale)),
                             min(width, math.floor((x + w - 2) * scale))):
                 index = offset + ((height - 1 - py) * width + px) * 4
                 b, g, r = bitmap[index:index + 3]
                 color = (r, g, b)
                 if any(all(abs(a - b) <= 12 for a, b in zip(color, candidate, strict=True))
-                       for candidate in (foreground, muted)):
+                       for candidate in palette):
                     ink += 1
                     shades.add(color)
         if ink < 20 or len(shades) < 3:
             raise SmokeFailure(f"No credible text/vector coverage in {name}: {ink} pixels, {len(shades)} shades")
-        samples[name] = {"bounds": bounds, "ink_pixels": ink, "ink_shades": len(shades)}
+        samples[name] = {"bounds": bounds, "ink_pixels": ink, "ink_shades": len(shades),
+                         "accent_caption": is_tab, "bottom_inset": bottom_inset}
     return samples
 
 
@@ -398,32 +446,34 @@ class RibbonSession(PopupSession):
 
         self.click_item(self.editor())
         self.snapshot("editor focus before KeyTips", lambda state: state["focused"] == "Текст")
+        before_keytips = control_geometry(self.state())
         before = self.commands()
         self.key(VK_F10)
-        self.ribbon_snapshot("F10 displays tab KeyTips", lambda state: state["key_tips"])
-        self.snapshot("tab KeyTip captions are visible", lambda state: any(
-            item["role"] == "Tab" and item["label"] == "Главная [H]" for item in state["controls"]))
+        self.ribbon_snapshot("F10 displays independent tab and QAT KeyTips", lambda state:
+                             state["key_tips"] and {"H", "V", "1", "2", "3"}.issubset(state["key_tip_labels"]))
+        verify_geometry(before_keytips, control_geometry(self.state()))
+        self.report["checks"].append({"check": "KeyTip badges preserve names and layout"})
         self.capture_ribbon(output, "key-tips")
         if self.report["numeric_keytips"]:
             self.letter_keytip("2", "QAT 2 invokes the Pin command", lambda: self.commands() > before)
         else:
-            self.letter_keytip("H", "H opens Home command KeyTips", lambda: any(
-                item["label"] == "Закрепить [P]" for item in self.state()["controls"]))
+            self.letter_keytip("H", "H opens Home command KeyTips", lambda:
+                               "P" in self.ribbon_state()["key_tip_labels"])
+            verify_geometry(before_keytips, control_geometry(self.state()))
             self.letter_keytip("P", "P invokes the Pin command", lambda: self.commands() > before)
         self.ribbon_snapshot("command KeyTip hides the hints", lambda state: not state["key_tips"])
         self.snapshot("KeyTip command returns focus to editor", lambda state: state["focused"] == "Текст")
         self.exact_command(before, "Pin", self.report["key_tip_sequence"], pin=True)
         self.assert_editor_text(INITIAL_TEXT, "KeyTip letters do not enter the editor")
+        verify_geometry(before_keytips, control_geometry(self.state()))
 
-        primaries = [item for item in self.state()["controls"]
-                     if item["label"] == "Подтвердить" and self.in_ribbon(item)]
-        primary = max(primaries, key=lambda item: item["bounds"][3])
+        arrow = self.control(lambda item:
+                             item["has_popup"] and item["command"] is None and self.in_ribbon(item))
+        primary = split_primary(self.state()["controls"], arrow)
         before = self.commands()
         self.click_item(primary)
         self.exact_command(before, "Confirm", "Split primary")
         self.snapshot("Split primary does not open a menu", lambda state: not state["popup_open"])
-        arrow = self.control(lambda item: item["label"] == "More" and self.in_ribbon(item)
-                             and abs(item["bounds"][0] - primary["bounds"][0]) < 1)
         before = self.commands()
         self.click_item(arrow)
         self.snapshot("Split arrow opens the secondary menu", lambda state: len(state["menus"]) == 1)
@@ -512,7 +562,63 @@ def self_test():
         pass
     else:
         raise AssertionError("Disagreeing shared command state was accepted")
-    print("PASS: Ribbon diagnostics, command counting, clipping and shared-state fixtures")
+    geometry_state = {"controls": [
+        {"role": "Tab", "label": "Главная", "bounds": [16, 48, 84, 34], "focused": False},
+        {"role": "ToggleButton", "label": "Закрепить", "bounds": [48, 16, 32, 32], "checked": False},
+    ]}
+    baseline = control_geometry(geometry_state)
+    geometry_state["controls"][0]["focused"] = True
+    geometry_state["controls"][1]["checked"] = True
+    verify_geometry(baseline, control_geometry(geometry_state))
+    for change in ({"label": "Главная [H]"}, {"bounds": [16, 48, 110, 34]}):
+        altered = {"controls": [{**geometry_state["controls"][0], **change}, geometry_state["controls"][1]]}
+        try:
+            verify_geometry(baseline, control_geometry(altered))
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("Changed KeyTip caption/layout was accepted")
+    arrow = {"role": "Button", "label": "Подтвердить menu", "command": None,
+             "has_popup": True, "bounds": [20, 120, 84, 40]}
+    primary = {"role": "Button", "label": "Подтвердить", "command": "Confirm",
+               "has_popup": True, "bounds": [20, 80, 84, 40]}
+    qat = {**primary, "bounds": [20, 20, 32, 32]}
+    unrelated = {**primary, "bounds": [200, 80, 84, 80]}
+    assert split_primary([qat, unrelated, primary, arrow], arrow) is primary
+    try:
+        split_primary([qat, unrelated, arrow], arrow)
+    except SmokeFailure:
+        pass
+    else:
+        raise AssertionError("A nonadjacent button was accepted as the Split primary")
+    for dark in (False, True):
+        width, height = 60, 40
+        background = (32, 32, 32) if dark else (243, 243, 243)
+        accent = (96, 205, 255) if dark else (0, 95, 184)
+        pixels = bytearray(bytes((*reversed(background), 255)) * width * height)
+        header = struct.pack("<2sIHHI", b"BM", 54 + len(pixels), 0, 0, 54)
+        header += struct.pack("<IiiHHIIiiII", 40, width, height, 1, 32, 0, len(pixels), 0, 0, 0, 0)
+
+        def accent_pixels(top, bottom):
+            for y in range(top, bottom):
+                for x in range(10, 40):
+                    offset = ((height - 1 - y) * width + x) * 4
+                    color = tuple(min(255, value + x % 4) for value in accent)
+                    pixels[offset:offset + 4] = bytes((*reversed(color), 255))
+
+        accent_pixels(height - 3, height)
+        try:
+            capture_ink(header + pixels, width, height, 1.0, {"first_tab": [0, 0, width, height]}, dark)
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("An accent underline alone passed the tab caption check")
+        accent_pixels(12, 18)
+        evidence = capture_ink(header + pixels, width, height, 1.0,
+                               {"first_tab": [0, 0, width, height]}, dark)
+        assert evidence["first_tab"]["ink_pixels"] >= 20
+        assert evidence["first_tab"]["ink_shades"] >= 3
+    print("PASS: Ribbon diagnostics, stable KeyTips, Split selection, shared state and accent tab ink")
 
 
 def main():

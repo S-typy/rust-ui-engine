@@ -75,6 +75,7 @@ impl Gallery {
         let mut ui = Controls::new(Theme::Light).map_err(err)?;
         let root = ui.root();
         let mut ribbon = Ribbon::new(ribbon_model::model(&mut ui)).map_err(err)?;
+        ribbon_model::appearances(&mut ribbon).map_err(err)?;
         ribbon.mount(&mut ui, root).map_err(err)?;
         let tabs = ui
             .tab_control(

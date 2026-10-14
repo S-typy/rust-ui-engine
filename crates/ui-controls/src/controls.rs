@@ -1,7 +1,7 @@
 use crate::{
-    ButtonIcon, ButtonStyle, ButtonVisualState, CommandId, CommandRegistry, CommitOutcome,
-    EditBoxStyle, EditBoxVisualState, EditEvent, EditorSettings, EditorValidation, EditorValidator,
-    IconStyle, IconSymbol, SeparatorSettings, Theme,
+    ButtonChrome, ButtonContentLayout, ButtonIcon, ButtonStyle, ButtonVisualState, CommandId,
+    CommandRegistry, CommitOutcome, EditBoxStyle, EditBoxVisualState, EditEvent, EditorSettings,
+    EditorValidation, EditorValidator, IconStyle, IconSymbol, SeparatorSettings, Theme,
 };
 use rust_desktop_ui_core::{
     Axis, Border, Color, Edges, FrameStats, InputEvent, Key, LayoutKind, LayoutStyle, Length,
@@ -19,6 +19,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
+mod button_presentation;
 mod popup;
 mod tooltip;
 pub use popup::{MAX_MENU_DEPTH, MAX_MENU_ITEMS, MenuEntry, SplitButton};
@@ -239,6 +240,13 @@ struct Control {
     edit_box_style: EditBoxStyle,
     button_style: ButtonStyle,
     button_icon: Option<ButtonIcon>,
+    button_content_layout: ButtonContentLayout,
+    button_chrome: ButtonChrome,
+    key_tip: Option<String>,
+    split_parts: Option<SplitButton>,
+    split_owner: Option<WidgetId>,
+    ribbon_surface: bool,
+    ribbon_caption: bool,
     explicit_button_style: bool,
     single_line: bool,
     text_scroll_x: f32,
@@ -960,6 +968,13 @@ impl Controls {
                 edit_box_style: EditBoxStyle::default(),
                 button_style: ButtonStyle::default(),
                 button_icon: None,
+                button_content_layout: ButtonContentLayout::default(),
+                button_chrome: ButtonChrome::default(),
+                key_tip: None,
+                split_parts: None,
+                split_owner: None,
+                ribbon_surface: false,
+                ribbon_caption: false,
                 explicit_button_style: false,
                 single_line: false,
                 text_scroll_x: 0.0,
@@ -2612,7 +2627,31 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            if let Some(split) = self
+                .controls
+                .get(&id)
+                .and_then(|control| control.split_parts)
+            {
+                self.paint_split_surface(split, bounds, clip);
+                continue;
+            }
             if let Some(control) = self.controls.get(&id) {
+                if control.ribbon_surface {
+                    editor_fill(&mut self.scene, bounds, clip, 8.0, tokens.surface);
+                    shape_border(&mut self.scene, bounds, clip, 8.0, 1.0, tokens.border);
+                    continue;
+                }
+                if control.ribbon_caption {
+                    button_presentation::paint_group_caption(
+                        &mut self.scene,
+                        &mut self.engine,
+                        bounds,
+                        clip,
+                        &control.label,
+                        self.theme,
+                    )?;
+                    continue;
+                }
                 match control.kind {
                     Kind::Icon { symbol, style } => {
                         let color = if self.is_enabled(id) {
@@ -2664,11 +2703,28 @@ impl Controls {
                 && (self.theme.is_fluent()
                     || control.explicit_button_style
                     || control.button_icon.is_some()
+                    || control.button_content_layout != ButtonContentLayout::Leading
+                    || control.button_chrome != ButtonChrome::Standard
                     || matches!(control.kind, Kind::Radio { .. }))
             {
                 let indicator = matches!(control.kind, Kind::CheckBox | Kind::Radio { .. });
                 let radio = matches!(control.kind, Kind::Radio { .. });
-                let style = control.button_style.resolve(self.theme, state, indicator);
+                let mut style = if indicator {
+                    control.button_style.resolve(self.theme, state, true)
+                } else {
+                    control
+                        .button_style
+                        .resolve_chrome(self.theme, state, control.button_chrome)
+                };
+                if control.split_owner.is_some() {
+                    // The container owns the common hover/checked surface. Only
+                    // a pressed subarea receives an additional local fill.
+                    if !state.pressed {
+                        style.background.a = 0.0;
+                    }
+                    style.corner_radius = 0.0;
+                    style.border_width = 0.0;
+                }
                 let text_bounds = paint_button(
                     &mut self.scene,
                     bounds,
@@ -2678,6 +2734,24 @@ impl Controls {
                     indicator,
                     radio,
                 );
+                if control.button_chrome == ButtonChrome::Tab && state.checked {
+                    let inset = 8.0_f32.min(bounds.width * 0.5);
+                    fill_clipped(
+                        &mut self.scene,
+                        Rect::new(
+                            bounds.x + inset,
+                            bounds.y + (bounds.height - 3.0).max(0.0),
+                            (bounds.width - inset * 2.0).max(0.0),
+                            3.0_f32.min(bounds.height),
+                        ),
+                        clip,
+                        if state.enabled {
+                            style.accent
+                        } else {
+                            tokens.muted
+                        },
+                    );
+                }
                 let text_bounds = popup::paint_indicator(
                     &mut self.scene,
                     control,
@@ -2688,7 +2762,27 @@ impl Controls {
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
                 }
-                if let Some(icon) = control.button_icon {
+                if control.button_content_layout != ButtonContentLayout::Leading {
+                    let label = self.button_paint_label(id).to_owned();
+                    button_presentation::paint_content(
+                        &mut self.scene,
+                        &mut self.engine,
+                        text_bounds,
+                        clip,
+                        &label,
+                        style,
+                        button_presentation::ContentPresentation {
+                            icon: control.button_icon,
+                            layout: control.button_content_layout,
+                            top_aligned: control.split_owner.is_some_and(|owner| {
+                                self.controls
+                                    .get(&owner)
+                                    .and_then(|control| control.split_parts)
+                                    .is_some_and(|split| split.dropdown == id)
+                            }),
+                        },
+                    )?;
+                } else if let Some(icon) = control.button_icon {
                     paint_button_icon_content(
                         &mut self.scene,
                         &mut self.engine,
@@ -3053,6 +3147,7 @@ impl Controls {
                 self.scene.text(run);
             }
         }
+        self.paint_key_tips()?;
         self.paint_tooltip()?;
         Ok(())
     }

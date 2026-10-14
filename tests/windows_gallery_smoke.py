@@ -45,6 +45,37 @@ def parse_state(title: str) -> dict | None:
             "frames": int(frames), "glyphs": int(glyphs), "missing": int(missing)}
 
 
+def latest_command_state(log: str) -> dict | None:
+    latest = None
+    for line in log.splitlines(keepends=True):
+        if not line.startswith("command-state ") or not line.endswith("\n"):
+            continue
+        try:
+            latest = json.loads(line.removeprefix("command-state "))
+        except json.JSONDecodeError as error:
+            raise SmokeFailure(f"Malformed complete gallery diagnostic: {error}") from error
+        if not isinstance(latest, dict):
+            raise SmokeFailure("Gallery diagnostic must contain an object")
+    return latest
+
+
+def visible_control_center(item: dict, viewport: tuple[float, float]) -> tuple[int, int]:
+    if not item["enabled"]:
+        raise SmokeFailure(f"Gallery control is disabled: {item}")
+    rectangles = [item["bounds"], [0, 0, *viewport]]
+    if item["clip"] is not None:
+        rectangles.append(item["clip"])
+    if any(len(rect) != 4 or any(not math.isfinite(value) for value in rect)
+           or rect[2] < 0 or rect[3] < 0 for rect in rectangles):
+        raise SmokeFailure("Invalid gallery diagnostic geometry")
+    left, top = max(r[0] for r in rectangles), max(r[1] for r in rectangles)
+    right = min(r[0] + r[2] for r in rectangles)
+    bottom = min(r[1] + r[3] for r in rectangles)
+    if right <= left or bottom <= top:
+        raise SmokeFailure(f"Gallery control has no visible hit area: {item}")
+    return round((left + right) / 2), round((top + bottom) / 2)
+
+
 def capture_checkpoints(pixels: bytes, width: int, height: int, scale: float, theme: str) -> dict:
     """Require the expected canvas and raster text pixels before saving a capture.
 
@@ -79,7 +110,7 @@ visual inspection. Direct and sRGB swapchain channel encodings are accepted.
         raise SmokeFailure(f"Unexpected gallery canvas {actual} for {theme}; image not saved")
     ink = 0
     shades = set()
-    # QAT + Ribbon labels, excluding the outer canvas and TabControl below.
+    # Sample the upper command area without depending on individual placements.
     for y in range(round(15 * scale), round(185 * scale)):
         for x in range(round(16 * scale), min(width, round(450 * scale))):
             color = rgb(x, y)
@@ -206,6 +237,8 @@ class GallerySession(RetainedSession):
     def wait_state(self, description: str, predicate) -> dict:
         def matches():
             state = parse_state(self.windows.title(self.hwnd))
+            if state is not None and state["missing"]:
+                raise SmokeFailure(f"Missing gallery glyphs: {state}")
             return state if state is not None and predicate(state) else None
         state = self.wait(description, matches)
         self.report["checks"].append({"check": description, "state": state})
@@ -216,6 +249,20 @@ class GallerySession(RetainedSession):
         self.pointer(WM_MOUSEMOVE, logical_x, logical_y, scale)
         self.pointer(WM_LBUTTONDOWN, logical_x, logical_y, scale, held=True)
         self.pointer(WM_LBUTTONUP, logical_x, logical_y, scale)
+
+    def click_diagnostic(self, description: str, predicate, scale: float) -> None:
+        def target():
+            state = latest_command_state(self.stdout_path.read_text(encoding="utf-8", errors="replace"))
+            if state is None:
+                return None
+            matches = [item for item in state["controls"] if predicate(item)]
+            if len(matches) > 1:
+                raise SmokeFailure(f"Ambiguous gallery control for {description}: {matches}")
+            return matches[0] if matches else None
+        item = self.wait(description + " has current diagnostic bounds", target)
+        viewport = tuple(value / scale for value in self.windows.client_size(self.hwnd))
+        self.click(*visible_control_center(item, viewport), scale)
+        self.report["checks"].append({"check": description + " uses observed hit area", "target": item})
 
     def settle(self) -> None:
         previous = None
@@ -238,6 +285,7 @@ class GallerySession(RetainedSession):
         return result
 
     def run(self, output: Path) -> None:
+        self.stdout_path = output / "stdout.log"
         self.hwnd = self.wait("visible gallery child window", lambda: self.windows.find_window(self.process.pid))
         self.report["window_handle"] = self.hwnd
         initial = self.wait_state("first GPU frame contains glyphs", lambda s: s["frames"] >= 1 and s["glyphs"] > 100)
@@ -255,19 +303,18 @@ class GallerySession(RetainedSession):
         self.pointer(WM_MOUSEMOVE, round(width / scale) - 5, round(height / scale) - 5, scale)
         self.capture(output, "library-light")
 
-        # The TabControl spans the body width directly below the 196px Ribbon.
-        self.click(round(width / scale / 2), 229, scale)
+        self.click_diagnostic("Controls tab", lambda item:
+                              item["role"] == "Tab" and item["label"] == "Компоненты", scale)
         controls = self.wait_state("posted Controls tab click", lambda s:
             s["page"] == "Компоненты" and s["frames"] > initial["frames"] and s["glyphs"] > 100)
         self.capture(output, "controls-light")
 
-        # View Ribbon tab, then the small Dark command in its Theme group.
-        # Posted pointer input is independent of the active keyboard language.
-        self.click(230, 60, scale)
+        self.click_diagnostic("View Ribbon tab", lambda item:
+                              item["role"] == "Tab" and item["label"] == "Вид", scale)
         view = self.wait_state("posted View Ribbon tab click", lambda s: s["frames"] > controls["frames"])
         self.settle()
         self.capture(output, "view-ribbon-light")
-        self.click(155, 97, scale)
+        self.click_diagnostic("Dark theme command", lambda item: item["command"] == "dark", scale)
         dark = self.wait_state("posted Dark command changes theme", lambda s:
             s["theme"] == "Тёмная" and s["page"] == "Компоненты" and s["frames"] > view["frames"])
         self.capture(output, "controls-dark")
@@ -294,6 +341,22 @@ def self_test() -> None:
     assert parse_state(title)["frames"] == 12
     assert parse_state(title + " extra") is None
     assert parse_state(title.replace("Тёмная", "unknown")) is None
+    assert latest_command_state('command-state {"controls":[]}\ncommand-state {') == {"controls": []}
+    for malformed in ('command-state nope\n', 'command-state []\n'):
+        try:
+            latest_command_state(malformed)
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("Malformed gallery diagnostic was accepted")
+    control = {"enabled": True, "bounds": [10, 20, 80, 40], "clip": [30, 10, 100, 100]}
+    assert visible_control_center(control, (60, 80)) == (45, 40)
+    try:
+        visible_control_center(control, (5, 5))
+    except SmokeFailure:
+        pass
+    else:
+        raise AssertionError("A fully clipped control was accepted")
     width, height = 600, 400
     pixels = bytearray(bytes((249, 244, 240, 255)) * width * height)
     for y in range(25, 45):
@@ -309,7 +372,7 @@ def self_test() -> None:
             pass
         else:
             raise AssertionError("Empty/incorrect capture must be rejected")
-    print("PASS: gallery title parser and raster-content capture fixtures")
+    print("PASS: gallery title/diagnostic parsers, observed hit areas and raster-content capture")
 
 
 def main() -> int:
@@ -334,7 +397,8 @@ def main() -> int:
     output = args.output_dir.resolve()
     output.mkdir(parents=True, exist_ok=True)
     report = {"status": "failed", "started_utc": datetime.now(timezone.utc).isoformat(),
-              "executable": str(executable), "mode": "gallery", "checks": [], "captures": {},
+              "executable": str(executable), "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
+              "mode": "gallery", "checks": [], "captures": {},
               "input_method": "Posted child-only Win32 pointer messages; temporary restored cursor alignment",
               "backend_environment": os.environ.get("WGPU_BACKEND"),
               "limits": ["No native IME or screen reader test", "Raster checkpoints require separate visual review"]}
@@ -343,7 +407,7 @@ def main() -> int:
         windows = GalleryWindows()
         original_cursor = windows.cursor_position()
         with (output / "stdout.log").open("wb") as stdout, (output / "stderr.log").open("wb") as stderr:
-            process = subprocess.Popen([str(executable), "--rows", "100000", "--state-file", str(output / "columns.txt")],
+            process = subprocess.Popen([str(executable), "--diagnostics", "--rows", "100000", "--state-file", str(output / "columns.txt")],
                                        stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
             report["process_id"] = process.pid
             session = GallerySession(windows, process, report, args.timeout, original_cursor)
@@ -352,7 +416,7 @@ def main() -> int:
                 report["status"] = "passed"
             finally:
                 session.cleanup()
-    except (SmokeFailure, OSError, subprocess.SubprocessError) as error:
+    except (SmokeFailure, OSError, subprocess.SubprocessError, KeyError, ValueError) as error:
         report["status"] = "failed"
         report["error"] = str(error)
     finally:

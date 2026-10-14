@@ -92,6 +92,332 @@ fn body_color(ui: &Controls, id: WidgetId) -> Color {
         .expect("button has a background")
 }
 
+#[test]
+fn above_content_measure_matches_paint_and_preserves_the_full_command_label() {
+    for theme in [Theme::FluentLight, Theme::FluentDark, Theme::Compact] {
+        let mut ui = Controls::new(theme).unwrap();
+        let caption = "Сохранить изменения документа и все параметры текущего представления";
+        let style = ButtonStyle {
+            padding: Some(Edges::all(4.0)),
+            ..Default::default()
+        };
+        let icon = ButtonIcon {
+            symbol: IconSymbol::Save,
+            size: 32.0,
+            spacing: 4.0,
+        };
+        let desired = ui
+            .measure_button_content(
+                caption,
+                &style,
+                Some(icon),
+                ButtonContentLayout::Above,
+                88.0,
+            )
+            .unwrap();
+        let id = ui
+            .button(ui.root(), caption, None, layout(88.0, desired.height))
+            .unwrap();
+        ui.set_button_icon(id, Some(icon)).unwrap();
+        ui.set_button_style(id, style).unwrap();
+        ui.set_button_content_layout(id, ButtonContentLayout::Above)
+            .unwrap();
+        frame(&mut ui);
+        let run = ui.scene().texts[0].clone();
+        assert!(run.wrap && run.text.ends_with('…'));
+        assert_eq!(run.align, rust_desktop_ui_core::TextAlign::Center);
+        let measured = ui.measure_text(&run.text, run.bounds.width, true).unwrap();
+        let two_lines = ui.measure_text("Ag\nAg", 88.0, true).unwrap();
+        assert!(measured.height <= two_lines.height + 0.001);
+        assert!(measured.height <= run.clip.height + 0.001);
+        assert!(measured.width <= run.clip.width + 0.001);
+        let bounds = ui.runtime.bounds(id).unwrap();
+        let path = &ui.scene().stroke_paths[0];
+        assert!(path.bounds().unwrap().y + path.bounds().unwrap().height < run.bounds.y);
+        assert!(run.bounds.y + measured.height <= bounds.y + bounds.height + 0.001);
+        assert_eq!(
+            ui.semantics()
+                .into_iter()
+                .find(|node| node.id == id)
+                .unwrap()
+                .label,
+            caption
+        );
+        assert_eq!(
+            ui.button_content_layout(id),
+            Some(ButtonContentLayout::Above)
+        );
+    }
+}
+
+#[test]
+fn icon_only_hides_visual_caption_and_retains_toggle_actions_with_text_fallback() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let command = CommandId::from("pin");
+    ui.commands_mut()
+        .register_toggle(command.clone(), "Pin document", false);
+    let id = ui
+        .button(
+            ui.root(),
+            "Pin document",
+            Some(command.clone()),
+            layout(100.0, 36.0),
+        )
+        .unwrap();
+    ui.set_button_content_layout(id, ButtonContentLayout::IconOnly)
+        .unwrap();
+    ui.set_button_icon(id, Some(ButtonIcon::new(IconSymbol::Pin)))
+        .unwrap();
+    frame(&mut ui);
+    assert!(ui.scene().texts.is_empty());
+    let semantic = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert_eq!(semantic.label, "Pin document");
+    assert_eq!(semantic.role, Role::ToggleButton);
+    let position = center(&ui, id);
+    pointer(&mut ui, position, true);
+    pointer(&mut ui, position, false);
+    assert_eq!(ui.commands().checked(&command), Some(true));
+    assert_eq!(ui.commands_mut().drain_invocations().len(), 1);
+    ui.set_button_icon(id, None).unwrap();
+    frame(&mut ui);
+    assert_eq!(text(&ui, "Pin document").text, "Pin document");
+    assert_eq!(ui.commands().checked(&command), Some(true));
+}
+
+#[test]
+fn key_tip_badges_do_not_change_content_layout_focus_or_accessibility() {
+    let mut ui = Controls::new(Theme::FluentDark).unwrap();
+    let id = ui
+        .button(ui.root(), "Save", None, layout(100.0, 40.0))
+        .unwrap();
+    frame(&mut ui);
+    focus(&mut ui, id);
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let caption = text(&ui, "Save").clone();
+    let semantic = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    ui.set_key_tip(id, Some("S12".into())).unwrap();
+    let stats = ui.update(Size::new(600.0, 480.0)).unwrap();
+    assert_eq!(stats.layout_passes, 0);
+    assert_eq!(ui.runtime.bounds(id), Some(bounds));
+    assert_eq!(ui.runtime.focused(), Some(id));
+    assert_eq!(text(&ui, "Save").bounds, caption.bounds);
+    assert_eq!(text(&ui, "Save").clip, caption.clip);
+    assert_eq!(ui.key_tip(id), Some("S12"));
+    assert!(ui.scene().texts.iter().any(|run| run.text == "S12"));
+    let after = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert_eq!(
+        (after.label, after.role, after.actions),
+        (semantic.label, semantic.role, semantic.actions)
+    );
+    assert!(ui.set_key_tip(id, Some("bad tip".into())).is_err());
+    assert_eq!(ui.key_tip(id), Some("S12"));
+    ui.set_key_tip(id, None).unwrap();
+    let stats = ui.update(Size::new(600.0, 480.0)).unwrap();
+    assert_eq!(stats.layout_passes, 0);
+    assert!(!ui.scene().texts.iter().any(|run| run.text == "S12"));
+    assert_eq!(ui.runtime.focused(), Some(id));
+}
+
+#[test]
+fn flat_and_tab_chrome_are_opt_in_and_follow_the_current_theme() {
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        let mut ui = Controls::new(theme).unwrap();
+        let standard = ui
+            .button(ui.root(), "Standard", None, layout(100.0, 36.0))
+            .unwrap();
+        let flat = ui
+            .button(ui.root(), "Flat", None, layout(100.0, 36.0))
+            .unwrap();
+        let tab = ui
+            .toggle(ui.root(), "Home", None, true, layout(100.0, 36.0))
+            .unwrap();
+        ui.set_button_chrome(flat, ButtonChrome::Flat).unwrap();
+        ui.set_button_chrome(tab, ButtonChrome::Tab).unwrap();
+        frame(&mut ui);
+        assert_eq!(ui.button_chrome(standard), Some(ButtonChrome::Standard));
+        assert_eq!(body_color(&ui, standard), theme.tokens().surface);
+        assert_eq!(body_color(&ui, flat).a, 0.0);
+        let bounds = ui.runtime.bounds(tab).unwrap();
+        assert!(
+            ui.scene()
+                .rectangles
+                .iter()
+                .any(|shape| shape.color == theme.tokens().focus
+                    && shape.bounds.y >= bounds.y + bounds.height - 3.001
+                    && shape.bounds.height <= 3.001)
+        );
+        let position = center(&ui, flat);
+        move_pointer(&mut ui, position);
+        frame(&mut ui);
+        assert_eq!(body_color(&ui, flat), theme.tokens().hover);
+        ui.set_enabled(flat, false).unwrap();
+        frame(&mut ui);
+        assert_eq!(body_color(&ui, flat).a, 0.0);
+    }
+}
+
+#[test]
+fn split_above_uses_independent_primary_and_menu_areas_with_one_command_activation() {
+    for has_icon in [false, true] {
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let command = CommandId::from("save");
+        let alternate = CommandId::from("save_as");
+        ui.commands_mut().register(command.clone(), "Save document");
+        ui.commands_mut().register(alternate.clone(), "Save as");
+        let split = ui
+            .split_button(
+                ui.root(),
+                "Save document",
+                Some(command.clone()),
+                &[MenuEntry::Item(MenuItem::new("Save as", alternate))],
+                layout(100.0, 88.0),
+            )
+            .unwrap();
+        if has_icon {
+            ui.set_button_icon(
+                split.primary,
+                Some(ButtonIcon {
+                    symbol: IconSymbol::Save,
+                    size: 32.0,
+                    spacing: 4.0,
+                }),
+            )
+            .unwrap();
+        }
+        ui.set_split_button_presentation(split, ButtonContentLayout::Above)
+            .unwrap();
+        frame(&mut ui);
+        let primary = ui.runtime.bounds(split.primary).unwrap();
+        let dropdown = ui.runtime.bounds(split.dropdown).unwrap();
+        assert_eq!(primary.height, if has_icon { 40.0 } else { 68.0 });
+        assert_eq!(primary.y + primary.height, dropdown.y);
+        assert_eq!(primary.height + dropdown.height, 88.0);
+        assert_eq!(
+            ui.scene()
+                .texts
+                .iter()
+                .filter(|run| run.text == "Save document")
+                .count(),
+            1
+        );
+        let position = center(&ui, split.primary);
+        pointer(&mut ui, position, true);
+        pointer(&mut ui, position, false);
+        assert_eq!(ui.commands_mut().drain_invocations().len(), 1);
+        let position = center(&ui, split.dropdown);
+        pointer(&mut ui, position, true);
+        pointer(&mut ui, position, false);
+        assert!(ui.commands_mut().drain_invocations().is_empty());
+        assert_eq!(ui.popup_expanded(split.dropdown), Some(true));
+        key(&mut ui, Key::Escape, false);
+        assert_eq!(ui.popup_expanded(split.dropdown), Some(false));
+        assert_eq!(ui.runtime.focused(), Some(split.dropdown));
+    }
+}
+
+#[test]
+fn button_content_measure_rejects_invalid_requests_without_changing_controls() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .button(ui.root(), "Unchanged", None, layout(120.0, 36.0))
+        .unwrap();
+    assert!(
+        ui.measure_button_content(
+            "text",
+            &ButtonStyle::default(),
+            None,
+            ButtonContentLayout::Above,
+            f32::NAN
+        )
+        .is_err()
+    );
+    assert!(
+        ui.measure_button_content(
+            "text",
+            &ButtonStyle::default(),
+            Some(ButtonIcon {
+                size: f32::INFINITY,
+                ..ButtonIcon::new(IconSymbol::Save)
+            }),
+            ButtonContentLayout::Above,
+            100.0
+        )
+        .is_err()
+    );
+    let label = ui.label(ui.root(), "label", layout(120.0, 36.0)).unwrap();
+    assert!(
+        ui.set_button_content_layout(label, ButtonContentLayout::Above)
+            .is_err()
+    );
+    assert!(ui.set_button_chrome(label, ButtonChrome::Flat).is_err());
+    assert!(ui.set_key_tip(label, Some("A".into())).is_err());
+    assert_eq!(
+        ui.button_content_layout(id),
+        Some(ButtonContentLayout::Leading)
+    );
+    assert_eq!(ui.button_chrome(id), Some(ButtonChrome::Standard));
+    frame(&mut ui);
+    assert_eq!(text(&ui, "Unchanged").text, "Unchanged");
+}
+
+#[test]
+fn split_footer_caption_aligns_with_above_buttons_instead_of_centering_its_row() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let icon = ButtonIcon {
+        symbol: IconSymbol::Save,
+        size: 32.0,
+        spacing: 4.0,
+    };
+    let regular = ui
+        .button(ui.root(), "Save", None, layout(100.0, 88.0))
+        .unwrap();
+    ui.set_button_icon(regular, Some(icon)).unwrap();
+    ui.set_button_content_layout(regular, ButtonContentLayout::Above)
+        .unwrap();
+    ui.set_button_style(
+        regular,
+        ButtonStyle {
+            padding: Some(Edges::all(4.0)),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ui.commands_mut().register("export_more", "Export options");
+    let split = ui
+        .split_button(
+            ui.root(),
+            "Export",
+            None,
+            &[MenuEntry::Item(MenuItem::new(
+                "Export options",
+                "export_more",
+            ))],
+            layout(100.0, 88.0),
+        )
+        .unwrap();
+    ui.set_button_icon(split.primary, Some(icon)).unwrap();
+    ui.set_split_button_presentation(split, ButtonContentLayout::Above)
+        .unwrap();
+    frame(&mut ui);
+    let regular_offset = text(&ui, "Save").bounds.y - ui.runtime.bounds(regular).unwrap().y;
+    let split_offset = text(&ui, "Export").bounds.y - ui.runtime.bounds(split.container).unwrap().y;
+    assert_eq!(regular_offset, 40.0);
+    assert_eq!(split_offset, 44.0);
+}
+
 fn has_shape_color(ui: &Controls, color: Color) -> bool {
     ui.scene()
         .rectangles

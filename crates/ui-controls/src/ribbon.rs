@@ -1,5 +1,8 @@
 //! Command-oriented Ribbon with adaptive group collapse and keyboard KeyTips.
-use crate::{ButtonIcon, CommandId, ControlError, Controls, MenuEntry, MenuItem, Role, Theme};
+use crate::{
+    ButtonChrome, ButtonContentLayout, ButtonIcon, ButtonStyle, CommandId, ControlError, Controls,
+    MenuEntry, MenuItem, Role, SeparatorSettings, SplitButton, Theme,
+};
 use rust_desktop_ui_core::{
     Axis, Edges, InputEvent, Key, LayoutKind, LayoutStyle, Length, Mutation, WidgetId,
 };
@@ -103,7 +106,6 @@ struct RibbonMetrics {
     caption: f32,
     small: f32,
     large: f32,
-    dropdown: f32,
     qat: f32,
     tab: f32,
     groups: f32,
@@ -114,56 +116,87 @@ impl RibbonMetrics {
         ui: &mut Controls,
         model: &RibbonModel,
         widths: &RibbonWidths,
+        appearances: &HashMap<CommandId, RibbonCommandAppearance>,
     ) -> Result<Self, ControlError> {
         let compact = ui.theme() == Theme::Compact;
-        let mut text_height = ui.measure_text("Ag More", 4096.0, false)?.height.ceil();
-        let mut caption = 20.0_f32;
+        let text_height = ui.measure_text("Ag", 4096.0, false)?.height.ceil();
+        let mut small = (if compact { 26.0_f32 } else { 28.0 }).max(text_height + 8.0);
+        let mut large = 0.0_f32;
+        let mut qat = 32.0_f32.max(text_height + 8.0);
+        let mut tab_height = 34.0_f32.max(text_height + 8.0);
         // Measure the whole model so tab/context/overflow switches keep a stable
-        // height for this theme. Group caption widths match their full layout.
-        let mut labels = Vec::new();
+        // height for this theme. Measure each actual content arrangement: an
+        // Above caption is limited to two lines and cannot inflate other rows.
         for tab in &model.tabs {
-            labels.push(tab.label.clone());
+            tab_height =
+                tab_height.max(ui.measure_text(&tab.label, 4096.0, false)?.height.ceil() + 8.0);
             for group in &tab.groups {
-                caption = caption.max(
-                    ui.measure_text(
-                        &group.label,
-                        (widths.group(&tab.id, &group.id).width - 24.0).max(0.0),
-                        true,
-                    )?
-                    .height
-                    .ceil(),
-                );
-                for item in &group.items {
-                    labels.push(
-                        ui.commands()
-                            .label(&item.command)
-                            .unwrap_or(&item.command.0)
-                            .to_owned(),
+                ui.measure_text(&group.label, MAX_COMMAND_WIDTH, false)?;
+                for (index, item) in group.items.iter().enumerate() {
+                    let layout = if matches!(item.kind, RibbonItemKind::Small) {
+                        ButtonContentLayout::Leading
+                    } else {
+                        ButtonContentLayout::Above
+                    };
+                    let icon = presentation_icon(
+                        appearances
+                            .get(&item.command)
+                            .and_then(|appearance| appearance.icon),
+                        layout,
                     );
+                    let label = ui
+                        .commands()
+                        .label(&item.command)
+                        .unwrap_or(&item.command.0)
+                        .to_owned();
+                    let size = ui.measure_button_content(
+                        &label,
+                        &ribbon_button_style(),
+                        icon,
+                        layout,
+                        widths.group(&tab.id, &group.id).items[index],
+                    )?;
+                    if layout == ButtonContentLayout::Leading {
+                        small = small.max(size.height.ceil());
+                    } else {
+                        large = large.max(size.height.ceil());
+                    }
                 }
             }
         }
-        for command in &model.quick_access {
-            labels.push(
-                ui.commands()
-                    .label(command)
-                    .unwrap_or(&command.0)
-                    .to_owned(),
+        for (index, command) in model.quick_access.iter().enumerate() {
+            let label = ui
+                .commands()
+                .label(command)
+                .unwrap_or(&command.0)
+                .to_owned();
+            let icon = presentation_icon(
+                appearances
+                    .get(command)
+                    .and_then(|appearance| appearance.icon),
+                ButtonContentLayout::IconOnly,
+            );
+            qat = qat.max(
+                ui.measure_button_content(
+                    &label,
+                    &ribbon_button_style(),
+                    icon,
+                    ButtonContentLayout::IconOnly,
+                    widths.qat[index],
+                )?
+                .height
+                .ceil(),
             );
         }
-        for label in labels {
-            text_height = text_height.max(ui.measure_text(&label, 4096.0, false)?.height.ceil());
-        }
-        let small = (if compact { 20.0_f32 } else { 26.0 }).max(text_height + 4.0);
-        let large = (if compact { 64.0_f32 } else { 84.0 }).max(small * 3.0 + 4.0);
+        let large = large.max(small * 3.0 + 4.0);
+        let caption = 22.0_f32.max(text_height);
         Ok(Self {
             caption,
             small,
             large,
-            dropdown: 24.0_f32.max(text_height + 4.0),
-            qat: 28.0_f32.max(text_height + 4.0),
-            tab: 30.0_f32.max(text_height + 4.0),
-            groups: (if compact { 94.0_f32 } else { 118.0 }).max(large + caption + 10.0),
+            qat,
+            tab: tab_height,
+            groups: large + caption + 18.0,
         })
     }
     fn total(self) -> f32 {
@@ -172,6 +205,31 @@ impl RibbonMetrics {
 }
 
 const MAX_COMMAND_WIDTH: f32 = 512.0;
+const QAT_TARGET: f32 = 32.0;
+const SURFACE_PADDING: f32 = 4.0;
+
+fn ribbon_button_style() -> ButtonStyle {
+    ButtonStyle {
+        padding: Some(Edges::all(4.0)),
+        ..Default::default()
+    }
+}
+
+fn presentation_icon(icon: Option<ButtonIcon>, layout: ButtonContentLayout) -> Option<ButtonIcon> {
+    icon.map(|icon| ButtonIcon {
+        symbol: icon.symbol,
+        size: if layout == ButtonContentLayout::Above {
+            32.0
+        } else {
+            16.0
+        },
+        spacing: if layout == ButtonContentLayout::Above {
+            4.0
+        } else {
+            6.0
+        },
+    })
+}
 
 struct MeasuredGroup {
     width: f32,
@@ -180,10 +238,11 @@ struct MeasuredGroup {
 }
 
 /// One measured profile feeds layout planning, popup preflight and construction.
-/// Short labels retain the legacy minimum widths; longer labels include their
-/// icon, gap and default button padding, up to a bounded presentation width.
+/// Content arrangement, icon metrics and style match the actual controls.
+/// KeyTips are overlays and never participate in these measurements.
 struct RibbonWidths {
     qat: Vec<f32>,
+    tabs: HashMap<String, f32>,
     groups: HashMap<(String, String), MeasuredGroup>,
 }
 
@@ -192,34 +251,71 @@ impl RibbonWidths {
         ui: &mut Controls,
         model: &RibbonModel,
         appearances: &HashMap<CommandId, RibbonCommandAppearance>,
-        tips: Tips,
+        _tips: Tips,
     ) -> Result<Self, ControlError> {
-        let mut measure_command = |command: &CommandId, key_tip: Option<&str>, minimum: f32| {
-            let label = ui.commands().label(command).unwrap_or(&command.0);
-            let caption =
-                key_tip.map_or_else(|| label.to_owned(), |tip| format!("{label} [{tip}]"));
-            let icon_width = appearances
-                .get(command)
-                .and_then(|appearance| appearance.icon)
-                .map_or(0.0, |icon| {
-                    icon.size
-                        + if caption.is_empty() {
-                            0.0
-                        } else {
-                            icon.spacing
-                        }
-                });
-            // ButtonStyle's theme-relative defaults use 8px left/right padding.
-            // Ceil plus one pixel protects fractional shaping and device snapping.
-            let text = ui.measure_text(&caption, 4096.0, false)?;
-            Ok::<f32, ControlError>(
-                (text.width.ceil() + icon_width + 17.0).clamp(minimum, MAX_COMMAND_WIDTH),
-            )
+        let mut measure_command = |command: &CommandId, layout, split: bool| {
+            let label = ui
+                .commands()
+                .label(command)
+                .unwrap_or(&command.0)
+                .to_owned();
+            let icon = presentation_icon(
+                appearances
+                    .get(command)
+                    .and_then(|appearance| appearance.icon),
+                layout,
+            );
+            if layout == ButtonContentLayout::Above {
+                let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
+                // Choose a compact width that fits two complete caption lines.
+                // Extremely long text is visually ellipsized by shared paint;
+                // the complete label remains semantic and in the tooltip.
+                let line = ui.measure_text("Ag", 4096.0, false)?.height;
+                let arrow = if split && icon.is_some() { 20.0 } else { 0.0 };
+                let mut width = 72.0_f32;
+                while width < 160.0 {
+                    let caption_width = width - 8.0 - arrow;
+                    let text = ui.measure_text(&label, caption_width, true)?;
+                    if text.height <= line * 2.0 + 0.001 && text.width <= caption_width + 0.001 {
+                        break;
+                    }
+                    width += 4.0;
+                }
+                let measured =
+                    ui.measure_button_content(&label, &ribbon_button_style(), icon, layout, width)?;
+                Ok::<f32, ControlError>(measured.width.ceil())
+            } else {
+                let measured = ui.measure_button_content(
+                    &label,
+                    &ribbon_button_style(),
+                    icon,
+                    layout,
+                    MAX_COMMAND_WIDTH,
+                )?;
+                // One pixel protects fractional shaping/global clip subtraction.
+                Ok((measured.width.ceil()
+                    + if icon.is_some() && layout == ButtonContentLayout::IconOnly {
+                        0.0
+                    } else {
+                        1.0
+                    })
+                .clamp(
+                    if layout == ButtonContentLayout::IconOnly {
+                        QAT_TARGET
+                    } else {
+                        56.0
+                    },
+                    MAX_COMMAND_WIDTH,
+                ))
+            }
         };
         let mut qat = Vec::new();
-        for (index, command) in model.quick_access.iter().enumerate() {
-            let key_tip = (tips == Tips::Tabs && index < 9).then(|| (index + 1).to_string());
-            qat.push(measure_command(command, key_tip.as_deref(), 104.0)?);
+        for command in &model.quick_access {
+            qat.push(measure_command(
+                command,
+                ButtonContentLayout::IconOnly,
+                false,
+            )?);
         }
         let mut groups = HashMap::new();
         for tab in &model.tabs {
@@ -228,12 +324,12 @@ impl RibbonWidths {
                 for item in &group.items {
                     items.push(measure_command(
                         &item.command,
-                        (tips == Tips::Commands).then_some(item.key_tip.as_str()),
                         if matches!(item.kind, RibbonItemKind::Small) {
-                            128.0
+                            ButtonContentLayout::Leading
                         } else {
-                            104.0
+                            ButtonContentLayout::Above
                         },
+                        matches!(item.kind, RibbonItemKind::Split { .. }),
                     )?);
                 }
                 let mut width = 8.0;
@@ -248,7 +344,7 @@ impl RibbonWidths {
                         let column = items[index..index + count]
                             .iter()
                             .copied()
-                            .fold(128.0_f32, f32::max);
+                            .fold(0.0_f32, f32::max);
                         items[index..index + count].fill(column);
                         width += column + 4.0;
                         index += count;
@@ -269,18 +365,25 @@ impl RibbonWidths {
         }
         for tab in &model.tabs {
             for group in &tab.groups {
-                let caption = format!("{}\nCommands", group.label);
-                let text = ui.measure_text(&caption, 4096.0, false)?;
+                let text = ui.measure_text(&group.label, 4096.0, false)?;
                 // The shared dropdown reserves 20px for its arrow, in addition
                 // to 8px button padding on each side. A collapse never expands
                 // a group: an already narrower full group stays full instead.
                 let measured = groups.get_mut(&(tab.id.clone(), group.id.clone())).unwrap();
-                measured.collapsed = (text.width.ceil() + 37.0)
+                measured.collapsed = (text.width.ceil() + 29.0)
                     .clamp(COLLAPSED, MAX_COMMAND_WIDTH)
                     .min(measured.width);
             }
         }
-        Ok(Self { qat, groups })
+        let mut tabs = HashMap::new();
+        for tab in &model.tabs {
+            let text = ui.measure_text(&tab.label, 4096.0, false)?;
+            tabs.insert(
+                tab.id.clone(),
+                (text.width.ceil() + 28.0).clamp(48.0, 240.0),
+            );
+        }
+        Ok(Self { qat, tabs, groups })
     }
     fn group(&self, tab: &str, group: &str) -> &MeasuredGroup {
         &self.groups[&(tab.to_owned(), group.to_owned())]
@@ -290,7 +393,7 @@ impl RibbonWidths {
         if total <= available {
             return self.qat.len();
         }
-        let mut used = 44.0; // The menu button plus a gap after each visible command.
+        let mut used = QAT_TARGET; // Menu button plus a gap after each visible command.
         self.qat
             .iter()
             .take_while(|&&width| {
@@ -302,7 +405,7 @@ impl RibbonWidths {
     fn layout_groups(&self, tab: &RibbonTab, available: f32) -> Vec<RibbonPresentation> {
         plan_groups(
             &tab.groups,
-            available,
+            (available - SURFACE_PADDING * 2.0).max(0.0),
             tab.groups
                 .iter()
                 .map(|group| self.group(&tab.id, &group.id).width)
@@ -329,6 +432,7 @@ pub struct Ribbon {
     container: Option<WidgetId>,
     actions: HashMap<WidgetId, Action>,
     tabs: HashMap<String, WidgetId>,
+    tip_nodes: HashMap<WidgetId, (Tips, String)>,
     tips: Tips,
     tip_prefix: String,
     dirty: bool,
@@ -390,6 +494,7 @@ impl Ribbon {
             container: None,
             actions: HashMap::new(),
             tabs: HashMap::new(),
+            tip_nodes: HashMap::new(),
             tips: Tips::Hidden,
             tip_prefix: String::new(),
             dirty: true,
@@ -519,19 +624,20 @@ impl Ribbon {
         for appearance in self.command_appearances.values() {
             appearance.validate()?;
         }
-        // KeyTip captions are generated text too. Validate before replacing the
-        // live subtree; a valid base label can exceed the text limit once its
-        // model-provided KeyTip has been appended.
+        // Badges are independent text. Validate every mode before any subtree
+        // mutation so entering KeyTips later only changes painting.
         for tab in &self.model.tabs {
-            if self.tips == Tips::Tabs {
-                ui.measure_text(&format!("{} [{}]", tab.label, tab.key_tip), 4096.0, false)?;
-            } else if self.tips == Tips::Commands {
-                for item in tab.groups.iter().flat_map(|group| &group.items) {
+            ui.measure_text(&tab.key_tip, 4096.0, false)?;
+            for item in tab.groups.iter().flat_map(|group| &group.items) {
+                ui.measure_text(&item.key_tip, 4096.0, false)?;
+                if matches!(item.kind, RibbonItemKind::Split { .. }) {
                     let label = ui
                         .commands()
                         .label(&item.command)
                         .unwrap_or(&item.command.0);
-                    ui.measure_text(&format!("{} [{}]", label, item.key_tip), 4096.0, false)?;
+                    rust_desktop_ui_text::TextLimits::default()
+                        .validate(&format!("{label} menu"))
+                        .map_err(|error| ControlError::Invalid(error.to_string()))?;
                 }
             }
         }
@@ -625,7 +731,7 @@ impl Ribbon {
             }
         }
         Ok(RibbonMeasurements {
-            metrics: RibbonMetrics::measure(ui, &self.model, &widths)?,
+            metrics: RibbonMetrics::measure(ui, &self.model, &widths, &self.command_appearances)?,
             widths,
         })
     }
@@ -732,7 +838,7 @@ impl Ribbon {
             return Err(ControlError::Invalid("Invalid Ribbon width".into()));
         }
         if !self.dirty && self.width == width && self.theme == Some(ui.theme()) {
-            return Ok(());
+            return self.sync_key_tips(ui);
         }
         let Some(parent) = self.parent else {
             return Ok(());
@@ -765,6 +871,7 @@ impl Ribbon {
         }
         self.actions.clear();
         self.tabs.clear();
+        self.tip_nodes.clear();
         self.presentations.clear();
         self.ensure_active();
         self.width = width;
@@ -784,11 +891,11 @@ impl Ribbon {
             })?;
             container
         } else {
-            ui.panel(parent, style)?
+            ui.transparent_panel(parent, style)?
         };
         self.container = Some(container);
         let available = (width - 12.0).max(0.0);
-        let qat = ui.panel(
+        let qat = ui.transparent_panel(
             container,
             LayoutStyle {
                 kind: LayoutKind::Flex(Axis::Horizontal),
@@ -806,14 +913,9 @@ impl Ribbon {
                 .label(command)
                 .unwrap_or(&command.0)
                 .to_owned();
-            let caption = if self.tips == Tips::Tabs && index < 9 {
-                format!("{} [{}]", label, index + 1)
-            } else {
-                label.clone()
-            };
             let id = ui.button(
                 qat,
-                caption,
+                label.clone(),
                 Some(command.clone()),
                 LayoutStyle {
                     width: Length::Px(measured.widths.qat[index]),
@@ -822,7 +924,11 @@ impl Ribbon {
                     ..Default::default()
                 },
             )?;
-            self.apply_command_appearance(ui, id, command, &label)?;
+            self.apply_command_appearance(ui, id, command, &label, ButtonContentLayout::IconOnly)?;
+            if index < 9 {
+                self.tip_nodes
+                    .insert(id, (Tips::Tabs, (index + 1).to_string()));
+            }
             self.actions.insert(id, Action::Command(command.clone()));
         }
         if self.model.quick_access.len() > capacity {
@@ -843,49 +949,61 @@ impl Ribbon {
                 "",
                 &items,
                 LayoutStyle {
-                    width: Length::Px(available.min(44.0)),
+                    width: Length::Px(available.min(QAT_TARGET)),
                     height: Length::Px(metrics.qat),
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
             )?;
             ui.set_automation_name(id, "More")?;
+            ui.set_button_style(id, ribbon_button_style())?;
+            ui.set_button_chrome(id, ButtonChrome::Flat)?;
             self.actions.insert(id, Action::Dropdown);
         }
-        let tab_row = ui.panel(
+        let visible: Vec<_> = self.visible_tabs().into_iter().cloned().collect();
+        let tab_gaps = visible.len().saturating_sub(1) as f32;
+        let tab_gap = if tab_gaps > 0.0 {
+            4.0_f32.min(available / tab_gaps)
+        } else {
+            0.0
+        };
+        let natural_tabs: f32 = visible
+            .iter()
+            .map(|tab| measured.widths.tabs[&tab.id])
+            .sum();
+        let tab_scale = if natural_tabs > 0.0 {
+            ((available - tab_gap * tab_gaps) / natural_tabs).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let tab_row = ui.transparent_panel(
             container,
             LayoutStyle {
                 kind: LayoutKind::Flex(Axis::Horizontal),
                 height: Length::Px(metrics.tab),
                 flex_shrink: 0.0,
-                gap: 4.0,
+                gap: tab_gap,
                 ..Default::default()
             },
         )?;
         ui.set_role(tab_row, Role::TabList);
-        let visible: Vec<_> = self.visible_tabs().into_iter().cloned().collect();
-        let tab_width = ((available - (visible.len().saturating_sub(1) as f32) * 4.0)
-            / visible.len().max(1) as f32)
-            .clamp(0.0, 150.0);
         for tab in visible {
-            let caption = if self.tips == Tips::Tabs {
-                format!("{} [{}]", tab.label, tab.key_tip)
-            } else {
-                tab.label.clone()
-            };
             let id = ui.toggle(
                 tab_row,
-                caption,
+                tab.label.clone(),
                 None,
                 tab.id == self.active,
                 LayoutStyle {
-                    width: Length::Px(tab_width),
+                    width: Length::Px(measured.widths.tabs[&tab.id] * tab_scale),
                     height: Length::Px(metrics.tab),
                     flex_shrink: 0.0,
                     ..Default::default()
                 },
             )?;
             ui.set_role(id, Role::Tab);
+            ui.set_button_style(id, ribbon_button_style())?;
+            ui.set_button_chrome(id, ButtonChrome::Tab)?;
+            self.tip_nodes.insert(id, (Tips::Tabs, tab.key_tip.clone()));
             self.actions.insert(id, Action::Tab(tab.id.clone()));
             self.tabs.insert(tab.id, id);
         }
@@ -894,11 +1012,13 @@ impl Ribbon {
             LayoutStyle {
                 kind: LayoutKind::Flex(Axis::Horizontal),
                 height: Length::Px(metrics.groups),
-                gap: 6.0,
+                gap: 0.0,
+                padding: Edges::all(SURFACE_PADDING),
                 flex_shrink: 0.0,
                 ..Default::default()
             },
         )?;
+        ui.set_ribbon_surface(groups_row)?;
         if let Some(tab) = self
             .model
             .tabs
@@ -907,7 +1027,28 @@ impl Ribbon {
             .cloned()
         {
             self.presentations = measured.widths.layout_groups(&tab, available);
-            for presentation in self.presentations.clone() {
+            for (index, presentation) in self.presentations.clone().into_iter().enumerate() {
+                if index > 0 {
+                    ui.separator(
+                        groups_row,
+                        SeparatorSettings {
+                            orientation: Axis::Vertical,
+                            ..Default::default()
+                        },
+                        LayoutStyle {
+                            width: Length::Px(1.0),
+                            height: Length::Percent(1.0),
+                            margin: Edges {
+                                left: 2.5,
+                                right: 2.5,
+                                top: 6.0,
+                                bottom: 6.0,
+                            },
+                            flex_shrink: 0.0,
+                            ..Default::default()
+                        },
+                    )?;
+                }
                 match presentation {
                     RibbonPresentation::Full(id) => {
                         if let Some(group) = tab.groups.iter().find(|g| g.id == id) {
@@ -929,7 +1070,7 @@ impl Ribbon {
                             let button = ribbon_dropdown(
                                 ui,
                                 groups_row,
-                                format!("{}\nCommands", group.label),
+                                group.label.clone(),
                                 &entries,
                                 LayoutStyle {
                                     width: Length::Px(
@@ -940,6 +1081,8 @@ impl Ribbon {
                                     ..Default::default()
                                 },
                             )?;
+                            ui.set_button_style(button, ribbon_button_style())?;
+                            ui.set_button_chrome(button, ButtonChrome::Flat)?;
                             self.actions.insert(button, Action::Dropdown);
                         }
                     }
@@ -956,18 +1099,21 @@ impl Ribbon {
                             "All commands",
                             &items,
                             LayoutStyle {
-                                width: Length::Px(available),
+                                width: Length::Px((available - SURFACE_PADDING * 2.0).max(0.0)),
                                 height: Length::Px(48.0),
                                 flex_shrink: 0.0,
                                 ..Default::default()
                             },
                         )?;
+                        ui.set_button_style(button, ribbon_button_style())?;
+                        ui.set_button_chrome(button, ButtonChrome::Flat)?;
                         self.actions.insert(button, Action::Dropdown);
                     }
                 }
             }
         }
         self.dirty = false;
+        self.sync_key_tips(ui)?;
         // Focus can be restored before layout because eligibility is a logical tree property.
         let restored = ui
             .runtime
@@ -1012,9 +1158,16 @@ impl Ribbon {
         id: WidgetId,
         command: &CommandId,
         label: &str,
+        layout: ButtonContentLayout,
     ) -> Result<(), ControlError> {
         let appearance = self.command_appearances.get(command);
-        ui.set_button_icon(id, appearance.and_then(|appearance| appearance.icon))?;
+        ui.set_button_style(id, ribbon_button_style())?;
+        ui.set_button_chrome(id, ButtonChrome::Flat)?;
+        ui.set_button_content_layout(id, layout)?;
+        ui.set_button_icon(
+            id,
+            presentation_icon(appearance.and_then(|appearance| appearance.icon), layout),
+        )?;
         ui.set_tooltip(
             id,
             appearance
@@ -1030,7 +1183,7 @@ impl Ribbon {
         metrics: RibbonMetrics,
         measured: &MeasuredGroup,
     ) -> Result<(), ControlError> {
-        let panel = ui.panel(
+        let panel = ui.transparent_panel(
             parent,
             LayoutStyle {
                 kind: LayoutKind::Stack(Axis::Vertical),
@@ -1043,7 +1196,8 @@ impl Ribbon {
             },
         )?;
         ui.set_role(panel, Role::Group);
-        let row = ui.panel(
+        ui.set_automation_name(panel, &group.label)?;
+        let row = ui.transparent_panel(
             panel,
             LayoutStyle {
                 kind: LayoutKind::Flex(Axis::Horizontal),
@@ -1061,14 +1215,14 @@ impl Ribbon {
                 .label(&item.command)
                 .unwrap_or(&item.command.0)
                 .to_owned();
-            let caption = if self.tips == Tips::Commands {
-                format!("{} [{}]", label, item.key_tip)
+            let layout = if matches!(item.kind, RibbonItemKind::Small) {
+                ButtonContentLayout::Leading
             } else {
-                label.clone()
+                ButtonContentLayout::Above
             };
             let (host, height, width) = if matches!(item.kind, RibbonItemKind::Small) {
                 if small_count % 3 == 0 {
-                    small_column = Some(ui.panel(
+                    small_column = Some(ui.transparent_panel(
                         row,
                         LayoutStyle {
                             kind: LayoutKind::Stack(Axis::Vertical),
@@ -1099,25 +1253,6 @@ impl Ribbon {
             };
             let id = match &item.kind {
                 RibbonItemKind::Split { menu } => {
-                    let split = ui.panel(
-                        host,
-                        LayoutStyle {
-                            kind: LayoutKind::Stack(Axis::Vertical),
-                            width: Length::Px(width),
-                            height: Length::Px(height),
-                            flex_shrink: 0.0,
-                            ..Default::default()
-                        },
-                    )?;
-                    let primary = ui.button(
-                        split,
-                        caption,
-                        Some(item.command.clone()),
-                        LayoutStyle {
-                            height: Length::Px(height - metrics.dropdown),
-                            ..Default::default()
-                        },
-                    )?;
                     let entries: Vec<_> = menu
                         .iter()
                         .map(|id| {
@@ -1127,26 +1262,65 @@ impl Ribbon {
                             ))
                         })
                         .collect();
-                    let dropdown = ribbon_dropdown(
+                    let split = if entries.is_empty() {
+                        // Preserve an independent, disabled menu area even when
+                        // the application supplies no secondary commands.
+                        let container = ui.transparent_panel(host, style)?;
+                        ui.set_role(container, Role::Group);
+                        let primary = ui.button(
+                            container,
+                            label.clone(),
+                            Some(item.command.clone()),
+                            LayoutStyle::default(),
+                        )?;
+                        let dropdown = ui.button(container, "", None, LayoutStyle::default())?;
+                        ui.set_enabled(dropdown, false)?;
+                        SplitButton {
+                            container,
+                            primary,
+                            dropdown,
+                        }
+                    } else {
+                        ui.split_button(
+                            host,
+                            label.clone(),
+                            Some(item.command.clone()),
+                            &entries,
+                            style,
+                        )?
+                    };
+                    self.apply_command_appearance(
                         ui,
-                        split,
-                        "More",
-                        &entries,
-                        LayoutStyle {
-                            height: Length::Px(metrics.dropdown),
-                            ..Default::default()
-                        },
+                        split.primary,
+                        &item.command,
+                        &label,
+                        layout,
                     )?;
-                    self.actions.insert(dropdown, Action::Dropdown);
-                    primary
+                    ui.set_button_style(split.dropdown, ribbon_button_style())?;
+                    ui.set_split_button_presentation(split, ButtonContentLayout::Above)?;
+                    ui.set_automation_name(split.dropdown, format!("{label} menu"))?;
+                    ui.set_tooltip(
+                        split.dropdown,
+                        self.command_appearances
+                            .get(&item.command)
+                            .and_then(|appearance| appearance.tool_tip.as_deref())
+                            .unwrap_or(&label),
+                    )?;
+                    self.actions.insert(split.dropdown, Action::Dropdown);
+                    split.primary
                 }
-                _ => ui.button(host, caption, Some(item.command.clone()), style)?,
+                _ => {
+                    let id = ui.button(host, label.clone(), Some(item.command.clone()), style)?;
+                    self.apply_command_appearance(ui, id, &item.command, &label, layout)?;
+                    id
+                }
             };
-            self.apply_command_appearance(ui, id, &item.command, &label)?;
+            self.tip_nodes
+                .insert(id, (Tips::Commands, item.key_tip.clone()));
             self.actions
                 .insert(id, Action::Command(item.command.clone()));
         }
-        ui.label(
+        let caption = ui.label(
             panel,
             group.label.clone(),
             LayoutStyle {
@@ -1154,6 +1328,18 @@ impl Ribbon {
                 ..Default::default()
             },
         )?;
+        ui.set_ribbon_group_caption(caption)?;
+        Ok(())
+    }
+    fn sync_key_tips(&self, ui: &mut Controls) -> Result<(), ControlError> {
+        for (id, (mode, label)) in &self.tip_nodes {
+            if ui.runtime.tree().node(*id).is_some() {
+                let label = (*mode == self.tips && ui.is_enabled(*id)).then(|| label.clone());
+                if ui.key_tip(*id) != label.as_deref() {
+                    ui.set_key_tip(*id, label)?;
+                }
+            }
+        }
         Ok(())
     }
     /// Call after `Controls::dispatch` to process tab/dropdown activations.
@@ -1243,7 +1429,7 @@ impl Ribbon {
                 self.key_tip_return_focus = ui.runtime.focused();
                 self.tips = Tips::Tabs;
                 self.tip_prefix.clear();
-                self.dirty = true;
+                self.sync_key_tips(ui)?;
                 if let Some(id) = self
                     .tabs
                     .get(&self.active)
@@ -1264,7 +1450,7 @@ impl Ribbon {
             if self.tips == Tips::Commands {
                 self.tips = Tips::Tabs;
                 self.tip_prefix.clear();
-                self.dirty = true;
+                self.sync_key_tips(ui)?;
             } else {
                 self.finish_key_tips(ui, true);
             }
@@ -1297,10 +1483,12 @@ impl Ribbon {
                 .iter()
                 .find(|tab| tab.key_tip.eq_ignore_ascii_case(&self.tip_prefix))
             {
-                self.active = tab.id.clone();
+                let id = tab.id.clone();
+                self.dirty |= self.active != id;
+                self.active = id;
                 self.tips = Tips::Commands;
                 self.tip_prefix.clear();
-                self.dirty = true;
+                self.sync_key_tips(ui)?;
                 if let Some(id) = self
                     .tabs
                     .get(&self.active)
@@ -1336,7 +1524,9 @@ impl Ribbon {
         if self.tips != Tips::Hidden || !self.tip_prefix.is_empty() {
             self.tips = Tips::Hidden;
             self.tip_prefix.clear();
-            self.dirty = true;
+            // Clearing an existing badge cannot fail validation. Removed owners
+            // are skipped; the next reflow will create fresh badge metadata.
+            let _ = self.sync_key_tips(ui);
         }
         if let Some(id) = self.key_tip_return_focus.take()
             && restore

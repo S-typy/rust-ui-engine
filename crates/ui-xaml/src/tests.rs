@@ -1236,6 +1236,13 @@ fn icon_symbols_and_separator_settings_parse_and_generate_typed_values() {
         ("ChevronRight", IconSymbol::ChevronRight),
         ("Save", IconSymbol::Save),
         ("Pin", IconSymbol::Pin),
+        ("FolderOpen", IconSymbol::FolderOpen),
+        ("Copy", IconSymbol::Copy),
+        ("Edit", IconSymbol::Edit),
+        ("Eraser", IconSymbol::Eraser),
+        ("Sun", IconSymbol::Sun),
+        ("Moon", IconSymbol::Moon),
+        ("Lock", IconSymbol::Lock),
     ] {
         let source = form(
             "",

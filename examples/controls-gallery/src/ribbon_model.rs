@@ -1,6 +1,36 @@
 use rust_desktop_ui_controls::{
-    Controls, RibbonGroup, RibbonItem, RibbonItemKind as Kind, RibbonModel, RibbonTab,
+    ButtonIcon, ControlError, Controls, IconSymbol, Ribbon, RibbonCommandAppearance, RibbonGroup,
+    RibbonItem, RibbonItemKind as Kind, RibbonModel, RibbonTab,
 };
+
+pub fn appearances(ribbon: &mut Ribbon) -> Result<(), ControlError> {
+    for (command, symbol) in [
+        ("open", IconSymbol::FolderOpen),
+        ("save", IconSymbol::Save),
+        ("menu", IconSymbol::Add),
+        ("edit", IconSymbol::Edit),
+        ("copy", IconSymbol::Copy),
+        ("favorite", IconSymbol::Check),
+        ("pin", IconSymbol::Pin),
+        ("light", IconSymbol::Sun),
+        ("dark", IconSymbol::Moon),
+        ("clear", IconSymbol::Eraser),
+        ("expand", IconSymbol::ChevronDown),
+        ("collapse", IconSymbol::ChevronRight),
+        ("qat_add", IconSymbol::Add),
+        ("qat_remove", IconSymbol::Remove),
+        ("disabled", IconSymbol::Lock),
+    ] {
+        ribbon.set_command_appearance(
+            command,
+            RibbonCommandAppearance {
+                icon: Some(ButtonIcon::new(symbol)),
+                ..Default::default()
+            },
+        )?;
+    }
+    Ok(())
+}
 
 pub fn model(ui: &mut Controls) -> RibbonModel {
     for (id, label) in [

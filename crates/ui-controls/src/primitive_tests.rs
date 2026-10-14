@@ -33,6 +33,13 @@ fn every_symbol_is_a_single_bounded_vector_path_without_text_or_font_dependency(
         IconSymbol::ChevronRight,
         IconSymbol::Save,
         IconSymbol::Pin,
+        IconSymbol::FolderOpen,
+        IconSymbol::Copy,
+        IconSymbol::Edit,
+        IconSymbol::Eraser,
+        IconSymbol::Sun,
+        IconSymbol::Moon,
+        IconSymbol::Lock,
     ] {
         let mut ui = Controls::new(Theme::FluentLight).unwrap();
         let id = ui.icon(ui.root(), symbol, LayoutStyle::default()).unwrap();

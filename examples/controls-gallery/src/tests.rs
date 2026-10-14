@@ -97,7 +97,8 @@ fn favorite_accessibility_shares_qat_ribbon_and_ordinary_button_state_live() {
 fn favorite_overflow_and_numeric_keytip_use_the_same_command() {
     use rust_desktop_ui_platform_winit::accesskit::{Role, Toggled};
     let mut app = gallery();
-    let viewport = Size::new(320.0, 800.0);
+    // Three compact icon buttons fit at 320px; force actual QAT overflow.
+    let viewport = Size::new(96.0, 800.0);
     app.update(viewport, 1.0).unwrap();
     let tree = app.accessibility(1.0);
     let more = tree

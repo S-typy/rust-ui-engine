@@ -14,10 +14,11 @@ pub(crate) fn snapshot(ui: &Controls) -> String {
     let controls = nodes.iter().filter(|node| matches!(node.role,
         Role::Button | Role::ToggleButton | Role::MenuItem | Role::Separator | Role::Tab | Role::TextBox))
         .map(|node| format!(
-            "{{\"label\":{},\"role\":{},\"checked\":{},\"enabled\":{},\"bounds\":{},\"clip\":{},\"has_popup\":{},\"expanded\":{},\"focused\":{}}}",
+            "{{\"label\":{},\"role\":{},\"checked\":{},\"enabled\":{},\"bounds\":{},\"clip\":{},\"has_popup\":{},\"expanded\":{},\"focused\":{},\"command\":{}}}",
             string(&node.label), string(&format!("{:?}", node.role)), optional_bool(node.checked),
             !node.disabled, rectangle(node.bounds), ui.runtime.clip(node.id).map_or_else(|| "null".into(), rectangle),
-            node.has_popup, optional_bool(node.expanded), node.focused))
+            node.has_popup, optional_bool(node.expanded), node.focused,
+            ui.command_id(node.id).map_or_else(|| "null".into(), |id| string(&id.0))))
         .collect::<Vec<_>>().join(",");
     let focused = nodes
         .iter()
@@ -44,10 +45,18 @@ pub(crate) fn ribbon_snapshot(
     ui: &Controls,
     mounted: &crate::view_ribbon::MountedRibbon,
 ) -> String {
+    let key_tip_labels = ui
+        .semantics()
+        .iter()
+        .filter_map(|node| ui.key_tip(node.id))
+        .map(string)
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "{{\"active_tab\":{},\"key_tips\":{},\"bounds\":{},\"presentations\":{}}}",
+        "{{\"active_tab\":{},\"key_tips\":{},\"key_tip_labels\":[{}],\"bounds\":{},\"presentations\":{}}}",
         string(mounted.ribbon.active_tab()),
         mounted.ribbon.key_tips_visible(),
+        key_tip_labels,
         ui.runtime
             .bounds(mounted.wrapper)
             .map_or_else(|| "null".into(), rectangle),

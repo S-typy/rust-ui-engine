@@ -16,19 +16,19 @@
                         <MenuItem Command="Confirm" />
                         <MenuItem Command="Clear" />
                     </SplitButton>
-                    <Button Command="Clear" KeyTip="N" Icon="Remove" ToolTip="Очистить текст" />
+                    <Button Command="Clear" KeyTip="N" Icon="Eraser" ToolTip="Очистить текст" />
                 </RibbonGroup>
                 <RibbonGroup Id="Editing" Header="Редактирование" CollapsePriority="2">
                     <ToggleButton Command="Pin" Size="Small" KeyTip="P" Icon="Pin"
                                   ToolTip="Закрепить документ" />
                     <Button Command="Confirm" Size="Small" KeyTip="E" />
-                    <Button Command="Disabled" Size="Small" KeyTip="D" />
+                    <Button Command="Disabled" Size="Small" KeyTip="D" Icon="Lock" />
                 </RibbonGroup>
             </RibbonTab>
             <RibbonTab Id="View" Header="Вид" KeyTip="V">
                 <RibbonGroup Id="Appearance" Header="Оформление" CollapsePriority="1">
-                    <Button Command="Light" KeyTip="L" />
-                    <Button Command="Dark" KeyTip="D" />
+                    <Button Command="Light" KeyTip="L" Icon="Sun" />
+                    <Button Command="Dark" KeyTip="D" Icon="Moon" />
                 </RibbonGroup>
                 <RibbonGroup Id="ViewOptions" Header="Документ" CollapsePriority="2">
                     <ToggleButton Command="Pin" Size="Small" KeyTip="P" />

@@ -18,23 +18,25 @@ import struct
 import subprocess
 import sys
 
-from windows_gallery_smoke import GallerySession, GalleryWindows
+from windows_gallery_smoke import GallerySession, GalleryWindows, latest_command_state, visible_control_center
 from windows_retained_smoke import WM_MOUSEMOVE, WM_KEYDOWN, WM_KEYUP, key_message
 from windows_smoke import SmokeFailure, WM_CLOSE
 
 
 def latest_snapshot(path: Path) -> dict | None:
-    # An incomplete final stdout write is allowed while the application runs.
-    snapshots = []
-    for line in path.read_text(encoding="utf-8", errors="replace").splitlines(keepends=True):
-        if line.startswith("command-state "):
-            if not line.endswith("\n"):
-                continue
-            try:
-                snapshots.append(json.loads(line.removeprefix("command-state ")))
-            except json.JSONDecodeError as error:
-                raise SmokeFailure(f"Malformed complete command snapshot: {error}") from error
-    return snapshots[-1] if snapshots else None
+    return latest_command_state(path.read_text(encoding="utf-8", errors="replace"))
+
+
+def background_color(state: dict, placement: dict) -> tuple[int, int, int]:
+    dark = state["theme"] == "dark"
+    if state["checked"]:
+        return (37, 72, 109) if dark else (199, 222, 246)
+    # Flat QAT commands expose the canvas; group commands expose the common
+    # Ribbon surface. Determine the QAT row from observed command positions.
+    qat_y = min(item["bounds"][1] for item in state["controls"] if item["command"] is not None)
+    if abs(placement["bounds"][1] - qat_y) < 0.001:
+        return (25, 29, 37) if dark else (240, 244, 249)
+    return (40, 46, 57) if dark else (255, 255, 255)
 
 
 def verify_shared(state: dict, sequence: int, checked: bool) -> None:
@@ -75,17 +77,8 @@ class CommandSession(GallerySession):
         return state
 
     def click_item(self, item: dict) -> None:
-        if not item["enabled"]:
-            raise SmokeFailure(f"Target is disabled: {item}")
-        x, y, width, height = item["bounds"]
-        if item.get("clip"):
-            cx, cy, cw, ch = item["clip"]
-            right, bottom = min(x + width, cx + cw), min(y + height, cy + ch)
-            x, y = max(x, cx), max(y, cy)
-            width, height = right - x, bottom - y
-        if width <= 0 or height <= 0:
-            raise SmokeFailure(f"Target has no visible hit area: {item}")
-        self.click(round(x + width / 2), round(y + height / 2), self.scale)
+        viewport = tuple(value / self.scale for value in self.windows.client_size(self.hwnd))
+        self.click(*visible_control_center(item, viewport), self.scale)
 
     def capture(self, output: Path, name: str) -> dict:
         width, height = self.windows.client_size(self.hwnd)
@@ -95,9 +88,6 @@ class CommandSession(GallerySession):
         bitmap = Path(result["bmp"]).read_bytes()
         offset = struct.unpack_from("<I", bitmap, 10)[0]
         state = self.state()
-        dark = state["theme"] == "dark"
-        expected = ((37, 72, 109) if dark else (199, 222, 246)) if state["checked"] else (
-            (40, 46, 57) if dark else (255, 255, 255))
         def encoded(color):
             return tuple(round(255 * (12.92 * (v / 255) if v / 255 <= 0.0031308
                          else 1.055 * (v / 255) ** (1 / 2.4) - 0.055)) for v in color)
@@ -105,6 +95,7 @@ class CommandSession(GallerySession):
         for placement in state["placements"]:
             if placement["role"] != "ToggleButton":
                 continue
+            expected = background_color(state, placement)
             x, y, _, _ = placement["bounds"]
             px, py = round((x + 5) * self.scale), round((y + 5) * self.scale)
             cx, cy, cw, ch = placement["clip"]
@@ -134,6 +125,14 @@ class CommandSession(GallerySession):
         self.snapshot(f"layout at {width}px", lambda s: abs(s["viewport"][0] - width) < 1)
         self.settle()
 
+    def resize_until(self, description: str, widths: tuple[int, ...], predicate) -> None:
+        for width in widths:
+            self.resize(width)
+            if predicate(self.state()):
+                self.report["checks"].append({"check": description, "logical_width": width})
+                return
+        raise SmokeFailure(f"No {description} at tested widths {widths}")
+
     def menu_favorite(self, anchor: dict, description: str) -> None:
         self.click_item(anchor)
         state = self.snapshot(description + " opens", lambda s: s["popup_open"])
@@ -157,22 +156,23 @@ class CommandSession(GallerySession):
         self.windows.topmost_without_activation(self.hwnd, True)
         self.promoted = True
         self.focus_messages(True)
-        self.pointer(WM_MOUSEMOVE, 1100, 700, self.scale)
+        width, height = self.windows.client_size(self.hwnd)
+        self.pointer(WM_MOUSEMOVE, round(width / self.scale) - 5, round(height / self.scale) - 5, self.scale)
         initial = self.snapshot("initial shared command", lambda s: len(s["placements"]) >= 2)
         verify_shared(initial, 0, False)
         self.capture(output, "initial-light")
 
-        body = next(p for p in initial["placements"] if p["bounds"][1] > 70)
+        body = max(initial["placements"], key=lambda p: p["bounds"][1])
         self.activate_placement(body, "Ribbon body toggles command")
         self.capture(output, "body-checked-light")
-        qat = next(p for p in self.state()["placements"] if p["bounds"][1] < 45)
+        qat = min(self.state()["placements"], key=lambda p: p["bounds"][1])
         self.activate_placement(qat, "QAT toggles same command")
         self.capture(output, "qat-unchecked-light")
 
         before = self.state()
         self.key(0x79)  # F10 opens KeyTips, independent of keyboard layout.
         self.snapshot("QAT KeyTips displayed", lambda s:
-                      any("[3]" in p["label"] for p in s["placements"]))
+                      any(p["key_tip"] == "3" and p["label"] == "Избранное" for p in s["placements"]))
         # Let the child's TranslateMessage enqueue WM_CHAR before KEYUP. Winit
         # assembles printable logical keys by looking ahead in that queue; an
         # already queued KEYUP would end the key as Unidentified before CHAR.
@@ -186,14 +186,18 @@ class CommandSession(GallerySession):
         verify_shared(self.state(), before["sequence"] + 1, not before["checked"])
         self.report["checks"].append({"check": "QAT KeyTip exactly once", "command_state": self.state()})
 
-        self.resize(320)
-        self.menu_favorite(self.control(lambda p: p["label"] == "More" and p["bounds"][1] < 45),
+        self.resize_until("QAT overflow", (96, 112, 128), lambda state:
+                          any(item["label"] == "More" for item in state["controls"]))
+        self.menu_favorite(self.control(lambda p: p["label"] == "More"),
                            "QAT More")
-        self.menu_favorite(self.control(lambda p: p["label"].startswith("Редактирование\n")),
+        self.resize_until("collapsed Editing group", (360, 400, 320, 480), lambda state:
+                          any(item["label"] == "Редактирование" for item in state["controls"]))
+        self.menu_favorite(self.control(lambda p: p["label"] == "Редактирование"),
                            "Collapsed Editing group")
         self.capture(output, "collapsed-light")
 
-        self.resize(240)
+        self.resize_until("All commands overflow", (180, 128, 96), lambda state:
+                          any(item["label"] == "All commands" for item in state["controls"]))
         self.menu_favorite(self.control(lambda p: p["label"] == "All commands"), "All commands overflow")
         # Existing gallery capture checker intentionally requires >=300px width.
         self.resize(1200)
@@ -207,12 +211,15 @@ class CommandSession(GallerySession):
         self.snapshot("Home tab after theme rebuild", lambda s:
                       len(s["placements"]) >= 2)
         verify_shared(self.state(), 6, False)
-        qat = next(p for p in self.state()["placements"] if p["bounds"][1] < 45)
+        qat = min(self.state()["placements"], key=lambda p: p["bounds"][1])
         self.activate_placement(qat, "Dark QAT after rebuild")
         self.capture(output, "checked-dark")
-        self.resize(320)
-        self.menu_favorite(self.control(lambda p: p["label"] == "More" and p["bounds"][1] < 45),
+        self.resize_until("Dark QAT overflow", (96, 112, 128), lambda state:
+                          any(item["label"] == "More" for item in state["controls"]))
+        self.menu_favorite(self.control(lambda p: p["label"] == "More"),
                            "Dark QAT More")
+        self.resize_until("Dark collapsed Editing group", (360, 400, 320, 480), lambda state:
+                          any(item["label"] == "Редактирование" for item in state["controls"]))
         self.capture(output, "unchecked-dark-collapsed")
         final = self.wait_state("no missing glyphs", lambda s: s["missing"] == 0)
         self.report["final_render_state"] = final
@@ -224,12 +231,34 @@ class CommandSession(GallerySession):
         self.report["checks"].append({"check": "native close", "exit_code": code})
 
 
+def self_test() -> None:
+    qat = {"command": "favorite", "bounds": [20, 500, 32, 32]}
+    body = {"command": "favorite", "bounds": [20, 600, 84, 88]}
+    state = {"theme": "light", "checked": False, "controls": [body, qat]}
+    assert background_color(state, qat) == (240, 244, 249)
+    assert background_color(state, body) == (255, 255, 255)
+    state["checked"] = True
+    assert background_color(state, qat) == background_color(state, body) == (199, 222, 246)
+    state.update(theme="dark", checked=False)
+    assert background_color(state, qat) == (25, 29, 37)
+    assert background_color(state, body) == (40, 46, 57)
+    state["checked"] = True
+    assert background_color(state, qat) == background_color(state, body) == (37, 72, 109)
+    print("PASS: Ribbon command capture palettes distinguish transparent QAT and group surfaces")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--exe", required=True, type=Path)
-    parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--exe", type=Path)
+    parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--timeout", type=float, default=20)
+    parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
+    if args.self_test:
+        self_test()
+        return 0
+    if not args.exe or not args.output_dir:
+        parser.error("--exe and --output-dir are required")
     if sys.platform != "win32" or not args.exe.is_file():
         parser.error("An interactive Windows desktop and gallery executable are required")
     if not math.isfinite(args.timeout) or not 0 < args.timeout <= 60:
@@ -240,7 +269,7 @@ def main() -> int:
               "executable": str(executable), "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
               "checks": [], "captures": {}, "backend_environment": os.environ.get("WGPU_BACKEND"),
               "limits": ["No native IME or screen reader test", "Letter KeyTips covered by Rust tests",
-                         "240px overflow verified by state/input; capture after restoring width"]}
+                         "Narrow overflow verified by state/input; captures require at least 300px width"]}
     session = None
     try:
         windows = GalleryWindows()

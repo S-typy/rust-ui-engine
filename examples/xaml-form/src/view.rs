@@ -795,6 +795,13 @@ pub(crate) fn icon_symbol(symbol: rust_desktop_ui_xaml::IconSymbol) -> IconSymbo
         rust_desktop_ui_xaml::IconSymbol::ChevronRight => IconSymbol::ChevronRight,
         rust_desktop_ui_xaml::IconSymbol::Save => IconSymbol::Save,
         rust_desktop_ui_xaml::IconSymbol::Pin => IconSymbol::Pin,
+        rust_desktop_ui_xaml::IconSymbol::FolderOpen => IconSymbol::FolderOpen,
+        rust_desktop_ui_xaml::IconSymbol::Copy => IconSymbol::Copy,
+        rust_desktop_ui_xaml::IconSymbol::Edit => IconSymbol::Edit,
+        rust_desktop_ui_xaml::IconSymbol::Eraser => IconSymbol::Eraser,
+        rust_desktop_ui_xaml::IconSymbol::Sun => IconSymbol::Sun,
+        rust_desktop_ui_xaml::IconSymbol::Moon => IconSymbol::Moon,
+        rust_desktop_ui_xaml::IconSymbol::Lock => IconSymbol::Lock,
     }
 }
 

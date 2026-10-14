@@ -130,7 +130,7 @@ fn entry(ui: &Controls, node: &SemanticNode) -> String {
         .command_id(node.id)
         .map_or_else(|| "null".into(), |id| json_string(&id.0));
     format!(
-        "{{\"command\":{},\"label\":{},\"role\":{},\"checked\":{},\"enabled\":{},\"bounds\":{},\"clip\":{}}}",
+        "{{\"command\":{},\"label\":{},\"role\":{},\"checked\":{},\"enabled\":{},\"bounds\":{},\"clip\":{},\"key_tip\":{}}}",
         command,
         json_string(&node.label),
         json_string(&format!("{:?}", node.role)),
@@ -139,7 +139,9 @@ fn entry(ui: &Controls, node: &SemanticNode) -> String {
         rectangle(node.bounds),
         ui.runtime
             .clip(node.id)
-            .map_or_else(|| "null".into(), rectangle)
+            .map_or_else(|| "null".into(), rectangle),
+        ui.key_tip(node.id)
+            .map_or_else(|| "null".into(), json_string)
     )
 }
 

@@ -1,6 +1,31 @@
 use crate::{ControlError, Theme};
 use rust_desktop_ui_core::{Color, Edges};
 
+/// Visual arrangement of a button's content. The full label remains available
+/// to commands, accessibility and tooltips in every arrangement.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ButtonContentLayout {
+    /// An optional icon followed by a single-line caption.
+    #[default]
+    Leading,
+    /// An icon above a centered caption of at most two lines. Oversized captions
+    /// receive a visual ellipsis without changing the semantic label.
+    Above,
+    /// A centered icon. A missing icon falls back to the full text caption.
+    IconOnly,
+}
+
+/// A button's surface treatment, independent of its command and checked state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ButtonChrome {
+    #[default]
+    Standard,
+    /// Transparent at rest, with themed hover, press and checked feedback.
+    Flat,
+    /// Flat tab treatment with an accent underline while checked.
+    Tab,
+}
+
 /// Optional colors shared by Button, ToggleButton, CheckBox and RadioButton. For indicators,
 /// background/border describe the indicator; the surrounding row is transparent.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -82,6 +107,29 @@ pub(crate) struct ResolvedButtonStyle {
 }
 
 impl ButtonStyle {
+    pub(crate) fn resolve_chrome(
+        mut self,
+        theme: Theme,
+        state: ButtonVisualState,
+        chrome: ButtonChrome,
+    ) -> ResolvedButtonStyle {
+        if chrome != ButtonChrome::Standard {
+            let transparent = Color {
+                a: 0.0,
+                ..theme.tokens().surface
+            };
+            self.normal.background.get_or_insert(transparent);
+            self.disabled.background.get_or_insert(transparent);
+            self.border_width.get_or_insert(0.0);
+            if chrome == ButtonChrome::Tab {
+                self.corner_radius.get_or_insert(0.0);
+                self.checked.background.get_or_insert(transparent);
+                self.checked.foreground.get_or_insert(theme.tokens().focus);
+            }
+        }
+        self.resolve(theme, state, false)
+    }
+
     /// Validate all overrides before storing any change.
     pub fn validate(&self) -> Result<(), ControlError> {
         if self

@@ -264,6 +264,13 @@ pub enum IconSymbol {
     ChevronRight,
     Save,
     Pin,
+    FolderOpen,
+    Copy,
+    Edit,
+    Eraser,
+    Sun,
+    Moon,
+    Lock,
 }
 
 /// A standalone symbol; the XAML `Symbol` attribute is required.
@@ -1019,11 +1026,18 @@ fn icon_symbol(
         "ChevronRight" => Ok(IconSymbol::ChevronRight),
         "Save" => Ok(IconSymbol::Save),
         "Pin" => Ok(IconSymbol::Pin),
+        "FolderOpen" => Ok(IconSymbol::FolderOpen),
+        "Copy" => Ok(IconSymbol::Copy),
+        "Edit" => Ok(IconSymbol::Edit),
+        "Eraser" => Ok(IconSymbol::Eraser),
+        "Sun" => Ok(IconSymbol::Sun),
+        "Moon" => Ok(IconSymbol::Moon),
+        "Lock" => Ok(IconSymbol::Lock),
         _ => Err(at_attribute(
             document,
             attribute,
             format!(
-                "{} must be Check, Close, Add, Remove, ChevronDown, ChevronRight, Save or Pin",
+                "{} must be Check, Close, Add, Remove, ChevronDown, ChevronRight, Save, Pin, FolderOpen, Copy, Edit, Eraser, Sun, Moon or Lock",
                 attribute.name()
             ),
         )),

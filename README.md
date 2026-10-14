@@ -19,6 +19,11 @@ commands and large or small buttons in XAML; register command labels, availabili
 toggle state and handlers in Rust. Split buttons open a separate command menu.
 Alt or F10 activates Ribbon KeyTips, and narrow windows collapse groups into menus.
 
+The Ribbon uses a Fluent presentation with large icons above two-line captions,
+compact icon buttons in quick access, underlined tabs and a rounded command
+surface with group separators. Split buttons share one surface with separate
+action and menu areas. KeyTip badges leave command labels and layout unchanged.
+
 The compiled profile also provides nested stack panels,
 labels, single-line edit boxes, buttons, toggle buttons, checkboxes and radio groups. Buttons
 share theme-relative styling and Fluent hover, press, checked and focus states.

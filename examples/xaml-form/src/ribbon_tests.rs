@@ -1,7 +1,7 @@
 use crate::{form::Form, generated, view::MountedView};
 use rust_desktop_ui_controls::{Controls, RibbonPresentation, Role, Theme};
 use rust_desktop_ui_core::{
-    InputEvent, Key, Modifiers, Mutation, Point, PointerButton, Size, WidgetId,
+    InputEvent, Key, Modifiers, Mutation, Point, PointerButton, Rect, Size, WidgetId,
 };
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent, accesskit};
 
@@ -133,6 +133,37 @@ fn tab_id(form: &Form, label: &str) -> WidgetId {
         .find(|node| node.role == Role::Tab && node.label == label)
         .unwrap_or_else(|| panic!("missing tab {label}"))
         .id
+}
+
+fn control_geometry(form: &Form) -> Vec<(String, String, Rect)> {
+    let mut result = form
+        .ui
+        .semantics()
+        .into_iter()
+        .filter(|node| {
+            matches!(
+                node.role,
+                Role::Button | Role::ToggleButton | Role::Tab | Role::TextBox
+            )
+        })
+        .map(|node| (format!("{:?}", node.role), node.label, node.bounds))
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| {
+        a.0.cmp(&b.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.y.total_cmp(&b.2.y))
+            .then_with(|| a.2.x.total_cmp(&b.2.x))
+    });
+    result
+}
+
+fn qat_pin(form: &Form) -> rust_desktop_ui_controls::SemanticNode {
+    form.ui
+        .semantics()
+        .into_iter()
+        .filter(|node| node.role == Role::ToggleButton && node.label == "Закрепить")
+        .min_by(|a, b| a.bounds.y.total_cmp(&b.bounds.y))
+        .expect("the fixture has a QAT Pin command")
 }
 
 #[test]
@@ -316,6 +347,112 @@ fn ribbon_keytips_activate_once_suppress_paired_text_and_restore_editor_focus() 
 }
 
 #[test]
+fn ribbon_keytip_badges_preserve_control_names_geometry_and_editor_selection() {
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        let mut form = form();
+        form.ui.set_theme(theme).unwrap();
+        update(&mut form, WIDTH);
+        focus_editor(&mut form);
+        form.event(PlatformEvent::Text("draft".into())).unwrap();
+        stroke(&mut form, Key::ArrowLeft);
+        let selection = form.ui.document(form.editor()).unwrap().selection();
+        let before = control_geometry(&form);
+        let presentations = form
+            .view
+            .ribbon
+            .as_ref()
+            .unwrap()
+            .ribbon
+            .presentations()
+            .to_vec();
+
+        for (key, badges) in [
+            (Key::F10, &["H", "V", "1"][..]),
+            (Key::Character("h".into()), &["C", "P", "S"][..]),
+            (Key::Escape, &["H", "V", "1"][..]),
+        ] {
+            stroke(&mut form, key);
+            update(&mut form, WIDTH);
+            assert_eq!(control_geometry(&form), before);
+            assert_eq!(
+                form.view.ribbon.as_ref().unwrap().ribbon.presentations(),
+                presentations
+            );
+            for badge in badges {
+                assert!(
+                    form.scene().texts.iter().any(|run| run.text == *badge),
+                    "missing independent KeyTip badge {badge}"
+                );
+                assert!(!form.ui.semantics().iter().any(|node| node.label == *badge));
+            }
+            assert_eq!(form.text(), "draft");
+            assert_eq!(
+                form.ui.document(form.editor()).unwrap().selection(),
+                selection
+            );
+        }
+        stroke(&mut form, Key::Escape);
+        update(&mut form, WIDTH);
+        assert_eq!(control_geometry(&form), before);
+        assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
+        assert!(
+            !form
+                .scene()
+                .texts
+                .iter()
+                .any(|run| { matches!(run.text.as_str(), "H" | "V" | "1" | "C" | "P" | "S") })
+        );
+        assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(false));
+    }
+}
+
+#[test]
+fn ribbon_icon_only_qat_retains_accessible_name_tooltip_and_shared_activation() {
+    let mut form = form();
+    let qat = qat_pin(&form);
+    assert_eq!(qat.tooltip.as_deref(), Some("Pin the document"));
+    assert_eq!(qat.bounds.width, qat.bounds.height);
+    assert!(qat.bounds.width <= 32.0);
+    assert!(!form.scene().texts.iter().any(|run| {
+        run.text == "Закрепить" && run.bounds.intersection(qat.bounds).is_some()
+    }));
+    let tree = form.accessibility(1.5);
+    let (_, accessible) = tree
+        .nodes
+        .iter()
+        .find(|(id, _)| Some(*id) == form.accessible.id(qat.id))
+        .unwrap();
+    assert_eq!(accessible.label(), Some("Закрепить"));
+    assert!(accessible.supports_action(accesskit::Action::Click));
+    accessible_action(&mut form, qat.id, accesskit::Action::Click);
+    update(&mut form, WIDTH);
+    assert_eq!(qat_pin(&form).checked, Some(true));
+    assert_eq!(
+        form.ui.checked(form.find_name("BodyPin").unwrap()),
+        Some(true)
+    );
+}
+
+#[test]
+fn ribbon_qat_without_an_icon_remains_visible_as_text_and_can_activate() {
+    let content = CONTENT.replace(" Icon=\"Pin\"", "");
+    let mut form = Form::new(definition(&content), false).unwrap();
+    update(&mut form, WIDTH);
+    let qat = qat_pin(&form);
+    assert!(form.scene().texts.iter().any(|run| {
+        run.text == "Закрепить" && run.bounds.intersection(qat.bounds).is_some()
+    }));
+    assert!(qat.bounds.width > qat.bounds.height);
+    click(&mut form, qat.id);
+    update(&mut form, WIDTH);
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(true));
+    assert_eq!(
+        form.ui.checked(form.find_name("BodyPin").unwrap()),
+        Some(true)
+    );
+}
+
+#[test]
 fn ribbon_keytips_cancel_on_escape_blur_and_disabled_wrapper_without_consuming_editing() {
     let mut form = form();
     focus_editor(&mut form);
@@ -431,8 +568,12 @@ fn ribbon_split_arrow_only_opens_menu_and_selection_shares_toggle_with_body() {
     let nodes = form.ui.semantics();
     let arrow = nodes
         .iter()
-        .find(|node| node.has_popup && node.label == "More")
+        .find(|node| {
+            node.has_popup && node.role == Role::Button && form.ui.command_id(node.id).is_none()
+        })
         .unwrap();
+    assert!(arrow.label.contains("Подтвердить"));
+    assert!(!form.scene().texts.iter().any(|run| run.text == "More"));
     let primary = nodes
         .iter()
         .find(|node| {
@@ -441,7 +582,24 @@ fn ribbon_split_arrow_only_opens_menu_and_selection_shares_toggle_with_body() {
         .unwrap()
         .id;
     let arrow = arrow.id;
+    let bounds = form.ui.runtime.bounds(arrow).unwrap();
+    assert!(
+        bounds.width > 0.0 && bounds.height > 0.0,
+        "split dropdown bounds: {bounds:?}"
+    );
+    assert_eq!(
+        form.ui.runtime.hit_test(Point::new(
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0
+        )),
+        Some(arrow),
+        "split dropdown center is not its hit area: {bounds:?}"
+    );
     click(&mut form, arrow);
+    assert!(
+        form.ui.popup_open(),
+        "the dropdown click must open its menu before reflow"
+    );
     update(&mut form, WIDTH);
     assert!(form.ui.popup_open());
     assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
