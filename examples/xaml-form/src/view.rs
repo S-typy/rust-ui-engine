@@ -35,9 +35,14 @@ impl MountedView {
         parent: WidgetId,
         element: &ElementDefinition,
     ) -> Result<Self, String> {
+        let available_width = ui.runtime.bounds(parent).map_or(0.0, |bounds| {
+            let padding = ui.runtime.tree().node(parent).unwrap().props.style.padding;
+            (bounds.width - padding.left - padding.right).max(0.0)
+        });
         validate_tree(ui, element)?;
+        validate_ribbon_width(ui, element, available_width)?;
         let mut view = Self::default();
-        view.mount_element(ui, parent, element, Axis::Vertical)?;
+        view.mount_element(ui, parent, element, Axis::Vertical, available_width)?;
         Ok(view)
     }
 
@@ -51,6 +56,7 @@ impl MountedView {
         parent: WidgetId,
         element: &ElementDefinition,
         parent_axis: Axis,
+        available_width: f32,
     ) -> Result<WidgetId, String> {
         let common = &element.common;
         let width = match (common.width, &element.kind) {
@@ -93,7 +99,7 @@ impl MountedView {
         let id = match &element.kind {
             ElementKind::Ribbon(definition) => {
                 let mut ribbon = crate::view_ribbon::build_ribbon(ui, definition)?;
-                let initial_width = common.width.unwrap_or(0.0);
+                let initial_width = resolved_width(ui, element, parent_axis, available_width)?;
                 ribbon.preflight(ui, initial_width).map_err(err)?;
                 let wrapper = ui
                     .transparent_panel(
@@ -161,6 +167,8 @@ impl MountedView {
                 }
             }
             ElementKind::StackPanel(panel) => {
+                let width = resolved_width(ui, element, parent_axis, available_width)?;
+                let child_width = (width - panel.padding[0] - panel.padding[2]).max(0.0);
                 let axis = axis(panel.orientation);
                 let id = ui
                     .transparent_panel(
@@ -174,7 +182,7 @@ impl MountedView {
                     )
                     .map_err(err)?;
                 for child in &panel.children {
-                    self.mount_element(ui, id, child, axis)?;
+                    self.mount_element(ui, id, child, axis, child_width)?;
                 }
                 id
             }
@@ -451,6 +459,56 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
     }
 }
 
+// Match the width assigned by mount_element. Auto stretches vertically, while
+// horizontal children retain their measured desired width (flex_shrink = 0).
+fn resolved_width(
+    ui: &mut Controls,
+    element: &ElementDefinition,
+    parent_axis: Axis,
+    available_width: f32,
+) -> Result<f32, String> {
+    if let Some(width) = element.common.width {
+        Ok(width)
+    } else if parent_axis == Axis::Horizontal {
+        desired_width(ui, element)
+    } else {
+        Ok((available_width - element.common.margin[0] - element.common.margin[2]).max(0.0))
+    }
+}
+
+fn validate_ribbon_width(
+    ui: &mut Controls,
+    root: &ElementDefinition,
+    available_width: f32,
+) -> Result<(), String> {
+    // Structural validation runs first, before recursive desired-width
+    // measurement can inspect any manually constructed descendant tree.
+    let mut pending = vec![(root, Axis::Vertical, available_width)];
+    while let Some((element, parent_axis, available_width)) = pending.pop() {
+        match &element.kind {
+            ElementKind::Ribbon(definition) => {
+                let width = resolved_width(ui, element, parent_axis, available_width)?;
+                crate::view_ribbon::build_ribbon(ui, definition)?
+                    .preflight(ui, width)
+                    .map_err(err)?;
+            }
+            ElementKind::StackPanel(panel) => {
+                let width = resolved_width(ui, element, parent_axis, available_width)?;
+                let child_width = (width - panel.padding[0] - panel.padding[2]).max(0.0);
+                let axis = axis(panel.orientation);
+                pending.extend(
+                    panel
+                        .children
+                        .iter()
+                        .map(|child| (child, axis, child_width)),
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), String> {
     let mut pending = vec![(root, 1, 0)];
     let mut names = HashSet::new();
@@ -483,7 +541,7 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                     return Err("Only one Ribbon is supported per Window".into());
                 }
                 has_ribbon = true;
-                let ribbon = crate::view_ribbon::build_ribbon(ui, definition)?;
+                crate::view_ribbon::build_ribbon(ui, definition)?;
                 let (nested, ribbon_depth) = crate::view_ribbon::nested_size(definition);
                 count += nested;
                 if count > rust_desktop_ui_xaml::MAX_ELEMENTS
@@ -491,9 +549,6 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                 {
                     return Err("XAML Ribbon exceeds the element count or depth limit".into());
                 }
-                ribbon
-                    .preflight(ui, element.common.width.unwrap_or(0.0))
-                    .map_err(err)?;
             }
             ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
                 let button = &menu.button;

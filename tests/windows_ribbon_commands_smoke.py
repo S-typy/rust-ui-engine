@@ -49,6 +49,52 @@ def verify_shared(state: dict, sequence: int, checked: bool) -> None:
             raise SmokeFailure(f"Incorrect command placement role: {placement}")
 
 
+def group_stage(state: dict, group: str) -> str:
+    """Classify the measured model group, never a coincidentally equal caption."""
+    matches = [entry["kind"] for entry in state["ribbon"] if group in entry["groups"]]
+    if len(matches) != 1 or matches[0] not in ("full", "collapsed", "overflow"):
+        raise SmokeFailure(f"Invalid measured stage for {group}: {state['ribbon']}")
+    return matches[0]
+
+
+def discover_group_layout(sample, group: str = "editing") -> dict:
+    """Bound the search and resolve the final full-to-overflow interval at 1px.
+
+    Adaptive icon columns may already be narrower than a collapsed header.
+    In that case report overflow as the reachable menu placement, explicitly
+    recording that a distinct collapsed stage was not observed.
+    """
+    samples = []
+
+    def stage_at(width):
+        stage = group_stage(sample(width), group)
+        samples.append({"width": width, "stage": stage})
+        return stage
+
+    previous_full = None
+    for width in [*range(1200, 63, -32), 64]:
+        stage = stage_at(width)
+        if previous_full is None and stage != "full":
+            raise SmokeFailure(f"Expected expanded {group} at 1200px, got {stage}")
+        if stage == "full":
+            previous_full = width
+            continue
+        if stage == "collapsed":
+            return {"group": group, "kind": stage, "width": width, "collapsed_observed": True,
+                    "samples": samples}
+        # The planner only collapses after all profitable item reductions.
+        # A short collapsed interval can sit between these two coarse samples.
+        for boundary in range(previous_full - 1, width, -1):
+            refined = stage_at(boundary)
+            if refined == "collapsed":
+                return {"group": group, "kind": refined, "width": boundary, "collapsed_observed": True,
+                        "samples": samples}
+        return {"group": group, "kind": "overflow", "width": width, "collapsed_observed": False,
+                "reason": "No separate collapsed group between expanded and overflow, including 1px boundary refinement",
+                "samples": samples}
+    raise SmokeFailure(f"Neither collapsed nor overflow {group} found in bounded widths 64..1200")
+
+
 class CommandSession(GallerySession):
     def snapshot(self, description: str, predicate=lambda _: True) -> dict:
         def matches():
@@ -133,9 +179,44 @@ class CommandSession(GallerySession):
                 return
         raise SmokeFailure(f"No {description} at tested widths {widths}")
 
-    def menu_favorite(self, anchor: dict, description: str) -> None:
+    def editing_menu_layout(self) -> dict:
+        initial = self.state()
+
+        def sample(width):
+            self.resize(width)
+            state = self.state()
+            verify_shared(state, initial["sequence"], initial["checked"])
+            if state["popup_open"]:
+                raise SmokeFailure("Resize unexpectedly opened a command menu")
+            return state
+
+        result = discover_group_layout(sample)
+        # Boundary refinement may finish at another width than its result.
+        self.resize(result["width"])
+        if group_stage(self.state(), "editing") != result["kind"]:
+            raise SmokeFailure("Measured group plan changed when restoring the discovered width")
+        result["theme"] = self.state()["theme"]
+        self.report.setdefault("adaptive_layout", []).append(result)
+        return result
+
+    def capture_discovered_layout(self, output: Path, name: str, layout: dict) -> None:
+        if layout["width"] >= 300:
+            self.capture(output, f"{name}-{layout['kind']}")
+        else:
+            self.report.setdefault("capture_limits", []).append({
+                "name": name, "kind": layout["kind"], "width": layout["width"],
+                "reason": "Existing gallery capture validation requires a width of at least 300px; command assertions still run",
+            })
+
+    def menu_favorite(self, anchor: dict, description: str, required_commands=()) -> None:
+        before = self.state()
         self.click_item(anchor)
         state = self.snapshot(description + " opens", lambda s: s["popup_open"])
+        verify_shared(state, before["sequence"], before["checked"])
+        commands = {item["command"] for item in state["items"]}
+        missing = set(required_commands) - commands
+        if missing:
+            raise SmokeFailure(f"{description} loses group commands: {sorted(missing)}")
         matches = [p for p in state["placements"] if p["role"] == "MenuItem"]
         if len(matches) != 1:
             raise SmokeFailure(f"Expected one favorite menu item: {matches}")
@@ -190,13 +271,13 @@ class CommandSession(GallerySession):
                           any(item["label"] == "More" for item in state["controls"]))
         self.menu_favorite(self.control(lambda p: p["label"] == "More"),
                            "QAT More")
-        self.resize_until("collapsed Editing group", (360, 400, 320, 480), lambda state:
-                          any(item["label"] == "Редактирование" for item in state["controls"]))
-        self.menu_favorite(self.control(lambda p: p["label"] == "Редактирование"),
-                           "Collapsed Editing group")
-        self.capture(output, "collapsed-light")
+        editing_layout = self.editing_menu_layout()
+        editing_anchor = "Редактирование" if editing_layout["kind"] == "collapsed" else "All commands"
+        self.menu_favorite(self.control(lambda p: p["label"] == editing_anchor),
+                           "Editing commands in " + editing_layout["kind"], ("edit", "copy", "favorite"))
+        self.capture_discovered_layout(output, "editing-light", editing_layout)
 
-        self.resize_until("All commands overflow", (180, 128, 96), lambda state:
+        self.resize_until("All commands overflow", tuple(range(256, 63, -16)), lambda state:
                           any(item["label"] == "All commands" for item in state["controls"]))
         self.menu_favorite(self.control(lambda p: p["label"] == "All commands"), "All commands overflow")
         # Existing gallery capture checker intentionally requires >=300px width.
@@ -218,9 +299,8 @@ class CommandSession(GallerySession):
                           any(item["label"] == "More" for item in state["controls"]))
         self.menu_favorite(self.control(lambda p: p["label"] == "More"),
                            "Dark QAT More")
-        self.resize_until("Dark collapsed Editing group", (360, 400, 320, 480), lambda state:
-                          any(item["label"] == "Редактирование" for item in state["controls"]))
-        self.capture(output, "unchecked-dark-collapsed")
+        editing_layout = self.editing_menu_layout()
+        self.capture_discovered_layout(output, "editing-dark", editing_layout)
         final = self.wait_state("no missing glyphs", lambda s: s["missing"] == 0)
         self.report["final_render_state"] = final
         verify_shared(self.state(), 8, False)
@@ -244,7 +324,26 @@ def self_test() -> None:
     assert background_color(state, body) == (40, 46, 57)
     state["checked"] = True
     assert background_color(state, qat) == background_color(state, body) == (37, 72, 109)
-    print("PASS: Ribbon command capture palettes distinguish transparent QAT and group surfaces")
+
+    def fixture(width, *, collapsed):
+        kind = "full" if width > 302 else "collapsed" if collapsed and width >= 300 else "overflow"
+        return {"ribbon": [{"kind": kind, "groups": ["file", "editing", "tree"]}]}
+
+    narrow = discover_group_layout(lambda width: fixture(width, collapsed=True))
+    assert narrow["kind"] == "collapsed" and narrow["width"] == 302
+    assert narrow["collapsed_observed"]
+    direct = discover_group_layout(lambda width: fixture(width, collapsed=False))
+    assert direct["kind"] == "overflow" and not direct["collapsed_observed"]
+    assert len(direct["samples"]) <= 70
+    for invalid in ([], [{"kind": "tiny", "groups": ["editing"]}],
+                    [{"kind": "full", "groups": ["editing"]}, {"kind": "overflow", "groups": ["editing"]}]):
+        try:
+            group_stage({"ribbon": invalid}, "editing")
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("Missing or ambiguous measured group stage accepted")
+    print("PASS: Ribbon command palettes and bounded adaptive discovery, including narrow or absent collapsed stages")
 
 
 def main() -> int:

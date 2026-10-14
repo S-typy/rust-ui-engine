@@ -8,6 +8,11 @@ use rust_desktop_ui_core::{
 };
 use std::collections::HashMap;
 
+#[path = "ribbon_menu.rs"]
+mod menu;
+pub use menu::RibbonMenuEntry;
+use menu::{group_entries, item_entries};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RibbonItemKind {
     /// Large presentation; registered command state determines activation.
@@ -20,6 +25,43 @@ pub enum RibbonItemKind {
     Split {
         menu: Vec<CommandId>,
     },
+    /// Split command with hierarchical secondary menu entries.
+    SplitMenu {
+        menu: Vec<RibbonMenuEntry>,
+    },
+    /// Menu owner. Its command supplies a label and availability; opening this
+    /// placement never executes the owner or changes its checked value.
+    DropDown {
+        menu: Vec<RibbonMenuEntry>,
+    },
+}
+
+impl RibbonItemKind {
+    fn is_split(&self) -> bool {
+        matches!(self, Self::Split { .. } | Self::SplitMenu { .. })
+    }
+}
+
+/// Preferred and minimum visual sizes do not change command behavior.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum RibbonItemSize {
+    IconOnly,
+    Small,
+    Large,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RibbonItemPresentation {
+    pub tab_id: String,
+    pub group_id: String,
+    pub key_tip: String,
+    pub size: RibbonItemSize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SizeLimits {
+    preferred: RibbonItemSize,
+    minimum: RibbonItemSize,
 }
 #[derive(Clone, Debug)]
 pub struct RibbonItem {
@@ -92,6 +134,7 @@ pub enum RibbonPresentation {
 enum Action {
     Tab(String),
     Dropdown,
+    Minimize,
     Command(CommandId),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -132,45 +175,50 @@ impl RibbonMetrics {
                 tab_height.max(ui.measure_text(&tab.label, 4096.0, false)?.height.ceil() + 8.0);
             for group in &tab.groups {
                 ui.measure_text(&group.label, MAX_COMMAND_WIDTH, false)?;
-                for (index, item) in group.items.iter().enumerate() {
-                    let layout = if matches!(item.kind, RibbonItemKind::Small) {
-                        ButtonContentLayout::Leading
-                    } else {
-                        ButtonContentLayout::Above
-                    };
-                    let icon = presentation_icon(
-                        appearances
-                            .get(&item.command)
-                            .and_then(|appearance| appearance.icon),
-                        layout,
-                    );
-                    let label = ui
-                        .commands()
-                        .label(&item.command)
-                        .unwrap_or(&item.command.0)
-                        .to_owned();
-                    let width = widths.group(&tab.id, &group.id).items[index];
-                    let size = if matches!(item.kind, RibbonItemKind::Split { .. }) {
-                        ui.measure_split_button_content(
-                            &label,
-                            &ribbon_button_style(),
-                            icon,
+                for profile in widths.profiles(&tab.id, &group.id) {
+                    for (index, item) in group.items.iter().enumerate() {
+                        let layout = profile.sizes[index].layout();
+                        let icon = presentation_icon(
+                            appearances
+                                .get(&item.command)
+                                .and_then(|appearance| appearance.icon),
                             layout,
-                            width,
-                        )?
-                    } else {
-                        ui.measure_button_content(
-                            &label,
-                            &ribbon_button_style(),
-                            icon,
-                            layout,
-                            width,
-                        )?
-                    };
-                    if layout == ButtonContentLayout::Leading {
-                        small = small.max(size.height.ceil());
-                    } else {
-                        large = large.max(size.height.ceil());
+                        );
+                        let label = ui
+                            .commands()
+                            .label(&item.command)
+                            .unwrap_or(&item.command.0)
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let width = profile.items[index];
+                        let size = if item.kind.is_split() {
+                            ui.measure_split_button_content(
+                                &label,
+                                &ribbon_button_style(),
+                                icon,
+                                layout,
+                                width,
+                            )?
+                        } else {
+                            let width = if matches!(item.kind, RibbonItemKind::DropDown { .. }) {
+                                (width - 20.0).max(0.0)
+                            } else {
+                                width
+                            };
+                            ui.measure_button_content(
+                                &label,
+                                &ribbon_button_style(),
+                                icon,
+                                layout,
+                                width,
+                            )?
+                        };
+                        if layout == ButtonContentLayout::Above {
+                            large = large.max(size.height.ceil());
+                        } else {
+                            small = small.max(size.height.ceil());
+                        }
                     }
                 }
             }
@@ -180,7 +228,9 @@ impl RibbonMetrics {
                 .commands()
                 .label(command)
                 .unwrap_or(&command.0)
-                .to_owned();
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
             let icon = presentation_icon(
                 appearances
                     .get(command)
@@ -214,8 +264,8 @@ impl RibbonMetrics {
             groups: large + caption + 18.0,
         })
     }
-    fn total(self) -> f32 {
-        self.qat + self.tab + self.groups + 20.0 // 12px padding and two 4px gaps
+    fn total(self, expanded: bool) -> f32 {
+        self.qat + self.tab + 16.0 + if expanded { self.groups + 4.0 } else { 0.0 }
     }
 }
 
@@ -246,192 +296,9 @@ fn presentation_icon(icon: Option<ButtonIcon>, layout: ButtonContentLayout) -> O
     })
 }
 
-struct MeasuredGroup {
-    width: f32,
-    collapsed: f32,
-    items: Vec<f32>,
-}
-
-/// One measured profile feeds layout planning, popup preflight and construction.
-/// Content arrangement, icon metrics and style match the actual controls.
-/// KeyTips are overlays and never participate in these measurements.
-struct RibbonWidths {
-    qat: Vec<f32>,
-    tabs: HashMap<String, f32>,
-    groups: HashMap<(String, String), MeasuredGroup>,
-}
-
-impl RibbonWidths {
-    fn measure(
-        ui: &mut Controls,
-        model: &RibbonModel,
-        appearances: &HashMap<CommandId, RibbonCommandAppearance>,
-        _tips: Tips,
-    ) -> Result<Self, ControlError> {
-        let mut measure_command = |command: &CommandId, layout, split: bool| {
-            let label = ui
-                .commands()
-                .label(command)
-                .unwrap_or(&command.0)
-                .to_owned();
-            let icon = presentation_icon(
-                appearances
-                    .get(command)
-                    .and_then(|appearance| appearance.icon),
-                layout,
-            );
-            if layout == ButtonContentLayout::Above {
-                let label = label.split_whitespace().collect::<Vec<_>>().join(" ");
-                // Choose a compact width that fits two complete caption lines.
-                // Extremely long text is visually ellipsized by shared paint;
-                // the complete label remains semantic and in the tooltip.
-                let line = ui.measure_text("Ag", 4096.0, false)?.height;
-                let arrow = if split && icon.is_some() { 20.0 } else { 0.0 };
-                let mut width = 72.0_f32;
-                while width < 160.0 {
-                    let caption_width = width - 8.0 - arrow;
-                    let text = ui.measure_text(&label, caption_width, true)?;
-                    if text.height <= line * 2.0 + 0.001 && text.width <= caption_width + 0.001 {
-                        break;
-                    }
-                    width += 4.0;
-                }
-                let measured =
-                    ui.measure_button_content(&label, &ribbon_button_style(), icon, layout, width)?;
-                Ok::<f32, ControlError>(measured.width.ceil())
-            } else {
-                let measured = ui.measure_button_content(
-                    &label,
-                    &ribbon_button_style(),
-                    icon,
-                    layout,
-                    MAX_COMMAND_WIDTH,
-                )?;
-                // One pixel protects fractional shaping/global clip subtraction.
-                Ok((measured.width.ceil()
-                    + if icon.is_some() && layout == ButtonContentLayout::IconOnly {
-                        0.0
-                    } else {
-                        1.0
-                    })
-                .clamp(
-                    if layout == ButtonContentLayout::IconOnly {
-                        QAT_TARGET
-                    } else {
-                        56.0
-                    },
-                    MAX_COMMAND_WIDTH,
-                ))
-            }
-        };
-        let mut qat = Vec::new();
-        for command in &model.quick_access {
-            qat.push(measure_command(
-                command,
-                ButtonContentLayout::IconOnly,
-                false,
-            )?);
-        }
-        let mut groups = HashMap::new();
-        for tab in &model.tabs {
-            for group in &tab.groups {
-                let mut items = Vec::new();
-                for item in &group.items {
-                    items.push(measure_command(
-                        &item.command,
-                        if matches!(item.kind, RibbonItemKind::Small) {
-                            ButtonContentLayout::Leading
-                        } else {
-                            ButtonContentLayout::Above
-                        },
-                        matches!(item.kind, RibbonItemKind::Split { .. }),
-                    )?);
-                }
-                let mut width = 8.0;
-                let mut index = 0;
-                while index < group.items.len() {
-                    if matches!(group.items[index].kind, RibbonItemKind::Small) {
-                        let count = group.items[index..]
-                            .iter()
-                            .take(3)
-                            .take_while(|item| matches!(item.kind, RibbonItemKind::Small))
-                            .count();
-                        let column = items[index..index + count]
-                            .iter()
-                            .copied()
-                            .fold(0.0_f32, f32::max);
-                        items[index..index + count].fill(column);
-                        width += column + 4.0;
-                        index += count;
-                    } else {
-                        width += items[index] + 4.0;
-                        index += 1;
-                    }
-                }
-                groups.insert(
-                    (tab.id.clone(), group.id.clone()),
-                    MeasuredGroup {
-                        width,
-                        collapsed: width,
-                        items,
-                    },
-                );
-            }
-        }
-        for tab in &model.tabs {
-            for group in &tab.groups {
-                let text = ui.measure_text(&group.label, 4096.0, false)?;
-                // The shared dropdown reserves 20px for its arrow, in addition
-                // to 8px button padding on each side. A collapse never expands
-                // a group: an already narrower full group stays full instead.
-                let measured = groups.get_mut(&(tab.id.clone(), group.id.clone())).unwrap();
-                measured.collapsed = (text.width.ceil() + 29.0)
-                    .clamp(COLLAPSED, MAX_COMMAND_WIDTH)
-                    .min(measured.width);
-            }
-        }
-        let mut tabs = HashMap::new();
-        for tab in &model.tabs {
-            let text = ui.measure_text(&tab.label, 4096.0, false)?;
-            tabs.insert(
-                tab.id.clone(),
-                (text.width.ceil() + 28.0).clamp(48.0, 240.0),
-            );
-        }
-        Ok(Self { qat, tabs, groups })
-    }
-    fn group(&self, tab: &str, group: &str) -> &MeasuredGroup {
-        &self.groups[&(tab.to_owned(), group.to_owned())]
-    }
-    fn qat_capacity(&self, available: f32) -> usize {
-        let total = self.qat.iter().sum::<f32>() + 4.0 * self.qat.len().saturating_sub(1) as f32;
-        if total <= available {
-            return self.qat.len();
-        }
-        let mut used = QAT_TARGET; // Menu button plus a gap after each visible command.
-        self.qat
-            .iter()
-            .take_while(|&&width| {
-                used += width + 4.0;
-                used <= available
-            })
-            .count()
-    }
-    fn layout_groups(&self, tab: &RibbonTab, available: f32) -> Vec<RibbonPresentation> {
-        plan_groups(
-            &tab.groups,
-            (available - SURFACE_PADDING * 2.0).max(0.0),
-            tab.groups
-                .iter()
-                .map(|group| self.group(&tab.id, &group.id).width)
-                .collect(),
-            tab.groups
-                .iter()
-                .map(|group| self.group(&tab.id, &group.id).collapsed)
-                .collect(),
-        )
-    }
-}
+#[path = "ribbon_layout.rs"]
+mod layout;
+use layout::{MeasuredGroup, RibbonWidths};
 
 struct RibbonMeasurements {
     metrics: RibbonMetrics,
@@ -457,9 +324,68 @@ pub struct Ribbon {
     legacy_toggles_initialized: bool,
     command_appearances: HashMap<CommandId, RibbonCommandAppearance>,
     key_tip_return_focus: Option<WidgetId>,
+    size_limits: HashMap<(String, String), SizeLimits>,
+    item_presentations: Vec<RibbonItemPresentation>,
+    minimized: bool,
+    transient: bool,
+    return_focus: Option<WidgetId>,
+    body: Option<WidgetId>,
+    owned_menu_open: bool,
+    item_anchors: HashMap<String, WidgetId>,
+    group_anchors: HashMap<String, WidgetId>,
 }
 
 impl Ribbon {
+    /// Sets placement-specific bounds. The preferred size is Large or Small;
+    /// the minimum may additionally be IconOnly. Command behavior is unchanged.
+    pub fn set_item_size_limits(
+        &mut self,
+        tab_id: &str,
+        key_tip: &str,
+        preferred: RibbonItemSize,
+        minimum: RibbonItemSize,
+    ) -> Result<(), ControlError> {
+        let key_tip = key_tip.to_uppercase();
+        if preferred == RibbonItemSize::IconOnly
+            || minimum > preferred
+            || !self.model.tabs.iter().any(|tab| {
+                tab.id == tab_id
+                    && tab
+                        .groups
+                        .iter()
+                        .flat_map(|group| &group.items)
+                        .any(|item| item.key_tip == key_tip)
+            })
+        {
+            return Err(ControlError::Invalid(
+                "Invalid Ribbon placement or size bounds".into(),
+            ));
+        }
+        let key = (tab_id.to_owned(), key_tip);
+        let value = SizeLimits { preferred, minimum };
+        if self.size_limits.get(&key) != Some(&value) {
+            self.size_limits.insert(key, value);
+            self.dirty = true;
+        }
+        Ok(())
+    }
+    pub fn item_presentations(&self) -> &[RibbonItemPresentation] {
+        &self.item_presentations
+    }
+    pub fn is_minimized(&self) -> bool {
+        self.minimized
+    }
+    /// True when the body is visible, including temporary in-flow expansion.
+    pub fn is_expanded(&self) -> bool {
+        !self.minimized || self.transient
+    }
+    pub fn set_minimized(&mut self, minimized: bool) {
+        if self.minimized != minimized || self.transient {
+            self.minimized = minimized;
+            self.transient = false;
+            self.dirty = true;
+        }
+    }
     pub fn new(mut model: RibbonModel) -> Result<Self, ControlError> {
         let mut ids = std::collections::HashSet::new();
         let mut tips: Vec<String> = Vec::new();
@@ -519,6 +445,15 @@ impl Ribbon {
             legacy_toggles_initialized: false,
             command_appearances: HashMap::new(),
             key_tip_return_focus: None,
+            size_limits: HashMap::new(),
+            item_presentations: Vec::new(),
+            minimized: false,
+            transient: false,
+            return_focus: None,
+            body: None,
+            owned_menu_open: false,
+            item_anchors: HashMap::new(),
+            group_anchors: HashMap::new(),
         })
     }
     pub fn model(&self) -> &RibbonModel {
@@ -626,7 +561,10 @@ impl Ribbon {
     /// Validates the requested layout, generated menus, text and presentation
     /// before tree or command mutation. Returns the natural logical height.
     pub fn preflight(&self, ui: &mut Controls, width: f32) -> Result<f32, ControlError> {
-        Ok(self.preflight_metrics(ui, width)?.metrics.total())
+        Ok(self
+            .preflight_metrics(ui, width)?
+            .metrics
+            .total(self.is_expanded()))
     }
     fn preflight_metrics(
         &self,
@@ -645,7 +583,15 @@ impl Ribbon {
             ui.measure_text(&tab.key_tip, 4096.0, false)?;
             for item in tab.groups.iter().flat_map(|group| &group.items) {
                 ui.measure_text(&item.key_tip, 4096.0, false)?;
-                if matches!(item.kind, RibbonItemKind::Split { .. }) {
+                if matches!(item.kind, RibbonItemKind::DropDown { .. })
+                    && !ui.commands().contains(&item.command)
+                {
+                    return Err(ControlError::Invalid(format!(
+                        "Unknown Ribbon dropdown command '{}'",
+                        item.command.0
+                    )));
+                }
+                if item.kind.is_split() {
                     let label = ui
                         .commands()
                         .label(&item.command)
@@ -676,10 +622,37 @@ impl Ribbon {
                 ));
             }
         }
-        let widths = RibbonWidths::measure(ui, &self.model, &self.command_appearances, self.tips)?;
-        self.validate_popup_counts(width, &widths)?;
+        // Validate even hidden/contextual menus before any tree mutation.
+        for item in self
+            .model
+            .tabs
+            .iter()
+            .flat_map(|tab| &tab.groups)
+            .flat_map(|group| &group.items)
+        {
+            let entries = item_entries(ui, item)?;
+            if !entries.is_empty() {
+                ui.preflight_menu(&entries)?;
+            }
+        }
+        let mut widths = RibbonWidths::measure(
+            ui,
+            &self.model,
+            &self.command_appearances,
+            &self.size_limits,
+        )?;
+        for tab in &self.model.tabs {
+            widths.adapt(tab, (width - 12.0).max(0.0));
+        }
         let available = (width - 12.0).max(0.0);
         let capacity = widths.qat_capacity(available);
+        let overflow_count = self.model.quick_access.len().saturating_sub(capacity);
+        if overflow_count > crate::MAX_MENU_ITEMS {
+            return Err(ControlError::Invalid(format!(
+                "Ribbon QAT overflow would contain {overflow_count} menu entries; the maximum is {}",
+                crate::MAX_MENU_ITEMS
+            )));
+        }
         if self.model.quick_access.len() > capacity {
             let entries: Vec<_> = self
                 .model
@@ -703,42 +676,18 @@ impl Ribbon {
         {
             for presentation in widths.layout_groups(tab, available) {
                 let entries: Vec<_> = match presentation {
-                    RibbonPresentation::Full(id) => {
-                        if let Some(group) = tab.groups.iter().find(|group| group.id == id) {
-                            for item in &group.items {
-                                if let RibbonItemKind::Split { menu } = &item.kind {
-                                    let entries: Vec<_> = menu
-                                        .iter()
-                                        .map(|command| {
-                                            MenuEntry::Item(MenuItem::new(
-                                                ui.commands().label(command).unwrap_or(&command.0),
-                                                command.clone(),
-                                            ))
-                                        })
-                                        .collect();
-                                    if !entries.is_empty() {
-                                        ui.preflight_menu(&entries)?;
-                                    }
-                                }
-                            }
-                        }
-                        Vec::new()
+                    RibbonPresentation::Full(_) => Vec::new(),
+                    RibbonPresentation::Collapsed(id) => {
+                        let group = tab.groups.iter().find(|group| group.id == id).unwrap();
+                        group_entries(ui, group)?
                     }
-                    RibbonPresentation::Collapsed(id) => tab
-                        .groups
-                        .iter()
-                        .find(|group| group.id == id)
-                        .map(|group| group_menu(ui, group))
-                        .unwrap_or_default()
-                        .into_iter()
-                        .map(MenuEntry::Item)
-                        .collect(),
-                    RibbonPresentation::Overflow(_) => tab
-                        .groups
-                        .iter()
-                        .flat_map(|group| group_menu(ui, group))
-                        .map(MenuEntry::Item)
-                        .collect(),
+                    RibbonPresentation::Overflow(_) => {
+                        let mut entries = Vec::new();
+                        for group in &tab.groups {
+                            entries.extend(group_entries(ui, group)?);
+                        }
+                        entries
+                    }
                 };
                 if !entries.is_empty() {
                     ui.preflight_menu(&entries)?;
@@ -787,66 +736,6 @@ impl Ribbon {
         }
         self.legacy_toggles_initialized = true;
     }
-    fn validate_popup_counts(&self, width: f32, widths: &RibbonWidths) -> Result<(), ControlError> {
-        let check = |count: usize, name: &str| {
-            if count > crate::MAX_MENU_ITEMS {
-                Err(ControlError::Invalid(format!(
-                    "Ribbon {name} would contain {count} menu entries; the maximum is {}. Reduce menu commands or use a wider Ribbon.",
-                    crate::MAX_MENU_ITEMS,
-                )))
-            } else {
-                Ok(())
-            }
-        };
-        let available = (width - 12.0).max(0.0);
-        let capacity = widths.qat_capacity(available);
-        check(
-            self.model.quick_access.len().saturating_sub(capacity),
-            "QAT overflow",
-        )?;
-        let visible = self.visible_tabs();
-        let tab = visible
-            .iter()
-            .find(|tab| tab.id == self.active)
-            .or(visible.first());
-        if let Some(tab) = tab {
-            let group_count = |group: &RibbonGroup| {
-                group.items.iter().fold(0_usize, |count, item| {
-                    count.saturating_add(1).saturating_add(match &item.kind {
-                        RibbonItemKind::Split { menu } => menu.len(),
-                        _ => 0,
-                    })
-                })
-            };
-            for presentation in widths.layout_groups(tab, available) {
-                match presentation {
-                    RibbonPresentation::Full(id) => {
-                        if let Some(group) = tab.groups.iter().find(|group| group.id == id) {
-                            for item in &group.items {
-                                if let RibbonItemKind::Split { menu } = &item.kind {
-                                    check(menu.len(), "Split secondary menu")?;
-                                }
-                            }
-                        }
-                    }
-                    RibbonPresentation::Collapsed(id) => {
-                        if let Some(group) = tab.groups.iter().find(|group| group.id == id) {
-                            check(group_count(group), "collapsed group")?;
-                        }
-                    }
-                    RibbonPresentation::Overflow(_) => {
-                        check(
-                            tab.groups.iter().fold(0_usize, |count, group| {
-                                count.saturating_add(group_count(group))
-                            }),
-                            "All commands",
-                        )?;
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
     /// Reflows only on width/theme/model changes. Commands retain their identity and checked state.
     pub fn update(&mut self, ui: &mut Controls, width: f32) -> Result<(), ControlError> {
         if !width.is_finite() || width < 0.0 {
@@ -859,6 +748,16 @@ impl Ribbon {
             return Ok(());
         };
         let measured = self.preflight_metrics(ui, width)?;
+        self.remember_external_focus(ui);
+        if !self.is_expanded()
+            && ui
+                .runtime
+                .focused()
+                .is_some_and(|id| self.body_owns(ui, id))
+            && let Some(id) = self.return_focus.filter(|id| ui.is_enabled(*id))
+        {
+            ui.runtime.apply(Mutation::Focus(Some(id)))?;
+        }
         let metrics = measured.metrics;
         self.initialize_legacy_toggles(ui);
         let popup_anchor = ui.popup_anchor().filter(|id| self.owns_node(ui, *id));
@@ -888,12 +787,16 @@ impl Ribbon {
         self.tabs.clear();
         self.tip_nodes.clear();
         self.presentations.clear();
+        self.item_presentations.clear();
+        self.item_anchors.clear();
+        self.group_anchors.clear();
+        self.body = None;
         self.ensure_active();
         self.width = width;
         self.theme = Some(ui.theme());
         let style = LayoutStyle {
             kind: LayoutKind::Stack(Axis::Vertical),
-            height: Length::Px(metrics.total()),
+            height: Length::Px(metrics.total(self.is_expanded())),
             flex_shrink: 0.0,
             gap: 4.0,
             padding: Edges::all(6.0),
@@ -976,9 +879,11 @@ impl Ribbon {
             self.actions.insert(id, Action::Dropdown);
         }
         let visible: Vec<_> = self.visible_tabs().into_iter().cloned().collect();
+        let minimize_width = 32.0_f32.min(available);
+        let tabs_available = (available - minimize_width - 8.0).max(0.0);
         let tab_gaps = visible.len().saturating_sub(1) as f32;
         let tab_gap = if tab_gaps > 0.0 {
-            4.0_f32.min(available / tab_gaps)
+            4.0_f32.min(tabs_available / tab_gaps)
         } else {
             0.0
         };
@@ -987,7 +892,7 @@ impl Ribbon {
             .map(|tab| measured.widths.tabs[&tab.id])
             .sum();
         let tab_scale = if natural_tabs > 0.0 {
-            ((available - tab_gap * tab_gaps) / natural_tabs).clamp(0.0, 1.0)
+            ((tabs_available - tab_gap * tab_gaps) / natural_tabs).clamp(0.0, 1.0)
         } else {
             1.0
         };
@@ -1022,76 +927,134 @@ impl Ribbon {
             self.actions.insert(id, Action::Tab(tab.id.clone()));
             self.tabs.insert(tab.id, id);
         }
-        let groups_row = ui.panel(
-            container,
+        ui.transparent_panel(
+            tab_row,
             LayoutStyle {
-                kind: LayoutKind::Flex(Axis::Horizontal),
-                height: Length::Px(metrics.groups),
-                gap: 0.0,
-                padding: Edges::all(SURFACE_PADDING),
+                flex_grow: 1.0,
+                ..Default::default()
+            },
+        )?;
+        let minimize_label = if self.minimized {
+            "Pin ribbon"
+        } else {
+            "Minimize ribbon"
+        };
+        let minimize = ui.button(
+            tab_row,
+            minimize_label,
+            None,
+            LayoutStyle {
+                width: Length::Px(minimize_width),
+                height: Length::Px(metrics.tab),
                 flex_shrink: 0.0,
                 ..Default::default()
             },
         )?;
-        ui.set_ribbon_surface(groups_row)?;
-        if let Some(tab) = self
-            .model
-            .tabs
-            .iter()
-            .find(|tab| tab.id == self.active)
-            .cloned()
-        {
-            self.presentations = measured.widths.layout_groups(&tab, available);
-            for (index, presentation) in self.presentations.clone().into_iter().enumerate() {
-                if index > 0 {
-                    ui.separator(
-                        groups_row,
-                        SeparatorSettings {
-                            orientation: Axis::Vertical,
-                            ..Default::default()
-                        },
-                        LayoutStyle {
-                            width: Length::Px(1.0),
-                            height: Length::Percent(1.0),
-                            margin: Edges {
-                                left: 2.5,
-                                right: 2.5,
-                                top: 6.0,
-                                bottom: 6.0,
+        ui.set_button_icon(
+            minimize,
+            Some(ButtonIcon::new(if self.minimized {
+                crate::IconSymbol::Pin
+            } else {
+                crate::IconSymbol::Remove
+            })),
+        )?;
+        ui.set_button_content_layout(minimize, ButtonContentLayout::IconOnly)?;
+        ui.set_button_chrome(minimize, ButtonChrome::Flat)?;
+        ui.set_button_style(minimize, ribbon_button_style())?;
+        ui.set_tooltip(minimize, minimize_label)?;
+        self.actions.insert(minimize, Action::Minimize);
+        if self.is_expanded() {
+            let groups_row = ui.panel(
+                container,
+                LayoutStyle {
+                    kind: LayoutKind::Flex(Axis::Horizontal),
+                    height: Length::Px(metrics.groups),
+                    gap: 0.0,
+                    padding: Edges::all(SURFACE_PADDING),
+                    flex_shrink: 0.0,
+                    ..Default::default()
+                },
+            )?;
+            ui.set_ribbon_surface(groups_row)?;
+            self.body = Some(groups_row);
+            if let Some(tab) = self
+                .model
+                .tabs
+                .iter()
+                .find(|tab| tab.id == self.active)
+                .cloned()
+            {
+                self.presentations = measured.widths.layout_groups(&tab, available);
+                for (index, presentation) in self.presentations.clone().into_iter().enumerate() {
+                    if index > 0 {
+                        ui.separator(
+                            groups_row,
+                            SeparatorSettings {
+                                orientation: Axis::Vertical,
+                                ..Default::default()
                             },
-                            flex_shrink: 0.0,
-                            ..Default::default()
-                        },
-                    )?;
-                }
-                match presentation {
-                    RibbonPresentation::Full(id) => {
-                        if let Some(group) = tab.groups.iter().find(|g| g.id == id) {
-                            self.mount_group(
-                                ui,
-                                groups_row,
-                                group,
-                                metrics,
-                                measured.widths.group(&tab.id, &group.id),
-                            )?;
-                        }
+                            LayoutStyle {
+                                width: Length::Px(1.0),
+                                height: Length::Percent(1.0),
+                                margin: Edges {
+                                    left: 2.5,
+                                    right: 2.5,
+                                    top: 6.0,
+                                    bottom: 6.0,
+                                },
+                                flex_shrink: 0.0,
+                                ..Default::default()
+                            },
+                        )?;
                     }
-                    RibbonPresentation::Collapsed(id) => {
-                        if let Some(group) = tab.groups.iter().find(|g| g.id == id) {
-                            let entries: Vec<_> = group_menu(ui, group)
-                                .into_iter()
-                                .map(MenuEntry::Item)
-                                .collect();
+                    match presentation {
+                        RibbonPresentation::Full(id) => {
+                            if let Some(group) = tab.groups.iter().find(|g| g.id == id) {
+                                self.mount_group(
+                                    ui,
+                                    groups_row,
+                                    group,
+                                    metrics,
+                                    measured.widths.group(&tab.id, &group.id),
+                                )?;
+                            }
+                        }
+                        RibbonPresentation::Collapsed(id) => {
+                            if let Some(group) = tab.groups.iter().find(|g| g.id == id) {
+                                let entries = group_entries(ui, group)?;
+                                let button = ribbon_dropdown(
+                                    ui,
+                                    groups_row,
+                                    group.label.clone(),
+                                    &entries,
+                                    LayoutStyle {
+                                        width: Length::Px(
+                                            measured.widths.group(&tab.id, &group.id).collapsed,
+                                        ),
+                                        height: Length::Percent(1.0),
+                                        flex_shrink: 0.0,
+                                        ..Default::default()
+                                    },
+                                )?;
+                                ui.set_button_style(button, ribbon_button_style())?;
+                                ui.set_button_chrome(button, ButtonChrome::Flat)?;
+                                self.actions.insert(button, Action::Dropdown);
+                                self.group_anchors.insert(group.id.clone(), button);
+                            }
+                        }
+                        RibbonPresentation::Overflow(_) => {
+                            let mut items = Vec::new();
+                            for group in &tab.groups {
+                                items.extend(group_entries(ui, group)?);
+                            }
                             let button = ribbon_dropdown(
                                 ui,
                                 groups_row,
-                                group.label.clone(),
-                                &entries,
+                                "All commands",
+                                &items,
                                 LayoutStyle {
-                                    width: Length::Px(
-                                        measured.widths.group(&tab.id, &group.id).collapsed,
-                                    ),
-                                    height: Length::Percent(1.0),
+                                    width: Length::Px((available - SURFACE_PADDING * 2.0).max(0.0)),
+                                    height: Length::Px(48.0),
                                     flex_shrink: 0.0,
                                     ..Default::default()
                                 },
@@ -1099,30 +1062,10 @@ impl Ribbon {
                             ui.set_button_style(button, ribbon_button_style())?;
                             ui.set_button_chrome(button, ButtonChrome::Flat)?;
                             self.actions.insert(button, Action::Dropdown);
+                            for group in &tab.groups {
+                                self.group_anchors.insert(group.id.clone(), button);
+                            }
                         }
-                    }
-                    RibbonPresentation::Overflow(_) => {
-                        let items: Vec<_> = tab
-                            .groups
-                            .iter()
-                            .flat_map(|group| group_menu(ui, group))
-                            .map(MenuEntry::Item)
-                            .collect();
-                        let button = ribbon_dropdown(
-                            ui,
-                            groups_row,
-                            "All commands",
-                            &items,
-                            LayoutStyle {
-                                width: Length::Px((available - SURFACE_PADDING * 2.0).max(0.0)),
-                                height: Length::Px(48.0),
-                                flex_shrink: 0.0,
-                                ..Default::default()
-                            },
-                        )?;
-                        ui.set_button_style(button, ribbon_button_style())?;
-                        ui.set_button_chrome(button, ButtonChrome::Flat)?;
-                        self.actions.insert(button, Action::Dropdown);
                     }
                 }
             }
@@ -1142,6 +1085,7 @@ impl Ribbon {
                             command == candidate
                         }
                         (Some(Action::Tab(tab)), Some(Action::Tab(candidate))) => tab == candidate,
+                        (Some(Action::Minimize), Some(Action::Minimize)) => true,
                         _ => false,
                     }
             })
@@ -1167,6 +1111,45 @@ impl Ribbon {
             id = parent;
         }
     }
+    fn body_owns(&self, ui: &Controls, id: WidgetId) -> bool {
+        std::iter::successors(Some(id), |id| ui.runtime.tree().parent(*id))
+            .any(|id| Some(id) == self.body)
+    }
+    fn remember_external_focus(&mut self, ui: &Controls) {
+        if let Some(id) = ui.runtime.focused()
+            && !self.owns_node(ui, id)
+            && !ui.popup_open()
+        {
+            self.return_focus = Some(id);
+        }
+    }
+    fn reveal(&mut self, ui: &Controls) {
+        if self.minimized && !self.transient {
+            self.remember_external_focus(ui);
+            self.transient = true;
+            self.dirty = true;
+        }
+    }
+    fn close_transient(&mut self, ui: &mut Controls, restore: bool) {
+        if !self.transient {
+            return;
+        }
+        self.transient = false;
+        self.dirty = true;
+        self.finish_key_tips(ui, false);
+        if restore
+            && let Some(id) = self.return_focus.filter(|id| {
+                ui.is_enabled(*id)
+                    && ui
+                        .runtime
+                        .tree()
+                        .node(*id)
+                        .is_some_and(|node| node.props.focusable)
+            })
+        {
+            let _ = ui.runtime.apply(Mutation::Focus(Some(id)));
+        }
+    }
     fn apply_command_appearance(
         &self,
         ui: &mut Controls,
@@ -1176,6 +1159,7 @@ impl Ribbon {
         layout: ButtonContentLayout,
     ) -> Result<(), ControlError> {
         let appearance = self.command_appearances.get(command);
+        ui.set_ribbon_command(id)?;
         ui.set_button_style(id, ribbon_button_style())?;
         ui.set_button_chrome(id, ButtonChrome::Flat)?;
         ui.set_button_content_layout(id, layout)?;
@@ -1230,12 +1214,15 @@ impl Ribbon {
                 .label(&item.command)
                 .unwrap_or(&item.command.0)
                 .to_owned();
-            let layout = if matches!(item.kind, RibbonItemKind::Small) {
-                ButtonContentLayout::Leading
-            } else {
-                ButtonContentLayout::Above
-            };
-            let (host, height, width) = if matches!(item.kind, RibbonItemKind::Small) {
+            let item_size = measured.sizes[index];
+            let layout = item_size.layout();
+            self.item_presentations.push(RibbonItemPresentation {
+                tab_id: self.active.clone(),
+                group_id: group.id.clone(),
+                key_tip: item.key_tip.clone(),
+                size: item_size,
+            });
+            let (host, height, width) = if item_size != RibbonItemSize::Large {
                 if small_count % 3 == 0 {
                     small_column = Some(ui.transparent_panel(
                         row,
@@ -1267,16 +1254,8 @@ impl Ribbon {
                 ..Default::default()
             };
             let id = match &item.kind {
-                RibbonItemKind::Split { menu } => {
-                    let entries: Vec<_> = menu
-                        .iter()
-                        .map(|id| {
-                            MenuEntry::Item(MenuItem::new(
-                                ui.commands().label(id).unwrap_or(&id.0),
-                                id.clone(),
-                            ))
-                        })
-                        .collect();
+                RibbonItemKind::Split { .. } | RibbonItemKind::SplitMenu { .. } => {
+                    let entries = item_entries(ui, item)?;
                     let split = if entries.is_empty() {
                         // Preserve an independent, disabled menu area even when
                         // the application supplies no secondary commands.
@@ -1312,7 +1291,8 @@ impl Ribbon {
                         layout,
                     )?;
                     ui.set_button_style(split.dropdown, ribbon_button_style())?;
-                    ui.set_split_button_presentation(split, ButtonContentLayout::Above)?;
+                    ui.set_ribbon_command(split.dropdown)?;
+                    ui.set_split_button_presentation(split, layout)?;
                     ui.set_automation_name(split.dropdown, format!("{label} menu"))?;
                     ui.set_tooltip(
                         split.dropdown,
@@ -1324,6 +1304,13 @@ impl Ribbon {
                     self.actions.insert(split.dropdown, Action::Dropdown);
                     split.primary
                 }
+                RibbonItemKind::DropDown { .. } => {
+                    let entries = item_entries(ui, item)?;
+                    let id = ui.dropdown_button(host, label.clone(), &entries, style)?;
+                    ui.set_dropdown_command(id, Some(item.command.clone()))?;
+                    self.apply_command_appearance(ui, id, &item.command, &label, layout)?;
+                    id
+                }
                 _ => {
                     let id = ui.button(host, label.clone(), Some(item.command.clone()), style)?;
                     self.apply_command_appearance(ui, id, &item.command, &label, layout)?;
@@ -1332,8 +1319,15 @@ impl Ribbon {
             };
             self.tip_nodes
                 .insert(id, (Tips::Commands, item.key_tip.clone()));
-            self.actions
-                .insert(id, Action::Command(item.command.clone()));
+            self.item_anchors.insert(item.key_tip.clone(), id);
+            self.actions.insert(
+                id,
+                if matches!(item.kind, RibbonItemKind::DropDown { .. }) {
+                    Action::Dropdown
+                } else {
+                    Action::Command(item.command.clone())
+                },
+            );
         }
         let caption = ui.label(
             panel,
@@ -1360,19 +1354,53 @@ impl Ribbon {
     /// Call after `Controls::dispatch` to process tab/dropdown activations.
     /// Returns activations belonging to other parts of the application.
     pub fn process(&mut self, ui: &mut Controls) -> Result<Vec<WidgetId>, ControlError> {
+        // Keyboard traversal and accessibility may transfer focus without a
+        // pointer event. Closing must retain that newly selected external owner.
+        if self.transient
+            && !ui.popup_open()
+            && ui
+                .runtime
+                .focused()
+                .is_some_and(|id| !self.owns_node(ui, id))
+        {
+            self.close_transient(ui, false);
+        }
+        self.remember_external_focus(ui);
         let mut unhandled = Vec::new();
+        let menu_was_owned = self.owned_menu_open;
         for id in ui.drain_activated() {
             match self.actions.get(&id).cloned() {
                 Some(Action::Tab(tab)) => {
                     self.active = tab;
+                    self.reveal(ui);
                     self.dirty = true;
                 }
-                // Controls owns dropdown activation and popup lifecycle.
+                Some(Action::Minimize) => {
+                    let minimized = !self.minimized;
+                    if minimized {
+                        self.close_transient(ui, true);
+                    }
+                    self.set_minimized(minimized);
+                    self.finish_key_tips(ui, false);
+                }
                 Some(Action::Dropdown) => {}
-                Some(Action::Command(_)) => {}
-                None => unhandled.push(id),
+                Some(Action::Command(_)) => {
+                    if self.body_owns(ui, id) {
+                        self.close_transient(ui, true);
+                    }
+                }
+                None => {
+                    // Successful menu selection removes its visual node. A
+                    // closed owned chain plus that activation identifies it;
+                    // Escape alone emits no activation and leaves the body open.
+                    if menu_was_owned && !ui.popup_open() && ui.runtime.tree().node(id).is_none() {
+                        self.close_transient(ui, true);
+                    }
+                    unhandled.push(id);
+                }
             }
         }
+        self.owned_menu_open = ui.popup_anchor().is_some_and(|id| self.body_owns(ui, id));
         Ok(unhandled)
     }
     /// Call before ordinary input dispatch. Alt/F10 then tab and item KeyTips
@@ -1382,12 +1410,27 @@ impl Ribbon {
         ui: &mut Controls,
         event: &InputEvent,
     ) -> Result<bool, ControlError> {
-        if matches!(
-            event,
-            InputEvent::WindowFocused(false)
-                | InputEvent::PointerDown { .. }
-                | InputEvent::Wheel { .. }
-        ) {
+        self.remember_external_focus(ui);
+        self.owned_menu_open |= ui.popup_anchor().is_some_and(|id| self.body_owns(ui, id));
+        if let InputEvent::PointerDown { position, .. } = event {
+            let inside = ui
+                .runtime
+                .hit_test(*position)
+                .is_some_and(|id| self.owns_node(ui, id));
+            let in_menu = ui.popup_anchor().is_some_and(|id| self.owns_node(ui, id))
+                && ui.popup_contains_point(*position);
+            if !inside && !in_menu {
+                self.close_transient(ui, false);
+            }
+            self.finish_key_tips(ui, false);
+            return Ok(false);
+        }
+        if matches!(event, InputEvent::WindowFocused(false)) {
+            self.close_transient(ui, false);
+            self.finish_key_tips(ui, false);
+            return Ok(false);
+        }
+        if matches!(event, InputEvent::Wheel { .. }) {
             self.finish_key_tips(ui, false);
             return Ok(false);
         }
@@ -1406,6 +1449,10 @@ impl Ribbon {
         // An open menu owns keyboard navigation, including Escape and arrows.
         if ui.popup_open() {
             return Ok(false);
+        }
+        if *key == Key::Escape && self.transient {
+            self.close_transient(ui, true);
+            return Ok(true);
         }
         if self.tips == Tips::Hidden
             && !modifiers.alt
@@ -1429,6 +1476,8 @@ impl Ribbon {
                         ui.runtime.apply(Mutation::Focus(Some(id)))?;
                         self.active = tab;
                         self.dirty = true;
+                        // Arrow navigation selects tabs but does not open a
+                        // minimized body until an explicit tab activation.
                         ui.dismiss_tooltip();
                         return Ok(true);
                     }
@@ -1501,6 +1550,7 @@ impl Ribbon {
                 let id = tab.id.clone();
                 self.dirty |= self.active != id;
                 self.active = id;
+                self.reveal(ui);
                 self.tips = Tips::Commands;
                 self.tip_prefix.clear();
                 self.sync_key_tips(ui)?;
@@ -1524,8 +1574,38 @@ impl Ribbon {
                 .iter()
                 .find(|item| item.key_tip.eq_ignore_ascii_case(&self.tip_prefix))
             {
-                ui.commands_mut().activate(&item.command);
-                self.finish_key_tips(ui, true);
+                let item = (*item).clone();
+                if matches!(item.kind, RibbonItemKind::DropDown { .. }) {
+                    if ui.commands().enabled(&item.command) {
+                        let entries = item_entries(ui, &item)?;
+                        let group = tab
+                            .groups
+                            .iter()
+                            .find(|group| {
+                                group
+                                    .items
+                                    .iter()
+                                    .any(|candidate| candidate.key_tip == item.key_tip)
+                            })
+                            .unwrap();
+                        let anchor = self
+                            .item_anchors
+                            .get(&item.key_tip)
+                            .or_else(|| self.group_anchors.get(&group.id))
+                            .copied();
+                        if let Some(anchor) = anchor.filter(|id| ui.is_enabled(*id)) {
+                            self.finish_key_tips(ui, false);
+                            ui.popup_menu_for_command(anchor, item.command.clone(), &entries)?;
+                            self.owned_menu_open = true;
+                        }
+                    }
+                } else {
+                    let activated = ui.commands_mut().activate(&item.command);
+                    self.finish_key_tips(ui, true);
+                    if activated {
+                        self.close_transient(ui, true);
+                    }
+                }
             } else if !items
                 .iter()
                 .any(|item| item.key_tip.to_uppercase().starts_with(&self.tip_prefix))
@@ -1644,38 +1724,6 @@ fn plan_groups(
             } else {
                 RibbonPresentation::Full(group.id.clone())
             }
-        })
-        .collect()
-}
-fn group_menu(ui: &Controls, group: &RibbonGroup) -> Vec<MenuItem> {
-    group
-        .items
-        .iter()
-        .flat_map(|item| {
-            let entry = MenuItem::new(
-                format!(
-                    "{} / {}",
-                    group.label,
-                    ui.commands()
-                        .label(&item.command)
-                        .unwrap_or(&item.command.0)
-                ),
-                item.command.clone(),
-            );
-            let mut entries = vec![entry];
-            if let RibbonItemKind::Split { menu } = &item.kind {
-                entries.extend(menu.iter().map(|id| {
-                    MenuItem::new(
-                        format!(
-                            "{} / {}",
-                            group.label,
-                            ui.commands().label(id).unwrap_or(&id.0)
-                        ),
-                        id.clone(),
-                    )
-                }));
-            }
-            entries
         })
         .collect()
 }

@@ -561,19 +561,26 @@ AutomationName меняет доступное имя, сохраняя види
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Width="960" Height="640" Padding="24">
     <StackPanel Spacing="12">
-        <Ribbon x:Name="MainRibbon" SelectedTab="Home">
+        <Ribbon x:Name="MainRibbon" SelectedTab="Home" IsMinimized="False">
             <Ribbon.QuickAccessToolbar>
                 <Button Command="Confirm" />
                 <Button Command="Pin" />
             </Ribbon.QuickAccessToolbar>
             <RibbonTab Id="Home" Header="Главная" KeyTip="H">
                 <RibbonGroup Id="Document" Header="Документ" CollapsePriority="1">
-                    <Button Command="Confirm" KeyTip="C" Icon="Check"
+                    <Button Command="Confirm" KeyTip="C" Icon="Check" MinSize="Small"
                             ToolTip="Подтвердить значение" />
                     <ToggleButton Command="Pin" KeyTip="P" Size="Small" Icon="Pin" />
                     <SplitButton Command="Confirm" KeyTip="S">
                         <MenuItem Command="Pin" />
                     </SplitButton>
+                    <DropDownButton Command="Confirm" KeyTip="M" Icon="Check">
+                        <MenuItem Header="Документ">
+                            <MenuItem Command="Confirm" />
+                            <MenuSeparator />
+                            <MenuItem Command="Pin" />
+                        </MenuItem>
+                    </DropDownButton>
                 </RibbonGroup>
             </RibbonTab>
         </Ribbon>
@@ -584,12 +591,20 @@ AutomationName меняет доступное имя, сохраняя види
 
 | Узел модели | Свойства и содержимое |
 |---|---|
-| Ribbon | Общие свойства элемента, необязательный `SelectedTab`; вкладки и не больше одного `Ribbon.QuickAccessToolbar` |
+| Ribbon | Общие свойства элемента, необязательный `SelectedTab`, `IsMinimized="False"`; вкладки и не больше одного `Ribbon.QuickAccessToolbar` |
 | Ribbon.QuickAccessToolbar | Только пустые `<Button Command="Id" />`, без повторов Command; атрибутов нет |
 | RibbonTab | Обязательные `Id`, непустой `Header`, `KeyTip`; необязательный `Context`; минимум одна группа |
 | RibbonGroup | Обязательные `Id`, непустой `Header`; `CollapsePriority="0"` в диапазоне 0–65535; минимум одна команда |
-| Button / ToggleButton внутри группы | Обязательные `Command`, `KeyTip`; `Size="Large"` или `Small`, необязательные `Icon`, `ToolTip` |
-| SplitButton внутри группы | Те же свойства, только `Size="Large"`; минимум один пустой `<MenuItem Command="Id" />` |
+| Button / ToggleButton внутри группы | Обязательные `Command`, `KeyTip`; preferred `Size="Large"` или `Small`, `MinSize="IconOnly"`, необязательные `Icon`, `ToolTip` |
+| SplitButton / DropDownButton внутри группы | Те же свойства размеров и оформления; непустое дерево меню |
+| MenuItem внутри Ribbon-меню | Лист: только `Command`; подменю: непустой `Header` и дочерние пункты, без Command |
+| MenuSeparator / Separator внутри Ribbon-меню | Разделитель без атрибутов и дочерних узлов |
+
+`MinSize` допускает `Large`, `Small`, `IconOnly` и не может быть больше `Size`.
+Предпочтительный `Size="IconOnly"` не принимается: IconOnly — минимальный
+адаптивный вариант. При `Size="Small"` допустимы MinSize Small или IconOnly.
+Ограничение относится к размещению, а не к общей команде: два размещения одной
+Command могут иметь разные пределы. Отсутствие Icon сохраняет текстовый fallback.
 
 Узлы внутри Ribbon — части модели, а не обычные элементы StackPanel. Они не
 принимают `x:Name`, размеры, стили кнопок, `Content`, `IsEnabled` или `IsChecked`.
@@ -612,8 +627,14 @@ QAT, скрытые вкладки и secondary menu. Для `ToggleButton` тр
 не преобразует обычную команду в переключатель. Command state общий для Ribbon,
 QAT, меню и кнопок за пределами ленты. Кнопка `Button` также отражает состояние
 зарегистрированной toggle-команды. Primary SplitButton выполняет команду,
-стрелка только открывает плоское меню; вложенные меню и Separator внутри
-Ribbon SplitButton этим профилем не принимаются.
+стрелка только открывает меню. DropDownButton использует Command для подписи
+и доступности; его активация открывает меню без выполнения или переключения
+владельца. Пункты-листья выполняют свои команды. Лист Ribbon-меню не принимает
+Header или IsEnabled: его подпись и состояние принадлежат registry.
+Статическое подменю принимает Header и непустые дочерние пункты.
+Прежний плоский синтаксис SplitButton с `<MenuItem Command="Id" />` сохраняется.
+Самостоятельный DropDownButton вне Ribbon по-прежнему использует Content
+и не принимает Command; его контракт описан в разделе обычных меню.
 
 Свойства `Icon` и `ToolTip` описывают оформление команды в Ribbon/QAT.
 `Icon` использует тот же набор собственных символов, что обычные кнопки;
@@ -624,32 +645,51 @@ ToolTip — до 4096 UTF-8 байт. Это свойства представл
 для одной команды отклоняются адаптером до монтажа.
 
 Вкладки и группы участвуют в общих ограничениях XAML на 256 элементов и
-32 уровня, включая QAT property element и ссылки MenuItem. Размер исходного
-файла ограничен 1 MiB. Ручной Rust AST проходит проверку структуры и ссылок
+32 уровня, включая QAT property element, все MenuItem и разделители меню.
+Глубина отдельного дерева меню ограничена восемью уровнями; верхние пункты
+имеют глубину один. Размер исходного файла ограничен 1 MiB. Ручной Rust AST проходит проверку структуры и ссылок
 до изменения retained tree. Это не runtime XAML loading и не data binding.
+`RibbonMenuEntryDefinition` содержит варианты `Command(String)`,
+`Submenu { header, items }` и `Separator`. Runtime дополнительно проверяет
+фактически создаваемые collapsed/overflow меню: их обёртки также расходуют
+лимиты восьми уровней, 256 пунктов и 1 MiB текста.
 
 Ширина Ribbon берётся из фактического layout его контейнера, включая отступы
-родителей. При сужении группы переходят в collapsed/overflow меню. Смена
+родителей. При сужении элементы уменьшаются Large → Small → IconOnly до MinSize;
+первыми рассматриваются группы с большим CollapsePriority. Уменьшение
+применяется только при реальном выигрыше измеренной ширины группы. Если места
+всё ещё недостаточно, группы переходят в collapsed/overflow меню. Смена
 ширины, темы или вкладки перестраивает внутренние placements Ribbon;
 идентификаторы соседних элементов, document, accepted value и undo редактора
 сохраняются. Автоматическая высота использует измеренные метрики Ribbon.
 Явный Height задаёт границу его области и может обрезать содержимое.
 Размеры команд зависят от представления: Large — значок 32 logical pixels
-сверху и до двух строк подписи, Small — значок 16 слева и колонки по три,
-QAT — компактный значок без подписи. Без Icon QAT сохраняет видимый текст.
+сверху и до двух строк подписи, Small — значок 16 слева, IconOnly — компактный
+значок без подписи; Small/IconOnly укладываются колонками по три.
+QAT также использует компактные значки. Без Icon видимый текст сохраняется.
 Не поместившийся остаток QAT переносится в More. Длинная крупная подпись
 сокращается визуально; полная строка сохраняется в registry и доступном имени.
 ToolTip по умолчанию показывает её, но может быть заменён или отключён.
 Вкладки используют подчёркивание активной, группы — общую скруглённую
-поверхность и вертикальные разделители. SplitButton разделяет верхнюю primary
-область и нижнюю область подписи со стрелкой в одной композиции. Без Icon
-подпись остаётся в primary, снизу отображается только стрелка. Точный план доступен через
-`Ribbon::presentations()`; helper `layout_groups` даёт оценку по базовым размерам.
+поверхность и вертикальные разделители. Крупный SplitButton разделяет верхнюю
+primary область и нижнюю область подписи со стрелкой. Без Icon подпись остаётся
+в primary, снизу отображается стрелка. В Small/IconOnly области расположены
+горизонтально. Точный план групп доступен через `Ribbon::presentations()`,
+размеры размещений — через `item_presentations()`; helper `layout_groups`
+даёт оценку по базовым размерам.
+
+`IsMinimized="True"` первоначально оставляет QAT и вкладки без тела групп.
+Активация вкладки временно раскрывает тело в обычном layout и изменяет
+автоматическую высоту Ribbon; соседние controls смещаются, сохраняя состояние.
+Это раскрытие внутри потока формы, без отдельного popup-окна. Последующие
+переходы управляются `Ribbon::set_minimized`, `is_minimized` и `is_expanded`.
+Ctrl+F1 этим профилем не назначен.
 
 Форма направляет обычный input в `Ribbon::handle_input` до Controls, затем
 обрабатывает активации вкладок через `Ribbon::process`. Alt/F10 включает
 KeyTips — отдельные метки поверх контролов, без изменения геометрии и
-доступных имён. Парные Text events клавиш KeyTips подавляются, включая событие после
+доступных имён. KeyTip DropDown открывает меню, KeyTip Split выполняет primary
+команду. Парные Text events клавиш KeyTips подавляются, включая событие после
 выполнения последней команды; следующий обычный ввод остаётся доступен.
 Escape закрывает один уровень KeyTips, завершение режима возвращает фокус
 доступному прежнему контролу. Переход с редактора по-прежнему соблюдает его

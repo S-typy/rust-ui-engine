@@ -35,6 +35,7 @@ TITLE_PREFIX = "Форма · XAML Ribbon"
 TITLE = re.compile(r"^Форма · XAML Ribbon \| frames=(\d+) glyphs=(\d+) missing=(\d+)$")
 VK_HOME = 0x24
 VK_F10 = 0x79
+VK_ESCAPE = 0x1B
 INITIAL_TEXT = "1234567890"
 PRESERVED_TEXT = "0123456789"
 
@@ -67,7 +68,24 @@ def command_invocations(log: str) -> list[str]:
 
 def pin_placements(state: dict) -> list[dict]:
     return [item for item in state["controls"]
-            if item["label"] == "Закрепить" or item["label"].endswith(" / Закрепить")]
+            if item.get("command") == "Pin" or item["label"] == "Закрепить"
+            or item["label"].endswith(" / Закрепить")]
+
+
+def item_sizes(ribbon: dict) -> dict[tuple[str, str, str], str]:
+    """Read actual adaptive placements; absent items can be collapsed or hidden."""
+    result = {}
+    for item in ribbon["item_presentations"]:
+        identity = (item["tab_id"], item["group_id"], item["key_tip"])
+        size = item["size"]
+        if any(not isinstance(value, str) or not value for value in identity):
+            raise SmokeFailure(f"Invalid Ribbon placement identity: {item}")
+        if size not in ("Large", "Small", "IconOnly") or identity in result:
+            raise SmokeFailure(f"Invalid or duplicate Ribbon placement: {item}")
+        result[identity] = size
+    if not ribbon["body_visible"] and result:
+        raise SmokeFailure("Hidden Ribbon body exposes item placements")
+    return result
 
 
 def control_geometry(state: dict) -> list[tuple]:
@@ -85,13 +103,20 @@ def verify_geometry(before: list[tuple], after: list[tuple]) -> None:
 
 
 def split_primary(controls: list[dict], arrow: dict) -> dict:
-    """Resolve the adjacent primary hit area of a unified vertical SplitButton."""
-    x, y, width, _height = arrow["bounds"]
+    """Resolve the Split sibling in either large or compact presentation."""
+    x, y, width, height = arrow["bounds"]
+
+    def adjacent(item):
+        px, py, pw, ph = item["bounds"]
+        vertical = abs(px - x) < 0.001 and abs(pw - width) < 0.001 and abs(py + ph - y) < 0.001
+        horizontal = abs(py - y) < 0.001 and abs(ph - height) < 0.001 and abs(px + pw - x) < 0.001
+        same_parent = ("parent_id" not in arrow
+                       or item.get("parent_id") == arrow["parent_id"])
+        return same_parent and (vertical or horizontal)
+
     matches = [item for item in controls if item["role"] in ("Button", "ToggleButton")
                and item["command"] is not None and arrow["label"] == item["label"] + " menu"
-               and abs(item["bounds"][0] - x) < 0.001
-               and abs(item["bounds"][2] - width) < 0.001
-               and abs(item["bounds"][1] + item["bounds"][3] - y) < 0.001]
+               and adjacent(item)]
     if len(matches) != 1:
         raise SmokeFailure(f"Expected the adjacent Split primary, found {matches} for {arrow}")
     return matches[0]
@@ -277,9 +302,23 @@ class RibbonSession(PopupSession):
 
     def pin(self, qat=False):
         matches = [item for item in pin_placements(self.state()) if self.in_ribbon(item)]
-        if len(matches) != 2:
-            raise SmokeFailure(f"Expected QAT and body Pin placements: {matches}")
-        return sorted(matches, key=lambda item: item["bounds"][1])[0 if qat else 1]
+        if not matches:
+            raise SmokeFailure("No visible Pin placement")
+        ordered = sorted(matches, key=lambda item: (item["bounds"][1], item["bounds"][0]))
+        if qat:
+            return ordered[0]
+        if len(ordered) < 2:
+            raise SmokeFailure(f"No body Pin placement: {matches}")
+        return ordered[1]
+
+    def menu_leaf(self, command):
+        matches = [item for item in self.state()["controls"]
+                   if item["role"] == "MenuItem" and item.get("command") == command
+                   and not item["has_popup"] and item["enabled"]]
+        if not matches:
+            raise SmokeFailure(f"No enabled visible menu leaf for {command}")
+        # Multiple leaves may deliberately invoke the same registry command.
+        return sorted(matches, key=lambda item: (item["bounds"][1], item["bounds"][0]))[0]
 
     def click_control(self, x, y, scale):
         self.focus_messages(True)
@@ -389,6 +428,55 @@ class RibbonSession(PopupSession):
             item["role"] == "TextBox" and abs(item["bounds"][2] - (width - 64)) < 1
             for item in state["controls"]))
 
+    def adaptive_resize(self):
+        """Discover real stages without assigning a layout mode to 360/180 px."""
+        seen = {}
+        collapsed = overflow = None
+        previous_width = 1040
+        for width in range(1008, 79, -16):
+            self.resize(width)
+            ribbon = self.ribbon_state()
+            for identity, size in item_sizes(ribbon).items():
+                seen.setdefault(identity, set()).add(size)
+            self.snapshot("adaptive resize preserves editor focus", lambda state: state["focused"] == "Текст")
+            self.assert_editor_text(PRESERVED_TEXT, "adaptive resize preserves editor draft")
+            if "Collapsed" in ribbon["presentations"] and collapsed is None:
+                collapsed = width
+            if "Overflow" in ribbon["presentations"]:
+                overflow = width
+                if collapsed is None:
+                    # IconOnly groups can make the remaining collapse interval
+                    # narrower than the coarse scan step. Inspect that final
+                    # interval before concluding that the stage is missing.
+                    for boundary_width in range(width + 1, previous_width):
+                        self.resize(boundary_width)
+                        boundary = self.ribbon_state()
+                        for identity, size in item_sizes(boundary).items():
+                            seen.setdefault(identity, set()).add(size)
+                        self.snapshot("boundary resize preserves editor focus", lambda state: state["focused"] == "Текст")
+                        self.assert_editor_text(PRESERVED_TEXT, "boundary resize preserves editor draft")
+                        if "Collapsed" in boundary["presentations"]:
+                            collapsed = boundary_width
+                            break
+                break
+            previous_width = width
+        transitions = [identity for identity, sizes in seen.items() if sizes == {"Large", "Small", "IconOnly"}]
+        if not transitions or overflow is None:
+            raise SmokeFailure(f"Incomplete adaptive sequence: sizes={seen}, collapsed={collapsed}, overflow={overflow}")
+        self.report["adaptive_layout"] = {"items": [{"identity": list(identity), "sizes": sorted(sizes)}
+                                                    for identity, sizes in seen.items()],
+                                           "collapsed_width": collapsed,
+                                           "overflow_width": overflow}
+        if collapsed is None:
+            self.report["adaptive_layout"]["collapsed_limit"] = (
+                "No separate collapsed group observed; the final expanded-to-overflow interval was refined at 1px. "
+                "IconOnly columns can already be narrower than collapsed headers. Overflow command coverage remains required.")
+        self.resize(1040)
+        restored = self.ribbon_state()
+        if "Collapsed" in restored["presentations"] or "Overflow" in restored["presentations"]:
+            raise SmokeFailure("Wide Ribbon failed to restore expanded groups")
+        return overflow
+
     def assert_editor_text(self, text, description):
         if last_edit_value(self.log()) != text:
             raise SmokeFailure(f"{description}: editor draft changed unexpectedly")
@@ -414,6 +502,9 @@ class RibbonSession(PopupSession):
         initial = self.snapshot("initial shared Pin and closed popup", lambda state:
                                 state["pin_checked"] is False and not state["popup_open"])
         verify_shared_pin(initial, False)
+        if self.report["minimized"]:
+            self.run_minimized(output)
+            return
         self.ribbon_snapshot("Home tab has full groups", lambda state:
                              state["active_tab"] == "Home" and "Collapsed" not in state["presentations"]
                              and "Overflow" not in state["presentations"])
@@ -468,7 +559,8 @@ class RibbonSession(PopupSession):
         verify_geometry(before_keytips, control_geometry(self.state()))
 
         arrow = self.control(lambda item:
-                             item["has_popup"] and item["command"] is None and self.in_ribbon(item))
+                             item["has_popup"] and item["label"] == "Подтвердить menu"
+                             and item["command"] is None and self.in_ribbon(item))
         primary = split_primary(self.state()["controls"], arrow)
         before = self.commands()
         self.click_item(primary)
@@ -491,34 +583,98 @@ class RibbonSession(PopupSession):
         self.key(VK_LEFT)
         self.key(VK_LEFT)
         self.wait("two caret-left keys are delivered", lambda: self.log().count("key: ArrowLeft") >= left_before + 4)
-        for width in (360, 180, 1040):
-            self.resize(width)
-            self.snapshot("reflow preserves editor focus", lambda state: state["focused"] == "Текст")
-            self.assert_editor_text(PRESERVED_TEXT, "reflow preserves the same draft")
-            presentation = self.ribbon_state()["presentations"]
-            if width == 360 and "Collapsed" not in presentation:
-                raise SmokeFailure("Medium width did not collapse a group")
-            if width == 180 and "Overflow" not in presentation:
-                raise SmokeFailure("Narrow width did not produce All commands")
-            if width == 1040 and ("Overflow" in presentation or "Collapsed" in presentation):
-                raise SmokeFailure("Wide Ribbon failed to restore full groups")
+        overflow_width = self.adaptive_resize()
         self.type_text("5")
         preserved_with_caret = PRESERVED_TEXT[:-2] + "5" + PRESERVED_TEXT[-2:]
         self.wait_value(preserved_with_caret, "caret survives collapse, overflow and expansion")
 
-        self.resize(180)
+        self.resize(overflow_width)
         before = self.commands()
         self.click_item(self.control(lambda item: item["label"] == "All commands" and self.in_ribbon(item)))
         self.snapshot("All commands opens inside the narrow client", lambda state: len(state["menus"]) == 1)
         self.ensure_no_command(before, "All commands opening")
+        menu_commands = {item.get("command") for item in self.state()["controls"] if item["role"] == "MenuItem"}
+        required_commands = {"Confirm", "Clear", "Pin", "Disabled", "Actions"}
+        if not required_commands.issubset(menu_commands):
+            raise SmokeFailure(f"Overflow lost Home command owners: {sorted(required_commands - menu_commands)}")
         self.capture_menu(output, "narrow-menu")
-        menu_pin = self.control(lambda item: item["role"] == "MenuItem" and item["label"] == "Редактирование / Закрепить")
+        menu_pin = self.menu_leaf("Pin")
         self.activate_pin(menu_pin, "Overflow shares the same Pin state")
         self.snapshot("Overflow activation closes the menu", lambda state: not state["popup_open"])
         self.resize(1040)
         self.assert_editor_text(preserved_with_caret, "menu activation preserves the editor document")
         verify_shared_pin(self.state(), False)
+        self.nested_dropdown(output)
         self.capture_ribbon(output, "restored-ribbon")
+        self.finish()
+
+    def nested_dropdown(self, output):
+        before = self.commands()
+        owner = self.control(lambda item: item.get("command") == "Actions"
+                             and item["has_popup"] and self.in_ribbon(item))
+        self.click_item(owner)
+        self.snapshot("DropDown opens its root menu", lambda state: len(state["menus"]) == 1)
+        self.ensure_no_command(before, "DropDown opening")
+        submenu = self.control(lambda item: item["role"] == "MenuItem" and item["label"] == "Документ"
+                               and item["has_popup"])
+        self.click_item(submenu)
+        self.snapshot("Ribbon submenu opens", lambda state: len(state["menus"]) == 2)
+        self.ensure_no_command(before, "Submenu opening")
+        self.capture_menu(output, "nested-dropdown")
+        self.key(VK_ESCAPE)
+        self.snapshot("Escape closes only the nested menu", lambda state: len(state["menus"]) == 1)
+        self.ensure_no_command(before, "Nested Escape")
+        submenu = self.control(lambda item: item["role"] == "MenuItem" and item["label"] == "Документ"
+                               and item["has_popup"])
+        self.click_item(submenu)
+        self.snapshot("Ribbon submenu reopens", lambda state: len(state["menus"]) == 2)
+        self.activate_pin(self.menu_leaf("Pin"), "Nested Ribbon leaf")
+        self.snapshot("Nested leaf closes the complete menu", lambda state: not state["popup_open"])
+
+    def run_minimized(self, output):
+        initial = self.ribbon_snapshot("initial minimized header only", lambda state:
+                                       state["minimized"] and not state["body_visible"])
+        if item_sizes(initial):
+            raise SmokeFailure("Minimized Ribbon still exposes body items")
+        self.capture_ribbon(output, "minimized-header")
+        self.click_item(self.editor())
+        self.snapshot("editor receives focus while Ribbon is minimized", lambda state: state["focused"] == "Текст")
+        self.type_text(INITIAL_TEXT)
+        self.wait_value(INITIAL_TEXT, "minimized editor draft")
+        self.click_item(self.tab("Главная"))
+        self.ribbon_snapshot("tab transiently reveals minimized body", lambda state:
+                             state["minimized"] and state["body_visible"])
+        self.capture_ribbon(output, "minimized-revealed")
+        self.key(VK_ESCAPE)
+        self.ribbon_snapshot("Escape hides transient body", lambda state: not state["body_visible"])
+        self.snapshot("Escape restores editor focus", lambda state: state["focused"] == "Текст")
+        self.assert_editor_text(INITIAL_TEXT, "minimized reveal preserves editor draft")
+        before = self.commands()
+        self.key(VK_F10)
+        self.ribbon_snapshot("minimized QAT KeyTips", lambda state:
+                             state["key_tips"] and "2" in state["key_tip_labels"])
+        self.letter_keytip("2", "minimized QAT toggles Pin", lambda: self.commands() > before)
+        self.exact_command(before, "Pin", "Minimized QAT KeyTip", pin=True)
+        self.ribbon_snapshot("QAT activation leaves body hidden", lambda state:
+                             state["minimized"] and not state["body_visible"] and not state["key_tips"])
+        self.snapshot("QAT returns to editor", lambda state: state["focused"] == "Текст")
+        self.click_item(self.tab("Главная"))
+        self.ribbon_snapshot("reveal before nested menu", lambda state: state["body_visible"])
+        self.nested_dropdown(output)
+        self.ribbon_snapshot("nested leaf closes transient body", lambda state:
+                             state["minimized"] and not state["body_visible"])
+        self.snapshot("nested leaf restores editor", lambda state: state["focused"] == "Текст")
+        for width in (360, 180, 1040):
+            self.resize(width)
+            ribbon = self.ribbon_state()
+            if not ribbon["minimized"] or ribbon["body_visible"] or item_sizes(ribbon):
+                raise SmokeFailure(f"Resize unexpectedly reveals minimized body: {ribbon}")
+            self.assert_editor_text(INITIAL_TEXT, "minimized resize preserves editor draft")
+        verify_shared_pin(self.state(), False)
+        self.capture_ribbon(output, "minimized-restored")
+        self.finish()
+
+    def finish(self):
         self.report["final_render_state"] = self.wait_state("final frame has no missing glyphs", lambda state: state["missing"] == 0)
         self.report["command_invocations"] = self.invocations()
         self.report["final_edit_value"] = last_edit_value(self.log())
@@ -591,6 +747,31 @@ def self_test():
         pass
     else:
         raise AssertionError("A nonadjacent button was accepted as the Split primary")
+    compact_primary = {**primary, "id": "primary", "parent_id": "split", "bounds": [20, 80, 80, 28]}
+    compact_arrow = {**arrow, "id": "arrow", "parent_id": "split", "bounds": [100, 80, 20, 28]}
+    same_position_other_parent = {**compact_primary, "parent_id": "unrelated"}
+    assert split_primary([same_position_other_parent, compact_primary, compact_arrow], compact_arrow) is compact_primary
+    try:
+        split_primary([same_position_other_parent, compact_arrow], compact_arrow)
+    except SmokeFailure:
+        pass
+    else:
+        raise AssertionError("A neighboring unrelated button was accepted as a Split sibling")
+    placement = {"tab_id": "Home", "group_id": "Actions", "key_tip": "A", "size": "IconOnly"}
+    assert item_sizes({"body_visible": True, "item_presentations": [placement]}) == {
+        ("Home", "Actions", "A"): "IconOnly"}
+    assert not item_sizes({"body_visible": False, "item_presentations": []})
+    for invalid in (
+        {"body_visible": False, "item_presentations": [placement]},
+        {"body_visible": True, "item_presentations": [placement, placement]},
+        {"body_visible": True, "item_presentations": [{**placement, "size": "Tiny"}]},
+    ):
+        try:
+            item_sizes(invalid)
+        except SmokeFailure:
+            pass
+        else:
+            raise AssertionError("Invalid adaptive placement diagnostics were accepted")
     for dark in (False, True):
         width, height = 60, 40
         background = (32, 32, 32) if dark else (243, 243, 243)
@@ -618,7 +799,7 @@ def self_test():
                                {"first_tab": [0, 0, width, height]}, dark)
         assert evidence["first_tab"]["ink_pixels"] >= 20
         assert evidence["first_tab"]["ink_shades"] >= 3
-    print("PASS: Ribbon diagnostics, stable KeyTips, Split selection, shared state and accent tab ink")
+    print("PASS: Ribbon diagnostics, adaptive sizes, stable KeyTips, Split siblings, shared state and accent tab ink")
 
 
 def main():
@@ -626,6 +807,7 @@ def main():
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--dark", action="store_true")
+    parser.add_argument("--ribbon-minimized", action="store_true", help="Exercise the initially minimized Ribbon")
     parser.add_argument("--timeout", type=float, default=20)
     parser.add_argument("--self-test", action="store_true")
     parser.add_argument("--numeric-keytips", action="store_true",
@@ -647,20 +829,23 @@ def main():
         "status": "failed", "started_utc": datetime.now(timezone.utc).isoformat(),
         "executable": str(executable), "executable_sha256": hashlib.sha256(executable.read_bytes()).hexdigest(),
         "backend_environment": os.environ.get("WGPU_BACKEND"), "theme": "dark" if args.dark else "light",
-        "numeric_keytips": args.numeric_keytips, "key_tip_sequence": "F10/2" if args.numeric_keytips else "F10/H/P",
+        "numeric_keytips": args.numeric_keytips,
+        "key_tip_sequence": "F10/2" if args.numeric_keytips or args.ribbon_minimized else "F10/H/P",
+        "minimized": args.ribbon_minimized,
         "checks": [], "captures": {},
         "input_method": "Acknowledged native cursor moves and child-only posted buttons/keys; native translated KeyTip characters",
         "limits": ["No physical keyboard, native IME or screen reader", "Printable H/P KeyTips require the child to use a Latin keyboard layout",
                    "No multi-monitor DPI test; screenshots require visual review"],
     }
-    if args.numeric_keytips:
+    if args.numeric_keytips or args.ribbon_minimized:
         report["limits"].append("Letter KeyTips were not exercised natively in this run; F10/2 covers QAT activation")
     session = None
     try:
         windows = RibbonWindows(args.dark)
         cursor = windows.cursor_position()
         with (output / "stdout.log").open("wb") as stdout, (output / "stderr.log").open("wb") as stderr:
-            process = subprocess.Popen([str(executable), "--diagnostics"] + (["--dark"] if args.dark else []),
+            process = subprocess.Popen([str(executable), "--diagnostics"] + (["--dark"] if args.dark else [])
+                                       + (["--ribbon-minimized"] if args.ribbon_minimized else []),
                                        stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
             report["process_id"] = process.pid
             session = RibbonSession(windows, process, report, args.timeout, cursor)

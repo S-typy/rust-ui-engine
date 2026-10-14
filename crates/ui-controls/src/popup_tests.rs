@@ -92,6 +92,283 @@ fn focused_label(ui: &Controls) -> String {
 }
 
 #[test]
+fn dropdown_metadata_is_live_without_executing_or_toggling_its_owner() {
+    use std::{cell::Cell, rc::Rc};
+    let (mut ui, anchor) = setup();
+    let calls = Rc::new(Cell::new(0));
+    let count = calls.clone();
+    let allowed = Rc::new(Cell::new(true));
+    let gate = allowed.clone();
+    ui.commands_mut().register_toggle("owner", "Owner", true);
+    ui.commands_mut()
+        .on_execute(&"owner".into(), move || count.set(count.get() + 1));
+    ui.commands_mut()
+        .set_can_execute(&"owner".into(), move || gate.get());
+    ui.set_dropdown_command(anchor, Some("owner".into()))
+        .unwrap();
+    frame(&mut ui);
+    let node = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.id == anchor)
+        .unwrap();
+    assert_eq!(node.label, "Owner");
+    assert_eq!(node.role, Role::Button);
+    assert_eq!(node.checked, None);
+    assert!(!node.actions.contains(&SemanticAction::Toggle));
+    ui.activate(anchor).unwrap();
+    assert!(ui.popup_open());
+    assert_eq!(calls.get(), 0);
+    assert_eq!(ui.commands().checked(&"owner".into()), Some(true));
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+    allowed.set(false);
+    assert!(!ui.is_enabled(anchor));
+    frame(&mut ui);
+    assert!(!ui.popup_open());
+    ui.activate(anchor).unwrap();
+    assert!(!ui.popup_open());
+    ui.commands_mut().register("owner", "Renamed owner");
+    assert_eq!(
+        ui.semantics()
+            .into_iter()
+            .find(|node| node.id == anchor)
+            .unwrap()
+            .label,
+        "Renamed owner"
+    );
+    frame(&mut ui);
+    assert!(
+        ui.scene()
+            .texts
+            .iter()
+            .any(|text| text.text == "Renamed owner")
+    );
+    ui.set_dropdown_command(anchor, None).unwrap();
+    assert_eq!(ui.command_id(anchor), None);
+    assert_eq!(
+        ui.semantics()
+            .into_iter()
+            .find(|node| node.id == anchor)
+            .unwrap()
+            .label,
+        "Menu"
+    );
+}
+
+#[test]
+fn command_submenu_updates_label_width_and_closes_only_its_unavailable_branch() {
+    let (mut ui, anchor) = setup();
+    ui.commands_mut().register_toggle("owner", "Short", true);
+    ui.popup_menu_entries(
+        anchor,
+        &[MenuEntry::CommandSubmenu {
+            command: "owner".into(),
+            items: vec![entry("Child")],
+        }],
+    )
+    .unwrap();
+    let submenu = ui.runtime.focused().unwrap();
+    let old_width = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.role == Role::Menu)
+        .unwrap()
+        .bounds
+        .width;
+    ui.commands_mut()
+        .register_toggle("owner", "A much longer live command submenu heading", true);
+    frame(&mut ui);
+    let menu_width = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.role == Role::Menu)
+        .unwrap()
+        .bounds
+        .width;
+    assert!(menu_width > old_width);
+    assert_eq!(
+        ui.semantics()
+            .into_iter()
+            .find(|node| node.id == submenu)
+            .unwrap()
+            .label,
+        "A much longer live command submenu heading"
+    );
+    key(&mut ui, Key::ArrowRight);
+    assert_eq!(ui.popup_depth(), 2);
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+    assert_eq!(ui.commands().checked(&"owner".into()), Some(true));
+    ui.commands_mut().set_enabled(&"owner".into(), false);
+    frame(&mut ui);
+    assert_eq!(ui.popup_depth(), 1);
+    assert!(!ui.is_enabled(submenu));
+    assert!(ui.runtime.focused().is_none_or(|id| ui.is_enabled(id)));
+}
+
+#[test]
+fn invalid_dropdown_binding_and_command_submenu_preserve_existing_popup() {
+    let (mut ui, anchor) = setup();
+    ui.activate(anchor).unwrap();
+    let nodes = ui.runtime.tree().preorder();
+    let focus = ui.runtime.focused();
+    assert!(
+        ui.set_dropdown_command(anchor, Some("unknown".into()))
+            .is_err()
+    );
+    assert!(
+        ui.popup_menu_entries(
+            anchor,
+            &[MenuEntry::CommandSubmenu {
+                command: "unknown".into(),
+                items: vec![entry("Child")],
+            }]
+        )
+        .is_err()
+    );
+    ui.commands_mut().register("oversized", "x".repeat(600_000));
+    assert!(
+        ui.popup_menu_entries(
+            anchor,
+            &[
+                entry(&"y".repeat(600_000)),
+                MenuEntry::CommandSubmenu {
+                    command: "oversized".into(),
+                    items: vec![entry("Child")],
+                },
+            ]
+        )
+        .is_err()
+    );
+    assert_eq!(ui.runtime.tree().preorder(), nodes);
+    assert_eq!(ui.runtime.focused(), focus);
+    assert_eq!(ui.command_id(anchor), None);
+    assert_eq!(ui.popup_depth(), 1);
+}
+
+#[test]
+fn open_nested_submenu_metadata_rebinding_updates_width_and_reopening_definition() {
+    let (mut ui, anchor) = setup();
+    ui.commands_mut().register("owner_a", "Short");
+    let expanded_label = "A much longer replacement command submenu heading";
+    ui.commands_mut()
+        .register_toggle("owner_b", expanded_label, true);
+    ui.popup_menu_entries(
+        anchor,
+        &[MenuEntry::Submenu {
+            label: "Outer".into(),
+            enabled: true,
+            items: vec![
+                MenuEntry::Separator,
+                MenuEntry::CommandSubmenu {
+                    command: "owner_a".into(),
+                    items: vec![entry("Child")],
+                },
+            ],
+        }],
+    )
+    .unwrap();
+    key(&mut ui, Key::ArrowRight);
+    let owner = ui.runtime.focused().unwrap();
+    assert_eq!(ui.command_id(owner), Some(&"owner_a".into()));
+    let old_width = ui
+        .semantics()
+        .iter()
+        .filter(|node| node.role == Role::Menu)
+        .map(|node| node.bounds.width)
+        .fold(0.0_f32, f32::max);
+    ui.set_dropdown_command(owner, Some("owner_b".into()))
+        .unwrap();
+    frame(&mut ui);
+    let new_width = ui
+        .semantics()
+        .iter()
+        .filter(|node| node.role == Role::Menu)
+        .map(|node| node.bounds.width)
+        .fold(0.0_f32, f32::max);
+    assert!(new_width > old_width + 0.001);
+    assert_eq!(focused_label(&ui), expanded_label);
+    assert_eq!(ui.runtime.focused(), Some(owner));
+    assert_eq!(ui.commands().checked(&"owner_b".into()), Some(true));
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+    key(&mut ui, Key::Escape);
+    assert_eq!(ui.popup_depth(), 1);
+    key(&mut ui, Key::ArrowRight);
+    let reopened = ui.runtime.focused().unwrap();
+    assert_eq!(ui.command_id(reopened), Some(&"owner_b".into()));
+    assert_eq!(focused_label(&ui), expanded_label);
+    key(&mut ui, Key::ArrowRight);
+    assert_eq!(ui.popup_depth(), 3);
+    assert_eq!(focused_label(&ui), "Child");
+}
+
+#[test]
+fn menu_metadata_rebinding_rejects_combined_text_budget_without_changing_the_chain() {
+    let (mut ui, anchor) = setup();
+    let large_id = "a".repeat(600_000);
+    ui.commands_mut().register(large_id.clone(), "Action");
+    ui.commands_mut().register("owner", "Short");
+    ui.commands_mut().register("oversized", "x".repeat(600_000));
+    ui.popup_menu_entries(
+        anchor,
+        &[
+            MenuEntry::Item(MenuItem::new("Static", large_id)),
+            MenuEntry::CommandSubmenu {
+                command: "owner".into(),
+                items: vec![entry("Child")],
+            },
+        ],
+    )
+    .unwrap();
+    let owner = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.label == "Short")
+        .unwrap()
+        .id;
+    ui.perform_action(owner, SemanticAction::Focus, None)
+        .unwrap();
+    key(&mut ui, Key::ArrowRight);
+    let nodes = ui.runtime.tree().preorder();
+    let focus = ui.runtime.focused();
+    let scene = ui.scene().clone();
+    assert!(
+        ui.set_dropdown_command(owner, Some("oversized".into()))
+            .is_err()
+    );
+    assert_eq!(ui.command_id(owner), Some(&"owner".into()));
+    assert_eq!(ui.runtime.tree().preorder(), nodes);
+    assert_eq!(ui.runtime.focused(), focus);
+    assert_eq!(ui.scene(), &scene);
+    assert_eq!(ui.popup_depth(), 2);
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn oversized_live_submenu_rename_closes_the_chain_before_shaping_new_labels() {
+    let (mut ui, anchor) = setup();
+    let large_id = "a".repeat(600_000);
+    ui.commands_mut().register(large_id.clone(), "Action");
+    ui.commands_mut().register("owner", "Short");
+    ui.popup_menu_entries(
+        anchor,
+        &[
+            MenuEntry::Item(MenuItem::new("Static", large_id)),
+            MenuEntry::CommandSubmenu {
+                command: "owner".into(),
+                items: vec![entry("Child")],
+            },
+        ],
+    )
+    .unwrap();
+    ui.commands_mut().register("owner", "x".repeat(600_000));
+    frame(&mut ui);
+    assert!(!ui.popup_open());
+    assert!(ui.semantics().iter().all(|node| node.role != Role::Menu));
+    assert!(ui.runtime.focused().is_none_or(|id| ui.is_enabled(id)));
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
 fn hierarchical_keyboard_skips_disabled_and_separators_and_escape_closes_one_level() {
     let (mut ui, anchor) = setup();
     ui.activate(anchor).unwrap();

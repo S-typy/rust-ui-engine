@@ -15,6 +15,11 @@
                                  ToolTip="Подтвердить значение или выбрать другое действие">
                         <MenuItem Command="Confirm" />
                         <MenuItem Command="Clear" />
+                        <MenuSeparator />
+                        <MenuItem Header="Оформление">
+                            <MenuItem Command="Light" />
+                            <MenuItem Command="Dark" />
+                        </MenuItem>
                     </SplitButton>
                     <Button Command="Clear" KeyTip="N" Icon="Eraser" ToolTip="Очистить текст" />
                 </RibbonGroup>
@@ -23,6 +28,18 @@
                                   ToolTip="Закрепить документ" />
                     <Button Command="Confirm" Size="Small" KeyTip="E" />
                     <Button Command="Disabled" Size="Small" KeyTip="D" Icon="Lock" />
+                </RibbonGroup>
+                <RibbonGroup Id="Actions" Header="Действия" CollapsePriority="3">
+                    <DropDownButton Command="Actions" KeyTip="A" Icon="FolderOpen"
+                                    ToolTip="Открыть меню действий">
+                        <MenuItem Command="Confirm" />
+                        <MenuItem Header="Документ">
+                            <MenuItem Command="Pin" />
+                            <MenuItem Command="Clear" />
+                            <MenuSeparator />
+                            <MenuItem Command="Disabled" />
+                        </MenuItem>
+                    </DropDownButton>
                 </RibbonGroup>
             </RibbonTab>
             <RibbonTab Id="View" Header="Вид" KeyTip="V">

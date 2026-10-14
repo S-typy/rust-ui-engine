@@ -41,6 +41,7 @@ fn ribbon_preserves_command_model_and_normalizes_key_tips() {
     };
     validate_ribbon(&ribbon).unwrap();
     assert_eq!(ribbon.selected_tab.as_deref(), Some("Home"));
+    assert!(!ribbon.is_minimized);
     assert_eq!(ribbon.quick_access, ["Save", "Pin"]);
     assert_eq!(ribbon.tabs[0].key_tip, "H");
     assert_eq!(ribbon.tabs[1].context.as_deref(), Some("Text"));
@@ -48,12 +49,259 @@ fn ribbon_preserves_command_model_and_normalizes_key_tips() {
     assert_eq!(group.collapse_priority, u16::MAX);
     assert_eq!(group.items[0].key_tip, "SV");
     assert_eq!(group.items[0].size, RibbonItemSize::Large);
+    assert_eq!(group.items[0].min_size, RibbonItemSize::IconOnly);
     assert_eq!(group.items[0].icon, Some(IconSymbol::Save));
     assert_eq!(group.items[0].tool_tip.as_deref(), Some("Сохранить"));
     assert_eq!(group.items[1].kind, RibbonItemKindDefinition::ToggleButton);
     assert_eq!(group.items[1].size, RibbonItemSize::Small);
     assert_eq!(group.items[2].kind, RibbonItemKindDefinition::SplitButton);
-    assert_eq!(group.items[2].menu, ["Csv", "Json"]);
+    assert_eq!(
+        group.items[2].menu,
+        [
+            RibbonMenuEntryDefinition::Command("Csv".into()),
+            RibbonMenuEntryDefinition::Command("Json".into()),
+        ]
+    );
+}
+
+#[test]
+fn ribbon_size_limits_preserve_preferred_size_and_validate_each_minimum() {
+    for kind in ["Button", "ToggleButton", "SplitButton", "DropDownButton"] {
+        let menu = if matches!(kind, "SplitButton" | "DropDownButton") {
+            "<MenuItem Command='Leaf'/>"
+        } else {
+            ""
+        };
+        for (preferred, minimum, valid) in [
+            ("Large", "Large", true),
+            ("Large", "Small", true),
+            ("Large", "IconOnly", true),
+            ("Small", "Large", false),
+            ("Small", "Small", true),
+            ("Small", "IconOnly", true),
+            ("IconOnly", "IconOnly", false),
+            ("Large", "Medium", false),
+        ] {
+            let source = ribbon(&format!(
+                "<{kind} Command='Owner' KeyTip='O' Size='{preferred}' MinSize='{minimum}'>{menu}</{kind}>"
+            ));
+            let parsed = parse(&form(&source));
+            assert_eq!(parsed.is_ok(), valid, "{source}");
+            if valid {
+                let ElementKind::Ribbon(ribbon) = parsed.unwrap().content.kind else {
+                    panic!("Ribbon")
+                };
+                validate_ribbon(&ribbon).unwrap();
+                let item = &ribbon.tabs[0].groups[0].items[0];
+                assert_eq!(format!("{:?}", item.size), preferred);
+                assert_eq!(format!("{:?}", item.min_size), minimum);
+                let generated = compile(&form(&source)).unwrap();
+                assert!(generated.contains(&format!(
+                    "min_size: rust_desktop_ui_xaml::RibbonItemSize::{minimum}"
+                )));
+            }
+        }
+    }
+    let source = definition(&ribbon("<Button Command='Owner' KeyTip='O'/>"));
+    let mut invalid = source.clone();
+    invalid.tabs[0].groups[0].items[0].size = RibbonItemSize::IconOnly;
+    assert!(validate_ribbon(&invalid).unwrap_err().contains("Size"));
+    let mut invalid = source;
+    invalid.tabs[0].groups[0].items[0].size = RibbonItemSize::Small;
+    invalid.tabs[0].groups[0].items[0].min_size = RibbonItemSize::Large;
+    assert!(validate_ribbon(&invalid).unwrap_err().contains("MinSize"));
+}
+
+#[test]
+fn ribbon_minimized_state_and_nested_command_menus_compile_without_static_leaf_labels() {
+    let source = ribbon(
+        r#"<DropDownButton Command="Export" KeyTip="e" Size="Small" Icon="Save">
+            <MenuItem Header="Formats &quot;\&#10;🌍">
+                <MenuItem Command="Csv"/>
+                <MenuSeparator/>
+                <MenuItem Header="Advanced"><MenuItem Command="Json"/></MenuItem>
+            </MenuItem>
+            <Separator/>
+            <MenuItem Command="Other"/>
+        </DropDownButton>
+        <SplitButton Command="Save" KeyTip="s" Size="Small"><MenuItem Command="Other"/></SplitButton>"#,
+    ).replacen("<Ribbon>", "<Ribbon IsMinimized='True'>", 1);
+    let ribbon = definition(&source);
+    assert!(ribbon.is_minimized);
+    let items = &ribbon.tabs[0].groups[0].items;
+    assert_eq!(items[0].kind, RibbonItemKindDefinition::DropDownButton);
+    assert_eq!(items[0].size, RibbonItemSize::Small);
+    assert_eq!(items[1].kind, RibbonItemKindDefinition::SplitButton);
+    assert_eq!(items[1].size, RibbonItemSize::Small);
+    let RibbonMenuEntryDefinition::Submenu {
+        header,
+        items: submenu,
+    } = &items[0].menu[0]
+    else {
+        panic!("expected a submenu");
+    };
+    assert_eq!(header, "Formats \"\\\n🌍");
+    assert_eq!(submenu[0], RibbonMenuEntryDefinition::Command("Csv".into()));
+    assert_eq!(submenu[1], RibbonMenuEntryDefinition::Separator);
+    assert!(matches!(
+        submenu[2],
+        RibbonMenuEntryDefinition::Submenu { .. }
+    ));
+    assert_eq!(items[0].menu[1], RibbonMenuEntryDefinition::Separator);
+    assert_eq!(
+        items[0].menu[2],
+        RibbonMenuEntryDefinition::Command("Other".into())
+    );
+    validate_ribbon(&ribbon).unwrap();
+    let generated = compile(&form(&source)).unwrap();
+    for expected in [
+        "is_minimized: true",
+        "RibbonItemKindDefinition::DropDownButton",
+        "RibbonMenuEntryDefinition::Command(\"Csv\".into())",
+        "RibbonMenuEntryDefinition::Submenu { header: \"Formats \\\"\\\\\\n🌍\".into()",
+        "RibbonMenuEntryDefinition::Separator",
+    ] {
+        assert!(
+            generated.contains(expected),
+            "missing {expected}\n{generated}"
+        );
+    }
+    for value in ["False", "false"] {
+        assert!(
+            !definition(&source.replace("IsMinimized='True'", &format!("IsMinimized='{value}'")))
+                .is_minimized
+        );
+    }
+    for value in ["1", "0", "TRUE", "yes", "{Binding Minimized}"] {
+        let error = parse(&form(
+            &source.replace("IsMinimized='True'", &format!("IsMinimized='{value}'")),
+        ))
+        .unwrap_err();
+        assert!(error.line > 0 && error.column > 0);
+    }
+}
+
+#[test]
+fn ribbon_menu_parser_rejects_state_overrides_ambiguous_leaves_and_invalid_branches() {
+    for menu in [
+        "<MenuItem Header='Leaf' Command='Save'/>",
+        "<MenuItem Command='Save' IsEnabled='False'/>",
+        "<MenuItem Command='Save' IsChecked='True'/>",
+        "<MenuItem Command='Save' x:Name='Leaf'/>",
+        "<MenuItem Command='Save'><MenuSeparator/></MenuItem>",
+        "<MenuItem Command='Save'>text</MenuItem>",
+        "<MenuItem Command='Bad.Command'/>",
+        "<MenuItem Header='Branch'/>",
+        "<MenuItem Header=' '><MenuItem Command='Save'/></MenuItem>",
+        "<MenuItem Header='{Binding Header}'><MenuItem Command='Save'/></MenuItem>",
+        "<MenuItem><MenuItem Command='Save'/></MenuItem>",
+        "<MenuItem Header='Branch' IsEnabled='False'><MenuItem Command='Save'/></MenuItem>",
+        "<MenuSeparator Header='Rule'/>",
+        "<MenuSeparator><MenuItem Command='Save'/></MenuSeparator>",
+        "<Separator>text</Separator>",
+        "<MenuItem xmlns='' Command='Save'/>",
+        "<MenuSeparator xmlns='urn:other'/>",
+        "<Button Command='Save'/>",
+    ] {
+        for kind in ["SplitButton", "DropDownButton"] {
+            let source = ribbon(&format!(
+                "<{kind} Command='Owner' KeyTip='O'>{menu}</{kind}>"
+            ));
+            let error = parse(&form(&source)).expect_err(menu);
+            assert!(error.line > 0 && error.column > 0, "{menu}");
+        }
+    }
+}
+
+fn nested_menu(depth: usize) -> String {
+    let mut menu = "<MenuItem Command='Leaf'/>".to_owned();
+    for _ in 1..depth {
+        menu = format!("<MenuItem Header='Branch'>{menu}</MenuItem>");
+    }
+    menu
+}
+
+#[test]
+fn nested_ribbon_menu_limits_include_every_branch_separator_and_window_ancestor() {
+    let item =
+        |menu: &str| format!("<DropDownButton Command='Owner' KeyTip='O'>{menu}</DropDownButton>");
+    let source = ribbon(&item(&nested_menu(MAX_MENU_DEPTH)));
+    let parsed = definition(&source);
+    validate_ribbon(&parsed).unwrap();
+    assert!(
+        parse(&form(&ribbon(&item(&nested_menu(MAX_MENU_DEPTH + 1)))))
+            .unwrap_err()
+            .message
+            .contains("depth")
+    );
+    let mut nested = source;
+    for _ in 0..MAX_ELEMENT_DEPTH - (4 + MAX_MENU_DEPTH) {
+        nested = format!("<StackPanel>{nested}</StackPanel>");
+    }
+    assert!(parse(&form(&nested)).is_ok());
+    assert!(
+        parse(&form(&format!("<StackPanel>{nested}</StackPanel>")))
+            .unwrap_err()
+            .message
+            .contains("depth")
+    );
+
+    // Ribbon, tab, group and button consume four nodes; menu separators count.
+    let menu = format!(
+        "{}<MenuItem Command='Leaf'/>",
+        "<MenuSeparator/>".repeat(MAX_ELEMENTS - 5)
+    );
+    let source = ribbon(&item(&menu));
+    validate_ribbon(&definition(&source)).unwrap();
+    assert!(
+        parse(&form(&ribbon(&item(&format!("{menu}<Separator/>")))))
+            .unwrap_err()
+            .message
+            .contains("count")
+    );
+}
+
+#[test]
+fn manually_constructed_ribbon_menus_receive_the_same_shape_depth_count_and_text_limits() {
+    let source = definition(&ribbon(
+        "<DropDownButton Command='Owner' KeyTip='O'><MenuItem Command='Leaf'/></DropDownButton>",
+    ));
+    for invalid_menu in [
+        Vec::new(),
+        vec![RibbonMenuEntryDefinition::Command("bad.command".into())],
+        vec![RibbonMenuEntryDefinition::Submenu {
+            header: "Branch".into(),
+            items: Vec::new(),
+        }],
+        vec![RibbonMenuEntryDefinition::Submenu {
+            header: " ".into(),
+            items: vec![RibbonMenuEntryDefinition::Command("Leaf".into())],
+        }],
+        vec![RibbonMenuEntryDefinition::Separator; MAX_ELEMENTS],
+        vec![RibbonMenuEntryDefinition::Submenu {
+            header: "x".repeat(MAX_SOURCE_BYTES),
+            items: vec![RibbonMenuEntryDefinition::Command("Leaf".into())],
+        }],
+    ] {
+        let mut invalid = source.clone();
+        invalid.tabs[0].groups[0].items[0].menu = invalid_menu;
+        assert!(validate_ribbon(&invalid).is_err());
+    }
+    let mut nested = RibbonMenuEntryDefinition::Command("Leaf".into());
+    for _ in 1..MAX_MENU_DEPTH {
+        nested = RibbonMenuEntryDefinition::Submenu {
+            header: "Branch".into(),
+            items: vec![nested],
+        };
+    }
+    let mut boundary = source;
+    boundary.tabs[0].groups[0].items[0].menu = vec![nested.clone()];
+    validate_ribbon(&boundary).unwrap();
+    boundary.tabs[0].groups[0].items[0].menu = vec![RibbonMenuEntryDefinition::Submenu {
+        header: "One more level".into(),
+        items: vec![nested],
+    }];
+    assert!(validate_ribbon(&boundary).unwrap_err().contains("depth"));
 }
 
 #[test]
@@ -77,7 +325,7 @@ fn ribbon_codegen_escapes_all_text_fields_and_emits_typed_model() {
         "icon: Some(rust_desktop_ui_xaml::IconSymbol::Pin)",
         "key_tip: \"P\".into()",
         "collapse_priority: 12",
-        "menu: vec![\"Csv\".into()]",
+        "menu: vec![rust_desktop_ui_xaml::RibbonMenuEntryDefinition::Command(\"Csv\".into())]",
         "context: Some(\"Selection\".into())",
     ] {
         assert!(
@@ -114,12 +362,10 @@ fn ribbon_rejects_internal_layout_state_unknown_controls_and_bindings() {
 }
 
 #[test]
-fn ribbon_split_and_qat_references_accept_only_flat_command_ids() {
+fn ribbon_rejects_ambiguous_menus_and_preserves_command_only_qat_references() {
     for item in [
         "<SplitButton Command='Save' KeyTip='S'/>",
-        "<SplitButton Command='Save' KeyTip='S' Size='Small'><MenuItem Command='Other'/></SplitButton>",
         "<SplitButton Command='Save' KeyTip='S'><MenuItem Header='Other' Command='Other'/></SplitButton>",
-        "<SplitButton Command='Save' KeyTip='S'><Separator/></SplitButton>",
         "<SplitButton Command='Save' KeyTip='S'><MenuItem/></SplitButton>",
         "<SplitButton Command='Save' KeyTip='S'><MenuItem Command='Other'><MenuItem Command='Save'/></MenuItem></SplitButton>",
     ] {
@@ -330,14 +576,16 @@ fn manual_ribbon_validation_rejects_structural_errors_before_mount() {
     ));
     validate_ribbon(&source).unwrap();
     let mut invalid = source.clone();
-    invalid.tabs[0].groups[0].items[1].size = RibbonItemSize::Small;
+    invalid.tabs[0].groups[0].items[1].menu.clear();
     assert!(
         validate_ribbon(&invalid)
             .unwrap_err()
             .contains("SplitButton")
     );
     let mut invalid = source.clone();
-    invalid.tabs[0].groups[0].items[0].menu.push("Other".into());
+    invalid.tabs[0].groups[0].items[0]
+        .menu
+        .push(RibbonMenuEntryDefinition::Command("Other".into()));
     assert!(validate_ribbon(&invalid).is_err());
     let mut invalid = source.clone();
     invalid.tabs[0].groups[0].items[1].key_tip = "s".into();

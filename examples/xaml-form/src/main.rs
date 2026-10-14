@@ -35,6 +35,7 @@ fn start() -> Result<(), String> {
     let mut controls = false;
     let mut smoke_test = false;
     let mut diagnostics = false;
+    let mut ribbon_minimized = false;
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
             "--dark" => theme = Some(Theme::Dark),
@@ -42,9 +43,10 @@ fn start() -> Result<(), String> {
             "--controls" => controls = true,
             "--smoke-test" => smoke_test = true,
             "--diagnostics" => diagnostics = true,
+            "--ribbon-minimized" => ribbon_minimized = true,
             "--help" | "-h" => {
                 println!(
-                    "xaml-form [--controls] [--light | --dark] [--smoke-test] [--diagnostics]"
+                    "xaml-form [--controls] [--ribbon-minimized] [--light | --dark] [--smoke-test] [--diagnostics]"
                 );
                 println!(
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
@@ -64,6 +66,21 @@ fn start() -> Result<(), String> {
     };
     if let Some(theme) = theme {
         definition.theme = theme;
+    }
+    if ribbon_minimized {
+        fn minimize(element: &mut rust_desktop_ui_xaml::ElementDefinition) {
+            use rust_desktop_ui_xaml::ElementKind;
+            match &mut element.kind {
+                ElementKind::Ribbon(ribbon) => ribbon.is_minimized = true,
+                ElementKind::StackPanel(panel) => {
+                    for child in &mut panel.children {
+                        minimize(child);
+                    }
+                }
+                _ => {}
+            }
+        }
+        minimize(&mut definition.content);
     }
     let options = RunOptions {
         width: definition.width,

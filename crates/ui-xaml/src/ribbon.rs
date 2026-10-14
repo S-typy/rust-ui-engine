@@ -1,8 +1,8 @@
 //! Static command references for the compiled Ribbon profile.
 use crate::{
     Diagnostic, ElementDefinition, ElementKind, IconSymbol, MAX_ELEMENT_DEPTH, MAX_ELEMENTS,
-    MAX_TOOLTIP_BYTES, UI_NAMESPACE, at_attribute, at_node, icon_symbol, identifier,
-    reject_extension, require_element, require_empty_content,
+    MAX_MENU_DEPTH, MAX_TOOLTIP_BYTES, UI_NAMESPACE, at_attribute, at_node, icon_symbol,
+    identifier, reject_extension, require_element, require_empty_content,
 };
 use roxmltree::Node;
 use std::collections::HashSet;
@@ -12,6 +12,8 @@ use std::collections::HashSet;
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RibbonDefinition {
     pub selected_tab: Option<String>,
+    /// Initial minimized state; the runtime owns subsequent reveal transitions.
+    pub is_minimized: bool,
     pub quick_access: Vec<String>,
     pub tabs: Vec<RibbonTabDefinition>,
 }
@@ -33,17 +35,48 @@ pub struct RibbonGroupDefinition {
     pub items: Vec<RibbonItemDefinition>,
 }
 
-/// A command placement. SplitButton owns a nonempty flat menu of command IDs.
-/// Its primary command and secondary menu have independent activation.
-#[derive(Clone, Debug, Default, PartialEq)]
+/// A command placement. SplitButton and DropDownButton own nonempty menus.
+/// SplitButton's primary command and secondary menu activate independently;
+/// DropDownButton uses its command for presentation and opens only its menu.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RibbonItemDefinition {
     pub command: String,
     pub key_tip: String,
+    /// Preferred expanded presentation: Large or Small.
     pub size: RibbonItemSize,
+    /// Smallest permitted adaptive presentation, defaulting to IconOnly.
+    pub min_size: RibbonItemSize,
     pub kind: RibbonItemKindDefinition,
     pub icon: Option<IconSymbol>,
     pub tool_tip: Option<String>,
-    pub menu: Vec<String>,
+    pub menu: Vec<RibbonMenuEntryDefinition>,
+}
+
+impl Default for RibbonItemDefinition {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+            key_tip: String::new(),
+            size: RibbonItemSize::Large,
+            min_size: RibbonItemSize::IconOnly,
+            kind: RibbonItemKindDefinition::Button,
+            icon: None,
+            tool_tip: None,
+            menu: Vec::new(),
+        }
+    }
+}
+
+/// Command leaves use the registry's current label and state. A submenu has its
+/// own static header and children; it never executes a command itself.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RibbonMenuEntryDefinition {
+    Command(String),
+    Submenu {
+        header: String,
+        items: Vec<RibbonMenuEntryDefinition>,
+    },
+    Separator,
 }
 
 /// Validate a manually constructed Ribbon before mounting it. This checks the
@@ -111,6 +144,7 @@ pub fn validate_ribbon(ribbon: &RibbonDefinition) -> Result<(), String> {
             }
             for item in &group.items {
                 count += 1;
+                validate_sizes(item.size, item.min_size)?;
                 check_identifier(&item.command, "Command")?;
                 text(&item.command)?;
                 text(&item.key_tip)?;
@@ -125,20 +159,20 @@ pub fn validate_ribbon(ribbon: &RibbonDefinition) -> Result<(), String> {
                     }
                     text(tool_tip)?;
                 }
-                if item.kind == RibbonItemKindDefinition::SplitButton {
-                    if item.size != RibbonItemSize::Large || item.menu.is_empty() {
+                if matches!(
+                    item.kind,
+                    RibbonItemKindDefinition::SplitButton
+                        | RibbonItemKindDefinition::DropDownButton
+                ) {
+                    if item.menu.is_empty() {
                         return Err(
-                            "Ribbon SplitButton requires Large size and a nonempty menu".into()
+                            "Ribbon SplitButton and DropDownButton require a nonempty menu".into(),
                         );
                     }
                 } else if !item.menu.is_empty() {
-                    return Err("Only Ribbon SplitButton accepts menu commands".into());
+                    return Err("Only Ribbon SplitButton and DropDownButton accept menus".into());
                 }
-                for command in &item.menu {
-                    count += 1;
-                    check_identifier(command, "Command")?;
-                    text(command)?;
-                }
+                validate_menu_entries(&item.menu, 1, &mut count, &mut text)?;
                 if count > MAX_ELEMENTS {
                     return Err("Ribbon exceeds the element count limit".into());
                 }
@@ -165,6 +199,47 @@ pub fn validate_ribbon(ribbon: &RibbonDefinition) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_sizes(preferred: RibbonItemSize, minimum: RibbonItemSize) -> Result<(), String> {
+    if preferred == RibbonItemSize::IconOnly
+        || (preferred == RibbonItemSize::Small && minimum == RibbonItemSize::Large)
+    {
+        return Err("Ribbon Size must be Large or Small and MinSize must not exceed Size".into());
+    }
+    Ok(())
+}
+
+fn validate_menu_entries(
+    entries: &[RibbonMenuEntryDefinition],
+    depth: usize,
+    count: &mut usize,
+    text: &mut impl FnMut(&str) -> Result<(), String>,
+) -> Result<(), String> {
+    if !entries.is_empty() && depth > MAX_MENU_DEPTH {
+        return Err("Ribbon menu exceeds the 8-level menu depth limit".into());
+    }
+    for entry in entries {
+        *count += 1;
+        if *count > MAX_ELEMENTS {
+            return Err("Ribbon exceeds the element count limit".into());
+        }
+        match entry {
+            RibbonMenuEntryDefinition::Command(command) => {
+                check_identifier(command, "Command")?;
+                text(command)?;
+            }
+            RibbonMenuEntryDefinition::Submenu { header, items } => {
+                if header.trim().is_empty() || items.is_empty() {
+                    return Err("Ribbon submenu requires a nonempty Header and children".into());
+                }
+                text(header)?;
+                validate_menu_entries(items, depth + 1, count, text)?;
+            }
+            RibbonMenuEntryDefinition::Separator => {}
+        }
+    }
+    Ok(())
+}
+
 fn check_identifier(value: &str, property: &str) -> Result<(), String> {
     let mut chars = value.chars();
     if !chars
@@ -182,6 +257,9 @@ pub enum RibbonItemSize {
     #[default]
     Large,
     Small,
+    /// Smallest adaptive presentation; accepted for MinSize, not preferred Size.
+    /// Without an icon the renderer retains a text fallback.
+    IconOnly,
 }
 
 /// ToggleButton requires a command already registered as a toggle at mount.
@@ -191,6 +269,7 @@ pub enum RibbonItemKindDefinition {
     Button,
     ToggleButton,
     SplitButton,
+    DropDownButton,
 }
 
 pub(super) fn count(element: &ElementDefinition) -> usize {
@@ -467,10 +546,11 @@ fn parse_item(
         "Button" => RibbonItemKindDefinition::Button,
         "ToggleButton" => RibbonItemKindDefinition::ToggleButton,
         "SplitButton" => RibbonItemKindDefinition::SplitButton,
+        "DropDownButton" => RibbonItemKindDefinition::DropDownButton,
         _ => {
             return Err(at_node(
                 node,
-                "RibbonGroup supports Button, ToggleButton and SplitButton command items",
+                "RibbonGroup supports Button, ToggleButton, SplitButton and DropDownButton command items",
             ));
         }
     };
@@ -488,14 +568,26 @@ fn parse_item(
             "Size" => {
                 item.size = match attribute.value() {
                     "Large" => RibbonItemSize::Large,
-                    "Small" if kind != RibbonItemKindDefinition::SplitButton => {
-                        RibbonItemSize::Small
-                    }
+                    "Small" => RibbonItemSize::Small,
                     _ => {
                         return Err(at_attribute(
                             node.document(),
                             attribute,
-                            "Ribbon Size must be Large or Small; SplitButton supports Large only",
+                            "Ribbon Size must be Large or Small",
+                        ));
+                    }
+                };
+            }
+            "MinSize" => {
+                item.min_size = match attribute.value() {
+                    "Large" => RibbonItemSize::Large,
+                    "Small" => RibbonItemSize::Small,
+                    "IconOnly" => RibbonItemSize::IconOnly,
+                    _ => {
+                        return Err(at_attribute(
+                            node.document(),
+                            attribute,
+                            "Ribbon MinSize must be Large, Small or IconOnly",
                         ));
                     }
                 };
@@ -520,28 +612,119 @@ fn parse_item(
             }
         }
     }
+    validate_sizes(item.size, item.min_size).map_err(|message| at_node(node, message))?;
     nonempty(node, &item.command, "Command")?;
     for child in node.children() {
         if child.is_element() {
-            if kind != RibbonItemKindDefinition::SplitButton {
+            if !matches!(
+                kind,
+                RibbonItemKindDefinition::SplitButton | RibbonItemKindDefinition::DropDownButton
+            ) {
                 return Err(at_node(
                     child,
-                    "Only Ribbon SplitButton accepts child command references",
+                    "Only Ribbon SplitButton and DropDownButton accept menus",
                 ));
             }
-            bounded(child, depth + 1, count)?;
-            item.menu.push(command_reference(child, "MenuItem")?);
+            item.menu
+                .push(parse_menu_entry(child, depth + 1, 1, count)?);
         } else {
             require_empty_content(child)?;
         }
     }
-    if kind == RibbonItemKindDefinition::SplitButton && item.menu.is_empty() {
+    if matches!(
+        kind,
+        RibbonItemKindDefinition::SplitButton | RibbonItemKindDefinition::DropDownButton
+    ) && item.menu.is_empty()
+    {
         return Err(at_node(
             node,
-            "Ribbon SplitButton requires nonempty MenuItem command references",
+            "Ribbon SplitButton and DropDownButton require a nonempty menu",
         ));
     }
     Ok(item)
+}
+
+fn parse_menu_entry(
+    node: Node<'_, '_>,
+    depth: usize,
+    menu_depth: usize,
+    count: &mut usize,
+) -> Result<RibbonMenuEntryDefinition, Diagnostic> {
+    bounded(node, depth, count)?;
+    if menu_depth > MAX_MENU_DEPTH {
+        return Err(at_node(
+            node,
+            "Ribbon menu exceeds the 8-level menu depth limit",
+        ));
+    }
+    checked_attributes(node)?;
+    if matches!(node.tag_name().name(), "MenuSeparator" | "Separator") {
+        if node.attributes().len() != 0 {
+            return Err(at_node(
+                node,
+                "A Ribbon menu separator accepts no attributes",
+            ));
+        }
+        for child in node.children() {
+            if child.is_element() {
+                return Err(at_node(
+                    child,
+                    "A Ribbon menu separator accepts no children",
+                ));
+            }
+            require_empty_content(child)?;
+        }
+        return Ok(RibbonMenuEntryDefinition::Separator);
+    }
+    require_element(node, "MenuItem")?;
+    let mut command = None;
+    let mut header = None;
+    for attribute in node.attributes() {
+        match attribute.name() {
+            "Command" => {
+                identifier(node.document(), attribute, "Command")?;
+                command = Some(attribute.value().to_owned());
+            }
+            "Header" => header = Some(attribute.value().to_owned()),
+            _ => {
+                return Err(at_attribute(
+                    node.document(),
+                    attribute,
+                    "Ribbon MenuItem accepts Command for a leaf or Header for a submenu",
+                ));
+            }
+        }
+    }
+    if let Some(command) = command {
+        if header.is_some() {
+            return Err(at_node(
+                node,
+                "Ribbon command leaves accept only Command; labels belong to CommandRegistry",
+            ));
+        }
+        for child in node.children() {
+            if child.is_element() {
+                return Err(at_node(child, "A Ribbon command leaf accepts no children"));
+            }
+            require_empty_content(child)?;
+        }
+        return Ok(RibbonMenuEntryDefinition::Command(command));
+    }
+    let header = header
+        .ok_or_else(|| at_node(node, "Ribbon MenuItem requires Command or a submenu Header"))?;
+    nonempty(node, &header, "Header")?;
+    let mut items = Vec::new();
+    for child in node.children() {
+        if child.is_element() {
+            items.push(parse_menu_entry(child, depth + 1, menu_depth + 1, count)?);
+        } else {
+            require_empty_content(child)?;
+        }
+    }
+    if items.is_empty() {
+        return Err(at_node(node, "Ribbon submenu requires nonempty children"));
+    }
+    Ok(RibbonMenuEntryDefinition::Submenu { header, items })
 }
 
 fn command_reference(node: Node<'_, '_>, element: &str) -> Result<String, Diagnostic> {

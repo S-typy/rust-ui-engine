@@ -46,6 +46,7 @@ impl Form {
             ("Light", "Светлая"),
             ("Dark", "Тёмная"),
             ("Disabled", "Недоступно"),
+            ("Actions", "Действия"),
         ] {
             ui.commands_mut().register(id, label);
         }
@@ -63,6 +64,8 @@ impl Form {
                     ..Default::default()
                 },
             })
+            .map_err(err)?;
+        ui.update(Size::new(definition.width as f32, definition.height as f32))
             .map_err(err)?;
         let root = ui.root();
         let view = MountedView::mount(&mut ui, root, &definition.content)?;

@@ -225,6 +225,7 @@ struct Control {
     kind: Kind,
     label: String,
     command: Option<CommandId>,
+    dropdown_command: Option<CommandId>,
     enabled: bool,
     checked: bool,
     role: Option<Role>,
@@ -246,6 +247,7 @@ struct Control {
     split_parts: Option<SplitButton>,
     split_owner: Option<WidgetId>,
     ribbon_surface: bool,
+    ribbon_command: bool,
     ribbon_caption: bool,
     explicit_button_style: bool,
     single_line: bool,
@@ -256,6 +258,15 @@ struct Control {
     caret: TextCaret,
 }
 impl Control {
+    fn metadata_command(&self) -> Option<&CommandId> {
+        self.dropdown_command.as_ref().or(self.command.as_ref())
+    }
+    fn display_label<'a>(&'a self, commands: &'a CommandRegistry) -> &'a str {
+        self.dropdown_command
+            .as_ref()
+            .and_then(|command| commands.label(command))
+            .unwrap_or(&self.label)
+    }
     fn check_state(&self, commands: &CommandRegistry) -> Option<bool> {
         if let Some(command) = &self.command {
             commands.checked(command)
@@ -386,7 +397,7 @@ impl Controls {
     /// or checked state. Unbound controls and removed IDs return `None`.
     pub fn command_id(&self, id: WidgetId) -> Option<&CommandId> {
         self.runtime.tree().node(id)?;
-        self.controls.get(&id)?.command.as_ref()
+        self.controls.get(&id)?.metadata_command()
     }
     pub fn scene(&self) -> &Scene {
         &self.scene
@@ -953,6 +964,7 @@ impl Controls {
                 kind,
                 label,
                 command,
+                dropdown_command: None,
                 enabled: true,
                 checked: false,
                 role: None,
@@ -974,6 +986,7 @@ impl Controls {
                 split_parts: None,
                 split_owner: None,
                 ribbon_surface: false,
+                ribbon_command: false,
                 ribbon_caption: false,
                 explicit_button_style: false,
                 single_line: false,
@@ -1561,6 +1574,10 @@ impl Controls {
         // Ancestor policies and the placement's own availability remain gates.
         control.enabled
             && node.props.visible
+            && control
+                .dropdown_command
+                .as_ref()
+                .is_none_or(|command| self.commands.enabled(command))
             && self
                 .runtime
                 .tree()
@@ -1581,8 +1598,7 @@ impl Controls {
                 .map_or(node.props.enabled, |control| {
                     control.enabled
                         && control
-                            .command
-                            .as_ref()
+                            .metadata_command()
                             .is_none_or(|command| self.commands.enabled(command))
                 });
             if !enabled {
@@ -1708,8 +1724,7 @@ impl Controls {
                     id,
                     control.enabled
                         && control
-                            .command
-                            .as_ref()
+                            .metadata_command()
                             .is_none_or(|command| self.commands.enabled(command)),
                 )
             })
@@ -2647,7 +2662,7 @@ impl Controls {
                         &mut self.engine,
                         bounds,
                         clip,
-                        &control.label,
+                        control.display_label(&self.commands),
                         self.theme,
                     )?;
                     continue;
@@ -2763,7 +2778,14 @@ impl Controls {
                     append_clipped(&mut self.scene, custom, clip);
                 }
                 if control.button_content_layout != ButtonContentLayout::Leading {
-                    let label = self.button_paint_label(id).to_owned();
+                    let label = if control.ribbon_command {
+                        self.button_paint_label(id)
+                            .split_whitespace()
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    } else {
+                        self.button_paint_label(id).to_owned()
+                    };
                     button_presentation::paint_content(
                         &mut self.scene,
                         &mut self.engine,
@@ -2788,11 +2810,11 @@ impl Controls {
                         &mut self.engine,
                         text_bounds,
                         clip,
-                        &control.label,
+                        control.display_label(&self.commands),
                         style,
                         icon,
                     )?;
-                } else if !control.label.is_empty()
+                } else if !control.display_label(&self.commands).is_empty()
                     && text_bounds.width > 0.0
                     && text_bounds.height > 0.0
                 {
@@ -2801,7 +2823,7 @@ impl Controls {
                         clip: text_bounds
                             .intersection(clip)
                             .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
-                        text: control.label.clone(),
+                        text: control.display_label(&self.commands).to_owned(),
                         font_size: style.font_size,
                         color: style.foreground,
                         weight: 400,
@@ -2940,7 +2962,7 @@ impl Controls {
                 clip,
                 if enabled { tokens.text } else { tokens.muted },
             );
-            let mut label = control.label.clone();
+            let mut label = control.display_label(&self.commands).to_owned();
             let editable = matches!(control.kind, Kind::TextBox(_));
             let align = if control.kind.clickable()
                 && !matches!(control.kind, Kind::CheckBox | Kind::MenuItem)
@@ -3247,9 +3269,9 @@ impl Controls {
                     role,
                     label: control
                         .automation_name
-                        .as_ref()
-                        .unwrap_or(&control.label)
-                        .clone(),
+                        .as_deref()
+                        .unwrap_or_else(|| control.display_label(&self.commands))
+                        .to_owned(),
                     value,
                     checked,
                     selected,

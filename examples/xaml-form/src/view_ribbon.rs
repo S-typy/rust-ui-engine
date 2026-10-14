@@ -1,11 +1,12 @@
 //! Bridge from the bounded compiled Ribbon profile to retained command controls.
 use rust_desktop_ui_controls::{
     ButtonIcon, Controls, Ribbon, RibbonCommandAppearance, RibbonGroup, RibbonItem, RibbonItemKind,
-    RibbonModel, RibbonTab,
+    RibbonItemSize as RuntimeSize, RibbonMenuEntry, RibbonModel, RibbonTab,
 };
 use rust_desktop_ui_core::WidgetId;
 use rust_desktop_ui_xaml::{
-    RibbonDefinition, RibbonItemKindDefinition, RibbonItemSize, validate_ribbon,
+    RibbonDefinition, RibbonItemKindDefinition, RibbonItemSize, RibbonMenuEntryDefinition,
+    validate_ribbon,
 };
 use std::collections::HashMap;
 
@@ -71,14 +72,19 @@ pub(crate) fn build_ribbon(ui: &Controls, definition: &RibbonDefinition) -> Resu
                     appearance.tool_tip = Some(tip.clone());
                 }
                 let kind = if item.kind == RibbonItemKindDefinition::SplitButton {
-                    RibbonItemKind::Split {
-                        menu: item.menu.iter().map(|id| id.as_str().into()).collect(),
+                    RibbonItemKind::SplitMenu {
+                        menu: menu_entries(&item.menu),
+                    }
+                } else if item.kind == RibbonItemKindDefinition::DropDownButton {
+                    RibbonItemKind::DropDown {
+                        menu: menu_entries(&item.menu),
                     }
                 } else {
                     // Toggle behavior belongs to the registry, never a presentation hint.
                     match item.size {
                         RibbonItemSize::Large => RibbonItemKind::Large,
                         RibbonItemSize::Small => RibbonItemKind::Small,
+                        RibbonItemSize::IconOnly => unreachable!("validated preferred size"),
                     }
                 };
                 items.push(RibbonItem::new(item.command.as_str(), kind, &item.key_tip));
@@ -117,25 +123,62 @@ pub(crate) fn build_ribbon(ui: &Controls, definition: &RibbonDefinition) -> Resu
             .set_command_appearance(command, appearance)
             .map_err(err)?;
     }
+    for tab in &definition.tabs {
+        for item in tab.groups.iter().flat_map(|group| &group.items) {
+            ribbon
+                .set_item_size_limits(&tab.id, &item.key_tip, size(item.size), size(item.min_size))
+                .map_err(err)?;
+        }
+    }
+    ribbon.set_minimized(definition.is_minimized);
     Ok(ribbon)
 }
 
-pub(crate) fn commands(definition: &RibbonDefinition) -> Vec<String> {
-    definition
-        .quick_access
+fn size(size: RibbonItemSize) -> RuntimeSize {
+    match size {
+        RibbonItemSize::Large => RuntimeSize::Large,
+        RibbonItemSize::Small => RuntimeSize::Small,
+        RibbonItemSize::IconOnly => RuntimeSize::IconOnly,
+    }
+}
+
+fn menu_entries(entries: &[RibbonMenuEntryDefinition]) -> Vec<RibbonMenuEntry> {
+    entries
         .iter()
-        .cloned()
-        .chain(
-            definition
-                .tabs
-                .iter()
-                .flat_map(|tab| &tab.groups)
-                .flat_map(|group| &group.items)
-                .flat_map(|item| {
-                    std::iter::once(item.command.clone()).chain(item.menu.iter().cloned())
-                }),
-        )
+        .map(|entry| match entry {
+            RibbonMenuEntryDefinition::Command(command) => {
+                RibbonMenuEntry::Command(command.as_str().into())
+            }
+            RibbonMenuEntryDefinition::Submenu { header, items } => RibbonMenuEntry::Submenu {
+                header: header.clone(),
+                items: menu_entries(items),
+            },
+            RibbonMenuEntryDefinition::Separator => RibbonMenuEntry::Separator,
+        })
         .collect()
+}
+
+pub(crate) fn commands(definition: &RibbonDefinition) -> Vec<String> {
+    fn collect(entries: &[RibbonMenuEntryDefinition], commands: &mut Vec<String>) {
+        for entry in entries {
+            match entry {
+                RibbonMenuEntryDefinition::Command(command) => commands.push(command.clone()),
+                RibbonMenuEntryDefinition::Submenu { items, .. } => collect(items, commands),
+                RibbonMenuEntryDefinition::Separator => {}
+            }
+        }
+    }
+    let mut commands = definition.quick_access.clone();
+    for item in definition
+        .tabs
+        .iter()
+        .flat_map(|tab| &tab.groups)
+        .flat_map(|group| &group.items)
+    {
+        commands.push(item.command.clone());
+        collect(&item.menu, &mut commands);
+    }
+    commands
 }
 
 /// Nested model nodes count towards the same budget as ordinary XAML elements.
@@ -148,12 +191,28 @@ pub(crate) fn nested_size(definition: &RibbonDefinition) -> (usize, usize) {
         for group in &tab.groups {
             count += 1;
             for item in &group.items {
-                count += 1 + item.menu.len();
-                depth = depth.max(if item.menu.is_empty() { 4 } else { 5 });
+                count += 1;
+                depth = depth.max(4);
+                count_menu(&item.menu, 5, &mut count, &mut depth);
             }
         }
     }
     (count, depth)
+}
+
+fn count_menu(
+    entries: &[RibbonMenuEntryDefinition],
+    level: usize,
+    count: &mut usize,
+    depth: &mut usize,
+) {
+    for entry in entries {
+        *count += 1;
+        *depth = (*depth).max(level);
+        if let RibbonMenuEntryDefinition::Submenu { items, .. } = entry {
+            count_menu(items, level + 1, count, depth);
+        }
+    }
 }
 
 fn err(error: impl std::fmt::Display) -> String {

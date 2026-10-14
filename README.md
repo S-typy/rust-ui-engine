@@ -16,13 +16,17 @@ Linux/macOS GPU execution still need the checks recorded in the
 The default [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) combines a
 command-oriented Ribbon with an editable form. Declare tabs, groups, quick-access
 commands and large or small buttons in XAML; register command labels, availability,
-toggle state and handlers in Rust. Split buttons open a separate command menu.
-Alt or F10 activates Ribbon KeyTips, and narrow windows collapse groups into menus.
+toggle state and handlers in Rust. Split buttons and dropdowns support nested
+command menus. Alt or F10 activates Ribbon KeyTips. As windows narrow, commands
+reduce from large to small or icon-only presentations before groups collapse.
 
 The Ribbon uses a Fluent presentation with large icons above two-line captions,
 compact icon buttons in quick access, underlined tabs and a rounded command
 surface with group separators. Split buttons share one surface with separate
 action and menu areas. KeyTip badges leave command labels and layout unchanged.
+The minimize button leaves quick access and tabs visible; selecting a tab opens
+the commands temporarily, and Escape closes them. `MinSize` keeps selected commands
+from reducing past their declared size.
 
 The compiled profile also provides nested stack panels,
 labels, single-line edit boxes, buttons, toggle buttons, checkboxes and radio groups. Buttons
@@ -37,6 +41,7 @@ Edit the XAML and rebuild:
 ```sh
 cargo run --release --locked -p xaml-form
 cargo run --release --locked -p xaml-form -- --dark
+cargo run --release --locked -p xaml-form -- --ribbon-minimized
 cargo run --release --locked -p xaml-form -- --controls
 ```
 

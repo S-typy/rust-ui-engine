@@ -178,7 +178,7 @@ impl Controls {
                     },
                 ))
             }
-            ButtonContentLayout::Leading => {
+            ButtonContentLayout::Leading | ButtonContentLayout::IconOnly => {
                 let primary = self.measure_button_content(
                     label,
                     &style,
@@ -191,10 +191,14 @@ impl Controls {
                     primary.height.max(SPLIT_ARROW_WIDTH),
                 ))
             }
-            ButtonContentLayout::IconOnly => Err(ControlError::Invalid(
-                "Split presentation requires Leading or Above layout".into(),
-            )),
         }
+    }
+
+    pub(crate) fn set_ribbon_command(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.require_content_button(id)?;
+        self.controls.get_mut(&id).unwrap().ribbon_command = true;
+        self.scene_dirty = true;
+        Ok(())
     }
 
     pub(crate) fn set_ribbon_surface(&mut self, id: WidgetId) -> Result<(), ControlError> {
@@ -245,9 +249,10 @@ impl Controls {
                 .controls
                 .get(&split.container)
                 .is_some_and(|control| matches!(control.kind, Kind::Panel))
-            || layout == ButtonContentLayout::IconOnly
         {
-            return Err(ControlError::Invalid("Split presentation requires two distinct child buttons and Leading or Above layout".into()));
+            return Err(ControlError::Invalid(
+                "Split presentation requires two distinct child buttons".into(),
+            ));
         }
         let above = layout == ButtonContentLayout::Above;
         let has_icon = self.controls[&split.primary].button_icon.is_some();
@@ -302,7 +307,7 @@ impl Controls {
         } else if above {
             ButtonContentLayout::Above
         } else {
-            ButtonContentLayout::Leading
+            layout
         };
         self.controls
             .get_mut(&split.dropdown)
@@ -391,7 +396,7 @@ impl Controls {
                 .filter(|control| control.button_icon.is_some())
                 .map_or("", |control| control.label.as_str());
         }
-        &control.label
+        control.display_label(&self.commands)
     }
 
     pub(super) fn paint_key_tips(&mut self) -> Result<(), ControlError> {

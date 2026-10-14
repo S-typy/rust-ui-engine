@@ -137,8 +137,8 @@ fn ribbon_definition(ribbon: &crate::RibbonDefinition) -> String {
     let tabs = ribbon.tabs.iter().map(|tab| {
         let groups = tab.groups.iter().map(|group| {
             let items = group.items.iter().map(|item| format!(
-                "rust_desktop_ui_xaml::RibbonItemDefinition {{ command: {:?}.into(), key_tip: {:?}.into(), size: rust_desktop_ui_xaml::RibbonItemSize::{:?}, kind: rust_desktop_ui_xaml::RibbonItemKindDefinition::{:?}, icon: {}, tool_tip: {}, menu: {} }}",
-                item.command, item.key_tip, item.size, item.kind, optional_icon(item.icon), optional_string(&item.tool_tip), string_vec(&item.menu),
+                "rust_desktop_ui_xaml::RibbonItemDefinition {{ command: {:?}.into(), key_tip: {:?}.into(), size: rust_desktop_ui_xaml::RibbonItemSize::{:?}, min_size: rust_desktop_ui_xaml::RibbonItemSize::{:?}, kind: rust_desktop_ui_xaml::RibbonItemKindDefinition::{:?}, icon: {}, tool_tip: {}, menu: {} }}",
+                item.command, item.key_tip, item.size, item.min_size, item.kind, optional_icon(item.icon), optional_string(&item.tool_tip), ribbon_menu_entries(&item.menu),
             )).collect::<Vec<_>>().join(",");
             format!(
                 "rust_desktop_ui_xaml::RibbonGroupDefinition {{ id: {:?}.into(), header: {:?}.into(), collapse_priority: {}, items: vec![{}] }}",
@@ -151,11 +151,27 @@ fn ribbon_definition(ribbon: &crate::RibbonDefinition) -> String {
         )
     }).collect::<Vec<_>>().join(",");
     format!(
-        "rust_desktop_ui_xaml::RibbonDefinition {{ selected_tab: {}, quick_access: {}, tabs: vec![{}] }}",
+        "rust_desktop_ui_xaml::RibbonDefinition {{ selected_tab: {}, is_minimized: {}, quick_access: {}, tabs: vec![{}] }}",
         optional_string(&ribbon.selected_tab),
+        ribbon.is_minimized,
         string_vec(&ribbon.quick_access),
         tabs,
     )
+}
+
+fn ribbon_menu_entries(entries: &[crate::RibbonMenuEntryDefinition]) -> String {
+    let entries = entries.iter().map(|entry| match entry {
+        crate::RibbonMenuEntryDefinition::Command(command) => format!(
+            "rust_desktop_ui_xaml::RibbonMenuEntryDefinition::Command({command:?}.into())"
+        ),
+        crate::RibbonMenuEntryDefinition::Submenu { header, items } => format!(
+            "rust_desktop_ui_xaml::RibbonMenuEntryDefinition::Submenu {{ header: {header:?}.into(), items: {} }}",
+            ribbon_menu_entries(items),
+        ),
+        crate::RibbonMenuEntryDefinition::Separator =>
+            "rust_desktop_ui_xaml::RibbonMenuEntryDefinition::Separator".into(),
+    }).collect::<Vec<_>>().join(",");
+    format!("vec![{entries}]")
 }
 
 fn string_vec(values: &[String]) -> String {

@@ -374,6 +374,63 @@ fn button_content_measure_rejects_invalid_requests_without_changing_controls() {
 }
 
 #[test]
+fn split_icon_only_matches_measure_and_preserves_primary_name_and_fallback() {
+    for theme in [Theme::FluentLight, Theme::FluentDark, Theme::Compact] {
+        for has_icon in [false, true] {
+            let mut ui = Controls::new(theme).unwrap();
+            ui.commands_mut().register("save", "Save document");
+            let icon = has_icon.then(|| ButtonIcon::new(IconSymbol::Save));
+            let measured = ui
+                .measure_split_button_content(
+                    "Save document",
+                    &ButtonStyle::default(),
+                    icon,
+                    ButtonContentLayout::IconOnly,
+                    512.0,
+                )
+                .unwrap();
+            let split = ui
+                .split_button(
+                    ui.root(),
+                    "Save document",
+                    Some("save".into()),
+                    &[MenuEntry::Item(MenuItem::new("Save", "save"))],
+                    layout(measured.width, measured.height),
+                )
+                .unwrap();
+            ui.set_button_icon(split.primary, icon).unwrap();
+            ui.set_split_button_presentation(split, ButtonContentLayout::IconOnly)
+                .unwrap();
+            frame(&mut ui);
+            let primary = ui.runtime.bounds(split.primary).unwrap();
+            let arrow = ui.runtime.bounds(split.dropdown).unwrap();
+            assert!((primary.x + primary.width - arrow.x).abs() < 0.001);
+            assert!((primary.width + arrow.width - measured.width).abs() < 0.001);
+            assert_eq!(
+                ui.semantics()
+                    .into_iter()
+                    .find(|node| node.id == split.primary)
+                    .unwrap()
+                    .label,
+                "Save document"
+            );
+            assert_eq!(
+                ui.scene()
+                    .texts
+                    .iter()
+                    .any(|run| run.text == "Save document"),
+                !has_icon
+            );
+            ui.activate(split.primary).unwrap();
+            assert_eq!(ui.commands_mut().drain_invocations().len(), 1);
+            ui.activate(split.dropdown).unwrap();
+            assert!(ui.commands_mut().drain_invocations().is_empty());
+            assert!(ui.popup_open());
+        }
+    }
+}
+
+#[test]
 fn split_footer_caption_aligns_with_above_buttons_instead_of_centering_its_row() {
     let mut ui = Controls::new(Theme::FluentLight).unwrap();
     let icon = ButtonIcon {

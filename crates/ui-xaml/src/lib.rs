@@ -29,7 +29,7 @@ mod ribbon;
 
 pub use ribbon::{
     RibbonDefinition, RibbonGroupDefinition, RibbonItemDefinition, RibbonItemKindDefinition,
-    RibbonItemSize, RibbonTabDefinition, validate_ribbon,
+    RibbonItemSize, RibbonMenuEntryDefinition, RibbonTabDefinition, validate_ribbon,
 };
 
 /// Namespace for this library's controls; not the WPF presentation namespace.
@@ -608,6 +608,10 @@ fn parse_element(
                     ElementKind::Ribbon(ribbon) if property == "SelectedTab" => {
                         identifier(document, attribute, "SelectedTab")?;
                         ribbon.selected_tab = Some(attribute.value().into());
+                        true
+                    }
+                    ElementKind::Ribbon(ribbon) if property == "IsMinimized" => {
+                        ribbon.is_minimized = boolean(document, attribute)?;
                         true
                     }
                     ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {

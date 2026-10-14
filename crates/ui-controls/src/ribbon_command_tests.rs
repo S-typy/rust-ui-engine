@@ -7,6 +7,238 @@ use std::{cell::Cell, rc::Rc};
 // thousandth of a logical pixel; actual visible glyph clipping still fails.
 const TEXT_GEOMETRY_EPSILON: f32 = 0.001;
 
+#[test]
+fn progressive_sizes_restore_preferred_and_preserve_command_behavior() {
+    let (mut ui, _, callbacks) = fixture();
+    let mut ribbon = Ribbon::new(RibbonModel {
+        quick_access: vec![],
+        tabs: vec![RibbonTab {
+            id: "home".into(),
+            label: "Home".into(),
+            key_tip: "H".into(),
+            context: None,
+            groups: vec![group(
+                "Work",
+                vec![
+                    RibbonItem::new("flag", RibbonItemKind::Large, "A"),
+                    RibbonItem::new("primary", RibbonItemKind::Large, "B"),
+                    RibbonItem::new("secondary", RibbonItemKind::Large, "C"),
+                ],
+            )],
+        }],
+    })
+    .unwrap();
+    for id in ["flag", "primary", "secondary"] {
+        ribbon
+            .set_command_appearance(
+                id,
+                RibbonCommandAppearance {
+                    icon: Some(ButtonIcon::new(crate::IconSymbol::Save)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    let root = ui.root();
+    ribbon.mount_with_width(&mut ui, root, 900.0).unwrap();
+    let mut visited = Vec::new();
+    for width in [900.0, 180.0, 75.0, 900.0] {
+        frame(&mut ui, &mut ribbon, width);
+        assert!(
+            ribbon
+                .presentations()
+                .iter()
+                .all(|placement| matches!(placement, RibbonPresentation::Full(_)))
+        );
+        let size = ribbon.item_presentations()[0].size;
+        assert!(
+            ribbon
+                .item_presentations()
+                .iter()
+                .all(|placement| placement.size == size)
+        );
+        visited.push(size);
+        let id = placements(&ui, &ribbon, "flag")[0];
+        ui.activate(id).unwrap();
+        ribbon.process(&mut ui).unwrap();
+        assert_eq!(ui.commands_mut().drain_invocations().len(), 1);
+        let bounds = ui.runtime.bounds(id).unwrap();
+        assert!(bounds.width > 0.0 && bounds.x + bounds.width <= width + TEXT_GEOMETRY_EPSILON);
+    }
+    assert_eq!(
+        visited,
+        [
+            RibbonItemSize::Large,
+            RibbonItemSize::Small,
+            RibbonItemSize::IconOnly,
+            RibbonItemSize::Large
+        ]
+    );
+    assert_eq!(callbacks.get(), 4);
+    assert_eq!(ui.commands().checked(&"flag".into()), Some(false));
+    for key_tip in ["A", "B", "C"] {
+        ribbon
+            .set_item_size_limits(
+                "home",
+                key_tip,
+                RibbonItemSize::Large,
+                RibbonItemSize::Large,
+            )
+            .unwrap();
+    }
+    frame(&mut ui, &mut ribbon, 180.0);
+    assert!(matches!(
+        ribbon.presentations(),
+        [RibbonPresentation::Collapsed(_)]
+    ));
+    frame(&mut ui, &mut ribbon, 40.0);
+    assert!(matches!(
+        ribbon.presentations(),
+        [RibbonPresentation::Overflow(_)]
+    ));
+    assert!(
+        ribbon
+            .set_item_size_limits("home", "A", RibbonItemSize::Small, RibbonItemSize::Large)
+            .is_err()
+    );
+}
+
+#[test]
+fn minimized_body_is_transient_and_escape_command_return_to_editor() {
+    let (mut ui, mut ribbon, callbacks) = fixture();
+    let root = ui.root();
+    let editor = ui
+        .edit_box(root, "Document", "draft", LayoutStyle::default())
+        .unwrap();
+    ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+    let selection = ui.document(editor).unwrap().selection();
+    let expanded = ribbon.preflight(&mut ui, 900.0).unwrap();
+    ribbon.set_minimized(true);
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert!(ribbon.is_minimized() && !ribbon.is_expanded());
+    assert!(ribbon.presentations().is_empty() && ribbon.item_presentations().is_empty());
+    assert!(ribbon.preflight(&mut ui, 900.0).unwrap() < expanded);
+    assert_eq!(ui.runtime.focused(), Some(editor));
+    assert!(key(&mut ribbon, &mut ui, Key::F10));
+    assert!(!ribbon.is_expanded());
+    assert!(key(&mut ribbon, &mut ui, Key::Character("H".into())));
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert!(ribbon.is_minimized() && ribbon.is_expanded());
+    assert!(key(&mut ribbon, &mut ui, Key::Escape));
+    frame(&mut ui, &mut ribbon, 300.0);
+    assert!(!ribbon.is_expanded());
+    assert_eq!(ui.runtime.focused(), Some(editor));
+    assert_eq!(ui.document(editor).unwrap().selection(), selection);
+    assert!(key(&mut ribbon, &mut ui, Key::F10));
+    assert!(key(&mut ribbon, &mut ui, Key::Character("H".into())));
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert!(key(&mut ribbon, &mut ui, Key::Character("F".into())));
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert!(!ribbon.is_expanded());
+    assert_eq!(ui.runtime.focused(), Some(editor));
+    assert_eq!(callbacks.get(), 1);
+    assert_eq!(ui.document(editor).unwrap().text(), "draft");
+    // Accessibility focus changes and ordinary Tab traversal both reach process
+    // without a pointer notification and retain the new external focus.
+    let other = ui
+        .edit_box(root, "Other", "second", LayoutStyle::default())
+        .unwrap();
+    assert!(key(&mut ribbon, &mut ui, Key::F10));
+    assert!(key(&mut ribbon, &mut ui, Key::Character("H".into())));
+    frame(&mut ui, &mut ribbon, 900.0);
+    ui.runtime.apply(Mutation::Focus(Some(other))).unwrap();
+    ribbon.process(&mut ui).unwrap();
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert!(!ribbon.is_expanded());
+    assert_eq!(ui.runtime.focused(), Some(other));
+}
+
+#[test]
+fn hierarchical_dropdown_keytips_and_overflow_never_execute_owner() {
+    let (mut ui, mut ribbon, callbacks) = fixture();
+    ribbon.model.tabs[0].groups[0].items[1].kind = RibbonItemKind::DropDown {
+        menu: vec![
+            RibbonMenuEntry::Submenu {
+                header: "Nested".into(),
+                items: vec![RibbonMenuEntry::Command("secondary".into())],
+            },
+            RibbonMenuEntry::Separator,
+            RibbonMenuEntry::Command("flag".into()),
+        ],
+    };
+    ribbon.dirty = true;
+    for width in [900.0, 45.0] {
+        frame(&mut ui, &mut ribbon, width);
+        tips(&mut ribbon, &mut ui, &["H", "P"]);
+        assert!(ui.popup_open());
+        assert_eq!(ui.commands().checked(&"primary".into()), Some(false));
+        assert!(ui.commands_mut().drain_invocations().is_empty());
+        let nested = menu_item(&ui, "Nested");
+        ui.activate(nested).unwrap();
+        assert_eq!(ui.popup_depth(), 2);
+        let secondary = menu_item(&ui, "secondary");
+        ui.activate(secondary).unwrap();
+        ribbon.process(&mut ui).unwrap();
+        assert!(!ui.popup_open());
+        assert_eq!(ui.commands_mut().drain_invocations()[0].id.0, "secondary");
+    }
+    assert_eq!(callbacks.get(), 2);
+    // In the generated overflow, the owner is a live submenu, never an action.
+    let anchor = *ribbon.group_anchors.get("work").unwrap();
+    ui.activate(anchor).unwrap();
+    let owner = menu_item(&ui, "primary");
+    ui.activate(owner).unwrap();
+    assert_eq!(ui.popup_depth(), 2);
+    assert_eq!(callbacks.get(), 2);
+    ui.commands_mut().set_enabled(&"primary".into(), false);
+    ui.update(Size::new(45.0, 600.0)).unwrap();
+    assert!(ui.popup_depth() < 2);
+    ui.close_popup().unwrap();
+    for predicate in [false, true] {
+        ui.commands_mut().set_enabled(&"primary".into(), true);
+        ui.commands_mut()
+            .set_can_execute(&"primary".into(), || true);
+        tips(&mut ribbon, &mut ui, &["H", "P"]);
+        let leaf = menu_item(&ui, "flag");
+        if predicate {
+            ui.commands_mut()
+                .set_can_execute(&"primary".into(), || false);
+        } else {
+            ui.commands_mut().set_enabled(&"primary".into(), false);
+        }
+        // No update between owner rejection and attempted leaf activation.
+        ui.activate(leaf).unwrap();
+        assert!(!ui.popup_open());
+        assert_eq!(callbacks.get(), 2);
+        assert_eq!(ui.commands().checked(&"flag".into()), Some(false));
+        assert!(ui.commands_mut().drain_invocations().is_empty());
+    }
+}
+
+#[test]
+fn nested_menu_failure_preserves_existing_tree_popup_and_command_state() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let primary = placements(&ui, &ribbon, "primary")[0];
+    ui.expand_popup(primary).unwrap();
+    let before = ui.runtime.tree().preorder();
+    let focus = ui.runtime.focused();
+    let mut menu = vec![RibbonMenuEntry::Command("flag".into())];
+    for _ in 0..8 {
+        menu = vec![RibbonMenuEntry::Submenu {
+            header: "Too deep".into(),
+            items: menu,
+        }];
+    }
+    ribbon.model.tabs[0].groups[0].items[1].kind = RibbonItemKind::DropDown { menu };
+    ribbon.dirty = true;
+    assert!(ribbon.update(&mut ui, 200.0).is_err());
+    assert_eq!(ui.runtime.tree().preorder(), before);
+    assert_eq!(ui.runtime.focused(), focus);
+    assert!(ui.popup_open());
+    assert_eq!(ui.commands().checked(&"primary".into()), Some(false));
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
 fn group(id: &str, items: Vec<RibbonItem>) -> RibbonGroup {
     RibbonGroup {
         id: id.into(),
@@ -15,6 +247,33 @@ fn group(id: &str, items: Vec<RibbonItem>) -> RibbonGroup {
         items,
     }
 }
+// These regressions isolate group collapse; item reduction has separate coverage.
+fn keep_preferred_sizes(ribbon: &mut Ribbon) {
+    let items: Vec<_> = ribbon
+        .model
+        .tabs
+        .iter()
+        .flat_map(|tab| {
+            tab.groups.iter().flat_map(|group| {
+                group.items.iter().map(|item| {
+                    (
+                        tab.id.clone(),
+                        item.key_tip.clone(),
+                        if matches!(item.kind, RibbonItemKind::Small) {
+                            RibbonItemSize::Small
+                        } else {
+                            RibbonItemSize::Large
+                        },
+                    )
+                })
+            })
+        })
+        .collect();
+    for (tab, tip, size) in items {
+        ribbon.set_item_size_limits(&tab, &tip, size, size).unwrap();
+    }
+}
+
 fn fixture() -> (Controls, Ribbon, Rc<Cell<usize>>) {
     let mut ui = Controls::new(Theme::FluentLight).unwrap();
     for id in ["flag", "primary", "secondary"] {
@@ -262,6 +521,7 @@ fn qat_more_preserves_toggle_semantics_and_latest_state_when_reopened() {
 #[test]
 fn collapsed_and_all_commands_menus_keep_primary_secondary_and_plain_actions() {
     let (mut ui, mut ribbon, callbacks) = fixture();
+    keep_preferred_sizes(&mut ribbon);
     for width in [200.0, 60.0] {
         frame(&mut ui, &mut ribbon, width);
         if width == 200.0 {
@@ -662,7 +922,7 @@ fn menu_count_rejection_preserves_tree_popup_and_command_state_before_rebuild() 
         &mut ui,
         &ribbon.model,
         &ribbon.command_appearances,
-        ribbon.tips,
+        &ribbon.size_limits,
     )
     .unwrap()
     .qat_capacity(888.0);
@@ -1113,7 +1373,7 @@ fn measured_widths_drive_qat_overflow_and_group_collapse_then_restore_full_conte
         &mut ui,
         &ribbon.model,
         &ribbon.command_appearances,
-        Tips::Hidden,
+        &ribbon.size_limits,
     )
     .unwrap();
     let required = profile.group("home", "work").items[0];
@@ -1209,6 +1469,7 @@ fn measured_collapsed_russian_headers_and_commands_fit_their_actual_dropdown_tex
             ));
         }
     }
+    keep_preferred_sizes(&mut ribbon);
     for theme in [Theme::FluentLight, Theme::FluentDark, Theme::Compact] {
         ui.set_theme(theme).unwrap();
         ribbon.dirty = true;
@@ -1269,6 +1530,7 @@ fn a_wide_collapsed_header_never_expands_an_already_narrow_full_group() {
         RibbonItem::new("primary", RibbonItemKind::Large, "P"),
         RibbonItem::new("plain", RibbonItemKind::Large, "O"),
     ];
+    keep_preferred_sizes(&mut ribbon);
     ribbon.dirty = true;
     frame(&mut ui, &mut ribbon, 200.0);
     assert_eq!(

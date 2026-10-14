@@ -1,9 +1,11 @@
 use crate::{form::Form, generated, view::MountedView};
-use rust_desktop_ui_controls::{Controls, RibbonPresentation, Role, Theme};
+use rust_desktop_ui_controls::{Controls, RibbonItemSize, RibbonPresentation, Role, Theme};
 use rust_desktop_ui_core::{
-    InputEvent, Key, Modifiers, Mutation, Point, PointerButton, Rect, Size, WidgetId,
+    Axis, Edges, InputEvent, Key, LayoutKind, LayoutStyle, Length, Modifiers, Mutation, Point,
+    PointerButton, Rect, Size, WidgetId,
 };
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent, accesskit};
+use std::{cell::Cell, rc::Rc};
 
 const WIDTH: f32 = 960.0;
 const HEIGHT: f32 = 640.0;
@@ -32,6 +34,30 @@ const CONTENT: &str = r#"
             </RibbonTab>
         </Ribbon>
         <TextBox x:Name="Message" Height="36" IsRequired="True" CommitOnLostFocus="True" />
+        <Button x:Name="BodyPin" Content="Body pin" Command="Pin" Height="36" />
+    </StackPanel>
+"#;
+
+const NESTED_CONTENT: &str = r#"
+    <StackPanel Spacing="12">
+        <Ribbon x:Name="MainRibbon" SelectedTab="Home">
+            <Ribbon.QuickAccessToolbar><Button Command="Pin" /></Ribbon.QuickAccessToolbar>
+            <RibbonTab Id="Home" Header="Home" KeyTip="H">
+                <RibbonGroup Id="Document" Header="Document">
+                    <DropDownButton Command="Confirm" KeyTip="M" Icon="Check" MinSize="IconOnly">
+                        <MenuItem Header="Nested">
+                            <MenuItem Command="Pin" />
+                            <Separator />
+                            <MenuItem Command="Disabled" />
+                        </MenuItem>
+                    </DropDownButton>
+                    <SplitButton Command="Confirm" KeyTip="S" Size="Small" MinSize="IconOnly">
+                        <MenuItem Header="Secondary"><MenuItem Command="Clear" /></MenuItem>
+                    </SplitButton>
+                </RibbonGroup>
+            </RibbonTab>
+        </Ribbon>
+        <TextBox x:Name="Message" Height="36" CommitOnLostFocus="False" />
         <Button x:Name="BodyPin" Content="Body pin" Command="Pin" Height="36" />
     </StackPanel>
 "#;
@@ -164,6 +190,55 @@ fn qat_pin(form: &Form) -> rust_desktop_ui_controls::SemanticNode {
         .filter(|node| node.role == Role::ToggleButton && node.label == "Закрепить")
         .min_by(|a, b| a.bounds.y.total_cmp(&b.bounds.y))
         .expect("the fixture has a QAT Pin command")
+}
+
+fn command_counter(form: &mut Form, command: &str) -> Rc<Cell<usize>> {
+    let count = Rc::new(Cell::new(0));
+    let callback_count = count.clone();
+    assert!(form.ui.commands_mut().on_execute(&command.into(), move || {
+        callback_count.set(callback_count.get() + 1);
+    }));
+    count
+}
+
+fn menu_count(form: &Form) -> usize {
+    form.ui
+        .semantics()
+        .iter()
+        .filter(|node| node.role == Role::Menu)
+        .count()
+}
+
+fn named_menu_item(form: &Form, label: &str) -> WidgetId {
+    form.ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.role == Role::MenuItem && node.label == label)
+        .unwrap_or_else(|| panic!("missing menu item {label}"))
+        .id
+}
+
+fn nested_form(minimized: bool) -> Form {
+    let content = if minimized {
+        NESTED_CONTENT.replace(
+            "SelectedTab=\"Home\"",
+            "SelectedTab=\"Home\" IsMinimized=\"True\"",
+        )
+    } else {
+        NESTED_CONTENT.into()
+    };
+    let mut form = Form::new(definition(&content), false).unwrap();
+    update(&mut form, WIDTH);
+    form
+}
+
+fn dropdown_id(form: &Form) -> WidgetId {
+    form.ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.role == Role::Button && node.has_popup && node.label == "Подтвердить")
+        .expect("the first command owner in this fixture is the dropdown")
+        .id
 }
 
 #[test]
@@ -624,4 +699,472 @@ fn ribbon_split_arrow_only_opens_menu_and_selection_shares_toggle_with_body() {
     update(&mut form, WIDTH);
     assert_eq!(form.ui.accepted_value(form.editor()), Some("draft"));
     assert!(!form.ui.popup_open());
+}
+
+#[test]
+fn ribbon_minimization_and_restore_preserve_editor_session_and_release_body_height() {
+    let mut form = nested_form(false);
+    let editor = form.editor();
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("accepted".into())).unwrap();
+    stroke(&mut form, Key::Enter);
+    form.event(PlatformEvent::Text(" draft".into())).unwrap();
+    stroke(&mut form, Key::ArrowLeft);
+    let selection = form.ui.document(editor).unwrap().selection();
+    form.accessibility(1.0);
+    let accessible_id = form.accessible.id(editor);
+    let expanded_height = form
+        .ui
+        .runtime
+        .bounds(form.view.ribbon.as_ref().unwrap().wrapper)
+        .unwrap()
+        .height;
+    let calls = command_counter(&mut form, "Confirm");
+
+    for (minimized, width, theme) in [
+        (true, WIDTH, Theme::FluentLight),
+        (true, 180.0, Theme::FluentDark),
+        (false, WIDTH, Theme::FluentDark),
+        (true, WIDTH, Theme::FluentLight),
+        (false, WIDTH, Theme::FluentLight),
+    ] {
+        form.view
+            .ribbon
+            .as_mut()
+            .unwrap()
+            .ribbon
+            .set_minimized(minimized);
+        form.ui.set_theme(theme).unwrap();
+        update(&mut form, width);
+        let mounted = form.view.ribbon.as_ref().unwrap();
+        assert_eq!(mounted.ribbon.is_minimized(), minimized);
+        assert_eq!(mounted.ribbon.is_expanded(), !minimized);
+        let bounds = form.ui.runtime.bounds(mounted.wrapper).unwrap();
+        if minimized {
+            assert!(bounds.height < expanded_height);
+            assert!(mounted.ribbon.item_presentations().is_empty());
+            assert!(
+                !form
+                    .ui
+                    .semantics()
+                    .iter()
+                    .any(|node| node.label == "Подтвердить")
+            );
+        }
+        assert!(form.ui.runtime.bounds(editor).unwrap().y >= bounds.y + bounds.height);
+        assert_eq!(form.editor(), editor);
+        assert_eq!(form.ui.runtime.focused(), Some(editor));
+        assert_eq!(form.text(), "accepted draft");
+        assert_eq!(form.ui.accepted_value(editor), Some("accepted"));
+        assert_eq!(form.ui.document(editor).unwrap().selection(), selection);
+        assert!(form.ui.document(editor).unwrap().can_undo());
+        form.accessibility(1.0);
+        assert_eq!(form.accessible.id(editor), accessible_id);
+        assert!(!form.ui.popup_open());
+        assert_eq!(calls.get(), 0);
+    }
+    key_down(&mut form, Key::Character("z".into()), true);
+    assert_eq!(form.text(), "accepted");
+    assert_eq!(form.ui.accepted_value(editor), Some("accepted"));
+}
+
+#[test]
+fn ribbon_minimized_tab_reveal_escape_and_outside_click_keep_valid_focus() {
+    let mut form = nested_form(true);
+    let editor = form.editor();
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("draft".into())).unwrap();
+    let home = tab_id(&form, "Home");
+    click(&mut form, home);
+    update(&mut form, WIDTH);
+    assert!(form.view.ribbon.as_ref().unwrap().ribbon.is_minimized());
+    assert!(form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    stroke(&mut form, Key::Escape);
+    update(&mut form, WIDTH);
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    assert_eq!(form.ui.runtime.focused(), Some(editor));
+    assert_eq!(form.text(), "draft");
+    assert_eq!(form.ui.accepted_value(editor), Some(""));
+
+    let home = tab_id(&form, "Home");
+    accessible_action(&mut form, home, accesskit::Action::Focus);
+    stroke(&mut form, Key::Enter);
+    update(&mut form, WIDTH);
+    assert!(form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    click(&mut form, editor);
+    update(&mut form, WIDTH);
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    assert_eq!(form.ui.runtime.focused(), Some(editor));
+    form.event(PlatformEvent::Text("!".into())).unwrap();
+    assert_eq!(form.text(), "draft!");
+    assert_eq!(form.ui.accepted_value(editor), Some(""));
+}
+
+#[test]
+fn ribbon_minimized_keytips_activate_once_restore_focus_and_do_not_leak_text() {
+    let content = CONTENT
+        .replace(
+            "SelectedTab=\"Home\"",
+            "SelectedTab=\"Home\" IsMinimized=\"True\"",
+        )
+        .replace("CommitOnLostFocus=\"True\"", "CommitOnLostFocus=\"False\"");
+    let mut form = Form::new(definition(&content), false).unwrap();
+    update(&mut form, WIDTH);
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("draft".into())).unwrap();
+    let calls = command_counter(&mut form, "Pin");
+    stroke(&mut form, Key::F10);
+    letter(&mut form, "h");
+    update(&mut form, WIDTH);
+    assert!(form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    letter(&mut form, "p");
+    update(&mut form, WIDTH);
+    assert_eq!(calls.get(), 1);
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(true));
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.key_tips_visible());
+    assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
+    assert_eq!(form.text(), "draft");
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
+    form.event(PlatformEvent::Text("!".into())).unwrap();
+    assert_eq!(form.text(), "draft!");
+
+    stroke(&mut form, Key::F10);
+    letter(&mut form, "1");
+    update(&mut form, WIDTH);
+    assert_eq!(calls.get(), 2);
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(false));
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
+    assert_eq!(form.text(), "draft!");
+}
+
+#[test]
+fn ribbon_dropdown_nested_accessibility_activates_only_the_leaf_once() {
+    let mut form = nested_form(false);
+    let owner_calls = command_counter(&mut form, "Confirm");
+    let pin_calls = command_counter(&mut form, "Pin");
+    let disabled_calls = command_counter(&mut form, "Disabled");
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("draft".into())).unwrap();
+    let owner = dropdown_id(&form);
+    accessible_action(&mut form, owner, accesskit::Action::Click);
+    update(&mut form, WIDTH);
+    assert_eq!(menu_count(&form), 1);
+    assert_eq!(owner_calls.get(), 0);
+    let nested = named_menu_item(&form, "Nested");
+    accessible_action(&mut form, nested, accesskit::Action::Click);
+    update(&mut form, WIDTH);
+    assert_eq!(menu_count(&form), 2);
+    assert_eq!(owner_calls.get(), 0);
+    let disabled = named_menu_item(&form, "Недоступно");
+    accessible_action(&mut form, disabled, accesskit::Action::Click);
+    assert_eq!(disabled_calls.get(), 0);
+    assert_eq!(menu_count(&form), 2);
+    let pin = named_menu_item(&form, "Закрепить");
+    accessible_action(&mut form, pin, accesskit::Action::Click);
+    update(&mut form, WIDTH);
+    assert!(!form.ui.popup_open());
+    assert_eq!(owner_calls.get(), 0);
+    assert_eq!(pin_calls.get(), 1);
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(true));
+    assert_eq!(
+        form.ui.checked(form.find_name("BodyPin").unwrap()),
+        Some(true)
+    );
+    assert_eq!(form.text(), "draft");
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
+}
+
+#[test]
+fn ribbon_minimized_dropdown_keytip_gives_menu_keyboard_priority_and_restores_editor() {
+    let mut form = nested_form(true);
+    let owner_calls = command_counter(&mut form, "Confirm");
+    let pin_calls = command_counter(&mut form, "Pin");
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("draft".into())).unwrap();
+    stroke(&mut form, Key::F10);
+    letter(&mut form, "h");
+    update(&mut form, WIDTH);
+    letter(&mut form, "m");
+    update(&mut form, WIDTH);
+    assert_eq!(menu_count(&form), 1);
+    assert_eq!(owner_calls.get(), 0);
+    stroke(&mut form, Key::ArrowRight);
+    update(&mut form, WIDTH);
+    assert_eq!(menu_count(&form), 2);
+    stroke(&mut form, Key::Escape);
+    update(&mut form, WIDTH);
+    assert_eq!(menu_count(&form), 1);
+    assert!(form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    stroke(&mut form, Key::ArrowRight);
+    stroke(&mut form, Key::Enter);
+    update(&mut form, WIDTH);
+    assert_eq!(owner_calls.get(), 0);
+    assert_eq!(pin_calls.get(), 1);
+    assert!(!form.ui.popup_open());
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
+    assert_eq!(form.text(), "draft");
+    form.event(PlatformEvent::Text("!".into())).unwrap();
+    assert_eq!(form.text(), "draft!");
+}
+
+#[test]
+fn ribbon_nested_unknown_command_in_hidden_tab_is_rejected_before_mount() {
+    let content = CONTENT.replace(
+        "<Button Command=\"Confirm\" KeyTip=\"A\" />\n                </RibbonGroup>\n            </RibbonTab>\n        </Ribbon>",
+        "<DropDownButton Command=\"Confirm\" KeyTip=\"A\"><MenuItem Header=\"One\"><MenuItem Header=\"Two\"><MenuItem Command=\"Missing\" /></MenuItem></MenuItem></DropDownButton>\n                </RibbonGroup>\n            </RibbonTab>\n        </Ribbon>",
+    );
+    assert!(content.contains("Command=\"Missing\""));
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    ui.commands_mut().register("Confirm", "Confirm");
+    ui.commands_mut().register_toggle("Pin", "Pin", true);
+    let root = ui.root();
+    let before = ui.runtime.tree().len();
+    let result = MountedView::mount(&mut ui, root, &definition(&content).content);
+    assert!(matches!(result, Err(error) if error.contains("Missing")));
+    assert_eq!(ui.runtime.tree().len(), before);
+    assert_eq!(ui.commands().checked(&"Pin".into()), Some(true));
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn ribbon_adaptive_sizes_preserve_command_identity_editor_and_restore_preferred_size() {
+    let content = r#"
+        <StackPanel Spacing="12">
+            <Ribbon x:Name="MainRibbon">
+                <RibbonTab Id="Home" Header="Home" KeyTip="H">
+                    <RibbonGroup Id="Group" Header="G">
+                        <Button Command="Confirm" KeyTip="C" Icon="Check" MinSize="IconOnly" />
+                        <Button Command="Clear" KeyTip="X" Icon="Eraser" MinSize="IconOnly" />
+                        <ToggleButton Command="Pin" KeyTip="P" Icon="Pin" MinSize="IconOnly" />
+                    </RibbonGroup>
+                </RibbonTab>
+            </Ribbon>
+            <TextBox x:Name="Message" Height="36" CommitOnLostFocus="False" />
+        </StackPanel>
+    "#;
+    let mut form = Form::new(definition(content), false).unwrap();
+    update(&mut form, WIDTH);
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("accepted".into())).unwrap();
+    stroke(&mut form, Key::Enter);
+    form.event(PlatformEvent::Text(" draft".into())).unwrap();
+    stroke(&mut form, Key::ArrowLeft);
+    let editor = form.editor();
+    let selection = form.ui.document(editor).unwrap().selection();
+    let calls = command_counter(&mut form, "Pin");
+    let mut stages = Vec::new();
+    for width in (80..=WIDTH as usize).rev().step_by(4) {
+        update(&mut form, width as f32);
+        let size = form
+            .view
+            .ribbon
+            .as_ref()
+            .unwrap()
+            .ribbon
+            .item_presentations()
+            .iter()
+            .find(|item| item.tab_id == "Home" && item.group_id == "Group" && item.key_tip == "P")
+            .map(|item| item.size);
+        if let Some(size) = size {
+            if !stages.contains(&size) {
+                stages.push(size);
+            }
+            let pin = form
+                .ui
+                .semantics()
+                .into_iter()
+                .find(|node| node.role == Role::ToggleButton && node.label == "Закрепить")
+                .expect("adaptive Pin retains its full accessible name");
+            assert_eq!(form.ui.command_id(pin.id), Some(&"Pin".into()));
+        }
+        assert_eq!(form.editor(), editor);
+        assert_eq!(form.ui.runtime.focused(), Some(editor));
+        assert_eq!(form.text(), "accepted draft");
+        assert_eq!(form.ui.accepted_value(editor), Some("accepted"));
+        assert_eq!(form.ui.document(editor).unwrap().selection(), selection);
+        assert_eq!(calls.get(), 0);
+        if stages.len() == 3 {
+            break;
+        }
+    }
+    assert_eq!(
+        stages,
+        [
+            RibbonItemSize::Large,
+            RibbonItemSize::Small,
+            RibbonItemSize::IconOnly
+        ]
+    );
+    update(&mut form, WIDTH);
+    assert!(
+        form.view
+            .ribbon
+            .as_ref()
+            .unwrap()
+            .ribbon
+            .item_presentations()
+            .iter()
+            .all(|item| item.size == RibbonItemSize::Large)
+    );
+    stroke(&mut form, Key::F10);
+    letter(&mut form, "h");
+    letter(&mut form, "p");
+    update(&mut form, WIDTH);
+    assert_eq!(calls.get(), 1);
+    assert_eq!(form.ui.commands().checked(&"Pin".into()), Some(true));
+    assert_eq!(form.text(), "accepted draft");
+    key_down(&mut form, Key::Character("z".into()), true);
+    assert_eq!(form.text(), "accepted");
+}
+
+#[test]
+fn ribbon_minimization_preserves_selected_auto_commit_policy() {
+    let mut form = form();
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("draft".into())).unwrap();
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
+    form.view
+        .ribbon
+        .as_mut()
+        .unwrap()
+        .ribbon
+        .set_minimized(true);
+    update(&mut form, WIDTH);
+    assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
+    assert_eq!(form.ui.accepted_value(form.editor()), Some(""));
+    let home = tab_id(&form, "Home");
+    click(&mut form, home);
+    update(&mut form, WIDTH);
+    assert_eq!(form.ui.accepted_value(form.editor()), Some("draft"));
+    stroke(&mut form, Key::Escape);
+    update(&mut form, WIDTH);
+    assert_eq!(form.ui.runtime.focused(), Some(form.editor()));
+    assert_eq!(form.text(), "draft");
+    assert_eq!(form.ui.accepted_value(form.editor()), Some("draft"));
+}
+
+#[test]
+fn ribbon_minimized_blur_closes_nested_chain_without_executing_commands() {
+    let mut form = nested_form(true);
+    let owner_calls = command_counter(&mut form, "Confirm");
+    let pin_calls = command_counter(&mut form, "Pin");
+    focus_editor(&mut form);
+    form.event(PlatformEvent::Text("draft".into())).unwrap();
+    stroke(&mut form, Key::F10);
+    letter(&mut form, "h");
+    update(&mut form, WIDTH);
+    letter(&mut form, "m");
+    update(&mut form, WIDTH);
+    stroke(&mut form, Key::ArrowRight);
+    update(&mut form, WIDTH);
+    assert_eq!(menu_count(&form), 2);
+    form.event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+        .unwrap();
+    update(&mut form, WIDTH);
+    assert!(!form.ui.popup_open());
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.is_expanded());
+    assert!(!form.view.ribbon.as_ref().unwrap().ribbon.key_tips_visible());
+    assert_eq!(owner_calls.get(), 0);
+    assert_eq!(pin_calls.get(), 0);
+    assert_eq!(form.text(), "draft");
+    form.event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+        .unwrap();
+    let editor = form.editor();
+    accessible_action(&mut form, editor, accesskit::Action::Focus);
+    form.event(PlatformEvent::Text("!".into())).unwrap();
+    assert_eq!(form.text(), "draft!");
+}
+
+fn deep_menu_ribbon(attributes: &str) -> String {
+    let mut menu = "<MenuItem Command='Pin' />".to_string();
+    for _ in 1..8 {
+        menu = format!("<MenuItem Header='Branch'>{menu}</MenuItem>");
+    }
+    format!(
+        "<Ribbon x:Name='DeepRibbon' {attributes}>\
+         <RibbonTab Id='Home' Header='Home' KeyTip='H'>\
+         <RibbonGroup Id='Group' Header='G'>\
+         <DropDownButton Command='Actions' KeyTip='A' Icon='FolderOpen' MinSize='Large'>\
+         {menu}</DropDownButton></RibbonGroup></RibbonTab></Ribbon>"
+    )
+}
+
+#[test]
+fn ribbon_initial_auto_width_accepts_eight_menu_levels_in_wide_form() {
+    let mut form = Form::new(definition(&deep_menu_ribbon("")), false).unwrap();
+    assert!(matches!(
+        form.view.ribbon.as_ref().unwrap().ribbon.presentations(),
+        [RibbonPresentation::Full { .. }]
+    ));
+    update(&mut form, WIDTH);
+    let mounted = form.view.ribbon.as_ref().unwrap();
+    let width = form.ui.runtime.bounds(mounted.wrapper).unwrap().width;
+    assert!((width - (WIDTH - 48.0)).abs() < 0.001);
+}
+
+#[test]
+fn ribbon_initial_auto_width_rejects_generated_overflow_before_tree_mutation() {
+    let content = format!(
+        "<StackPanel Padding='30'><TextBlock Text='Before Ribbon' />{}</StackPanel>",
+        deep_menu_ribbon("")
+    );
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    ui.commands_mut().register("Actions", "Actions");
+    ui.commands_mut().register_toggle("Pin", "Pin", true);
+    let root = ui.root();
+    ui.runtime
+        .apply(Mutation::SetStyle {
+            node: root,
+            style: LayoutStyle {
+                kind: LayoutKind::Stack(Axis::Vertical),
+                width: Length::Percent(1.0),
+                height: Length::Percent(1.0),
+                padding: Edges::all(20.0),
+                ..Default::default()
+            },
+        })
+        .unwrap();
+    ui.update(Size::new(120.0, HEIGHT)).unwrap();
+    let before = ui.runtime.tree().len();
+    let focus = ui.runtime.focused();
+    let scene = ui.scene().clone();
+    let result = MountedView::mount(&mut ui, root, &definition(&content).content);
+    assert!(matches!(result, Err(error) if error.contains("8 levels")));
+    assert_eq!(ui.runtime.tree().len(), before);
+    assert_eq!(ui.runtime.focused(), focus);
+    assert_eq!(ui.scene(), &scene);
+    assert_eq!(ui.commands().checked(&"Pin".into()), Some(true));
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
+#[test]
+fn ribbon_initial_width_tracks_nested_padding_margins_and_horizontal_desired_width() {
+    for (panel_attributes, ribbon_attributes, expected) in [
+        (
+            "",
+            "Margin='4'",
+            WIDTH - 48.0 - 20.0 - 24.0 - 16.0 - 12.0 - 8.0,
+        ),
+        ("Orientation='Horizontal'", "Margin='4'", 640.0),
+        ("Orientation='Horizontal'", "Margin='4' Width='720'", 720.0),
+    ] {
+        let content = format!(
+            "<StackPanel Margin='10' Padding='12'>\
+             <StackPanel Margin='8' Padding='6' {panel_attributes}>\
+             {}</StackPanel></StackPanel>",
+            deep_menu_ribbon(ribbon_attributes)
+        );
+        let mut form = Form::new(definition(&content), false).unwrap();
+        assert!(matches!(
+            form.view.ribbon.as_ref().unwrap().ribbon.presentations(),
+            [RibbonPresentation::Full { .. }]
+        ));
+        update(&mut form, WIDTH);
+        let mounted = form.view.ribbon.as_ref().unwrap();
+        let width = form.ui.runtime.bounds(mounted.wrapper).unwrap().width;
+        assert!((width - expected).abs() < 0.001, "{width} != {expected}");
+    }
 }

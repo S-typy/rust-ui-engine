@@ -14,11 +14,13 @@ pub(crate) fn snapshot(ui: &Controls) -> String {
     let controls = nodes.iter().filter(|node| matches!(node.role,
         Role::Button | Role::ToggleButton | Role::MenuItem | Role::Separator | Role::Tab | Role::TextBox))
         .map(|node| format!(
-            "{{\"label\":{},\"role\":{},\"checked\":{},\"enabled\":{},\"bounds\":{},\"clip\":{},\"has_popup\":{},\"expanded\":{},\"focused\":{},\"command\":{}}}",
+            "{{\"label\":{},\"role\":{},\"checked\":{},\"enabled\":{},\"bounds\":{},\"clip\":{},\"has_popup\":{},\"expanded\":{},\"focused\":{},\"command\":{},\"id\":{},\"parent_id\":{}}}",
             string(&node.label), string(&format!("{:?}", node.role)), optional_bool(node.checked),
             !node.disabled, rectangle(node.bounds), ui.runtime.clip(node.id).map_or_else(|| "null".into(), rectangle),
             node.has_popup, optional_bool(node.expanded), node.focused,
-            ui.command_id(node.id).map_or_else(|| "null".into(), |id| string(&id.0))))
+            ui.command_id(node.id).map_or_else(|| "null".into(), |id| string(&id.0)),
+            string(&format!("{:?}", node.id)),
+            node.parent.map_or_else(|| "null".into(), |id| string(&format!("{id:?}")))))
         .collect::<Vec<_>>().join(",");
     let focused = nodes
         .iter()
@@ -52,15 +54,33 @@ pub(crate) fn ribbon_snapshot(
         .map(string)
         .collect::<Vec<_>>()
         .join(",");
+    let items = mounted
+        .ribbon
+        .item_presentations()
+        .iter()
+        .map(|item| {
+            format!(
+                "{{\"tab_id\":{},\"group_id\":{},\"key_tip\":{},\"size\":{}}}",
+                string(&item.tab_id),
+                string(&item.group_id),
+                string(&item.key_tip),
+                string(&format!("{:?}", item.size)),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "{{\"active_tab\":{},\"key_tips\":{},\"key_tip_labels\":[{}],\"bounds\":{},\"presentations\":{}}}",
+        "{{\"active_tab\":{},\"key_tips\":{},\"key_tip_labels\":[{}],\"bounds\":{},\"presentations\":{},\"minimized\":{},\"body_visible\":{},\"item_presentations\":[{}]}}",
         string(mounted.ribbon.active_tab()),
         mounted.ribbon.key_tips_visible(),
         key_tip_labels,
         ui.runtime
             .bounds(mounted.wrapper)
             .map_or_else(|| "null".into(), rectangle),
-        string(&format!("{:?}", mounted.ribbon.presentations()))
+        string(&format!("{:?}", mounted.ribbon.presentations())),
+        mounted.ribbon.is_minimized(),
+        mounted.ribbon.is_expanded(),
+        items,
     )
 }
 

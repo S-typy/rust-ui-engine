@@ -13,6 +13,12 @@ pub enum MenuEntry {
         items: Vec<MenuEntry>,
         enabled: bool,
     },
+    /// A submenu whose caption and availability follow a registered command.
+    /// Opening it never executes or toggles that command.
+    CommandSubmenu {
+        command: CommandId,
+        items: Vec<MenuEntry>,
+    },
     Separator,
 }
 
@@ -32,6 +38,9 @@ struct Level {
     entries: Vec<MenuEntry>,
     desired: Size,
     theme: Theme,
+    // A collapsed Ribbon can use its group as a visual anchor while retaining
+    // the original dropdown command as the live availability owner.
+    command_owner: Option<CommandId>,
 }
 pub(super) struct Popup {
     anchor: WidgetId,
@@ -81,6 +90,7 @@ pub(super) fn place_overlay(anchor: Rect, desired: Size, viewport: Size, submenu
 
 fn validate_entries(
     entries: &[MenuEntry],
+    commands: &CommandRegistry,
     depth: usize,
     count: &mut usize,
     bytes: &mut usize,
@@ -100,8 +110,15 @@ fn validate_entries(
         let text = match entry {
             MenuEntry::Item(item) => item.label.len().checked_add(item.command.0.len()),
             MenuEntry::Submenu { label, items, .. } => {
-                validate_entries(items, depth + 1, count, bytes)?;
+                validate_entries(items, commands, depth + 1, count, bytes)?;
                 Some(label.len())
+            }
+            MenuEntry::CommandSubmenu { command, items } => {
+                validate_entries(items, commands, depth + 1, count, bytes)?;
+                let label = commands.label(command).ok_or_else(|| {
+                    ControlError::Invalid(format!("Unknown submenu command '{}'", command.0))
+                })?;
+                command.0.len().checked_add(label.len())
             }
             MenuEntry::Separator => Some(0),
         };
@@ -113,22 +130,70 @@ fn validate_entries(
     Ok(())
 }
 
+fn level_entry_index(level: &Level, id: WidgetId) -> Option<usize> {
+    let position = level.items.iter().position(|candidate| *candidate == id)?;
+    level
+        .entries
+        .iter()
+        .enumerate()
+        .filter(|(_, entry)| !matches!(entry, MenuEntry::Separator))
+        .nth(position)
+        .map(|(index, _)| index)
+}
+
+fn validate_levels(levels: &[Level], commands: &CommandRegistry) -> Result<(), ControlError> {
+    let (mut prefix_count, mut prefix_bytes) = (0usize, 0usize);
+    for (index, level) in levels.iter().enumerate() {
+        let (mut count, mut bytes) = (prefix_count, prefix_bytes);
+        validate_entries(&level.entries, commands, index + 1, &mut count, &mut bytes)?;
+        prefix_count += level.entries.len();
+        for entry in &level.entries {
+            let bytes = match entry {
+                MenuEntry::Item(item) => item.label.len().checked_add(item.command.0.len()),
+                MenuEntry::Submenu { label, .. } => Some(label.len()),
+                MenuEntry::CommandSubmenu { command, .. } => {
+                    let label = commands.label(command).ok_or_else(|| {
+                        ControlError::Invalid(format!("Unknown submenu command '{}'", command.0))
+                    })?;
+                    command.0.len().checked_add(label.len())
+                }
+                MenuEntry::Separator => Some(0),
+            };
+            prefix_bytes = bytes
+                .and_then(|bytes| prefix_bytes.checked_add(bytes))
+                .filter(|bytes| *bytes <= MAX_MENU_TEXT)
+                .ok_or_else(|| ControlError::Invalid("Menu text exceeds 1 MiB".into()))?;
+        }
+    }
+    Ok(())
+}
+
 impl Controls {
     pub(crate) fn preflight_menu(&mut self, entries: &[MenuEntry]) -> Result<(), ControlError> {
-        validate_entries(entries, 1, &mut 0, &mut 0)?;
+        validate_entries(entries, &self.commands, 1, &mut 0, &mut 0)?;
         let mut pending = vec![entries];
         while let Some(entries) = pending.pop() {
             for entry in entries {
                 let label = match entry {
-                    MenuEntry::Item(item) => Some(item.label.as_str()),
+                    MenuEntry::Item(item) => Some(item.label.clone()),
                     MenuEntry::Submenu { label, items, .. } => {
                         pending.push(items);
-                        Some(label.as_str())
+                        Some(label.clone())
+                    }
+                    MenuEntry::CommandSubmenu { command, items } => {
+                        pending.push(items);
+                        let label = self.commands.label(command).ok_or_else(|| {
+                            ControlError::Invalid(format!(
+                                "Unknown submenu command '{}'",
+                                command.0
+                            ))
+                        })?;
+                        Some(label.to_owned())
                     }
                     MenuEntry::Separator => None,
                 };
                 if let Some(label) = label {
-                    self.measure_text(label, 4096.0, false)?;
+                    self.measure_text(&label, 4096.0, false)?;
                 }
             }
         }
@@ -139,12 +204,15 @@ impl Controls {
         let mut height = 12.0;
         for entry in entries {
             let label = match entry {
-                MenuEntry::Item(item) => Some(item.label.as_str()),
-                MenuEntry::Submenu { label, .. } => Some(label.as_str()),
+                MenuEntry::Item(item) => Some(item.label.clone()),
+                MenuEntry::Submenu { label, .. } => Some(label.clone()),
+                MenuEntry::CommandSubmenu { command, .. } => {
+                    self.commands.label(command).map(str::to_owned)
+                }
                 MenuEntry::Separator => None,
             };
             if let Some(label) = label {
-                width = width.max(self.measure_text(label, 4096.0, false)?.width + 64.0);
+                width = width.max(self.measure_text(&label, 4096.0, false)?.width + 64.0);
                 height += self.theme.tokens().control_height;
             } else {
                 height += 9.0;
@@ -198,6 +266,93 @@ impl Controls {
         let id = self.button(parent, label, None, style)?;
         self.controls.get_mut(&id).unwrap().menu = Some(items.to_vec());
         Ok(id)
+    }
+    /// Bind a menu button's caption and availability without binding activation
+    /// or checked state. `None` restores the button's original explicit label.
+    /// An existing primary command cannot be replaced through this API.
+    pub fn set_dropdown_command(
+        &mut self,
+        id: WidgetId,
+        command: Option<CommandId>,
+    ) -> Result<(), ControlError> {
+        if self.runtime.tree().node(id).is_none()
+            || !self.controls.get(&id).is_some_and(|control| {
+                matches!(control.kind, Kind::Button | Kind::MenuItem)
+                    && control.menu.is_some()
+                    && control.command.is_none()
+            })
+        {
+            return Err(ControlError::Invalid(
+                "Dropdown metadata requires an unbound menu button".into(),
+            ));
+        }
+        let mut changed_levels = None;
+        if let Some(popup) = &self.popup
+            && let Some(level_index) = popup
+                .levels
+                .iter()
+                .position(|level| level.items.contains(&id))
+        {
+            let mut levels = popup.levels.clone();
+            let entry_index = level_entry_index(&levels[level_index], id)
+                .ok_or_else(|| ControlError::Invalid("Unknown popup entry".into()))?;
+            let control = &self.controls[&id];
+            let items = control.menu.clone().unwrap();
+            levels[level_index].entries[entry_index] = match &command {
+                Some(command) => MenuEntry::CommandSubmenu {
+                    command: command.clone(),
+                    items,
+                },
+                None => MenuEntry::Submenu {
+                    label: control.label.clone(),
+                    items,
+                    enabled: control.enabled,
+                },
+            };
+            for index in (1..=level_index).rev() {
+                let anchor = levels[index].anchor;
+                let Some(parent_entry) = level_entry_index(&levels[index - 1], anchor) else {
+                    break;
+                };
+                let entries = levels[index].entries.clone();
+                match &mut levels[index - 1].entries[parent_entry] {
+                    MenuEntry::Submenu { items, .. } | MenuEntry::CommandSubmenu { items, .. } => {
+                        *items = entries
+                    }
+                    // An explicitly opened menu can use an ordinary leaf as its
+                    // anchor. Its separate level is validated with the prefix.
+                    _ => break,
+                }
+            }
+            validate_levels(&levels, &self.commands)?;
+            changed_levels = Some(levels);
+        }
+        if let Some(command) = &command {
+            let label = self
+                .commands
+                .label(command)
+                .ok_or_else(|| {
+                    ControlError::Invalid(format!("Unknown dropdown command '{}'", command.0))
+                })?
+                .to_owned();
+            TextLimits::default().validate(&label).map_err(edit_error)?;
+            self.measure_text(&label, 4096.0, false)?;
+        }
+        self.controls.get_mut(&id).unwrap().dropdown_command = command;
+        if let Some(levels) = changed_levels {
+            for level in levels.iter().skip(1) {
+                if let Some(control) = self.controls.get_mut(&level.anchor)
+                    && control.menu.is_some()
+                {
+                    control.menu = Some(level.entries.clone());
+                }
+            }
+            self.popup.as_mut().unwrap().levels = levels;
+        }
+        self.scene_dirty = true;
+        self.refresh_paints()?;
+        self.sync_popup_availability()?;
+        Ok(())
     }
     pub fn split_button(
         &mut self,
@@ -282,6 +437,30 @@ impl Controls {
         anchor: WidgetId,
         entries: &[MenuEntry],
     ) -> Result<WidgetId, ControlError> {
+        self.open_menu_entries(anchor, entries, None)
+    }
+    pub(crate) fn popup_menu_for_command(
+        &mut self,
+        anchor: WidgetId,
+        owner: CommandId,
+        entries: &[MenuEntry],
+    ) -> Result<WidgetId, ControlError> {
+        self.open_menu_entries(anchor, entries, Some(owner))
+    }
+    fn open_menu_entries(
+        &mut self,
+        anchor: WidgetId,
+        entries: &[MenuEntry],
+        command_owner: Option<CommandId>,
+    ) -> Result<WidgetId, ControlError> {
+        if command_owner
+            .as_ref()
+            .is_some_and(|owner| !self.commands.enabled(owner))
+        {
+            return Err(ControlError::Invalid(
+                "Unavailable popup command owner".into(),
+            ));
+        }
         self.preflight_menu(entries)?;
         let bounds = self.validate_popup_anchor(anchor)?;
         let parent_level = self.popup.as_ref().and_then(|popup| {
@@ -299,12 +478,15 @@ impl Controls {
                     bytes += match entry {
                         MenuEntry::Item(item) => item.label.len() + item.command.0.len(),
                         MenuEntry::Submenu { label, .. } => label.len(),
+                        MenuEntry::CommandSubmenu { command, .. } => {
+                            command.0.len() + self.commands.label(command).map_or(0, str::len)
+                        }
                         MenuEntry::Separator => 0,
                     };
                 }
             }
         }
-        validate_entries(entries, depth + 1, &mut count, &mut bytes)?;
+        validate_entries(entries, &self.commands, depth + 1, &mut count, &mut bytes)?;
         if parent_level.is_none()
             && self.popup.as_ref().is_some_and(|popup| {
                 popup.levels.iter().any(|level| {
@@ -319,7 +501,8 @@ impl Controls {
         }
         let desired = self.menu_size(entries)?;
         let previous_focus = self.runtime.focused();
-        let level = self.build_menu_level(anchor, entries, desired, bounds, depth)?;
+        let mut level = self.build_menu_level(anchor, entries, desired, bounds, depth)?;
+        level.command_owner = command_owner;
         let container = level.container;
         self.dismiss_tooltip();
         self.pressed = None;
@@ -408,6 +591,18 @@ impl Controls {
                         control.enabled = *enabled;
                         id
                     }
+                    MenuEntry::CommandSubmenu { command, items } => {
+                        let id = self.add(
+                            viewer.content,
+                            Kind::MenuItem,
+                            String::new(),
+                            None,
+                            LayoutStyle::default(),
+                        )?;
+                        self.controls.get_mut(&id).unwrap().menu = Some(items.clone());
+                        self.set_dropdown_command(id, Some(command.clone()))?;
+                        id
+                    }
                 };
                 self.edit_props(id, |props| props.tab_stop = false)?;
                 if !matches!(entry, MenuEntry::Separator) {
@@ -415,6 +610,7 @@ impl Controls {
                 }
             }
             Ok(Level {
+                command_owner: None,
                 container: viewer.viewport,
                 anchor,
                 items: ids,
@@ -447,6 +643,15 @@ impl Controls {
     }
     pub(crate) fn popup_anchor(&self) -> Option<WidgetId> {
         self.popup.as_ref().map(|popup| popup.anchor)
+    }
+    pub(crate) fn popup_contains_point(&self, point: Point) -> bool {
+        self.popup.as_ref().is_some_and(|popup| {
+            popup.levels.iter().any(|level| {
+                self.runtime
+                    .bounds(level.container)
+                    .is_some_and(|bounds| bounds.contains(point.x, point.y))
+            })
+        })
     }
     pub fn popup_depth(&self) -> usize {
         self.popup.as_ref().map_or(0, |popup| popup.levels.len())
@@ -571,6 +776,10 @@ impl Controls {
                 !self.window_focused
                     || self.runtime.tree().node(level.container).is_none()
                     || !self.is_enabled(level.anchor)
+                    || level
+                        .command_owner
+                        .as_ref()
+                        .is_some_and(|owner| !self.commands.enabled(owner))
             })
         });
         if let Some(index) = invalid {
@@ -581,6 +790,16 @@ impl Controls {
     pub(super) fn sync_popup_layout(&mut self) -> Result<FrameStats, ControlError> {
         self.sync_popup_availability()?;
         let mut delta = FrameStats::default();
+        if self
+            .popup
+            .as_ref()
+            .is_some_and(|popup| validate_levels(&popup.levels, &self.commands).is_err())
+        {
+            // Registry labels can change independently of menu construction.
+            // Close an invalid chain before shaping or changing its geometry.
+            self.close_popup_from(0, CloseReason::Unavailable)?;
+            return Ok(delta);
+        }
         let count = self.popup_depth();
         for index in 0..count {
             let Some(mut level) = self
@@ -595,8 +814,9 @@ impl Controls {
                 self.close_popup_from(index, CloseReason::Unavailable)?;
                 break;
             };
-            if level.theme != self.theme {
-                level.desired = self.menu_size(&level.entries)?;
+            let desired = self.menu_size(&level.entries)?;
+            if level.theme != self.theme || level.desired != desired {
+                level.desired = desired;
                 level.theme = self.theme;
                 self.set_scroll_extent(level.container, level.desired.height)?;
                 for &item in &level.items {
