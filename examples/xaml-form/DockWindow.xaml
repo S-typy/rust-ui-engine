@@ -1,0 +1,85 @@
+<Window xmlns="urn:rust-ui-engine:ui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Рабочее пространство · Rust UI" Width="1200" Height="800"
+        TitleBar="Ribbon" Padding="0" Theme="Light">
+    <StackPanel Spacing="8">
+        <Ribbon x:Name="DockRibbon" SelectedTab="Workspace">
+            <Ribbon.QuickAccessToolbar>
+                <Button Command="DockReset" />
+                <Button Command="DockRestore" />
+            </Ribbon.QuickAccessToolbar>
+            <RibbonTab Id="Workspace" Header="Рабочее пространство" KeyTip="W">
+                <RibbonGroup Id="Panels" Header="Панели">
+                    <Button Command="DockFloat" Icon="Copy" KeyTip="F" ToolTip="Открыть активную панель в отдельном окне" />
+                    <Button Command="DockBack" Icon="Pin" KeyTip="D" ToolTip="Вернуть активную панель в главное окно" />
+                    <Button Command="DockRestore" Icon="FolderOpen" Size="Small" KeyTip="O" />
+                    <Button Command="DockReset" Icon="Remove" Size="Small" KeyTip="R" />
+                </RibbonGroup>
+                <RibbonGroup Id="Appearance" Header="Оформление">
+                    <Button Command="Light" Icon="Sun" Size="Small" KeyTip="L" />
+                    <Button Command="Dark" Icon="Moon" Size="Small" KeyTip="N" />
+                </RibbonGroup>
+            </RibbonTab>
+        </Ribbon>
+        <DockWorkspace x:Name="Workspace">
+            <DockSplit Orientation="Horizontal" Ratio="0.21">
+                <DockGroup>
+                    <DockPane Id="Explorer" Header="Обозреватель" MinWidth="170" MinHeight="140">
+                        <StackPanel Padding="16" Spacing="12">
+                            <TextBlock Text="ПРОЕКТ" FontSize="12" FontWeight="SemiBold" TextTone="Secondary" />
+                            <TextBlock Text="Рабочее пространство" FontWeight="SemiBold" />
+                            <TextBox x:Name="Search" PlaceholderText="Поиск…" />
+                            <Separator />
+                            <TextBlock Text="Документ" />
+                            <TextBlock Text="Заметки" />
+                            <TextBlock Text="Свойства" />
+                            <TextBlock Text="Перетащите вкладку к краю панели или за пределы окна." FontSize="12" TextTone="Secondary" TextWrapping="Wrap" />
+                        </StackPanel>
+                    </DockPane>
+                </DockGroup>
+                <DockSplit Orientation="Horizontal" Ratio="0.72">
+                    <DockSplit Orientation="Vertical" Ratio="0.72">
+                        <DockGroup SelectedPane="Document">
+                            <DockPane Id="Document" Header="Документ" CanClose="False" MinWidth="280" MinHeight="190">
+                                <StackPanel Padding="20" Spacing="12">
+                                    <TextBlock Text="Документ без имени" FontSize="22" FontWeight="SemiBold" />
+                                    <TextBlock Text="Текст сохраняется при переносе панели между окнами." FontSize="13" TextTone="Secondary" TextWrapping="Wrap" />
+                                    <TextBox x:Name="Message" PlaceholderText="Введите текст…" IsRequired="True" CommitOnLostFocus="True" />
+                                    <Button x:Name="Confirm" Content="Подтвердить" Command="Confirm" Icon="Check" Width="152" />
+                                    <TextBlock x:Name="Status" Text="Изменений нет." FontSize="12" TextTone="Secondary" />
+                                </StackPanel>
+                            </DockPane>
+                            <DockPane Id="Notes" Header="Заметки" MinWidth="220" MinHeight="130">
+                                <StackPanel Padding="20" Spacing="12">
+                                    <TextBlock Text="Заметки" FontSize="22" FontWeight="SemiBold" />
+                                    <TextBox x:Name="NotesText" Text="Панели можно объединять во вкладки." />
+                                    <TextBlock Text="Кнопка отдельного окна находится справа от вкладок." TextWrapping="Wrap" TextTone="Secondary" />
+                                </StackPanel>
+                            </DockPane>
+                        </DockGroup>
+                        <DockGroup>
+                            <DockPane Id="Output" Header="Вывод" MinWidth="220" MinHeight="80">
+                                <StackPanel Padding="16" Spacing="8">
+                                    <TextBlock Text="Рабочее пространство готово." FontSize="13" />
+                                    <TextBlock Text="Размеры областей меняются разделителями. Escape отменяет перетаскивание." FontSize="12" TextTone="Secondary" TextWrapping="Wrap" />
+                                </StackPanel>
+                            </DockPane>
+                        </DockGroup>
+                    </DockSplit>
+                    <DockGroup>
+                        <DockPane Id="Properties" Header="Свойства" MinWidth="180" MinHeight="150">
+                            <StackPanel Padding="16" Spacing="12">
+                                <TextBlock Text="СВОЙСТВА" FontSize="12" FontWeight="SemiBold" TextTone="Secondary" />
+                                <TextBlock Text="Название" FontSize="13" />
+                                <TextBox x:Name="DocumentName" Text="Документ без имени" />
+                                <CheckBox x:Name="Autosave" Content="Автосохранение" IsChecked="True" />
+                                <Separator />
+                                <TextBlock Text="Содержимое панели живёт независимо от её расположения." FontSize="12" TextTone="Secondary" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </DockPane>
+                    </DockGroup>
+                </DockSplit>
+            </DockSplit>
+        </DockWorkspace>
+    </StackPanel>
+</Window>

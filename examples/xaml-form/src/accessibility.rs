@@ -8,6 +8,7 @@ use std::collections::{HashMap, HashSet};
 const WINDOW: NodeId = NodeId(1);
 
 pub(crate) struct Accessibility {
+    root: NodeId,
     widgets: HashMap<WidgetId, NodeId>,
     errors: HashMap<WidgetId, NodeId>,
     next: u64,
@@ -15,6 +16,7 @@ pub(crate) struct Accessibility {
 impl Default for Accessibility {
     fn default() -> Self {
         Self {
+            root: WINDOW,
             widgets: HashMap::new(),
             errors: HashMap::new(),
             next: 2,
@@ -22,6 +24,20 @@ impl Default for Accessibility {
     }
 }
 impl Accessibility {
+    /// Distinct stable ranges let independently retained panes share one native
+    /// accessibility tree without remapping their internal relationships.
+    pub(crate) fn with_base(base: u64) -> Self {
+        Self {
+            root: NodeId(base),
+            next: base + 1,
+            widgets: HashMap::new(),
+            errors: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn root_id(&self) -> NodeId {
+        self.root
+    }
     pub(crate) fn id(&self, widget: WidgetId) -> Option<NodeId> {
         self.widgets.get(&widget).copied()
     }
@@ -55,8 +71,8 @@ impl Accessibility {
                 .map(|node| self.widgets[&node.id])
                 .collect::<Vec<_>>(),
         );
-        let mut nodes = vec![(WINDOW, window)];
-        let mut focus = WINDOW;
+        let mut nodes = vec![(self.root, window)];
+        let mut focus = self.root;
         for semantic in semantics {
             let widget = semantic.id;
             let id = self.widgets[&widget];
@@ -165,7 +181,7 @@ impl Accessibility {
         }
         accesskit::TreeUpdate {
             nodes,
-            tree: Some(accesskit::TreeInfo::new(WINDOW)),
+            tree: Some(accesskit::TreeInfo::new(self.root)),
             tree_id: accesskit::TreeId::ROOT,
             focus,
         }

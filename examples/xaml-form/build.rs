@@ -3,6 +3,7 @@ fn main() {
     for (source, generated) in [
         ("MainWindow.xaml", "main_window.rs"),
         ("ControlsWindow.xaml", "controls_window.rs"),
+        ("DockWindow.xaml", "dock_window.rs"),
     ] {
         println!("cargo:rerun-if-changed={source}");
         if let Err(error) = rust_desktop_ui_xaml::compile_file(source, out.join(generated)) {

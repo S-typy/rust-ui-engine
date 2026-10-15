@@ -276,6 +276,11 @@ pub(super) fn count(element: &ElementDefinition) -> usize {
     match &element.kind {
         ElementKind::Ribbon(_) => 1,
         ElementKind::StackPanel(panel) => panel.children.iter().map(count).sum(),
+        ElementKind::DockWorkspace(workspace) => workspace
+            .panes()
+            .iter()
+            .map(|pane| count(&pane.content))
+            .sum(),
         _ => 0,
     }
 }

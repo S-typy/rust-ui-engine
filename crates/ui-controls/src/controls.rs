@@ -24,6 +24,8 @@ mod appearance;
 mod appearance_tests;
 mod button_presentation;
 mod popup;
+#[cfg(test)]
+mod scene_layer_tests;
 mod tooltip;
 pub use appearance::{SurfaceKind, TextStyle, TextTone};
 pub use popup::{MAX_MENU_DEPTH, MAX_MENU_ITEMS, MenuEntry, SplitButton};
@@ -331,6 +333,8 @@ pub struct Controls {
     observed_editor_focus: Option<WidgetId>,
     viewport: Size,
     scene: Scene,
+    base_scene: Scene,
+    overlay_scene: Scene,
     text_layouts: HashMap<WidgetId, PreparedText>,
     scene_dirty: bool,
     total: FrameStats,
@@ -392,6 +396,8 @@ impl Controls {
             observed_editor_focus: None,
             viewport: Size::ZERO,
             scene: Scene::default(),
+            base_scene: Scene::default(),
+            overlay_scene: Scene::default(),
             text_layouts: HashMap::new(),
             scene_dirty: true,
             total: FrameStats::default(),
@@ -420,6 +426,18 @@ impl Controls {
     }
     pub fn scene(&self) -> &Scene {
         &self.scene
+    }
+    /// Ordinary controls and their custom paint, excluding transient menus,
+    /// KeyTips and ToolTips. A compositor can insert other retained content
+    /// between this layer and [`Self::overlay_scene`].
+    pub fn base_scene(&self) -> &Scene {
+        &self.base_scene
+    }
+    /// Popup subtrees, KeyTips and ToolTips in painter order. Render this after
+    /// inserted content so visible overlays agree with popup input ownership.
+    /// [`Self::scene`] remains the complete base-plus-overlay scene.
+    pub fn overlay_scene(&self) -> &Scene {
+        &self.overlay_scene
     }
     /// Custom paint in global logical coordinates, inserted at this node's z-order.
     /// Commands are additionally intersected with this node's ancestor clip.
@@ -2643,13 +2661,25 @@ impl Controls {
     }
     fn rebuild_scene(&mut self) -> Result<(), ControlError> {
         self.scene.clear();
+        let mut other_layer = std::mem::take(&mut self.overlay_scene);
+        other_layer.clear();
+        let mut painting_overlay = false;
         self.text_layouts.clear();
         let tokens = self.theme.tokens();
-        let mut pending = vec![self.overlay];
-        while let Some(id) = pending.pop() {
+        let mut pending = vec![(self.overlay, false)];
+        while let Some((id, inherited_overlay)) = pending.pop() {
             let Some(node) = self.runtime.tree().node(id) else {
                 continue;
             };
+            let overlay = inherited_overlay
+                || self
+                    .controls
+                    .get(&id)
+                    .is_some_and(|control| control.popup_surface);
+            if painting_overlay != overlay {
+                std::mem::swap(&mut self.scene, &mut other_layer);
+                painting_overlay = overlay;
+            }
             let mut children = self
                 .runtime
                 .tree()
@@ -2662,7 +2692,7 @@ impl Controls {
                     .node(*child)
                     .map_or(0, |n| n.props.z_index)
             });
-            pending.extend(children.into_iter().rev());
+            pending.extend(children.into_iter().rev().map(|child| (child, overlay)));
             let (Some(bounds), Some(clip)) = (self.runtime.bounds(id), self.runtime.clip(id))
             else {
                 continue;
@@ -3270,8 +3300,15 @@ impl Controls {
                 self.scene.text(run);
             }
         }
+        if !painting_overlay {
+            std::mem::swap(&mut self.scene, &mut other_layer);
+        }
         self.paint_key_tips()?;
         self.paint_tooltip()?;
+        self.overlay_scene = std::mem::take(&mut self.scene);
+        self.base_scene = other_layer;
+        self.scene = self.base_scene.clone();
+        self.scene.append(&self.overlay_scene);
         Ok(())
     }
     pub fn semantics(&self) -> Vec<SemanticNode> {

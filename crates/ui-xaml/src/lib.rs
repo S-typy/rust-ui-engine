@@ -25,7 +25,13 @@ use roxmltree::{Attribute, Document, Node, ParsingOptions};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod codegen;
+mod docking;
 mod ribbon;
+
+pub use docking::{
+    DockNodeDefinition, DockPaneDefinition, DockWorkspaceDefinition, MAX_DOCK_PANES,
+    validate_docking, validate_window_docking,
+};
 
 pub use ribbon::{
     RibbonDefinition, RibbonGroupDefinition, RibbonItemDefinition, RibbonItemKindDefinition,
@@ -163,6 +169,15 @@ pub fn validate_window_chrome(window: &WindowDefinition) -> Result<(), String> {
                 }
             }
             ElementKind::StackPanel(panel) => elements.extend(&panel.children),
+            ElementKind::DockWorkspace(workspace) => {
+                validate_docking(workspace)?;
+                elements.extend(
+                    workspace
+                        .panes()
+                        .into_iter()
+                        .map(|pane| pane.content.as_ref()),
+                );
+            }
             _ => {}
         }
     }
@@ -221,6 +236,7 @@ pub struct ElementDefinition {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
     StackPanel(StackPanelDefinition),
+    DockWorkspace(DockWorkspaceDefinition),
     Ribbon(RibbonDefinition),
     TextBox(EditBoxDefinition),
     TextBlock(TextBlockDefinition),
@@ -664,6 +680,7 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
     if ribbon::count(&definition.content) > 1 {
         return Err(at_node(window, "Window supports at most one Ribbon"));
     }
+    validate_window_docking(&definition).map_err(|message| at_node(window, message))?;
     validate_window_chrome(&definition).map_err(|message| at_node(window, message))?;
     Ok(definition)
 }
@@ -699,6 +716,7 @@ fn parse_element(
     let element_name = node.tag_name().name();
     let mut kind = match element_name {
         "StackPanel" => ElementKind::StackPanel(StackPanelDefinition::default()),
+        "DockWorkspace" => ElementKind::DockWorkspace(DockWorkspaceDefinition::default()),
         "Ribbon" => ElementKind::Ribbon(RibbonDefinition::default()),
         "TextBox" => ElementKind::TextBox(EditBoxDefinition::default()),
         "TextBlock" => ElementKind::TextBlock(TextBlockDefinition::default()),
@@ -952,7 +970,9 @@ fn parse_element(
         }
     }
     let mut menu_text_bytes = 0;
-    if let ElementKind::Ribbon(ribbon) = &mut kind {
+    if let ElementKind::DockWorkspace(workspace) = &mut kind {
+        *workspace = docking::parse_workspace(node, depth, count, names, checked_radio_groups)?;
+    } else if let ElementKind::Ribbon(ribbon) = &mut kind {
         ribbon::parse_children(node, depth, count, ribbon)?;
     } else {
         for child in node.children() {
@@ -1664,6 +1684,8 @@ pub fn compile_file(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result
     })
 }
 
+#[cfg(test)]
+mod docking_tests;
 #[cfg(test)]
 mod ribbon_tests;
 #[cfg(test)]

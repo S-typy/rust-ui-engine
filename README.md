@@ -2,7 +2,7 @@
 
 An experimental native desktop UI framework written in Rust for Windows, Linux
 (X11 and Wayland), and macOS. It combines a retained core, Unicode text editing,
-controls, an adaptive Ribbon, and a virtualized TreeGrid. Rendering uses hardware
+controls, an adaptive Ribbon, docking panels, and a virtualized TreeGrid. Rendering uses hardware
 GPU backends through `wgpu`; core and control APIs have no GPU or window types.
 
 The current source is a **0.1.0 alpha candidate**. M2–M5 functionality is available
@@ -65,6 +65,26 @@ runtime is required. This is a bounded, explicit control-tree profile, with no b
 hot reload or general WPF XAML compatibility yet. See the
 [supported syntax and example](docs/public/xaml.md).
 
+## Run the docking workspace
+
+[DockWindow.xaml](examples/xaml-form/DockWindow.xaml) declares a document area,
+tabbed panels and resizable splits. Panels can move within the workspace or open
+in separate native GPU windows. Closing a floating window returns its panels to
+the main workspace; closing a panel keeps its document available for restoration.
+The same retained editors survive these placement changes.
+
+```sh
+cargo run --release --locked -p xaml-form -- --docking
+cargo run --release --locked -p xaml-form -- --docking --float-pane Properties
+cargo run --release --locked -p xaml-form -- --docking --dark
+```
+
+Drag tabs to reorder or dock beside another group; drag splitters to resize.
+The panel header and Ribbon provide floating, redocking and restoration actions.
+Direct dragging between separate native windows, auto-hide and a layout file
+format remain outside this initial profile. See the [docking contract](docs/public/docking.md)
+for model, host lifecycle and current validation limits.
+
 ## Run the gallery
 
 Install Rust 1.96.0 and the native build tools: MSVC with Windows SDK, Xcode
@@ -122,10 +142,10 @@ protocols; client-side window decorations are not implemented.
 | `crates/ui-core` | Generational tree, routed input, focus/capture, invalidation, geometry and ordered Scene; no external dependencies |
 | `crates/ui-layout` | Taffy Stack/Flex/Grid/Overlay adapter and margin/padding constraints |
 | `crates/ui-text` | Parley shaping, Swash glyph bitmaps, Unicode document editing and caret geometry |
-| `crates/ui-controls` | Controls, themes, command registry, popups and adaptive Ribbon |
+| `crates/ui-controls` | Controls, themes, command registry, popups, adaptive Ribbon and docking model/view |
 | `crates/ui-treegrid` | Indexed data-source contract, hierarchy/selection/edit state and viewport Scene generation |
 | `crates/ui-render-wgpu` | Rectangle batches, glyph atlas, ordered GPU drawing and surface lifecycle |
-| `crates/ui-platform-winit` | Window/input normalization, IME, clipboard and AccessKit host |
+| `crates/ui-platform-winit` | Single/multiple native windows, input, IME, clipboard and AccessKit host |
 | `crates/ui-xaml` | Independent compiler for the Window and control-tree XAML profile |
 | `examples/xaml-form` | Native Fluent form built from MainWindow.xaml |
 | `examples/controls-gallery` | Integrated controls and book-library demonstration |
@@ -184,6 +204,7 @@ Their historical success does not validate the newer gallery.
 
 - [Architecture](docs/public/architecture.md), [retained runtime](docs/public/retained-ui.md), [layout](docs/public/layout.md)
 - [Text](docs/public/text.md), [controls](docs/public/controls.md), [Ribbon](docs/public/ribbon.md), [TreeGrid](docs/public/treegrid.md)
+- [Docking and floating windows](docs/public/docking.md)
 - [Native host / DesktopApp](docs/public/platform.md)
 - [Alpha candidate notes](docs/public/alpha-release-notes.md) and [runtime matrix](docs/public/runtime-matrix.md)
 - [Subsystem decision](docs/public/adr/ADR-004-text-controls-platform-treegrid.md), [retained decision](docs/public/adr/ADR-003-retained-runtime.md)
@@ -192,8 +213,8 @@ Their historical success does not validate the newer gallery.
 
 Automatic intrinsic text measurement, incremental subtree layout and general
 vector/image rendering remain incomplete. TreeGrid uses fixed row heights;
-variable heights, grouping/summaries, Docking and PropertyGrid are outside this
-alpha scope. Alpha 0.1.0 contracts are documented; API compatibility before 1.0
+variable heights, grouping/summaries, advanced docking and PropertyGrid remain
+outside this alpha scope. Alpha 0.1.0 contracts are documented; API compatibility before 1.0
 is not guaranteed.
 
 ## License

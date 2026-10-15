@@ -122,6 +122,23 @@ impl<A: DesktopApp> Host<A> {
         )
     }
 
+    fn geometry_changed(&mut self) {
+        let Some(window) = &self.window else { return };
+        let Ok(position) = window.outer_position() else {
+            return;
+        };
+        let scale = window.scale_factor();
+        let position = position.to_logical::<f32>(scale);
+        let size = window.inner_size().to_logical::<f32>(scale);
+        if size.width > 0.0 && size.height > 0.0 {
+            self.app.window_geometry_changed(
+                Point::new(position.x, position.y),
+                Size::new(size.width, size.height),
+                scale as f32,
+            );
+        }
+    }
+
     fn dispatch(&mut self, event_loop: &ActiveEventLoop, event: PlatformEvent) {
         match self.app.event(event) {
             Ok(response) => self.effects(event_loop, response),
@@ -411,6 +428,7 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
         self.accessible_nodes.clear();
         window.set_visible(true);
         self.window = Some(window);
+        self.geometry_changed();
         self.initialize_renderer(event_loop);
     }
 
@@ -454,6 +472,7 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::RedrawRequested => self.render(event_loop),
+            WindowEvent::Moved(_) => self.geometry_changed(),
             WindowEvent::Resized(size) => {
                 if self.smoke_resize == Some(size) {
                     self.smoke_resized = true;
@@ -464,6 +483,7 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
                     self.fail(event_loop, error);
                     return;
                 }
+                self.geometry_changed();
                 self.redraw();
             }
             WindowEvent::ScaleFactorChanged { .. } => {
@@ -473,6 +493,7 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
                     self.fail(event_loop, error);
                     return;
                 }
+                self.geometry_changed();
                 self.redraw();
             }
             WindowEvent::Occluded(value) => {

@@ -8,6 +8,7 @@ mod model;
 mod runtime;
 mod scene_stroke;
 mod scene_text;
+mod scene_view;
 mod tree;
 
 pub use arena::WidgetId;

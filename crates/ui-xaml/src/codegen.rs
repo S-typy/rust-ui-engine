@@ -45,6 +45,10 @@ fn optional_icon(value: Option<IconSymbol>) -> String {
 fn element(element: &ElementDefinition) -> String {
     let common = &element.common;
     let kind = match &element.kind {
+        ElementKind::DockWorkspace(workspace) => format!(
+            "rust_desktop_ui_xaml::ElementKind::DockWorkspace(rust_desktop_ui_xaml::DockWorkspaceDefinition {{ root: {} }})",
+            dock_node(&workspace.root),
+        ),
         ElementKind::Ribbon(ribbon) => format!(
             "rust_desktop_ui_xaml::ElementKind::Ribbon({})",
             ribbon_definition(ribbon),
@@ -135,6 +139,23 @@ fn element(element: &ElementDefinition) -> String {
         automation_name = optional_string(&common.automation_name),
         tool_tip = optional_string(&common.tool_tip),
     )
+}
+
+fn dock_node(node: &crate::DockNodeDefinition) -> String {
+    match node {
+        crate::DockNodeDefinition::Split { orientation, ratio, first, second } => format!(
+            "rust_desktop_ui_xaml::DockNodeDefinition::Split {{ orientation: rust_desktop_ui_xaml::Orientation::{orientation:?}, ratio: {ratio:?}, first: Box::new({}), second: Box::new({}) }}",
+            dock_node(first), dock_node(second),
+        ),
+        crate::DockNodeDefinition::Group { selected_pane, panes } => format!(
+            "rust_desktop_ui_xaml::DockNodeDefinition::Group {{ selected_pane: {}, panes: vec![{}] }}",
+            optional_string(selected_pane), panes.iter().map(|pane| format!(
+                "rust_desktop_ui_xaml::DockPaneDefinition {{ id: {:?}.into(), header: {:?}.into(), can_close: {}, min_width: {:?}, min_height: {:?}, content: Box::new({}) }}",
+                pane.id, pane.header, pane.can_close, pane.min_width, pane.min_height,
+                element(&pane.content),
+            )).collect::<Vec<_>>().join(",\n"),
+        ),
+    }
 }
 
 fn ribbon_definition(ribbon: &crate::RibbonDefinition) -> String {

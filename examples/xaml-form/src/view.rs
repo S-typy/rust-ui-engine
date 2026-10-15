@@ -72,7 +72,9 @@ impl MountedView {
         };
         let height = common.height.map_or_else(
             || match &element.kind {
-                ElementKind::StackPanel(_) | ElementKind::Ribbon(_) => Length::Auto,
+                ElementKind::StackPanel(_)
+                | ElementKind::DockWorkspace(_)
+                | ElementKind::Ribbon(_) => Length::Auto,
                 ElementKind::TextBox(_)
                 | ElementKind::Button(_)
                 | ElementKind::ToggleButton(_)
@@ -97,6 +99,9 @@ impl MountedView {
             ..Default::default()
         };
         let id = match &element.kind {
+            ElementKind::DockWorkspace(_) => {
+                return Err("DockWorkspace requires the docking window coordinator".into());
+            }
             ElementKind::Ribbon(definition) => {
                 let mut ribbon = crate::view_ribbon::build_ribbon(ui, definition)?;
                 let initial_width = resolved_width(ui, element, parent_axis, available_width)?;
@@ -375,6 +380,7 @@ impl MountedView {
             id,
             match &element.kind {
                 ElementKind::StackPanel(_) => Role::Panel,
+                ElementKind::DockWorkspace(_) => Role::Panel,
                 ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) => Role::TextBox,
                 ElementKind::TextBlock(_) => Role::Label,
@@ -407,6 +413,9 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         return Ok(width);
     }
     match &element.kind {
+        ElementKind::DockWorkspace(_) => {
+            Err("DockWorkspace requires the docking window coordinator".into())
+        }
         ElementKind::Ribbon(_) => Ok(640.0),
         ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
             let button = &menu.button;
@@ -559,6 +568,9 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         match &element.kind {
+            ElementKind::DockWorkspace(_) => {
+                return Err("DockWorkspace requires the docking window coordinator".into());
+            }
             ElementKind::TextBlock(text) => {
                 rust_desktop_ui_xaml::validate_text_block(text)?;
                 text_style(text).validate().map_err(err)?;
@@ -947,4 +959,27 @@ fn color([red, green, blue, alpha]: [u8; 4]) -> Color {
 
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod docking_rejection_tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_form_rejects_docking_before_creating_any_nodes() {
+        let definition = rust_desktop_ui_xaml::parse(
+            r#"<Window xmlns="urn:rust-ui-engine:ui">
+                <StackPanel><TextBox/><DockWorkspace><DockGroup><DockPane Id="P">
+                    <TextBox/>
+                </DockPane></DockGroup></DockWorkspace></StackPanel>
+            </Window>"#,
+        )
+        .unwrap();
+        let mut ui = Controls::new(rust_desktop_ui_controls::Theme::FluentLight).unwrap();
+        let root = ui.root();
+        let original = ui.runtime.tree().preorder();
+        let result = MountedView::mount(&mut ui, root, &definition.content);
+        assert!(result.err().unwrap().contains("docking window coordinator"));
+        assert_eq!(ui.runtime.tree().preorder(), original);
+    }
 }

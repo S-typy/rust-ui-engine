@@ -648,7 +648,9 @@ impl Controls {
     pub(crate) fn popup_anchor(&self) -> Option<WidgetId> {
         self.popup.as_ref().map(|popup| popup.anchor)
     }
-    pub(crate) fn popup_contains_point(&self, point: Point) -> bool {
+    /// Whether a client-local point lies in any currently open menu surface.
+    /// Compositors can consume an outside click before forwarding it to another view.
+    pub fn popup_contains_point(&self, point: Point) -> bool {
         self.popup.as_ref().is_some_and(|popup| {
             popup.levels.iter().any(|level| {
                 self.runtime

@@ -3,6 +3,7 @@
 mod button;
 mod commands;
 mod controls;
+mod docking;
 mod editor;
 mod primitives;
 mod ribbon;
@@ -11,6 +12,7 @@ mod theme;
 pub use button::*;
 pub use commands::*;
 pub use controls::*;
+pub use docking::*;
 pub use editor::*;
 pub use primitives::*;
 pub use ribbon::*;

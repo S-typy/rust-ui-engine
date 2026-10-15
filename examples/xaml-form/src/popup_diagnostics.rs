@@ -111,7 +111,7 @@ fn optional_bool(value: Option<bool>) -> &'static str {
     }
 }
 
-fn string(value: &str) -> String {
+pub(crate) fn string(value: &str) -> String {
     let mut result = String::from("\"");
     for ch in value.chars() {
         match ch {

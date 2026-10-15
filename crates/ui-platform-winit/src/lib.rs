@@ -5,10 +5,13 @@ mod chrome;
 mod host;
 mod ime;
 mod input;
+mod multi;
+mod multi_host;
 
 pub use accesskit;
 pub use chrome::{TitleBar, WindowChrome};
 pub use host::run;
+pub use multi::{DesktopApplication, WindowKey, WindowSpec, run_multi};
 use rust_desktop_ui_core::{InputEvent, Rect, Scene, Size};
 pub use rust_desktop_ui_render_wgpu::RendererStats;
 use std::time::Duration;
@@ -66,6 +69,17 @@ pub trait DesktopApp {
     /// button bounds can be unavailable before the first visible native frame.
     fn window_chrome_changed(&mut self, chrome: WindowChrome) {
         let _ = chrome;
+    }
+    /// Native outer position and client size in logical pixels. A host calls this
+    /// after creation, moves, resizes and DPI changes; it does not move the window
+    /// back to the application's initial placement on subsequent frames.
+    fn window_geometry_changed(
+        &mut self,
+        position: rust_desktop_ui_core::Point,
+        size: Size,
+        scale: f32,
+    ) {
+        let _ = (position, size, scale);
     }
     /// A caret in logical client coordinates. `None` disables native IME input.
     fn ime_cursor(&self) -> Option<Rect> {

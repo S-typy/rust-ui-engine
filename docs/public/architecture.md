@@ -177,8 +177,10 @@ validation error и commit/cancel; источник должен атомарн�
 Versioned column state включает порядок, ширину и pinning. Файл и сохранение
 выбирает приложение. См. [TreeGrid](treegrid.md).
 
-Alpha использует фиксированную высоту строк. Variable heights, grouping/summary,
-Docking и PropertyGrid относятся к последующему объёму работ. CPU benchmark
+Alpha использует фиксированную высоту строк. Variable heights, grouping/summary
+и PropertyGrid относятся к последующему объёму работ. [Docking](docking.md)
+реализован отдельным профилем: модель вкладок и разделений, compiled XAML,
+долгоживущие панели и несколько нативных GPU-окон. CPU benchmark
 построения Scene не измеряет GPU FPS или latency native input.
 
 ## Сборка и проверка

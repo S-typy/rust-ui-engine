@@ -5,7 +5,8 @@
 `TextBlock`, однострочные `TextBox`, кнопки `Button`, переключатели `ToggleButton`,
 флажки `CheckBox`, переключатели группы `RadioButton`, векторные `Icon`
 и разделители `Separator`, `DropDownButton` и `SplitButton` со статическими меню,
-а также командный `Ribbon` с вкладками, группами и панелью быстрого доступа.
+а также командный `Ribbon` с вкладками, группами и панелью быстрого доступа
+и дерево панелей `DockWorkspace`.
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -774,6 +775,76 @@ Escape закрывает один уровень KeyTips, завершение 
 Этот профиль не содержит backstage, gallery items, embedded ComboBox,
 runtime binding, drag customization, Ribbon styles/templates или полного
 WPF Ribbon API. Цвета и плотность следуют собственным темам Controls.
+
+## Панели DockWorkspace
+
+`DockWorkspace` описывает начальную структуру панелей. `DockSplit` делит область
+между двумя дочерними узлами, `DockGroup` объединяет вкладки, `DockPane` содержит
+один обычный элемент формы. Содержимым панели может быть StackPanel с редакторами
+и кнопками; Id панели не заменяет x:Name её элементов.
+
+```xml
+<DockWorkspace xmlns="urn:rust-ui-engine:ui"
+               xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <DockSplit Orientation="Horizontal" Ratio="0.25">
+        <DockGroup>
+            <DockPane Id="Explorer" Header="Обозреватель" MinWidth="160">
+                <TextBlock Text="Содержимое проекта" />
+            </DockPane>
+        </DockGroup>
+        <DockGroup SelectedPane="Document">
+            <DockPane Id="Document" Header="Документ" CanClose="False">
+                <StackPanel Padding="16" Spacing="12">
+                    <TextBlock Text="Текст документа" />
+                    <TextBox x:Name="Message" />
+                </StackPanel>
+            </DockPane>
+        </DockGroup>
+    </DockSplit>
+</DockWorkspace>
+```
+
+Этот фрагмент размещается внутри Window. В shell с `TitleBar="Ribbon"` первым
+ребёнком вертикального StackPanel остаётся Ribbon, а рабочая область располагается
+после него. Компиляция не меняет обычное поведение размеров StackPanel: оставшееся
+место рабочей области назначает координатор docking-окон.
+Текущий координатор примера принимает DockWorkspace в корне либо вертикальный
+StackPanel с одной рабочей областью или с Ribbon первым ребёнком и рабочей
+областью последним. Window Padding должен быть нулевым; shell и DockWorkspace
+используют автоматические размеры, нулевые отступы и остальные общие свойства
+по умолчанию, кроме x:Name. У shell допускается Spacing, но не Padding или Card.
+Эти ограничения монтажа дополнительно проверяются до создания окон;
+обычный компилятор сохраняет общие свойства DockWorkspace в AST.
+
+| Элемент | Свойства и ограничения |
+|---|---|
+| DockWorkspace | Один корневой DockSplit или DockGroup; общие свойства элемента, включая x:Name |
+| DockSplit | Orientation=Horizontal или Vertical, по умолчанию Horizontal; Ratio от 0.1 до 0.9 включительно, по умолчанию 0.5; ровно два DockSplit/DockGroup |
+| DockGroup | Непустой список DockPane; SelectedPane указывает на собственную панель, по умолчанию выбрана первая |
+| DockPane | Обязательный Id вида `[A-Za-z_][A-Za-z0-9_]*`, до 128 байт; Header по умолчанию равен Id; CanClose=True; MinWidth=120, MinHeight=80 |
+
+Header должен быть непустым и занимать не более 4096 байт UTF-8. Минимальные
+размеры задаются в логических пикселях, должны быть конечными и принадлежать
+диапазону (0, 16384]. В одном Window разрешена одна рабочая область и до 64 панелей;
+Id панелей уникальны. Имена x:Name общие для всего Window. DockSplit, DockGroup
+и DockPane не принимают x:Name и общие свойства контролов. Все внутренние узлы,
+содержимое панелей и меню учитываются в общих лимитах 256 элементов и 32 уровней.
+Внутри DockPane нельзя размещать Ribbon или вложенный DockWorkspace.
+Каждая панель содержит независимый набор controls: один RadioButton GroupName
+не может использоваться в нескольких DockPane. Внутри одной панели именованные
+группы сохраняют обычную семантику; неименованные группы ограничены родителем.
+
+Rust-описание использует `DockWorkspaceDefinition`, `DockNodeDefinition` и
+`DockPaneDefinition`. `validate_docking` проверяет отдельную рабочую область,
+`validate_window_docking` — полное дерево Window с общими именами и лимитами.
+Эти функции нужны также для определений, созданных вручную. Регистрация команд
+и проверка индивидуальных настроек контролов остаются задачами адаптера.
+`DockWorkspaceDefinition::panes()` перечисляет панели в порядке начального дерева.
+
+DockWorkspace требует координатор нескольких окон: обычный адаптер одной формы
+отклоняет его до создания контролов. XML описывает начальное docked-состояние;
+перемещения, отдельные системные окна и восстановление layout выполняет runtime.
+DockFloating, bindings и шаблоны панелей в этот профиль не входят.
 
 ## Границы профиля
 
