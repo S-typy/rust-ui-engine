@@ -131,15 +131,6 @@ fn validate_entries(
                         }
                         pending.push((Entry::Dock(&workspace.root), depth + 1, true));
                     }
-                    ElementKind::StackPanel(panel) => {
-                        check_pending(panel.children.len(), count)?;
-                        pending.extend(
-                            panel
-                                .children
-                                .iter()
-                                .map(|child| (Entry::Element(child), depth + 1, in_pane)),
-                        );
-                    }
                     ElementKind::Ribbon(ribbon) => {
                         if in_pane {
                             return Err("DockPane content cannot contain a Ribbon".into());
@@ -178,7 +169,15 @@ fn validate_entries(
                                 .map(|entry| (Entry::Menu(entry), depth + 1, in_pane)),
                         );
                     }
-                    _ => {}
+                    _ => {
+                        let children = element.children();
+                        check_pending(children.len(), count)?;
+                        pending.extend(
+                            children
+                                .into_iter()
+                                .map(|child| (Entry::Element(child), depth + 1, in_pane)),
+                        );
+                    }
                 }
             }
             Entry::Dock(DockNodeDefinition::Split {
@@ -296,11 +295,11 @@ fn validate_radio_owners<'a>(
                     ));
                 }
             }
-            ElementKind::StackPanel(panel) => {
-                check_pending(panel.children.len(), count)?;
-                pending.extend(&panel.children);
+            _ => {
+                let children = element.children();
+                check_pending(children.len(), count)?;
+                pending.extend(children);
             }
-            _ => {}
         }
     }
     Ok(())

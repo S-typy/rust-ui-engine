@@ -55,15 +55,23 @@ cargo run --release --locked -p xaml-form
 cargo run --release --locked -p xaml-form -- --dark
 cargo run --release --locked -p xaml-form -- --ribbon-minimized
 cargo run --release --locked -p xaml-form -- --controls
+cargo run --release --locked -p xaml-form -- --editors
 ```
 
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
 the separate example of individual controls and popup menus.
 
 The build validates the markup and generates a Rust window definition. No .NET
-runtime is required. This is a bounded, explicit control-tree profile, with no bindings,
-hot reload or general WPF XAML compatibility yet. See the
+runtime is required. The profile supports observable data bindings and form layouts;
+hot reload and general WPF XAML compatibility remain outside its scope. See the
 [supported syntax and example](docs/public/xaml.md).
+
+The separate [editors form](examples/xaml-form/EditorsWindow.xaml), opened with
+`--editors`, combines ListBox, ComboBox, searchable multi-column lookup, embedded
+editor buttons, SpinBox, date and time fields. Two-way bindings share typed data,
+validate values before acceptance, and preserve drafts until commit. Grid,
+WrapPanel, DockPanel, Border and two-axis ScrollViewer arrange the form.
+See [editors, bindings and layout](docs/public/forms.md) for syntax and contracts.
 
 ## Run the docking workspace
 
@@ -153,7 +161,7 @@ protocols; client-side window decorations are not implemented.
 | Path | Responsibility |
 |---|---|
 | `crates/ui-core` | Generational tree, routed input, focus/capture, invalidation, geometry and ordered Scene; no external dependencies |
-| `crates/ui-layout` | Taffy Stack/Flex/Grid/Overlay adapter and margin/padding constraints |
+| `crates/ui-layout` | Taffy Stack/Flex/Grid/Wrap/Overlay adapter and margin/padding constraints |
 | `crates/ui-text` | Parley shaping, Swash glyph bitmaps, Unicode document editing and caret geometry |
 | `crates/ui-controls` | Controls, themes, command registry, popups, adaptive Ribbon and docking model/view |
 | `crates/ui-treegrid` | Indexed data-source contract, hierarchy/selection/edit state and viewport Scene generation |

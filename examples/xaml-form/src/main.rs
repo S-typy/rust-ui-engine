@@ -1,9 +1,16 @@
 //! A native form whose structure and initial properties are compiled from XAML.
 mod accessibility;
+#[cfg(test)]
+mod binding_adapter_tests;
 mod docking_accessibility;
 mod docking_app;
 mod form;
 mod form_chrome;
+mod forms_model;
+#[cfg(test)]
+mod forms_tests;
+#[cfg(test)]
+mod layout_adapter_tests;
 mod popup_diagnostics;
 #[cfg(test)]
 mod ribbon_tests;
@@ -17,6 +24,9 @@ mod generated {
 }
 mod generated_controls {
     include!(concat!(env!("OUT_DIR"), "/controls_window.rs"));
+}
+mod generated_editors {
+    include!(concat!(env!("OUT_DIR"), "/editors_window.rs"));
 }
 mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
@@ -39,6 +49,7 @@ fn main() -> ExitCode {
 fn start() -> Result<(), String> {
     let mut theme = None;
     let mut controls = false;
+    let mut editors = false;
     let mut docking = false;
     let mut float_pane = None;
     let mut layout_file = None;
@@ -52,6 +63,7 @@ fn start() -> Result<(), String> {
             "--dark" => theme = Some(Theme::Dark),
             "--light" => theme = Some(Theme::Light),
             "--controls" => controls = true,
+            "--editors" => editors = true,
             "--docking" => docking = true,
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
@@ -67,10 +79,13 @@ fn start() -> Result<(), String> {
             "--native-title-bar" => native_title_bar = true,
             "--help" | "-h" => {
                 println!(
-                    "xaml-form [--controls | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
+                    "xaml-form [--controls | --editors | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
                 );
                 println!(
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
+                );
+                println!(
+                    "--editors opens EditorsWindow.xaml with selection, typed values and data bindings."
                 );
                 println!(
                     "--diagnostics logs input, values and validation for automated input tests."
@@ -83,8 +98,13 @@ fn start() -> Result<(), String> {
             _ => return Err(format!("Unknown argument: {argument}")),
         }
     }
-    if controls && docking {
-        return Err("--controls and --docking are mutually exclusive".into());
+    if [controls, docking, editors]
+        .into_iter()
+        .filter(|v| *v)
+        .count()
+        > 1
+    {
+        return Err("--controls, --editors and --docking are mutually exclusive".into());
     }
     if float_pane.is_some() && !docking {
         return Err("--float-pane requires --docking".into());
@@ -94,6 +114,8 @@ fn start() -> Result<(), String> {
     }
     let mut definition = if docking {
         generated_docking::window_definition()
+    } else if editors {
+        generated_editors::window_definition()
     } else if controls {
         generated_controls::window_definition()
     } else {
@@ -108,14 +130,11 @@ fn start() -> Result<(), String> {
     if ribbon_minimized {
         fn minimize(element: &mut rust_desktop_ui_xaml::ElementDefinition) {
             use rust_desktop_ui_xaml::ElementKind;
-            match &mut element.kind {
-                ElementKind::Ribbon(ribbon) => ribbon.is_minimized = true,
-                ElementKind::StackPanel(panel) => {
-                    for child in &mut panel.children {
-                        minimize(child);
-                    }
-                }
-                _ => {}
+            if let ElementKind::Ribbon(ribbon) = &mut element.kind {
+                ribbon.is_minimized = true;
+            }
+            for child in element.children_mut() {
+                minimize(child);
             }
         }
         minimize(&mut definition.content);
@@ -141,7 +160,11 @@ fn start() -> Result<(), String> {
         app.set_layout_file(path);
         return rust_desktop_ui_platform_winit::run_multi(app);
     }
-    let app = form::Form::new(definition, diagnostics)?;
+    let app = if editors {
+        form::Form::new_with_model(definition, diagnostics, Some(forms_model::model()?))?
+    } else {
+        form::Form::new(definition, diagnostics)?
+    };
     if diagnostics {
         println!(
             "named-editor=Message resolved={}",

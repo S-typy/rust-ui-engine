@@ -4,7 +4,8 @@
 //! editors, buttons, check boxes, radio buttons, icons, separators and static
 //! dropdown/split menus and a command-oriented Ribbon. Elements use
 //! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. It does not load WPF types,
-//! execute markup extensions, resolve external entities, or implement bindings.
+//! execute arbitrary markup extensions or resolve external entities. Explicit
+//! property bindings are compiled into renderer-independent definitions.
 //! Unknown syntax is an error instead of being silently ignored.
 //!
 //! ```
@@ -19,12 +20,24 @@
 //! assert_eq!(editor.text, "Hello");
 //! ```
 
-use std::{collections::HashSet, fmt, fs, io::Read, path::Path};
+use std::{
+    collections::{BTreeMap, HashSet},
+    fmt, fs,
+    io::Read,
+    path::Path,
+};
 
 use roxmltree::{Attribute, Document, Node, ParsingOptions};
 use unicode_segmentation::UnicodeSegmentation;
 
+mod binding;
 mod codegen;
+mod form_parse;
+mod forms;
+mod panels;
+pub use binding::{BindingDefinition, BindingMode, UpdateSourceTrigger};
+pub use forms::*;
+pub use panels::*;
 mod docking;
 mod ribbon;
 
@@ -168,7 +181,6 @@ pub fn validate_window_chrome(window: &WindowDefinition) -> Result<(), String> {
                     return Err("Window TitleBar=Ribbon requires exactly one Ribbon".into());
                 }
             }
-            ElementKind::StackPanel(panel) => elements.extend(&panel.children),
             ElementKind::DockWorkspace(workspace) => {
                 validate_docking(workspace)?;
                 elements.extend(
@@ -178,16 +190,38 @@ pub fn validate_window_chrome(window: &WindowDefinition) -> Result<(), String> {
                         .map(|pane| pane.content.as_ref()),
                 );
             }
-            _ => {}
+            _ => elements.extend(element.children()),
         }
     }
     Ok(())
 }
 
 fn validate_chrome_placement(common: &CommonProperties, element: &str) -> Result<(), String> {
-    if common.margin != [0.0; 4] || common.width.is_some() || common.height.is_some() {
+    if common.margin != [0.0; 4]
+        || common.width.is_some()
+        || common.height.is_some()
+        || common.min_width != 0.0
+        || common.min_height != 0.0
+        || common.max_width.is_some()
+        || common.max_height.is_some()
+        || common.horizontal_alignment != Alignment::Stretch
+        || common.vertical_alignment != Alignment::Stretch
+        || common.visibility != Visibility::Visible
+        || common.bindings.keys().any(|property| {
+            matches!(
+                property.as_str(),
+                "Width"
+                    | "Height"
+                    | "MinWidth"
+                    | "MinHeight"
+                    | "MaxWidth"
+                    | "MaxHeight"
+                    | "Visibility"
+            )
+        })
+    {
         return Err(format!(
-            "Window TitleBar=Ribbon requires {element} Margin=0 and automatic Width/Height"
+            "Window TitleBar=Ribbon requires {element} Margin=0 and automatic Width/Height, unconstrained stretch alignment and no bound geometry"
         ));
     }
     Ok(())
@@ -205,10 +239,26 @@ pub struct CommonProperties {
     /// Left, top, right, bottom margin in logical pixels.
     pub margin: [f32; 4],
     pub is_enabled: bool,
+    pub visibility: Visibility,
     /// Optional accessible name, supplied by `AutomationName`.
     pub automation_name: Option<String>,
     /// Plain text shown by the control's tooltip, supplied by `ToolTip`.
     pub tool_tip: Option<String>,
+    pub min_width: f32,
+    pub min_height: f32,
+    pub max_width: Option<f32>,
+    pub max_height: Option<f32>,
+    pub horizontal_alignment: Alignment,
+    pub vertical_alignment: Alignment,
+    /// Zero-based Grid cell, with positive spans.
+    pub grid_row: u16,
+    pub grid_column: u16,
+    pub grid_row_span: u16,
+    pub grid_column_span: u16,
+    pub dock: DockSide,
+    /// Property path relative to the inherited context.
+    pub data_context: Option<String>,
+    pub bindings: BTreeMap<String, BindingDefinition>,
 }
 
 impl Default for CommonProperties {
@@ -219,8 +269,22 @@ impl Default for CommonProperties {
             height: None,
             margin: [0.0; 4],
             is_enabled: true,
+            visibility: Visibility::Visible,
             automation_name: None,
             tool_tip: None,
+            min_width: 0.0,
+            min_height: 0.0,
+            max_width: None,
+            max_height: None,
+            horizontal_alignment: Alignment::Stretch,
+            vertical_alignment: Alignment::Stretch,
+            grid_row: 0,
+            grid_column: 0,
+            grid_row_span: 1,
+            grid_column_span: 1,
+            dock: DockSide::Left,
+            data_context: None,
+            bindings: BTreeMap::new(),
         }
     }
 }
@@ -232,10 +296,74 @@ pub struct ElementDefinition {
     pub kind: ElementKind,
 }
 
+impl ElementDefinition {
+    /// Content children in source order, including the contents of docking panes.
+    pub fn children(&self) -> Vec<&ElementDefinition> {
+        match &self.kind {
+            ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) => p.children.iter().collect(),
+            ElementKind::Grid(p) => p.children.iter().collect(),
+            ElementKind::DockPanel(p) => p.children.iter().collect(),
+            ElementKind::Border(p) => vec![&p.child],
+            ElementKind::ScrollViewer(p) => vec![&p.child],
+            ElementKind::DockWorkspace(p) => p
+                .panes()
+                .into_iter()
+                .map(|pane| pane.content.as_ref())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Mutable content children in the same order as [`Self::children`].
+    pub fn children_mut(&mut self) -> Vec<&mut ElementDefinition> {
+        fn panes<'a>(
+            node: &'a mut DockNodeDefinition,
+            output: &mut Vec<&'a mut ElementDefinition>,
+        ) {
+            match node {
+                DockNodeDefinition::Split { first, second, .. } => {
+                    panes(first, output);
+                    panes(second, output);
+                }
+                DockNodeDefinition::Group { panes, .. } => {
+                    output.extend(panes.iter_mut().map(|pane| pane.content.as_mut()))
+                }
+            }
+        }
+        match &mut self.kind {
+            ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) => {
+                p.children.iter_mut().collect()
+            }
+            ElementKind::Grid(p) => p.children.iter_mut().collect(),
+            ElementKind::DockPanel(p) => p.children.iter_mut().collect(),
+            ElementKind::Border(p) => vec![&mut p.child],
+            ElementKind::ScrollViewer(p) => vec![&mut p.child],
+            ElementKind::DockWorkspace(p) => {
+                let mut output = Vec::new();
+                panes(&mut p.root, &mut output);
+                output
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// Supported layout elements. Menu buttons own static menu entries separately.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
     StackPanel(StackPanelDefinition),
+    WrapPanel(StackPanelDefinition),
+    Grid(GridDefinition),
+    Border(BorderDefinition),
+    ScrollViewer(ScrollViewerDefinition),
+    DockPanel(DockPanelDefinition),
+    ListBox(SelectionDefinition),
+    ComboBox(SelectionDefinition),
+    LookupEdit(LookupDefinition),
+    ButtonEdit(ButtonEditDefinition),
+    SpinBox(SpinBoxDefinition),
+    DateEdit(TemporalEditDefinition),
+    TimeEdit(TemporalEditDefinition),
     DockWorkspace(DockWorkspaceDefinition),
     Ribbon(RibbonDefinition),
     TextBox(EditBoxDefinition),
@@ -728,6 +856,7 @@ fn parse_element(
         "RadioButton" => ElementKind::RadioButton(RadioButtonDefinition::default()),
         "Icon" => ElementKind::Icon(IconDefinition::default()),
         "Separator" => ElementKind::Separator(SeparatorDefinition::default()),
+        name if form_parse::new_kind(name).is_some() => form_parse::new_kind(name).unwrap(),
         name => {
             return Err(at_node(
                 node,
@@ -738,6 +867,33 @@ fn parse_element(
     let document = node.document();
     let mut common = CommonProperties::default();
     for attribute in node.attributes() {
+        if attribute.namespace().is_none() && attribute.name() == "DataContext" {
+            form_parse::common_property(document, attribute, &mut common)?;
+            continue;
+        }
+        if attribute.namespace().is_none() && attribute.value().trim_start().starts_with("{Binding")
+        {
+            let property = attribute.name();
+            if !form_parse::is_binding_property(&kind, property) {
+                return Err(at_attribute(
+                    document,
+                    attribute,
+                    format!("{element_name}.{property} does not support binding markup extensions"),
+                ));
+            }
+            let editable = matches!(
+                property,
+                "Text" | "Value" | "SelectedValue" | "SelectedValues" | "IsChecked"
+            ) && !matches!(kind, ElementKind::TextBlock(_));
+            let mut binding = binding::parse_binding(document, attribute, editable)?;
+            if matches!(property, "SelectedValue" | "SelectedValues" | "IsChecked")
+                && !attribute.value().contains("UpdateSourceTrigger")
+            {
+                binding.update_source_trigger = UpdateSourceTrigger::PropertyChanged;
+            }
+            common.bindings.insert(property.into(), binding);
+            continue;
+        }
         reject_extension(document, attribute)?;
         if attribute.namespace() == Some(XAML_NAMESPACE) && attribute.name() == "Name" {
             let name = attribute.value();
@@ -773,11 +929,26 @@ fn parse_element(
                 }
                 common.tool_tip = Some(attribute.value().into());
             }
-            "Width" => common.width = Some(editor_dimension(document, attribute)?),
-            "Height" => common.height = Some(editor_dimension(document, attribute)?),
+            "Width" => {
+                common.width = if attribute.value() == "Auto" {
+                    None
+                } else {
+                    Some(editor_dimension(document, attribute)?)
+                }
+            }
+            "Height" => {
+                common.height = if attribute.value() == "Auto" {
+                    None
+                } else {
+                    Some(editor_dimension(document, attribute)?)
+                }
+            }
             "Margin" => common.margin = thickness(document, attribute)?,
             "IsEnabled" => common.is_enabled = boolean(document, attribute)?,
             property => {
+                if form_parse::common_property(document, attribute, &mut common)? {
+                    continue;
+                }
                 let supported = match &mut kind {
                     ElementKind::Ribbon(ribbon) if property == "SelectedTab" => {
                         identifier(document, attribute, "SelectedTab")?;
@@ -796,46 +967,48 @@ fn parse_element(
                         }
                     }
                     ElementKind::TextBox(editor) => editor_property(document, attribute, editor)?,
-                    ElementKind::StackPanel(panel) => match property {
-                        "Orientation" => {
-                            panel.orientation = match attribute.value() {
-                                "Vertical" => Orientation::Vertical,
-                                "Horizontal" => Orientation::Horizontal,
-                                _ => {
-                                    return Err(at_attribute(
-                                        document,
-                                        attribute,
-                                        "Orientation must be Vertical or Horizontal",
-                                    ));
-                                }
-                            };
-                            true
+                    ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) => {
+                        match property {
+                            "Orientation" => {
+                                panel.orientation = match attribute.value() {
+                                    "Vertical" => Orientation::Vertical,
+                                    "Horizontal" => Orientation::Horizontal,
+                                    _ => {
+                                        return Err(at_attribute(
+                                            document,
+                                            attribute,
+                                            "Orientation must be Vertical or Horizontal",
+                                        ));
+                                    }
+                                };
+                                true
+                            }
+                            "Spacing" => {
+                                panel.spacing =
+                                    editor_metric(document, attribute, MAX_DIMENSION, true)?;
+                                true
+                            }
+                            "Padding" => {
+                                panel.padding = thickness(document, attribute)?;
+                                true
+                            }
+                            "Surface" => {
+                                panel.surface = match attribute.value() {
+                                    "Transparent" => SurfaceKindDefinition::Transparent,
+                                    "Card" => SurfaceKindDefinition::Card,
+                                    _ => {
+                                        return Err(at_attribute(
+                                            document,
+                                            attribute,
+                                            "Surface must be Transparent or Card",
+                                        ));
+                                    }
+                                };
+                                true
+                            }
+                            _ => false,
                         }
-                        "Spacing" => {
-                            panel.spacing =
-                                editor_metric(document, attribute, MAX_DIMENSION, true)?;
-                            true
-                        }
-                        "Padding" => {
-                            panel.padding = thickness(document, attribute)?;
-                            true
-                        }
-                        "Surface" => {
-                            panel.surface = match attribute.value() {
-                                "Transparent" => SurfaceKindDefinition::Transparent,
-                                "Card" => SurfaceKindDefinition::Card,
-                                _ => {
-                                    return Err(at_attribute(
-                                        document,
-                                        attribute,
-                                        "Surface must be Transparent or Card",
-                                    ));
-                                }
-                            };
-                            true
-                        }
-                        _ => false,
-                    },
+                    }
                     ElementKind::TextBlock(text) => text_block_property(document, attribute, text)?,
                     ElementKind::Button(button) => match property {
                         "Icon" => {
@@ -957,7 +1130,7 @@ fn parse_element(
                         }
                         _ => false,
                     },
-                    _ => false,
+                    _ => form_parse::property(document, attribute, &mut kind)?,
                 };
                 if !supported {
                     return Err(at_attribute(
@@ -974,10 +1147,33 @@ fn parse_element(
         *workspace = docking::parse_workspace(node, depth, count, names, checked_radio_groups)?;
     } else if let ElementKind::Ribbon(ribbon) = &mut kind {
         ribbon::parse_children(node, depth, count, ribbon)?;
+    } else if matches!(
+        kind,
+        ElementKind::Grid(_)
+            | ElementKind::Border(_)
+            | ElementKind::ScrollViewer(_)
+            | ElementKind::DockPanel(_)
+            | ElementKind::ListBox(_)
+            | ElementKind::ComboBox(_)
+            | ElementKind::LookupEdit(_)
+            | ElementKind::ButtonEdit(_)
+            | ElementKind::SpinBox(_)
+            | ElementKind::DateEdit(_)
+            | ElementKind::TimeEdit(_)
+    ) {
+        form_parse::parse_children(
+            node,
+            depth,
+            element_id,
+            count,
+            names,
+            checked_radio_groups,
+            &mut kind,
+        )?;
     } else {
         for child in node.children() {
             if child.is_element() {
-                if let ElementKind::StackPanel(panel) = &mut kind {
+                if let ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) = &mut kind {
                     panel.children.push(parse_element(
                         child,
                         depth + 1,
@@ -1007,6 +1203,7 @@ fn parse_element(
             }
         }
     }
+    form_parse::validate(node, &kind, &common)?;
     if let ElementKind::TextBox(editor) = &kind {
         validate_initial_text(node, editor)?;
     }
@@ -1686,6 +1883,8 @@ pub fn compile_file(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result
 
 #[cfg(test)]
 mod docking_tests;
+#[cfg(test)]
+mod form_tests;
 #[cfg(test)]
 mod ribbon_tests;
 #[cfg(test)]

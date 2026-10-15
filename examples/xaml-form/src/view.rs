@@ -7,6 +7,10 @@ use rust_desktop_ui_controls::{
 use rust_desktop_ui_core::{Axis, Color, Edges, LayoutKind, LayoutStyle, Length, WidgetId};
 use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind, Orientation};
 use std::collections::{HashMap, HashSet};
+#[path = "view_bindings.rs"]
+mod bindings;
+#[path = "view_forms.rs"]
+mod forms;
 
 #[derive(Default)]
 pub(crate) struct MountedView {
@@ -20,6 +24,10 @@ pub(crate) struct MountedView {
     pub(crate) commands: Vec<String>,
     pub(crate) roles: HashMap<WidgetId, Role>,
     pub(crate) splits: HashMap<WidgetId, SplitButton>,
+    pub(crate) bindings: Option<rust_desktop_ui_controls::ControlBindings>,
+    pending_bindings: Vec<bindings::PendingBindings>,
+    decorations: Vec<forms::BorderSurface>,
+    scrolls: Vec<forms::ScrollLayout>,
     radio_groups: HashMap<RadioGroupKey<WidgetId>, RadioGroupId>,
 }
 
@@ -35,6 +43,45 @@ impl MountedView {
         parent: WidgetId,
         element: &ElementDefinition,
     ) -> Result<Self, String> {
+        Self::mount_with_context(
+            ui,
+            parent,
+            element,
+            std::rc::Rc::new(std::cell::RefCell::new(
+                rust_desktop_ui_controls::BindingContext::new(
+                    rust_desktop_ui_controls::DataValue::Object(Default::default()),
+                )
+                .map_err(err)?,
+            )),
+        )
+    }
+
+    pub(crate) fn mount_with_context(
+        ui: &mut Controls,
+        parent: WidgetId,
+        element: &ElementDefinition,
+        context: std::rc::Rc<std::cell::RefCell<rust_desktop_ui_controls::BindingContext>>,
+    ) -> Result<Self, String> {
+        Self::mount_with_converters(
+            ui,
+            parent,
+            element,
+            context,
+            std::rc::Rc::new(std::cell::RefCell::new(
+                rust_desktop_ui_controls::BindingConverterRegistry::default(),
+            )),
+        )
+    }
+
+    pub(crate) fn mount_with_converters(
+        ui: &mut Controls,
+        parent: WidgetId,
+        element: &ElementDefinition,
+        context: std::rc::Rc<std::cell::RefCell<rust_desktop_ui_controls::BindingContext>>,
+        converters: std::rc::Rc<
+            std::cell::RefCell<rust_desktop_ui_controls::BindingConverterRegistry>,
+        >,
+    ) -> Result<Self, String> {
         let available_width = ui.runtime.bounds(parent).map_or(0.0, |bounds| {
             let padding = ui.runtime.tree().node(parent).unwrap().props.style.padding;
             (bounds.width - padding.left - padding.right).max(0.0)
@@ -42,7 +89,29 @@ impl MountedView {
         validate_tree(ui, element)?;
         validate_ribbon_width(ui, element, available_width)?;
         let mut view = Self::default();
-        view.mount_element(ui, parent, element, Axis::Vertical, available_width)?;
+        let content =
+            view.mount_element(ui, parent, element, Axis::Vertical, available_width, "")?;
+        if element.common.height.is_none()
+            && !element.common.bindings.contains_key("Height")
+            && element.common.vertical_alignment == rust_desktop_ui_xaml::Alignment::Stretch
+            && matches!(
+                element.kind,
+                ElementKind::Grid(_)
+                    | ElementKind::Border(_)
+                    | ElementKind::ScrollViewer(_)
+                    | ElementKind::DockPanel(_)
+            )
+        {
+            let mut style = ui.runtime.tree().node(content).unwrap().props.style.clone();
+            style.height = Length::Percent(1.0);
+            ui.runtime
+                .apply(rust_desktop_ui_core::Mutation::SetStyle {
+                    node: content,
+                    style,
+                })
+                .map_err(err)?;
+        }
+        view.initialize_bindings(ui, context, converters)?;
         Ok(view)
     }
 
@@ -57,8 +126,10 @@ impl MountedView {
         element: &ElementDefinition,
         parent_axis: Axis,
         available_width: f32,
+        inherited_context: &str,
     ) -> Result<WidgetId, String> {
         let common = &element.common;
+        let context = bindings::context_path(inherited_context, common.data_context.as_deref());
         let width = match (common.width, &element.kind) {
             (Some(width), _) => Length::Px(width),
             (None, ElementKind::Icon(_)) => Length::Px(16.0),
@@ -73,9 +144,21 @@ impl MountedView {
         let height = common.height.map_or_else(
             || match &element.kind {
                 ElementKind::StackPanel(_)
+                | ElementKind::Grid(_)
+                | ElementKind::Border(_)
+                | ElementKind::ScrollViewer(_)
+                | ElementKind::WrapPanel(_)
+                | ElementKind::DockPanel(_)
                 | ElementKind::DockWorkspace(_)
                 | ElementKind::Ribbon(_) => Length::Auto,
+                ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::TextBox(_)
+                | ElementKind::ComboBox(_)
+                | ElementKind::LookupEdit(_)
+                | ElementKind::ButtonEdit(_)
+                | ElementKind::SpinBox(_)
+                | ElementKind::DateEdit(_)
+                | ElementKind::TimeEdit(_)
                 | ElementKind::Button(_)
                 | ElementKind::ToggleButton(_)
                 | ElementKind::DropDownButton(_)
@@ -96,9 +179,38 @@ impl MountedView {
             height,
             margin: edges(common.margin),
             flex_shrink: 0.0,
+            min_size: rust_desktop_ui_core::Size::new(common.min_width, common.min_height),
+            max_size: rust_desktop_ui_core::Size::new(
+                common.max_width.unwrap_or(f32::INFINITY),
+                common.max_height.unwrap_or(f32::INFINITY),
+            ),
+            horizontal_alignment: Some(forms::alignment(common.horizontal_alignment)),
+            vertical_alignment: Some(forms::alignment(common.vertical_alignment)),
+            grid_row: rust_desktop_ui_core::GridPlacement {
+                start: Some(common.grid_row + 1),
+                span: common.grid_row_span,
+            },
+            grid_column: rust_desktop_ui_core::GridPlacement {
+                start: Some(common.grid_column + 1),
+                span: common.grid_column_span,
+            },
             ..Default::default()
         };
         let id = match &element.kind {
+            ElementKind::ListBox(_)
+            | ElementKind::ComboBox(_)
+            | ElementKind::LookupEdit(_)
+            | ElementKind::ButtonEdit(_)
+            | ElementKind::SpinBox(_)
+            | ElementKind::DateEdit(_)
+            | ElementKind::TimeEdit(_)
+            | ElementKind::Grid(_)
+            | ElementKind::Border(_)
+            | ElementKind::ScrollViewer(_)
+            | ElementKind::WrapPanel(_)
+            | ElementKind::DockPanel(_) => {
+                self.mount_form_element(ui, parent, element, style, available_width, &context)?
+            }
             ElementKind::DockWorkspace(_) => {
                 return Err("DockWorkspace requires the docking window coordinator".into());
             }
@@ -197,7 +309,7 @@ impl MountedView {
                 )
                 .map_err(err)?;
                 for child in &panel.children {
-                    self.mount_element(ui, id, child, axis, child_width)?;
+                    self.mount_element(ui, id, child, axis, child_width, &context)?;
                 }
                 id
             }
@@ -371,6 +483,14 @@ impl MountedView {
             }
         };
         ui.set_enabled(id, common.is_enabled).map_err(err)?;
+        if common.visibility != rust_desktop_ui_xaml::Visibility::Visible {
+            let mut props = ui.runtime.tree().node(id).unwrap().props.clone();
+            props.visible = false;
+            props.collapsed = common.visibility == rust_desktop_ui_xaml::Visibility::Collapsed;
+            ui.runtime
+                .apply(rust_desktop_ui_core::Mutation::SetProps { node: id, props })
+                .map_err(err)?;
+        }
         if let Some(tip) = &common.tool_tip
             && !matches!(element.kind, ElementKind::SplitButton(_))
         {
@@ -379,7 +499,18 @@ impl MountedView {
         self.roles.insert(
             id,
             match &element.kind {
-                ElementKind::StackPanel(_) => Role::Panel,
+                ElementKind::StackPanel(_)
+                | ElementKind::Grid(_)
+                | ElementKind::Border(_)
+                | ElementKind::WrapPanel(_)
+                | ElementKind::DockPanel(_) => Role::Panel,
+                ElementKind::ScrollViewer(_) => Role::ScrollView,
+                ElementKind::ListBox(_) => Role::ListBox,
+                ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
+                ElementKind::ButtonEdit(_)
+                | ElementKind::SpinBox(_)
+                | ElementKind::DateEdit(_)
+                | ElementKind::TimeEdit(_) => Role::Group,
                 ElementKind::DockWorkspace(_) => Role::Panel,
                 ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) => Role::TextBox,
@@ -402,6 +533,7 @@ impl MountedView {
         if let Some(name) = &common.automation_name {
             self.automation_names.insert(id, name.clone());
         }
+        self.record_bindings(id, element, context);
         Ok(id)
     }
 }
@@ -433,7 +565,24 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
                 button.icon_spacing,
             )? + arrow)
         }
-        ElementKind::TextBox(_) => Ok(240.0),
+        ElementKind::TextBox(_)
+        | ElementKind::ListBox(_)
+        | ElementKind::ComboBox(_)
+        | ElementKind::LookupEdit(_)
+        | ElementKind::ButtonEdit(_)
+        | ElementKind::SpinBox(_)
+        | ElementKind::DateEdit(_)
+        | ElementKind::TimeEdit(_) => Ok(240.0),
+        ElementKind::Grid(_)
+        | ElementKind::Border(_)
+        | ElementKind::ScrollViewer(_)
+        | ElementKind::DockPanel(_) => {
+            let mut width = 0.0_f32;
+            for child in element.children() {
+                width = width.max(desired_width(ui, child)?);
+            }
+            Ok(width)
+        }
         ElementKind::TextBlock(text) => Ok(ui
             .measure_styled_text(
                 &text.text,
@@ -472,7 +621,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
                 16.0
             })
         }
-        ElementKind::StackPanel(panel) => {
+        ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) => {
             let mut widths = Vec::with_capacity(panel.children.len());
             for child in &panel.children {
                 widths.push(
@@ -535,7 +684,12 @@ fn validate_ribbon_width(
                         .map(|child| (child, axis, child_width)),
                 );
             }
-            _ => {}
+            _ => pending.extend(
+                element
+                    .children()
+                    .into_iter()
+                    .map(|child| (child, Axis::Vertical, available_width)),
+            ),
         }
     }
     Ok(())
@@ -616,7 +770,6 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                 if panel.children.len() > rust_desktop_ui_xaml::MAX_ELEMENTS {
                     return Err("XAML content exceeds the element count limit".into());
                 }
-                pending.extend(panel.children.iter().map(|child| (child, depth + 1, count)));
             }
             ElementKind::Button(button) => {
                 validate_button_icon(
@@ -687,6 +840,12 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             }
             _ => {}
         }
+        pending.extend(
+            element
+                .children()
+                .into_iter()
+                .map(|child| (child, depth + 1, count)),
+        );
     }
     Ok(())
 }

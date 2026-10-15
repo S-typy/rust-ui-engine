@@ -105,6 +105,9 @@ impl LayoutEngine for TaffyLayout {
                 .and_then(|parent| tree.node(parent))
                 .map(|n| &n.props.style);
             let mut style = map_style(&node.props.style, parent_style);
+            if node.props.collapsed {
+                style.display = Display::None;
+            }
             if id == tree.root() {
                 // Root geometry is the viewport, independent of root size constraints.
                 style.size = taffy::Size {
@@ -298,19 +301,35 @@ fn map_style(style: &LayoutStyle, parent: Option<&LayoutStyle>) -> Style {
             height: LengthPercentage::length(style.gap),
         },
         flex_direction: match style.kind {
-            LayoutKind::Stack(Axis::Vertical) | LayoutKind::Flex(Axis::Vertical) => {
-                FlexDirection::Column
-            }
+            LayoutKind::Stack(Axis::Vertical)
+            | LayoutKind::Flex(Axis::Vertical)
+            | LayoutKind::Wrap(Axis::Vertical) => FlexDirection::Column,
             _ => FlexDirection::Row,
         },
         flex_grow,
         flex_shrink,
+        flex_wrap: if matches!(style.kind, LayoutKind::Wrap(_)) {
+            taffy::FlexWrap::Wrap
+        } else {
+            taffy::FlexWrap::NoWrap
+        },
+        align_content: Some(taffy::AlignContent::START),
         align_items: Some(alignment(style.align)),
         justify_content: Some(justification(style.justify)),
         // Overlay auto height stretches even when explicit children are aligned.
-        align_self: (parent.is_some_and(|p| p.kind == LayoutKind::Overlay)
-            && style.height == Length::Auto)
-            .then_some(taffy::AlignSelf::STRETCH),
+        align_self: match parent.map(|p| p.kind) {
+            Some(
+                LayoutKind::Stack(Axis::Vertical)
+                | LayoutKind::Flex(Axis::Vertical)
+                | LayoutKind::Wrap(Axis::Vertical),
+            ) => style.horizontal_alignment.map(alignment),
+            Some(LayoutKind::Grid) => style.vertical_alignment.map(alignment),
+            Some(LayoutKind::Overlay) if style.height == Length::Auto => {
+                Some(taffy::AlignSelf::STRETCH)
+            }
+            _ => style.vertical_alignment.map(alignment),
+        },
+        justify_self: style.horizontal_alignment.map(alignment),
         ..Style::default()
     }
 }
@@ -1080,5 +1099,85 @@ mod tests {
             TaffyLayout::new().compute(&tree, Size::new(100.0, 100.0)),
             Err(LayoutError::InvalidStyle { .. })
         ));
+    }
+
+    #[test]
+    fn child_alignment_uses_physical_axes_inside_grid_cells_after_resize() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Grid,
+                grid_columns: vec![GridTrack::Px(40.0), GridTrack::Fr(1.0)],
+                grid_rows: vec![GridTrack::Fr(1.0)],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let child = tree
+            .insert(
+                root,
+                props(LayoutStyle {
+                    width: Length::Px(30.0),
+                    height: Length::Px(20.0),
+                    horizontal_alignment: Some(Align::Center),
+                    vertical_alignment: Some(Align::End),
+                    grid_column: GridPlacement {
+                        start: Some(2),
+                        span: 1,
+                    },
+                    ..Default::default()
+                }),
+            )
+            .unwrap();
+        assert_rect(
+            &compute(&tree, 140.0, 100.0),
+            child,
+            Rect::new(75.0, 80.0, 30.0, 20.0),
+        );
+        assert_rect(
+            &compute(&tree, 240.0, 200.0),
+            child,
+            Rect::new(125.0, 180.0, 30.0, 20.0),
+        );
+    }
+
+    #[test]
+    fn wrap_panel_reflows_without_changing_child_identity() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Wrap(Axis::Horizontal),
+                gap: 5.0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let children: Vec<_> = (0..3)
+            .map(|_| {
+                tree.insert(
+                    root,
+                    props(LayoutStyle {
+                        width: Length::Px(60.0),
+                        height: Length::Px(20.0),
+                        flex_shrink: 0.0,
+                        ..Default::default()
+                    }),
+                )
+                .unwrap()
+            })
+            .collect();
+        let narrow = compute(&tree, 130.0, 100.0);
+        assert_rect(&narrow, children[0], Rect::new(0.0, 0.0, 60.0, 20.0));
+        assert_rect(&narrow, children[1], Rect::new(65.0, 0.0, 60.0, 20.0));
+        assert_rect(&narrow, children[2], Rect::new(0.0, 25.0, 60.0, 20.0));
+        assert_rect(
+            &compute(&tree, 200.0, 100.0),
+            children[2],
+            Rect::new(130.0, 0.0, 60.0, 20.0),
+        );
     }
 }

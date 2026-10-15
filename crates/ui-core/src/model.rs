@@ -104,6 +104,8 @@ pub enum LayoutKind {
     /// The panel needs an explicit or parent-assigned size, not child intrinsic sizing.
     Overlay,
     Flex(Axis),
+    /// Flex lines wrap when the available main-axis space is exhausted.
+    Wrap(Axis),
     /// Row-major auto placement with explicit tracks and optional child placement.
     Grid,
 }
@@ -154,6 +156,9 @@ pub struct LayoutStyle {
     pub flex_shrink: f32,
     pub align: Align,
     pub justify: Justify,
+    /// Per-child physical-axis alignment. `None` inherits container behavior.
+    pub horizontal_alignment: Option<Align>,
+    pub vertical_alignment: Option<Align>,
     pub grid_columns: Vec<GridTrack>,
     pub grid_rows: Vec<GridTrack>,
     pub grid_column: GridPlacement,
@@ -177,6 +182,8 @@ impl Default for LayoutStyle {
             flex_shrink: 1.0,
             align: Align::Stretch,
             justify: Justify::Start,
+            horizontal_alignment: None,
+            vertical_alignment: None,
             grid_columns: Vec::new(),
             grid_rows: Vec::new(),
             grid_column: GridPlacement::default(),
@@ -309,6 +316,9 @@ pub struct NodeProps {
     pub paint: Paint,
     /// Hidden nodes retain their layout space; their subtree does not paint or receive input.
     pub visible: bool,
+    /// Remove the subtree from layout as well as paint/input. Unlike `visible`,
+    /// changing this field invalidates layout; restoring it keeps widget IDs.
+    pub collapsed: bool,
     /// Disabled ancestors exclude the whole subtree from hit testing and focus.
     pub enabled: bool,
     pub focusable: bool,
@@ -331,6 +341,7 @@ impl Default for NodeProps {
             style: LayoutStyle::default(),
             paint: Paint::default(),
             visible: true,
+            collapsed: false,
             enabled: true,
             focusable: false,
             tab_stop: true,

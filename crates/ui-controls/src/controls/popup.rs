@@ -513,6 +513,7 @@ impl Controls {
             self.popup.as_mut().unwrap().levels.push(level);
         } else {
             self.close_popup_from(0, CloseReason::Outside)?;
+            self.close_rich_popup(false)?;
             self.popup = Some(Popup {
                 anchor,
                 previous_focus,
@@ -640,18 +641,26 @@ impl Controls {
     }
     /// Close the entire chain and restore an eligible anchor (or prior focus).
     pub fn close_popup(&mut self) -> Result<(), ControlError> {
+        self.close_rich_popup(true)?;
         self.close_popup_from(0, CloseReason::Restore)
     }
     pub fn popup_open(&self) -> bool {
-        self.popup.is_some()
+        self.popup.is_some() || self.rich.popup.is_some()
     }
     pub(crate) fn popup_anchor(&self) -> Option<WidgetId> {
-        self.popup.as_ref().map(|popup| popup.anchor)
+        self.popup
+            .as_ref()
+            .map(|popup| popup.anchor)
+            .or_else(|| self.rich.popup.as_ref().map(|p| p.owner))
     }
     /// Whether a client-local point lies in any currently open menu surface.
     /// Compositors can consume an outside click before forwarding it to another view.
     pub fn popup_contains_point(&self, point: Point) -> bool {
-        self.popup.as_ref().is_some_and(|popup| {
+        self.rich.popup.as_ref().is_some_and(|p| {
+            self.runtime
+                .bounds(p.surface)
+                .is_some_and(|r| r.contains(point.x, point.y))
+        }) || self.popup.as_ref().is_some_and(|popup| {
             popup.levels.iter().any(|level| {
                 self.runtime
                     .bounds(level.container)
@@ -660,9 +669,16 @@ impl Controls {
         })
     }
     pub fn popup_depth(&self) -> usize {
-        self.popup.as_ref().map_or(0, |popup| popup.levels.len())
+        self.popup
+            .as_ref()
+            .map_or(usize::from(self.rich.popup.is_some()), |popup| {
+                popup.levels.len()
+            })
     }
     pub fn popup_expanded(&self, id: WidgetId) -> Option<bool> {
+        if let Some(expanded) = self.rich_popup_expanded(id) {
+            return Some(expanded);
+        }
         let target = self.popup_target(id)?;
         Some(
             self.popup
@@ -687,6 +703,12 @@ impl Controls {
         }
     }
     pub fn expand_popup(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        if self.rich_popup_expanded(id).is_some()
+            && let Some(owner) = self.rich_owner(id)
+        {
+            return self.open_editor_popup(owner);
+        }
+        self.close_rich_popup(false)?;
         self.sync_popup_availability()?;
         let Some(target) = self.popup_target(id) else {
             return Ok(());
@@ -706,6 +728,9 @@ impl Controls {
         Ok(())
     }
     pub fn collapse_popup(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        if self.rich_popup_expanded(id).is_some() {
+            return self.close_rich_popup(true);
+        }
         let Some(target) = self.popup_target(id) else {
             return Ok(());
         };

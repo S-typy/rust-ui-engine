@@ -34,6 +34,13 @@ pub(crate) struct Form {
 
 impl Form {
     pub(crate) fn new(definition: WindowDefinition, diagnostics: bool) -> Result<Self, String> {
+        Self::new_with_model(definition, diagnostics, None)
+    }
+    pub(crate) fn new_with_model(
+        definition: WindowDefinition,
+        diagnostics: bool,
+        context: Option<std::rc::Rc<std::cell::RefCell<rust_desktop_ui_controls::BindingContext>>>,
+    ) -> Result<Self, String> {
         rust_desktop_ui_xaml::validate_window_chrome(&definition)?;
         let theme = match definition.theme {
             rust_desktop_ui_xaml::Theme::Light => Theme::FluentLight,
@@ -49,6 +56,9 @@ impl Form {
             ("Dark", "Тёмная"),
             ("Disabled", "Недоступно"),
             ("Actions", "Действия"),
+            ("ReloadForm", "Обновить данные"),
+            ("SaveForm", "Сохранить заметку"),
+            ("ChooseReference", "Выбрать документ"),
         ] {
             ui.commands_mut().register(id, label);
         }
@@ -70,7 +80,11 @@ impl Form {
         ui.update(Size::new(definition.width as f32, definition.height as f32))
             .map_err(err)?;
         let root = ui.root();
-        let view = MountedView::mount(&mut ui, root, &definition.content)?;
+        let view = if let Some(context) = context {
+            MountedView::mount_with_context(&mut ui, root, &definition.content, context)?
+        } else {
+            MountedView::mount(&mut ui, root, &definition.content)?
+        };
         for (name, expected) in [
             ("Message", Role::TextBox),
             ("Option", Role::CheckBox),
@@ -231,7 +245,7 @@ impl Form {
         if let Some(mounted) = &mut self.view.ribbon {
             mounted.ribbon.process(&mut self.ui).map_err(err)?;
         }
-        for invocation in self.ui.commands_mut().drain_invocations() {
+        for invocation in self.ui.drain_command_invocations() {
             if self.diagnostics {
                 println!("command={}", invocation.id.0);
             }
@@ -251,6 +265,42 @@ impl Form {
                 {
                     self.ui.set_text(editor, "").map_err(err)?;
                     self.last_notice = "Текст очищен.";
+                }
+            } else if invocation.id.0 == "ReloadForm" {
+                if let Some(engine) = &mut self.view.bindings {
+                    engine
+                        .context()
+                        .borrow_mut()
+                        .set_many([
+                            ("Form.Title", "Обновлённый документ".into()),
+                            ("Form.Person", "maria".into()),
+                            ("Form.Quantity", 24.0.into()),
+                            ("Status", "Модель обновлена — поля синхронизированы".into()),
+                        ])
+                        .map_err(err)?;
+                }
+            } else if invocation.id.0 == "ChooseReference" {
+                if let Some(engine) = &self.view.bindings {
+                    engine
+                        .context()
+                        .borrow_mut()
+                        .set("Form.Reference", "DOC-2026-042".into())
+                        .map_err(err)?;
+                }
+            } else if invocation.id.0 == "SaveForm" {
+                if let Some(engine) = &mut self.view.bindings {
+                    engine.update_sources(&mut self.ui);
+                    let errors = engine.drain_diagnostics();
+                    let message = errors
+                        .first()
+                        .map_or("Заметка сохранена".to_owned(), |error| {
+                            error.message.clone()
+                        });
+                    engine
+                        .context()
+                        .borrow_mut()
+                        .set("Status", message.into())
+                        .map_err(err)?;
                 }
             } else if invocation.id.0 == "Light" {
                 self.ui.set_theme(Theme::FluentLight).map_err(err)?;
@@ -300,6 +350,7 @@ impl Form {
                 }
             }
         }
+        self.view.sync_bindings(&mut self.ui);
         self.ui.drain_activated();
         let focus = self.ui.runtime.focused();
         if focus != self.last_focus {
@@ -322,6 +373,7 @@ impl Form {
 
 impl DesktopApp for Form {
     fn update(&mut self, viewport: Size, _scale: f32) -> Result<(), String> {
+        self.view.sync_bindings(&mut self.ui);
         self.consume_edit_events();
         self.refresh_status()?;
         self.ui.update(viewport).map_err(err)?;
@@ -336,6 +388,7 @@ impl DesktopApp for Form {
         if self.refresh_status()? {
             self.ui.update(viewport).map_err(err)?;
         }
+        self.view.update_form_layout(&mut self.ui, viewport)?;
         if self.diagnostics {
             let snapshot = crate::popup_diagnostics::snapshot(&self.ui);
             if snapshot != self.last_popup_diagnostic {

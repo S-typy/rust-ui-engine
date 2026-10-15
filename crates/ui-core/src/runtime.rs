@@ -163,6 +163,14 @@ impl UiRuntime {
         self.stats
     }
 
+    /// Last arranged parent-local box, including Hidden nodes and zero-sized
+    /// Collapsed nodes. Call `update` after mutations before using it to measure
+    /// content; unlike [`Self::bounds`], this ignores visual scroll/translation.
+    pub fn layout_bounds(&self, id: WidgetId) -> Option<Rect> {
+        self.tree.node(id)?;
+        self.snapshot.as_ref()?.boxes.get(&id).copied()
+    }
+
     /// A changed viewport also requires an update, even when this is false.
     pub fn needs_update(&self) -> bool {
         self.snapshot.is_none() || self.geometry_dirty || !self.tree.pending_dirty().is_empty()
@@ -454,7 +462,7 @@ impl UiRuntime {
             let Some(node) = self.tree.node(id) else {
                 return false;
             };
-            if !node.props.visible || !node.props.enabled {
+            if !node.props.visible || node.props.collapsed || !node.props.enabled {
                 return false;
             }
             current = self.tree.parent(id);
@@ -575,7 +583,7 @@ impl UiRuntime {
             let Some(node) = self.tree.node(id) else {
                 continue;
             };
-            if !node.props.visible {
+            if !node.props.visible || node.props.collapsed {
                 continue;
             }
             let Some(local) = snapshot.boxes.get(&id) else {

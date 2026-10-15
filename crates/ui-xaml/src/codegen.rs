@@ -59,8 +59,8 @@ fn element(element: &ElementDefinition) -> String {
             format!("rust_desktop_ui_xaml::ElementKind::{kind}(rust_desktop_ui_xaml::MenuButtonDefinition {{ button: rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }}, items: vec![{}] }})",
                 button.content, optional_string(&button.command), button_style(&button.style), optional_icon(button.icon), button.icon_size, button.icon_spacing, menu.items.iter().map(menu_entry).collect::<Vec<_>>().join(","))
         }
-        ElementKind::StackPanel(panel) => format!(
-            "rust_desktop_ui_xaml::ElementKind::StackPanel(rust_desktop_ui_xaml::StackPanelDefinition {{
+        ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) => format!(
+            "rust_desktop_ui_xaml::ElementKind::{kind}(rust_desktop_ui_xaml::StackPanelDefinition {{
                 orientation: rust_desktop_ui_xaml::Orientation::{orientation:?},
                 spacing: {spacing:?},
                 padding: {padding:?},
@@ -71,6 +71,7 @@ fn element(element: &ElementDefinition) -> String {
             spacing = panel.spacing,
             padding = panel.padding,
             surface = panel.surface,
+            kind = if matches!(element.kind, ElementKind::WrapPanel(_)) { "WrapPanel" } else { "StackPanel" },
             children = panel.children.iter().map(self::element).collect::<Vec<_>>().join(",\n"),
         ),
         ElementKind::TextBox(editor) => format!(
@@ -117,6 +118,7 @@ fn element(element: &ElementDefinition) -> String {
             "rust_desktop_ui_xaml::ElementKind::Separator(rust_desktop_ui_xaml::SeparatorDefinition {{ orientation: rust_desktop_ui_xaml::Orientation::{:?}, thickness: {:?}, foreground: {:?} }})",
             separator.orientation, separator.thickness, separator.foreground,
         ),
+        other => form_kind(other),
     };
     format!(
         "rust_desktop_ui_xaml::ElementDefinition {{
@@ -126,8 +128,17 @@ fn element(element: &ElementDefinition) -> String {
                 height: {height:?},
                 margin: {margin:?},
                 is_enabled: {is_enabled},
+                visibility: rust_desktop_ui_xaml::Visibility::{visibility:?},
                 automation_name: {automation_name},
                 tool_tip: {tool_tip},
+                min_width: {min_width:?}, min_height: {min_height:?},
+                max_width: {max_width:?}, max_height: {max_height:?},
+                horizontal_alignment: rust_desktop_ui_xaml::Alignment::{horizontal_alignment:?},
+                vertical_alignment: rust_desktop_ui_xaml::Alignment::{vertical_alignment:?},
+                grid_row: {grid_row}, grid_column: {grid_column},
+                grid_row_span: {grid_row_span}, grid_column_span: {grid_column_span},
+                dock: rust_desktop_ui_xaml::DockSide::{dock:?},
+                data_context: {data_context}, bindings: {bindings},
             }},
             kind: {kind},
         }}",
@@ -136,9 +147,70 @@ fn element(element: &ElementDefinition) -> String {
         height = common.height,
         margin = common.margin,
         is_enabled = common.is_enabled,
+        visibility = common.visibility,
         automation_name = optional_string(&common.automation_name),
         tool_tip = optional_string(&common.tool_tip),
+        min_width = common.min_width,
+        min_height = common.min_height,
+        max_width = common.max_width,
+        max_height = common.max_height,
+        horizontal_alignment = common.horizontal_alignment,
+        vertical_alignment = common.vertical_alignment,
+        grid_row = common.grid_row,
+        grid_column = common.grid_column,
+        grid_row_span = common.grid_row_span,
+        grid_column_span = common.grid_column_span,
+        dock = common.dock,
+        data_context = optional_string(&common.data_context),
+        bindings = bindings(&common.bindings),
     )
+}
+
+fn bindings(bindings: &std::collections::BTreeMap<String, crate::BindingDefinition>) -> String {
+    format!("std::collections::BTreeMap::from([{}])", bindings.iter().map(|(property,b)| format!(
+        "({property:?}.into(), rust_desktop_ui_xaml::BindingDefinition {{ path: {:?}.into(), element_name: {}, mode: rust_desktop_ui_xaml::BindingMode::{:?}, update_source_trigger: rust_desktop_ui_xaml::UpdateSourceTrigger::{:?}, converter: {}, fallback_value: {} }})",
+        b.path, optional_string(&b.element_name), b.mode, b.update_source_trigger, optional_string(&b.converter), optional_string(&b.fallback_value)
+    )).collect::<Vec<_>>().join(","))
+}
+
+fn selection(s: &crate::SelectionDefinition) -> String {
+    let items = s.items.iter().map(|i| format!("rust_desktop_ui_xaml::SelectionItemDefinition {{ value: {:?}.into(), display: {:?}.into(), is_enabled: {} }}", i.value, i.display, i.is_enabled)).collect::<Vec<_>>().join(",");
+    let selected = s
+        .selected_values
+        .iter()
+        .map(|s| format!("{s:?}.into()"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "rust_desktop_ui_xaml::SelectionDefinition {{ items: vec![{items}], selected_value: {}, display_member_path: {}, value_member_path: {}, placeholder: {:?}.into(), is_read_only: {}, is_editable: {}, selection_mode: rust_desktop_ui_xaml::SelectionMode::{:?}, selected_values: vec![{selected}] }}",
+        optional_string(&s.selected_value),
+        optional_string(&s.display_member_path),
+        optional_string(&s.value_member_path),
+        s.placeholder,
+        s.is_read_only,
+        s.is_editable,
+        s.selection_mode
+    )
+}
+
+fn form_kind(kind: &ElementKind) -> String {
+    let (name, definition) = match kind {
+        ElementKind::ListBox(s) => ("ListBox", selection(s)),
+        ElementKind::ComboBox(s) => ("ComboBox", selection(s)),
+        ElementKind::LookupEdit(l) => ("LookupEdit", format!("rust_desktop_ui_xaml::LookupDefinition {{ selection: {}, columns: vec![{}] }}", selection(&l.selection), l.columns.iter().map(|c| format!("rust_desktop_ui_xaml::LookupColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?} }}", c.field, c.header, c.width)).collect::<Vec<_>>().join(","))),
+        ElementKind::ButtonEdit(e) => ("ButtonEdit", format!("rust_desktop_ui_xaml::ButtonEditDefinition {{ editor: {}, buttons: vec![{}] }}", edit_box(&e.editor), e.buttons.iter().map(|b| format!("rust_desktop_ui_xaml::EditorButtonDefinition {{ command: {:?}.into(), icon: {}, content: {:?}.into(), tool_tip: {} }}", b.command, optional_icon(b.icon), b.content, optional_string(&b.tool_tip))).collect::<Vec<_>>().join(","))),
+        ElementKind::SpinBox(e) => ("SpinBox", format!("rust_desktop_ui_xaml::SpinBoxDefinition {{ editor: {}, value: {:?}, minimum: {:?}, maximum: {:?}, increment: {:?} }}", edit_box(&e.editor), e.value, e.minimum, e.maximum, e.increment)),
+        ElementKind::DateEdit(e) | ElementKind::TimeEdit(e) => (if matches!(kind, ElementKind::DateEdit(_)) { "DateEdit" } else { "TimeEdit" }, format!("rust_desktop_ui_xaml::TemporalEditDefinition {{ editor: {}, value: {}, minimum: {}, maximum: {}, format: {:?}.into() }}", edit_box(&e.editor), optional_string(&e.value), optional_string(&e.minimum), optional_string(&e.maximum), e.format)),
+        ElementKind::Grid(g) => {
+            let tracks = |tracks: &[crate::GridLength]| tracks.iter().map(|track| format!("rust_desktop_ui_xaml::GridLength::{track:?}")).collect::<Vec<_>>().join(",");
+            ("Grid", format!("rust_desktop_ui_xaml::GridDefinition {{ rows: vec![{}], columns: vec![{}], spacing: {:?}, padding: {:?}, surface: rust_desktop_ui_xaml::SurfaceKindDefinition::{:?}, children: vec![{}] }}", tracks(&g.rows), tracks(&g.columns), g.spacing, g.padding, g.surface, g.children.iter().map(element).collect::<Vec<_>>().join(",")))
+        }
+        ElementKind::Border(b) => ("Border", format!("rust_desktop_ui_xaml::BorderDefinition {{ padding: {:?}, background: {:?}, border_brush: {:?}, border_thickness: {:?}, corner_radius: {:?}, child: Box::new({}) }}", b.padding, b.background, b.border_brush, b.border_thickness, b.corner_radius, element(&b.child))),
+        ElementKind::ScrollViewer(s) => ("ScrollViewer", format!("rust_desktop_ui_xaml::ScrollViewerDefinition {{ horizontal_scroll_bar_visibility: rust_desktop_ui_xaml::ScrollBarVisibility::{:?}, vertical_scroll_bar_visibility: rust_desktop_ui_xaml::ScrollBarVisibility::{:?}, child: Box::new({}) }}", s.horizontal_scroll_bar_visibility, s.vertical_scroll_bar_visibility, element(&s.child))),
+        ElementKind::DockPanel(p) => ("DockPanel", format!("rust_desktop_ui_xaml::DockPanelDefinition {{ last_child_fill: {}, padding: {:?}, children: vec![{}] }}", p.last_child_fill, p.padding, p.children.iter().map(element).collect::<Vec<_>>().join(","))),
+        _ => unreachable!("ordinary content is generated by element"),
+    };
+    format!("rust_desktop_ui_xaml::ElementKind::{name}({definition})")
 }
 
 fn dock_node(node: &crate::DockNodeDefinition) -> String {

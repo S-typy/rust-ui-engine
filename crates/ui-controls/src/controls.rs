@@ -26,11 +26,20 @@ mod button_presentation;
 #[cfg(test)]
 mod pointer_cancel_tests;
 mod popup;
+mod scroll;
+mod selection;
+#[cfg(test)]
+mod selection_tests;
+pub use scroll::{ScrollBarVisibility, ScrollSettings};
+mod rich_presentation;
 #[cfg(test)]
 mod scene_layer_tests;
 mod tooltip;
+mod value_editors;
 pub use appearance::{SurfaceKind, TextStyle, TextTone};
 pub use popup::{MAX_MENU_DEPTH, MAX_MENU_ITEMS, MenuEntry, SplitButton};
+pub use selection::*;
+pub use value_editors::*;
 
 /// An opaque radio group allocated by one `Controls` instance. Group identities
 /// are process-unique and cannot be used to add members in another instance.
@@ -79,6 +88,10 @@ pub enum Role {
     Menu,
     MenuItem,
     Group,
+    ListBox,
+    ListItem,
+    ComboBox,
+    SpinButton,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SemanticAction {
@@ -186,7 +199,8 @@ enum Kind {
     TextBox(TextDocument),
     Scroll {
         content: WidgetId,
-        extent: f32,
+        extent: Size,
+        settings: ScrollSettings,
     },
     Tab {
         group: WidgetId,
@@ -342,6 +356,8 @@ pub struct Controls {
     total: FrameStats,
     caret_visible: bool,
     custom_scenes: HashMap<WidgetId, Scene>,
+    rich: selection::RichControls,
+    scroll_drag: Option<scroll::ScrollDrag>,
 }
 
 impl Controls {
@@ -405,6 +421,8 @@ impl Controls {
             total: FrameStats::default(),
             caret_visible: true,
             custom_scenes: HashMap::new(),
+            rich: Default::default(),
+            scroll_drag: None,
         })
     }
     pub fn root(&self) -> WidgetId {
@@ -419,6 +437,10 @@ impl Controls {
     pub fn commands_mut(&mut self) -> &mut CommandRegistry {
         self.scene_dirty = true;
         &mut self.commands
+    }
+    /// Consume command notifications without invalidating otherwise idle paint.
+    pub fn drain_command_invocations(&mut self) -> Vec<crate::CommandInvocation> {
+        self.commands.drain_invocations()
     }
     /// Command attached to a live placement, independent of its current enabled
     /// or checked state. Unbound controls and removed IDs return `None`.
@@ -563,6 +585,7 @@ impl Controls {
         Ok(())
     }
     fn validate_editor_value(&self, id: WidgetId, value: &str) -> Result<(), String> {
+        self.validate_rich_value(id, value)?;
         let control = &self.controls[&id];
         control.validation.check(value)?;
         if let Some(validator) = &control.validator {
@@ -599,6 +622,7 @@ impl Controls {
         }
         control.accepted_value.clone_from(&value);
         self.edit_events.push(EditEvent::Committed { id, value });
+        self.rich_value_committed(id)?;
         Ok(CommitOutcome::Committed)
     }
     /// Restore the baseline without validating it. Cancelling clears the whole
@@ -663,6 +687,7 @@ impl Controls {
         self.record_text_change(id, &before);
         if changed {
             self.edit_events.push(EditEvent::Committed { id, value });
+            self.rich_value_committed(id)?;
             Ok(CommitOutcome::Committed)
         } else {
             Ok(CommitOutcome::Unchanged)
@@ -1465,7 +1490,11 @@ impl Controls {
         self.controls
             .get_mut(&viewport)
             .ok_or_else(|| ControlError::Invalid("Missing scroll viewport".into()))?
-            .kind = Kind::Scroll { content, extent };
+            .kind = Kind::Scroll {
+            content,
+            extent: Size::new(0.0, extent),
+            settings: ScrollSettings::default(),
+        };
         self.edit_props(viewport, |props| {
             props.focusable = true;
             props.clip = true;
@@ -1561,12 +1590,23 @@ impl Controls {
     pub fn selected_tab(&self, container: WidgetId) -> Option<usize> {
         self.tabs.get(&container).map(|s| s.selected)
     }
+    /// Remove a control subtree. A composite editor's required editor and a
+    /// ListBox's required content cannot be removed individually; remove their
+    /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.preflight_rich_removal(id)?;
         self.runtime.apply(Mutation::Remove(id))?;
         self.controls
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.tabs
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
+        self.retain_rich_controls();
+        if self.rich.popup.as_ref().is_some_and(|popup| {
+            !self.rich.composites.contains_key(&popup.owner)
+                || !self.controls.contains_key(&popup.surface)
+        }) {
+            self.close_rich_popup(false)?;
+        }
         self.custom_scenes
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.text_changes
@@ -1617,6 +1657,7 @@ impl Controls {
         // Ancestor policies and the placement's own availability remain gates.
         control.enabled
             && node.props.visible
+            && !node.props.collapsed
             && control
                 .dropdown_command
                 .as_ref()
@@ -1632,7 +1673,7 @@ impl Controls {
             let Some(node) = self.runtime.tree().node(id) else {
                 return false;
             };
-            if !node.props.visible {
+            if !node.props.visible || node.props.collapsed {
                 return false;
             }
             let enabled = self
@@ -1875,13 +1916,14 @@ impl Controls {
                 .runtime
                 .tree()
                 .node(id)
-                .map_or(0.0, |n| n.props.scroll.y);
-            self.scroll_to(id, value)?;
+                .map_or(Point::ZERO, |n| n.props.scroll);
+            self.scroll_to_point(id, value)?;
         }
         if self.runtime.needs_update() {
             add_stats(&mut delta, self.runtime.update(&mut self.layout, viewport)?);
         }
         add_stats(&mut delta, self.sync_popup_layout()?);
+        add_stats(&mut delta, self.sync_rich_layout()?);
         self.tooltip_sync();
         if delta.paint_passes > 0 || self.scene_dirty {
             self.rebuild_scene()?;
@@ -1900,6 +1942,7 @@ impl Controls {
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
         self.selecting = None;
+        self.scroll_drag = None;
         if !self.keyboard_pressed {
             self.pressed = None;
         }
@@ -1920,6 +1963,12 @@ impl Controls {
         }
         self.update(self.viewport)?;
         self.caret_visible = true;
+        if self.scroll_before_input(&event)? {
+            return Ok(());
+        }
+        if self.rich_before_input(&event)? {
+            return Ok(());
+        }
         if let InputEvent::KeyDown {
             key: Key::Escape,
             modifiers,
@@ -2071,24 +2120,9 @@ impl Controls {
                     } else if matches!(
                         self.controls.get(&id).map(|c| &c.kind),
                         Some(Kind::Scroll { .. })
-                    ) {
-                        let current = self
-                            .runtime
-                            .tree()
-                            .node(id)
-                            .map_or(0.0, |n| n.props.scroll.y);
-                        let desired = match key {
-                            Key::ArrowDown => Some(current + 40.0),
-                            Key::ArrowUp => Some(current - 40.0),
-                            Key::Home => Some(0.0),
-                            Key::End => Some(f32::MAX),
-                            Key::PageDown => Some(current + self.viewport.height * 0.8),
-                            Key::PageUp => Some(current - self.viewport.height * 0.8),
-                            _ => None,
-                        };
-                        if let Some(desired) = desired {
-                            self.scroll_to(id, desired)?;
-                        }
+                    ) && !report.default_prevented
+                    {
+                        self.scroll_key(id, key)?;
                     }
                 }
             }
@@ -2106,13 +2140,8 @@ impl Controls {
                 self.scene_dirty = true;
             }
             InputEvent::Wheel { delta, .. } => {
-                if let Some(id) = hit.and_then(|id| self.scroll_ancestor(id)) {
-                    let current = self
-                        .runtime
-                        .tree()
-                        .node(id)
-                        .map_or(0.0, |n| n.props.scroll.y);
-                    self.scroll_to(id, current + delta.y)?;
+                if let Some(id) = hit.filter(|_| !report.default_prevented) {
+                    self.scroll_wheel_from(id, delta)?;
                 }
             }
             InputEvent::WindowFocused(false) => {
@@ -2133,6 +2162,9 @@ impl Controls {
     pub fn activate(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.sync_popup_availability()?;
         if !self.activation_available(id) || !self.controls[&id].kind.clickable() {
+            return Ok(());
+        }
+        if self.activate_rich_control(id)? {
             return Ok(());
         }
         if self.controls[&id].menu.is_some() {
@@ -2226,35 +2258,26 @@ impl Controls {
         }
     }
     pub fn scroll_to(&mut self, id: WidgetId, desired: f32) -> Result<(), ControlError> {
-        let Some(Control {
-            kind: Kind::Scroll { extent, .. },
-            ..
-        }) = self.controls.get(&id)
-        else {
-            return Ok(());
-        };
-        if !desired.is_finite() {
-            return Err(ControlError::Invalid("Scroll must be finite".into()));
-        }
-        let height = self.runtime.bounds(id).map_or(0.0, |r| r.height);
-        let next = desired.clamp(0.0, (*extent - height).max(0.0));
-        self.edit_props(id, |props| props.scroll.y = next)
+        let current = self.scroll_offset(id).unwrap_or(Point::ZERO);
+        self.scroll_to_point(id, Point::new(current.x, desired))
     }
     pub fn set_scroll_extent(&mut self, id: WidgetId, extent: f32) -> Result<(), ControlError> {
         if !extent.is_finite() || extent < 0.0 {
             return Err(ControlError::Invalid("Invalid scroll extent".into()));
         }
         let Some(Control {
-            kind: Kind::Scroll {
-                content,
-                extent: old,
-            },
+            kind:
+                Kind::Scroll {
+                    content,
+                    extent: old,
+                    ..
+                },
             ..
         }) = self.controls.get_mut(&id)
         else {
             return Err(ControlError::Invalid("Unknown scroll viewer".into()));
         };
-        *old = extent;
+        old.height = extent;
         let content = *content;
         self.edit_props(content, |props| props.style.height = Length::Px(extent))
     }
@@ -2587,10 +2610,10 @@ impl Controls {
     // Also observes public runtime focus mutations at the next Controls boundary.
     // A disappearing, hidden or disabled editor is never implicitly accepted.
     fn synchronize_editor_focus(&mut self) -> Result<(), ControlError> {
-        let current = self
-            .runtime
-            .focused()
-            .filter(|&id| self.document(id).is_some());
+        let current = self.runtime.focused().and_then(|id| {
+            self.rich_focus_editor(id)
+                .or_else(|| self.document(id).map(|_| id))
+        });
         let previous = self.observed_editor_focus;
         self.observed_editor_focus = current;
         if current != previous
@@ -2687,8 +2710,8 @@ impl Controls {
         let mut painting_overlay = false;
         self.text_layouts.clear();
         let tokens = self.theme.tokens();
-        let mut pending = vec![(self.overlay, false)];
-        while let Some((id, inherited_overlay)) = pending.pop() {
+        let mut pending = vec![(self.overlay, false, false)];
+        while let Some((id, inherited_overlay, after_children)) = pending.pop() {
             let Some(node) = self.runtime.tree().node(id) else {
                 continue;
             };
@@ -2700,6 +2723,10 @@ impl Controls {
             if painting_overlay != overlay {
                 std::mem::swap(&mut self.scene, &mut other_layer);
                 painting_overlay = overlay;
+            }
+            if after_children {
+                self.paint_scroll_bars(id);
+                continue;
             }
             let mut children = self
                 .runtime
@@ -2713,12 +2740,26 @@ impl Controls {
                     .node(*child)
                     .map_or(0, |n| n.props.z_index)
             });
-            pending.extend(children.into_iter().rev().map(|child| (child, overlay)));
+            if matches!(
+                self.controls.get(&id).map(|c| &c.kind),
+                Some(Kind::Scroll { .. })
+            ) {
+                pending.push((id, overlay, true));
+            }
+            pending.extend(
+                children
+                    .into_iter()
+                    .rev()
+                    .map(|child| (child, overlay, false)),
+            );
             let (Some(bounds), Some(clip)) = (self.runtime.bounds(id), self.runtime.clip(id))
             else {
                 continue;
             };
             let paint = node.props.paint;
+            if self.paint_rich_surface(id, bounds, clip)? {
+                continue;
+            }
             if let Some(split) = self
                 .controls
                 .get(&id)
@@ -2814,7 +2855,7 @@ impl Controls {
                     continue;
                 }
             }
-            if let Some(state) = self.button_visual_state(id)
+            if let Some(mut state) = self.button_visual_state(id)
                 && let Some(control) = self.controls.get(&id)
                 && (self.theme.is_fluent()
                     || control.explicit_button_style
@@ -2823,6 +2864,18 @@ impl Controls {
                     || control.button_chrome != ButtonChrome::Standard
                     || matches!(control.kind, Kind::Radio { .. }))
             {
+                let embedded = self
+                    .rich_owner(id)
+                    .is_some_and(|owner| self.rich.composites[&owner].parts.buttons.contains(&id));
+                if embedded {
+                    state.enabled &= !self.rich_read_only(id);
+                }
+                if matches!(
+                    self.rich.actions.get(&id),
+                    Some(selection::RichAction::Date { .. })
+                ) {
+                    state.checked = control.checked;
+                }
                 let indicator = matches!(control.kind, Kind::CheckBox | Kind::Radio { .. });
                 let radio = matches!(control.kind, Kind::Radio { .. });
                 let mut style = if indicator {
@@ -2841,9 +2894,39 @@ impl Controls {
                     style.corner_radius = 0.0;
                     style.border_width = 0.0;
                 }
+                if embedded {
+                    style.border_width = 0.0;
+                    style.corner_radius = 2.0;
+                    style.focus_visible = false;
+                    if !state.hovered && !state.pressed && !state.checked {
+                        style.background.a = 0.0;
+                    }
+                    let divider = self.theme.chrome().divider;
+                    fill_clipped(
+                        &mut self.scene,
+                        Rect::new(
+                            bounds.x,
+                            bounds.y + 7.0_f32.min(bounds.height * 0.5),
+                            1.0_f32.min(bounds.width),
+                            (bounds.height - 14.0).max(0.0),
+                        ),
+                        clip,
+                        divider,
+                    );
+                }
+                let button_bounds = if embedded {
+                    Rect::new(
+                        bounds.x + 2.0_f32.min(bounds.width * 0.5),
+                        bounds.y + 3.0_f32.min(bounds.height * 0.5),
+                        (bounds.width - 4.0).max(0.0),
+                        (bounds.height - 6.0).max(0.0),
+                    )
+                } else {
+                    bounds
+                };
                 let text_bounds = paint_button(
                     &mut self.scene,
-                    bounds,
+                    button_bounds,
                     clip,
                     style,
                     state.checked,
@@ -2975,54 +3058,56 @@ impl Controls {
                 paint.background
             };
             if let Some(style) = editor_style {
-                let underline = self.theme.is_fluent();
-                let width = if style.focus_visible && !underline {
-                    style.border_width.max(2.0)
-                } else {
-                    style.border_width
-                };
-                let border_color = if style.focus_visible && !underline {
-                    style.accent
-                } else {
-                    style.border
-                };
-                let inset = width.min(bounds.width * 0.5).min(bounds.height * 0.5);
-                let radius = style
-                    .corner_radius
-                    .min(bounds.width.min(bounds.height) * 0.5);
-                // Background covers the whole shape; the border is a separate
-                // ring so translucent colors blend without filling its center.
-                editor_fill(&mut self.scene, bounds, clip, radius, style.background);
-                if inset > 0.0 {
-                    if radius > 0.0 {
-                        self.scene
-                            .rounded_stroke(bounds, clip, radius, inset, border_color);
+                if self.rich_owner(id).is_none() {
+                    let underline = self.theme.is_fluent();
+                    let width = if style.focus_visible && !underline {
+                        style.border_width.max(2.0)
                     } else {
-                        draw_border(
+                        style.border_width
+                    };
+                    let border_color = if style.focus_visible && !underline {
+                        style.accent
+                    } else {
+                        style.border
+                    };
+                    let inset = width.min(bounds.width * 0.5).min(bounds.height * 0.5);
+                    let radius = style
+                        .corner_radius
+                        .min(bounds.width.min(bounds.height) * 0.5);
+                    // Background covers the whole shape; the border is a separate
+                    // ring so translucent colors blend without filling its center.
+                    editor_fill(&mut self.scene, bounds, clip, radius, style.background);
+                    if inset > 0.0 {
+                        if radius > 0.0 {
+                            self.scene
+                                .rounded_stroke(bounds, clip, radius, inset, border_color);
+                        } else {
+                            draw_border(
+                                &mut self.scene,
+                                bounds,
+                                clip,
+                                Border {
+                                    width: inset,
+                                    color: border_color,
+                                },
+                            );
+                        }
+                    }
+                    if style.focus_visible && underline {
+                        let indent = radius.max(2.0).min((bounds.width - 2.0).max(0.0) * 0.5);
+                        let thickness = 2.0_f32.min(bounds.height);
+                        fill_clipped(
                             &mut self.scene,
-                            bounds,
+                            Rect::new(
+                                bounds.x + indent,
+                                bounds.y + bounds.height - thickness,
+                                (bounds.width - indent * 2.0).max(0.0),
+                                thickness,
+                            ),
                             clip,
-                            Border {
-                                width: inset,
-                                color: border_color,
-                            },
+                            style.accent,
                         );
                     }
-                }
-                if style.focus_visible && underline {
-                    let indent = radius.max(2.0).min((bounds.width - 2.0).max(0.0) * 0.5);
-                    let thickness = 2.0_f32.min(bounds.height);
-                    fill_clipped(
-                        &mut self.scene,
-                        Rect::new(
-                            bounds.x + indent,
-                            bounds.y + bounds.height - thickness,
-                            (bounds.width - indent * 2.0).max(0.0),
-                            thickness,
-                        ),
-                        clip,
-                        style.accent,
-                    );
                 }
             } else {
                 let fluent_menu = self.theme.is_fluent()
@@ -3387,6 +3472,9 @@ impl Controls {
                 });
                 let value = if let Kind::TextBox(document) = &control.kind {
                     Some(document.text().to_owned())
+                } else if let Some(editor) = self.composite_editor(id) {
+                    self.document(editor)
+                        .map(|document| document.text().to_owned())
                 } else {
                     None
                 };
@@ -3394,12 +3482,14 @@ impl Controls {
                     Kind::Tab { group, index } => {
                         self.tabs.get(&group).is_some_and(|t| t.selected == index)
                     }
-                    _ => role == Role::Tab && control.checked,
+                    _ => matches!(role, Role::Tab | Role::ListItem) && control.checked,
                 };
                 let mut actions = Vec::new();
                 let enabled = self.is_enabled(id);
                 if enabled && !matches!(control.kind, Kind::Icon { .. } | Kind::Separator { .. }) {
-                    if let Some(expanded) = self.popup_expanded(id) {
+                    if let Some(expanded) = self.popup_expanded(id)
+                        && !self.rich_read_only(id)
+                    {
                         actions.push(if expanded {
                             SemanticAction::Collapse
                         } else {
@@ -3409,10 +3499,10 @@ impl Controls {
                     if props.focusable {
                         actions.push(SemanticAction::Focus);
                     }
-                    if control.kind.clickable() {
+                    if control.kind.clickable() && !self.rich_read_only(id) {
                         actions.push(SemanticAction::Activate);
                     }
-                    if value.is_some() && !control.editor.is_read_only {
+                    if matches!(control.kind, Kind::TextBox(_)) && !control.editor.is_read_only {
                         actions.push(SemanticAction::SetValue);
                     }
                     if checked.is_some() && !matches!(control.kind, Kind::Radio { .. }) {
@@ -3435,7 +3525,7 @@ impl Controls {
                     checked,
                     selected,
                     disabled: !enabled,
-                    read_only: control.editor.is_read_only,
+                    read_only: control.editor.is_read_only || self.rich_read_only(id),
                     validation_error: control.validation_error.clone(),
                     has_popup: self.popup_expanded(id).is_some(),
                     expanded: self.popup_expanded(id),

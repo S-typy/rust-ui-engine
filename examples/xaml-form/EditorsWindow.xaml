@@ -1,0 +1,81 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Fluent Forms — редакторы и данные" Width="1060" Height="800" Padding="24">
+  <Grid Spacing="20">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Редакторы и данные" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Выбор из коллекций, проверка значений и двухсторонние привязки." TextTone="Secondary"/>
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+      <Grid Spacing="20">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Surface="Card" Padding="20" Spacing="12">
+          <TextBlock Text="Выбор и поиск" FontSize="18" FontWeight="SemiBold"/>
+          <TextBlock Text="Команда · ListBox"/>
+          <ListBox x:Name="TeamList" Height="150" ItemsSource="{Binding People}"
+                   DisplayMemberPath="Name" ValueMemberPath="Id" SelectedValue="{Binding Form.Person}"/>
+          <TextBlock Text="Ответственный · ComboBox"/>
+          <ComboBox x:Name="PersonCombo" ItemsSource="{Binding People}" DisplayMemberPath="Name"
+                    ValueMemberPath="Id" SelectedValue="{Binding Form.Person}"/>
+          <TextBlock Text="Справочник · поиск по имени и отделу"/>
+          <LookupEdit x:Name="PersonLookup" ItemsSource="{Binding People}" DisplayMemberPath="Name"
+                      ValueMemberPath="Id" SelectedValue="{Binding Form.Person}" IsEditable="True" PlaceholderText="Введите имя или отдел">
+            <LookupEdit.Columns>
+              <LookupColumn Field="Name" Header="Имя" Width="180"/>
+              <LookupColumn Field="Department" Header="Отдел" Width="160"/>
+            </LookupEdit.Columns>
+          </LookupEdit>
+          <TextBlock Text="Несколько тегов · Ctrl / Shift + выбор"/>
+          <ListBox x:Name="Tags" Height="115" SelectionMode="Multiple" ItemsSource="{Binding Tags}"
+                   SelectedValues="{Binding Form.Tags}"/>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Surface="Card" Padding="20" Spacing="12" DataContext="{Binding Form}">
+          <TextBlock Text="Значения и подтверждение" FontSize="18" FontWeight="SemiBold"/>
+          <TextBlock Text="Название · Enter или уход из поля"/>
+          <TextBox x:Name="TitleEditor" Text="{Binding Title}" IsReadOnly="{Binding ReadOnly}" IsRequired="True" MaxLength="80"/>
+          <TextBlock x:Name="TitlePreview" Text="{Binding Title}" TextTone="Secondary"/>
+          <TextBlock Text="Редактор со встроенной кнопкой"/>
+          <ButtonEdit x:Name="ReferenceEditor" Text="{Binding Reference}">
+            <ButtonEdit.Buttons>
+              <EditorButton Command="ChooseReference" Content="Выбрать" Icon="ChevronDown" ToolTip="Заполнить номер документа"/>
+            </ButtonEdit.Buttons>
+          </ButtonEdit>
+          <Grid Spacing="12">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <StackPanel Spacing="6">
+              <TextBlock Text="Количество"/>
+              <SpinBox x:Name="Quantity" Value="{Binding Quantity}" Minimum="1" Maximum="1000" Increment="1"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="6">
+              <TextBlock Text="Время · ЧЧ:ММ"/>
+              <TimeEdit x:Name="StartTime" Value="{Binding Time}" Minimum="08:00" Maximum="20:00"/>
+            </StackPanel>
+          </Grid>
+          <TextBlock Text="Дата · ДД.ММ.ГГГГ"/>
+          <DateEdit x:Name="DueDate" Value="{Binding Date}" Minimum="2020-01-01" Maximum="2100-12-31"/>
+          <CheckBox x:Name="ReadOnly" Content="Только чтение названия" IsChecked="{Binding ReadOnly}"/>
+          <TextBox x:Name="LiveTitle" Text="{Binding Text, ElementName=TitleEditor, Mode=OneWay}"
+                   IsReadOnly="True" PlaceholderText="Связь по ElementName"/>
+          <TextBlock Text="Заметка · сохраняется по кнопке"/>
+          <TextBox x:Name="Note" Text="{Binding Note, UpdateSourceTrigger=Explicit}"/>
+        </StackPanel>
+      </Grid>
+    </ScrollViewer>
+    <DockPanel Grid.Row="2">
+      <WrapPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+        <Button Content="Светлая" Command="Light"/>
+        <Button Content="Тёмная" Command="Dark"/>
+        <Button Content="Обновить данные" Command="ReloadForm"/>
+        <Button Content="Сохранить заметку" Command="SaveForm"/>
+      </WrapPanel>
+      <TextBlock x:Name="ModelStatus" Text="{Binding Status}" TextTone="Secondary" VerticalAlignment="Center"/>
+    </DockPanel>
+  </Grid>
+</Window>

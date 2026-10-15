@@ -62,7 +62,11 @@ impl Gallery {
             node.set_label(item.label);
             node.set_bounds(bounds(item.bounds, scale));
             if item.has_popup {
-                node.set_has_popup(HasPopup::Menu);
+                node.set_has_popup(if item.role == ControlRole::ComboBox {
+                    HasPopup::Listbox
+                } else {
+                    HasPopup::Menu
+                });
             }
             if let Some(expanded) = item.expanded {
                 node.set_expanded(expanded);
@@ -80,7 +84,7 @@ impl Gallery {
                     Toggled::False
                 });
             }
-            if item.role == ControlRole::Tab {
+            if matches!(item.role, ControlRole::Tab | ControlRole::ListItem) {
                 node.set_selected(item.selected);
             }
             if item.disabled {
@@ -334,6 +338,10 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Image => Role::Image,
         ControlRole::Separator => Role::Splitter,
         ControlRole::TextBox => Role::TextInput,
+        ControlRole::ListBox => Role::ListBox,
+        ControlRole::ListItem => Role::ListBoxOption,
+        ControlRole::ComboBox => Role::ComboBox,
+        ControlRole::SpinButton => Role::SpinButton,
         ControlRole::ScrollView => Role::ScrollView,
         ControlRole::TabList => Role::TabList,
         ControlRole::Tab => Role::Tab,

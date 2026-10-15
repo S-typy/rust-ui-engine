@@ -105,7 +105,11 @@ impl Accessibility {
                 });
             }
             if semantic.has_popup {
-                node.set_has_popup(accesskit::HasPopup::Menu);
+                node.set_has_popup(if semantic.role == ControlRole::ComboBox {
+                    accesskit::HasPopup::Listbox
+                } else {
+                    accesskit::HasPopup::Menu
+                });
             }
             if let Some(expanded) = semantic.expanded {
                 node.set_expanded(expanded);
@@ -119,7 +123,7 @@ impl Accessibility {
             if semantic.read_only {
                 node.set_read_only();
             }
-            if semantic.role == ControlRole::Tab {
+            if matches!(semantic.role, ControlRole::Tab | ControlRole::ListItem) {
                 node.set_selected(semantic.selected);
             }
             if let Some(settings) = ui.editor_settings(widget) {
@@ -248,6 +252,10 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Image => Role::Image,
         ControlRole::Separator => Role::Splitter,
         ControlRole::TextBox => Role::TextInput,
+        ControlRole::ListBox => Role::ListBox,
+        ControlRole::ListItem => Role::ListBoxOption,
+        ControlRole::ComboBox => Role::ComboBox,
+        ControlRole::SpinButton => Role::SpinButton,
         ControlRole::ScrollView => Role::ScrollView,
         ControlRole::TabList => Role::TabList,
         ControlRole::Tab => Role::Tab,

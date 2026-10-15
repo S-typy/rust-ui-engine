@@ -1,5 +1,19 @@
 # Runtime matrix и протокол проверки alpha
 
+## Формы и данные — Windows, 2026-10-15
+
+Новый пример `xaml-form --editors` проверен локально: 769 workspace tests,
+2 doctests, fmt, clippy, release и rustdoc с запретом warnings пройдены.
+Два отдельных hardware unit tests остаются ignored.
+
+На NVIDIA GeForce RTX 3090 выполнены DX12/Vulkan × Light/Dark: четыре
+оконных capture-прогона и четыре smoke-прогона с native resize/redraw,
+все exit 0. Снимки Light/Dark просмотрены; 600 glyphs, missing=0, scale 1.5.
+Системный ввод при проверке не генерировался. Native клики, popup keyboard,
+IME, screen reader и mixed-DPI для новых редакторов ещё требуют проверки.
+Linux/macOS этим срезом не проверены. Контракты — [формы и привязки](forms.md).
+
+
 Дата состояния: 2026-10-09. Матрица относится к текущему `controls-gallery`.
 Исторические Windows GPU и трёхплатформенные CI проверки M1 сохранены в
 [M1_TEST_REPORT](M1_TEST_REPORT.md); они не подменяют результаты нового gallery.

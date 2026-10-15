@@ -13,6 +13,7 @@ constraints and margin. Zero-sized viewports are valid.
 | `Leaf` | No children; intrinsic size is zero without explicit size/minimum. |
 | `Stack(Axis)` | A single line; child main-axis sizes do not grow or shrink. |
 | `Flex(Axis)` | A single line with `flex_grow` and `flex_shrink` distribution. |
+| `Wrap(Axis)` | Flex lines wrap when the available main-axis space is exhausted. |
 | `Overlay` | Independent children share the padded content area. |
 | `Grid` | Explicit or implicit tracks with row-major automatic placement. |
 
@@ -25,7 +26,15 @@ may be negative; padding, gap and sizes are nonnegative. There is no margin
 collapse or automatic margin value.
 
 For Stack and Flex, `align` controls the cross axis and `justify` controls the
-main axis. Overlay's automatic dimensions fill the padded area after subtracting
+main axis. Wrap uses the same controls per line; lines start at the beginning
+of the cross axis, with `gap` between lines and between children. Children keep
+their retained identities when available space moves them to a different line.
+
+Optional child `horizontal_alignment` and `vertical_alignment` override inherited
+alignment on physical axes. Grid supports both axes independently; Stack/Flex/Wrap
+apply the property corresponding to their cross axis. A child cannot align within
+unused main-axis space that its container has not allocated to it.
+Overlay's automatic dimensions fill the padded area after subtracting
 margins, subject to constraints; fixed children use horizontal `justify` and
 vertical `align`. Overlay `offset` shifts the resulting child box without affecting
 siblings. An Overlay needs an explicit or parent-assigned size because its
@@ -74,8 +83,18 @@ order and hit testing continue to use retained sibling order and `z_index`.
 placement. `span` defaults to one and must be positive. For Grid, `align` controls
 item alignment within cells on both axes, and `justify` distributes the column
 tracks horizontally. Width, height, min/max and margins still apply to items.
+Individual children can override the two cell axes through `horizontal_alignment`
+and `vertical_alignment`. These alignments move the border box after sizing;
+explicit dimensions and min/max constraints remain effective.
 Named lines, negative line indices, dense/column flow, repeat, subgrid and public
 minmax track expressions are not part of this API.
+
+The [compiled XAML form adapter](forms.md) maps omitted Grid axes to one `Fr(1)`
+track and zero-based `Grid.Row`/`Grid.Column` to explicit one-based placements.
+This differs deliberately from the backend API's implicit Auto tracks and
+automatic placement. DockPanel edge reservation, Border padding/stroke space,
+and ScrollViewer content measurement are implemented by that adapter and controls,
+using these retained layout primitives.
 
 ## Validation and invalidation
 
@@ -88,7 +107,12 @@ Errors preserve the runtime's last successful scene and leave layout pending.
 
 Style changes request layout; a layout pass currently rebuilds and computes the
 whole backend tree. Paint, hover, focus, visual translation and scrolling do not
-request layout. Hidden nodes retain their layout space. Clipping, scrolling,
+request layout. Hidden nodes (`visible = false`) retain their layout space.
+`NodeProps::collapsed = true` maps the whole subtree to `Display::None`: its
+boxes are zero-sized and its occupied space is removed. Toggling this flag
+invalidates layout, while restoring it preserves widget identities and content.
+Collapsed nodes are also excluded from painting and input, regardless of the
+`visible` field. Clipping, scrolling,
 visual translation, painting and hit testing are applied by the retained runtime
 after arrangement. Paint border width does not change layout padding or size.
 

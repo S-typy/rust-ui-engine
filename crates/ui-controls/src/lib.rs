@@ -1,7 +1,9 @@
 //! Retained controls, themes, commands, and an adaptive Ribbon.
 
+mod binding;
 mod button;
 mod commands;
+mod control_bindings;
 mod controls;
 mod docking;
 mod editor;
@@ -9,8 +11,10 @@ mod primitives;
 mod ribbon;
 mod theme;
 
+pub use binding::*;
 pub use button::*;
 pub use commands::*;
+pub use control_bindings::*;
 pub use controls::*;
 pub use docking::*;
 pub use editor::*;

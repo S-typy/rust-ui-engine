@@ -89,7 +89,7 @@ fn text_block_typography_rejects_invalid_scalars_and_preserves_text_content_rule
     for content in [
         "<TextBlock FontSize='18'>inline text</TextBlock>",
         "<TextBlock FontWeight='Bold'><Button/></TextBlock>",
-        "<TextBlock Text='{Binding Title}' FontSize='18'/>",
+        "<TextBlock Text='{Binding Title, Unknown=True}' FontSize='18'/>",
         "<TextBlock Foreground='{StaticResource Text}'/>",
         "<TextBlock xmlns:p='urn:other' p:TextTone='Secondary'/>",
         "<Button TextTone='Secondary'/>",
@@ -262,7 +262,7 @@ fn popup_markup_rejects_ambiguous_actions_unknown_contexts_and_menu_geometry() {
         "<DropDownButton><Separator><MenuItem Header='Do' Command='Do'/></Separator></DropDownButton>",
         "<DropDownButton><Button Content='Do'/></DropDownButton>",
         "<DropDownButton><MenuItem Header='Do' Command='Do'>text</MenuItem></DropDownButton>",
-        "<DropDownButton ToolTip='{Binding Tip}'><Separator/></DropDownButton>",
+        "<DropDownButton ToolTip='{Binding Tip, Invalid=True}'><Separator/></DropDownButton>",
     ] {
         assert!(parse(&form("", markup)).is_err(), "{markup}");
     }
@@ -400,10 +400,8 @@ fn rejects_unknown_properties_and_directives() {
 }
 
 #[test]
-fn rejects_bindings_resources_and_other_extensions() {
+fn rejects_resources_and_other_extensions() {
     for property in [
-        "Text='{Binding Name}'",
-        "Text=' &#123;Binding Name}'",
         "PlaceholderText='{StaticResource Prompt}'",
         "Text='{}{literal}'",
     ] {
@@ -456,9 +454,7 @@ fn whitespace_and_comments_are_allowed_but_text_and_instructions_are_not() {
 
 #[test]
 fn rejects_zero_nonfinite_and_out_of_range_dimensions() {
-    for value in [
-        "0", "-1", "NaN", "inf", "-inf", "1e1000", "16385", "Auto", "",
-    ] {
+    for value in ["0", "-1", "NaN", "inf", "-inf", "1e1000", "16385", ""] {
         for source in [
             form(&format!("Width='{value}'"), "<TextBox/>"),
             form("", &format!("<TextBox Height='{value}'/>")),
@@ -467,6 +463,8 @@ fn rejects_zero_nonfinite_and_out_of_range_dimensions() {
         }
     }
     assert!(parse(&form("Width='16384'", "<TextBox Height='0.5'/>")).is_ok());
+    assert!(parse(&form("Width='Auto'", "<TextBox/>")).is_err());
+    assert!(parse(&form("", "<TextBox Height='Auto'/>")).is_ok());
     assert!(parse(&form("", "<TextBox Width='1e-300'/>")).is_err());
 }
 
@@ -1008,7 +1006,7 @@ fn tree_rejects_events_cross_control_properties_and_nonliteral_commands() {
     for content in [
         "<StackPanel Text='oops'/>",
         "<TextBlock Content='oops'/>",
-        "<TextBlock Text='{Binding Name}'/>",
+        "<TextBlock Text='{Binding Name, Unknown=True}'/>",
         "<Button Text='oops'/>",
         "<Button Click='on_click'/>",
         "<Button IsChecked='True'/>",
@@ -1099,7 +1097,7 @@ fn common_geometry_and_state_are_validated_for_every_element_kind() {
             "Margin='1,2,3'",
             "IsEnabled='yes'",
             "x:Name='2bad'",
-            "AutomationName='{Binding Label}'",
+            "AutomationName='{Binding Label, Unknown=True}'",
         ] {
             assert!(
                 parse(&form("", &format!("<{tag} {attributes}/>"))).is_err(),
@@ -1332,7 +1330,7 @@ fn toggle_command_and_checked_are_literals_and_codegen_preserves_all_style_field
         "Command='{Binding Pin}'",
         "Command='Pin.Now'",
         "IsChecked='null'",
-        "IsChecked='{Binding State}'",
+        "IsChecked='{Binding State, Unknown=True}'",
         "Click='Handler'",
         "Text='wrong'",
     ] {

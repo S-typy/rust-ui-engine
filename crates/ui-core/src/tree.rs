@@ -185,7 +185,7 @@ impl UiTree {
         if previous == &props {
             return Ok(());
         }
-        let style_changed = previous.style != props.style;
+        let style_changed = previous.style != props.style || previous.collapsed != props.collapsed;
         let paint_changed = previous.paint != props.paint;
         let mut compared = previous.clone();
         compared.style = props.style.clone();

@@ -58,6 +58,13 @@ commit передаются отдельно: `text_input`, `ime_preedit`, `ime_
 | `split_button` | Независимые основная кнопка команды и стрелка меню |
 | `text_box` | Unicode документ, caret, selection, multiline wrapping, preedit и undo/redo |
 | `edit_box` | Однострочный TextBox с горизонтальной прокруткой caret и placeholder |
+| `list_box` | Выбор по устойчивым ключам, одиночный/множественный режим, клавиатура и прокрутка |
+| `combo_box` | Редактор с выпадающим списком; настраиваемый свободный ввод |
+| `lookup_box` | Поиск по колонкам справочника с принятием значения из списка |
+| `button_edit` | EditBox со встроенными командными кнопками |
+| `spin_box` | Число с диапазоном и положительным шагом |
+| `date_edit` | Дата, локальный формат отображения и календарь |
+| `time_edit` | Время суток с настраиваемой точностью и шагом |
 | `scroll_view` | Viewport с clipped content, ограниченной прокруткой и keyboard navigation |
 | `tab_control` | Tab strip и overlay страниц; неактивные страницы не рисуются и не участвуют в focus |
 | `popup_menu` | Overlay menu, keyboard navigation, отключённые и toggle items, возврат focus к anchor |
@@ -638,6 +645,16 @@ PreparedText для рисования, прокрутки, hit-testing и ка�
 Общие renderer/text budgets остаются в силе. Маски, асинхронная валидация,
 общая транзакция формы и интеграция accepted value с TreeGrid остаются отдельными
 возможностями.
+
+## Модель и привязки форм
+
+`BindingContext` хранит наблюдаемые значения, `ValueSchema` и `BindingValidator`
+проверяют атомарные изменения. `ControlBindings` связывает свойства Controls
+с моделью или другим элементом без потребления очередей событий приложения.
+Вызовите `initialize` после создания дерева, затем `sync` после ввода и изменений
+модели, перед рисованием. `Explicit` обновляется через `update_sources`.
+Полный контракт редакторов, ключей, triggers, конвертеров и XAML —
+в [описании форм](forms.md).
 
 ## Темы и семантика
 

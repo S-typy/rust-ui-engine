@@ -129,7 +129,7 @@ impl Controls {
         let control = self
             .controls
             .get_mut(&id)
-            .filter(|control| matches!(control.kind, Kind::Panel))
+            .filter(|control| matches!(control.kind, Kind::Panel | Kind::Scroll { .. }))
             .ok_or_else(|| ControlError::Invalid("Surface requires a panel".into()))?;
         control.surface = Some(surface);
         control.transparent_panel = true;
