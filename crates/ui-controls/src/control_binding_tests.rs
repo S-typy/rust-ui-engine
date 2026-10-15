@@ -904,3 +904,89 @@ fn element_name_can_read_group_header_or_expansion_through_its_retained_header_p
     assert_eq!(ui.label_text(label), Some("Updated"));
     assert_eq!(ui.checked(check), Some(false));
 }
+
+#[test]
+fn tab_selection_binding_is_typed_two_way_and_invalid_index_preserves_selection() {
+    let (mut ui, data, mut bindings) = setup();
+    data.borrow_mut().set("Count", 1.0.into()).unwrap();
+    let tabs = ui
+        .tabbed_group(
+            ui.root(),
+            vec![crate::GroupTab::new("First"), crate::GroupTab::new("Last")],
+            0,
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let mut link =
+        ControlBinding::new(tabs.container, BindingProperty::SelectedIndex, "Count").unwrap();
+    link.mode = ControlBindingMode::TwoWay;
+    bindings.add(link).unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    assert_eq!(ui.selected_tab(tabs.container), Some(1));
+    ui.set_selected_tab(tabs.container, 0).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(data.borrow().get("Count").unwrap().as_number(), Some(0.0));
+    for value in [1.5, -1.0, 64.0, 2.0] {
+        data.borrow_mut().set("Count", value.into()).unwrap();
+        bindings.sync(&mut ui);
+        assert_eq!(ui.selected_tab(tabs.container), Some(0));
+        assert!(!bindings.diagnostics().is_empty());
+    }
+    bindings.drain_diagnostics();
+    data.borrow_mut().set("Count", 1.0.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.selected_tab(tabs.container), Some(1));
+    assert!(bindings.diagnostics().is_empty());
+}
+
+#[test]
+fn tab_binding_header_aliases_cannot_bypass_duplicates_or_cycles() {
+    let (mut ui, data, mut bindings) = setup();
+    let tabs = ui
+        .tab_control(ui.root(), &["First", "Last"], LayoutStyle::default())
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(tabs.container, BindingProperty::SelectedIndex, "Count").unwrap())
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(tabs.tabs[1], BindingProperty::SelectedIndex, "Count").unwrap())
+        .unwrap();
+    assert!(bindings.initialize(&mut ui).is_err());
+    assert_eq!(ui.selected_tab(tabs.container), Some(0));
+    let mut cycle = ControlBindings::new(data);
+    let mut link =
+        ControlBinding::new(tabs.container, BindingProperty::SelectedIndex, "Count").unwrap();
+    link.source = BindingSource::Element(BindingEndpoint {
+        widget: tabs.tabs[0],
+        property: BindingProperty::SelectedIndex,
+    });
+    cycle.add(link).unwrap();
+    assert!(cycle.initialize(&mut ui).is_err());
+}
+
+#[test]
+fn selected_index_element_alias_is_evaluated_after_its_model_writer() {
+    let (mut ui, data, mut bindings) = setup();
+    data.borrow_mut().set("Count", 1.0.into()).unwrap();
+    let first = ui
+        .tab_control(ui.root(), &["First", "Last"], LayoutStyle::default())
+        .unwrap();
+    let second = ui
+        .tab_control(ui.root(), &["First", "Last"], LayoutStyle::default())
+        .unwrap();
+    let mut dependent =
+        ControlBinding::new(second.container, BindingProperty::SelectedIndex, "Count").unwrap();
+    dependent.source = BindingSource::Element(BindingEndpoint {
+        widget: first.tabs[0],
+        property: BindingProperty::SelectedIndex,
+    });
+    bindings.add(dependent).unwrap();
+    bindings
+        .add(ControlBinding::new(first.container, BindingProperty::SelectedIndex, "Count").unwrap())
+        .unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    assert_eq!(ui.selected_tab(second.container), Some(1));
+    data.borrow_mut().set("Count", 0.0.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.selected_tab(second.container), Some(0));
+}

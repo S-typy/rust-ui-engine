@@ -650,7 +650,7 @@ PreparedText для рисования, прокрутки, hit-testing и ка�
 
 ## Модель и привязки форм
 
-Группы поддерживают `Header` и `IsExpanded` в привязках. Их Rust API,
+Группы поддерживают `Header`, `IsExpanded` и `SelectedIndex` в привязках. Их Rust API,
 клавиатурное поведение и ограничения описаны в [контракте групп](groups.md).
 
 `BindingContext` хранит наблюдаемые значения, `ValueSchema` и `BindingValidator`

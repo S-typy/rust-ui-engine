@@ -10,8 +10,9 @@
 `LookupEdit`, `ButtonEdit`, `SpinBox`, `DateEdit` и `TimeEdit`, привязки данных,
 Grid/WrapPanel/DockPanel/Border/ScrollViewer описаны в
 [контракте форм](forms.md).
-`GroupBox` и `Expander` объединяют содержимое под заголовком, поддерживают
-вложенность и привязки; см. [группы и раскрывающиеся секции](groups.md).
+`GroupBox` и `Expander` объединяют содержимое под настраиваемым заголовком,
+`TabbedGroup` / `GroupTab` предоставляют постоянные страницы с выбором вкладки.
+Поддерживаются вложенность и привязки; см. [группы и раскрывающиеся секции](groups.md).
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 

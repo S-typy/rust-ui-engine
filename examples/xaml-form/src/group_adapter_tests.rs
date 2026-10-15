@@ -46,6 +46,7 @@ fn compiled_groups_demo_mounts_all_appearances_and_keeps_collapsed_content() {
         ("PrimaryGroup", GroupAppearance::Card),
         ("OutlineGroup", GroupAppearance::Outline),
         ("PlainGroup", GroupAppearance::Plain),
+        ("StandardGroup", GroupAppearance::Standard),
     ] {
         let group = form.find_name(name).unwrap();
         assert_eq!(
@@ -65,6 +66,204 @@ fn compiled_groups_demo_mounts_all_appearances_and_keeps_collapsed_content() {
         "Новая версия документа"
     );
     assert!(form.ui.runtime.bounds(archived).is_some());
+}
+
+#[test]
+fn rich_group_chrome_and_hidden_header_are_projected_into_controls() {
+    use rust_desktop_ui_controls::{GroupHeaderStyle, IconSymbol};
+    let form = form(
+        "<StackPanel Spacing='0'><GroupBox x:Name='Styled' Header='Caption' Appearance='Standard' HeaderStyle='Light' HeaderIcon='Lock' CornerRadius='3' HeaderForeground='#80402010' HeaderBackground='#00112233' Padding='0'><TextBox Height='36'/></GroupBox><GroupBox x:Name='Hidden' Header='Accessible' ShowHeader='False' Padding='0'><TextBox Height='36'/></GroupBox></StackPanel>",
+    );
+    let settings = form
+        .ui
+        .group_settings(form.find_name("Styled").unwrap())
+        .unwrap();
+    assert_eq!(settings.appearance, GroupAppearance::Standard);
+    assert_eq!(settings.header_style, GroupHeaderStyle::Light);
+    assert_eq!(settings.header_icon, Some(IconSymbol::Lock));
+    assert_eq!(settings.corner_radius, Some(3.0));
+    assert!(settings.header_foreground.is_some());
+    assert!(settings.header_background.is_some());
+    near(bounds(&form, "Styled").height, 72.0);
+    near(bounds(&form, "Hidden").height, 36.0);
+}
+
+#[test]
+fn collapsible_group_box_binding_uses_retained_auto_height() {
+    let model = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([("Open", true.into())])).unwrap(),
+    ));
+    let mut form = Form::new_with_model(definition("<GroupBox x:Name='Group' Header='Details' IsCollapsible='True' IsExpanded='{Binding Open}' HeaderStyle='Light'><TextBox x:Name='Editor' Text='Accepted'/></GroupBox>"), false, Some(model.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let group = form.find_name("Group").unwrap();
+    let editor = form.find_name("Editor").unwrap();
+    form.ui.set_text(editor, "Draft").unwrap();
+    model.borrow_mut().set("Open", false.into()).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    near(bounds(&form, "Group").height, 36.0);
+    assert_eq!(form.ui.document(editor).unwrap().text(), "Draft");
+    assert_eq!(form.ui.accepted_value(editor), Some("Accepted"));
+    form.ui.set_expander_expanded(group, true).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(model.borrow().get("Open").unwrap(), &DataValue::Bool(true));
+    assert!(form.ui.runtime.bounds(editor).is_some());
+}
+
+#[test]
+fn tabbed_group_binding_round_trips_and_keeps_hidden_page_drafts() {
+    let model = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([
+            ("Index", 0.0.into()),
+            ("Title", "Accepted".into()),
+            ("Second", "Second".into()),
+        ]))
+        .unwrap(),
+    ));
+    let mut form = Form::new_with_model(definition("<StackPanel><TabbedGroup x:Name='Tabs' SelectedIndex='{Binding Index}'><GroupTab Header='First'><TextBox x:Name='First' Text='{Binding Title}'/></GroupTab><GroupTab Header='Second'><TextBox x:Name='Second' Text='{Binding Second}'/></GroupTab><GroupTab Header='Unavailable' IsEnabled='False'/></TabbedGroup><SpinBox x:Name='IndexEditor' Minimum='0' Maximum='1' Value='{Binding SelectedIndex, ElementName=Tabs}'/></StackPanel>"), false, Some(model.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let group = form.find_name("Tabs").unwrap();
+    let first = form.find_name("First").unwrap();
+    let second = form.find_name("Second").unwrap();
+    let nodes = form.ui.runtime.tree().preorder();
+    form.ui.set_text(first, "Uncommitted").unwrap();
+    form.ui.set_selected_tab(group, 1).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(
+        model.borrow().get("Index").unwrap(),
+        &DataValue::Number(1.0)
+    );
+    assert_eq!(form.ui.document(first).unwrap().text(), "Uncommitted");
+    assert_eq!(form.ui.accepted_value(first), Some("Accepted"));
+    assert!(form.ui.runtime.bounds(first).is_none());
+    assert!(form.ui.runtime.bounds(second).is_some());
+    model.borrow_mut().set("Index", 0.0.into()).unwrap();
+    model
+        .borrow_mut()
+        .set("Second", "Updated while hidden".into())
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(form.ui.selected_tab(group), Some(0));
+    assert_eq!(form.ui.document(first).unwrap().text(), "Uncommitted");
+    assert_eq!(
+        form.ui.document(second).unwrap().text(),
+        "Updated while hidden"
+    );
+    assert_eq!(form.ui.runtime.tree().preorder(), nodes);
+    assert!(form.ui.set_selected_tab(group, 2).is_err());
+    assert_eq!(form.ui.selected_tab(group), Some(0));
+}
+
+#[test]
+fn root_tabbed_group_fills_height_and_preserves_separate_radio_parents() {
+    let mut form = form(
+        "<TabbedGroup x:Name='Tabs' Padding='10'><GroupTab Header='First'><Grid x:Name='Body'><RadioButton x:Name='First' Content='First' IsChecked='True' VerticalAlignment='Bottom'/></Grid></GroupTab><GroupTab Header='Second'><RadioButton x:Name='Second' Content='Second' IsChecked='True'/></GroupTab></TabbedGroup>",
+    );
+    near(bounds(&form, "Tabs").height, SIZE.height);
+    near(bounds(&form, "Body").height, SIZE.height - 48.0 - 20.0);
+    near(
+        bounds(&form, "First").y + bounds(&form, "First").height,
+        SIZE.height - 10.0,
+    );
+    let group = form.find_name("Tabs").unwrap();
+    form.ui.set_selected_tab(group, 1).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(
+        form.ui.checked(form.find_name("First").unwrap()),
+        Some(true)
+    );
+    assert_eq!(
+        form.ui.checked(form.find_name("Second").unwrap()),
+        Some(true)
+    );
+}
+
+#[test]
+fn invalid_manual_tab_selection_is_rejected_before_mount() {
+    let mut definition = definition(
+        "<StackPanel><Button Content='Before'/><TabbedGroup><GroupTab Header='First'/><GroupTab Header='Second' IsEnabled='False'/></TabbedGroup></StackPanel>",
+    );
+    let ElementKind::StackPanel(panel) = &mut definition.content.kind else {
+        unreachable!()
+    };
+    let ElementKind::TabbedGroup(group) = &mut panel.children[1].kind else {
+        unreachable!()
+    };
+    group.selected_index = 1;
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let before = ui.runtime.tree().preorder();
+    let root = ui.root();
+    assert!(MountedView::mount(&mut ui, root, &definition.content).is_err());
+    assert_eq!(ui.runtime.tree().preorder(), before);
+}
+
+#[test]
+fn horizontal_auto_tabbed_group_includes_page_child_margins() {
+    let form = form(
+        "<StackPanel Orientation='Horizontal' Spacing='0'><TabbedGroup x:Name='Tabs' Padding='16'><GroupTab Header='A'><TextBox x:Name='Editor' Width='300' Margin='20,0,20,0'/></GroupTab></TabbedGroup><Button x:Name='After' Width='40'/></StackPanel>",
+    );
+    near(bounds(&form, "Tabs").width, 372.0);
+    near(bounds(&form, "After").x, 372.0);
+    near(bounds(&form, "Editor").x, 36.0);
+}
+
+#[test]
+fn auto_group_headers_measure_the_same_single_line_that_is_painted() {
+    for tabbed in [false, true] {
+        let make = |header: &str| {
+            let group = if tabbed {
+                format!(
+                    "<TabbedGroup x:Name='Group' Padding='0'><GroupTab Header='{header}'/></TabbedGroup>"
+                )
+            } else {
+                format!(
+                    "<GroupBox x:Name='Group' Header='{header}' HeaderIcon='Edit' Padding='0'/>"
+                )
+            };
+            form(&format!(
+                "<StackPanel Orientation='Horizontal'>{group}</StackPanel>"
+            ))
+        };
+        let newline = make("Long&#10;Caption");
+        let single_line = make("Long Caption");
+        near(
+            bounds(&newline, "Group").width,
+            bounds(&single_line, "Group").width,
+        );
+    }
+}
+
+#[test]
+fn selected_index_fallback_is_numeric_and_rejects_fractional_values() {
+    let form = form(
+        "<TabbedGroup x:Name='Tabs' SelectedIndex='{Binding Missing, FallbackValue=1}'><GroupTab Header='A'/><GroupTab Header='B'/></TabbedGroup>",
+    );
+    assert_eq!(
+        form.ui.selected_tab(form.find_name("Tabs").unwrap()),
+        Some(1)
+    );
+    assert!(Form::new(definition("<TabbedGroup SelectedIndex='{Binding Missing, FallbackValue=0.5}'><GroupTab Header='A'/><GroupTab Header='B'/></TabbedGroup>"), false).is_err());
+}
+
+#[test]
+fn tabbed_group_accessibility_has_selected_tabs_and_only_active_page() {
+    let mut form = form(
+        "<TabbedGroup x:Name='Tabs' AutomationName='Document sections'><GroupTab Header='First'><TextBox x:Name='First'/></GroupTab><GroupTab Header='Second'><TextBox x:Name='Second'/></GroupTab></TabbedGroup>",
+    );
+    let tree = form.accessibility(1.0);
+    let tabs: Vec<_> = tree
+        .nodes
+        .iter()
+        .filter(|(_, node)| node.role() == accesskit::Role::Tab)
+        .collect();
+    assert_eq!(tabs.len(), 2);
+    assert_eq!(
+        tabs.iter()
+            .filter(|(_, node)| node.is_selected() == Some(true))
+            .count(),
+        1
+    );
+    let inactive = form.accessible.id(form.find_name("Second").unwrap());
+    assert!(inactive.is_none_or(|id| tree.nodes.iter().all(|(node, _)| *node != id)));
 }
 
 #[test]

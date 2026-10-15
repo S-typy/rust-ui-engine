@@ -17,6 +17,7 @@ pub enum BindingProperty {
     Text,
     Header,
     IsExpanded,
+    SelectedIndex,
     Value,
     SelectedValue,
     SelectedValues,
@@ -276,6 +277,11 @@ impl ControlBindings {
                 endpoint.property,
                 BindingProperty::Text | BindingProperty::Header | BindingProperty::IsExpanded
             ) && let Some(owner) = ui.group_owner(endpoint.widget)
+            {
+                endpoint.widget = owner;
+            }
+            if endpoint.property == BindingProperty::SelectedIndex
+                && let Some(owner) = ui.tab_owner(endpoint.widget)
             {
                 endpoint.widget = owner;
             }
@@ -831,6 +837,10 @@ fn read_property(
         return editor_parser(ui, endpoint).parse(text);
     }
     match endpoint.property {
+        BindingProperty::SelectedIndex => ui
+            .selected_tab(id)
+            .map(|index| DataValue::Number(index as f64))
+            .ok_or_else(|| invalid("SelectedIndex requires a tabbed group")),
         BindingProperty::Header => ui
             .group_header(id)
             .map(DataValue::from)
@@ -952,6 +962,14 @@ fn write_property(
         return accepted(outcome);
     }
     match endpoint.property {
+        BindingProperty::SelectedIndex => {
+            let index = number(value)?;
+            if !(0.0..=63.0).contains(&index) || index.fract() != 0.0 {
+                return Err(invalid("SelectedIndex must be an integer in 0..=63"));
+            }
+            ui.set_selected_tab(id, index as usize)
+                .map_err(control_error)
+        }
         BindingProperty::Header => ui
             .set_group_header(id, string(value)?)
             .map_err(control_error),

@@ -177,8 +177,9 @@ Collapsed убирает его до восстановления видимос
 | `WrapPanel` | Перенос элементов на следующую строку или колонку |
 | `DockPanel` | Последовательное резервирование краёв, `LastChildFill=True` по умолчанию |
 | `Border` | Один ребёнок, padding, фон, граница и скругление |
-| `GroupBox` | Заголовок и одно содержимое; Card, Outline или Plain |
+| `GroupBox` | Заголовок и одно содержимое; Card, Outline, Plain, Standard; необязательное сворачивание |
 | `Expander` | Сворачиваемая группа; поддерево и привязки сохраняются |
+| `TabbedGroup` | Несколько GroupTab с сохранением неактивных страниц; SelectedIndex |
 | `ScrollViewer` | Один ребёнок, две оси, отсечение и полосы прокрутки |
 
 ```xml
@@ -212,7 +213,7 @@ Collapsed убирает его до восстановления видимос
 по умолчанию занимает остаток. Разрешено до 48 детей одного DockPanel;
 вложенные служебные контейнеры учитываются в пределе глубины layout.
 `DockPanel` не является docking workspace.
-Группы и их `Header`/`IsExpanded` bindings описаны в [отдельном контракте](groups.md).
+Группы и их `Header`/`IsExpanded`/`SelectedIndex` bindings описаны в [отдельном контракте](groups.md).
 Для перемещаемых панелей и отдельных окон используется [DockWorkspace](docking.md).
 
 ScrollViewer использует `Auto`, `Visible`, `Hidden`, `Disabled` отдельно для

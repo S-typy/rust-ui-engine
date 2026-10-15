@@ -26,7 +26,11 @@ mod button_presentation;
 #[cfg(test)]
 mod group_tests;
 mod groups;
-pub use groups::{Expander, GroupAppearance, GroupBox, GroupSettings};
+#[cfg(test)]
+mod tabbed_group_tests;
+mod tabbed_groups;
+pub use groups::{Expander, GroupAppearance, GroupBox, GroupHeaderStyle, GroupSettings};
+pub use tabbed_groups::{GroupTab, TabbedGroup};
 #[cfg(test)]
 mod pointer_cancel_tests;
 mod popup;
@@ -322,9 +326,13 @@ impl Control {
     }
 }
 struct Tabs {
+    header: WidgetId,
+    content: WidgetId,
+    icons: Vec<Option<IconSymbol>>,
     tabs: Vec<WidgetId>,
     pages: Vec<WidgetId>,
     selected: usize,
+    legacy_layout: bool,
 }
 /// Owns control state while exposing the independent retained runtime for composition.
 /// For registered controls, enabled state belongs to `set_enabled` and the command
@@ -1514,96 +1522,30 @@ impl Controls {
         &mut self,
         parent: WidgetId,
         titles: &[&str],
-        mut style: LayoutStyle,
+        style: LayoutStyle,
     ) -> Result<TabControl, ControlError> {
-        style.kind = LayoutKind::Flex(Axis::Vertical);
-        let container = self.panel(parent, style)?;
-        let header = self.panel(
-            container,
-            LayoutStyle {
-                kind: LayoutKind::Flex(Axis::Horizontal),
-                height: Length::Px(self.theme.tokens().control_height),
-                flex_shrink: 0.0,
-                gap: 4.0,
-                ..Default::default()
-            },
+        let group = self.add_tabbed_group(
+            parent,
+            titles.iter().map(|title| GroupTab::new(*title)).collect(),
+            0,
+            style,
+            true,
         )?;
-        self.set_role(header, Role::TabList);
-        let content = self.panel(
-            container,
-            LayoutStyle {
-                kind: LayoutKind::Overlay,
-                height: Length::Px(0.0),
-                flex_grow: 1.0,
-                ..Default::default()
-            },
-        )?;
-        let mut tabs = Vec::new();
-        let mut pages = Vec::new();
-        for (index, title) in titles.iter().enumerate() {
-            tabs.push(self.add(
-                header,
-                Kind::Tab {
-                    group: container,
-                    index,
-                },
-                (*title).into(),
-                None,
-                LayoutStyle {
-                    flex_grow: 1.0,
-                    ..Default::default()
-                },
-            )?);
-            let page = self.panel(
-                content,
-                LayoutStyle {
-                    kind: LayoutKind::Stack(Axis::Vertical),
-                    gap: 6.0,
-                    padding: Edges::all(8.0),
-                    ..Default::default()
-                },
-            )?;
-            self.edit_props(page, |props| props.visible = index == 0)?;
-            pages.push(page);
-        }
-        self.tabs.insert(
-            container,
-            Tabs {
-                tabs: tabs.clone(),
-                pages: pages.clone(),
-                selected: 0,
-            },
-        );
         Ok(TabControl {
-            container,
-            tabs,
-            pages,
+            container: group.container,
+            tabs: group.headers,
+            pages: group.contents,
         })
     }
     pub fn select_tab(&mut self, container: WidgetId, selected: usize) -> Result<(), ControlError> {
-        let state = self
-            .tabs
-            .get_mut(&container)
-            .ok_or_else(|| ControlError::Invalid("Unknown tab control".into()))?;
-        if selected >= state.pages.len() {
-            return Err(ControlError::Invalid("Tab index is out of range".into()));
-        }
-        state.selected = selected;
-        let pages = state.pages.clone();
-        for (index, page) in pages.into_iter().enumerate() {
-            self.edit_props(page, |props| props.visible = index == selected)?;
-        }
-        self.scene_dirty = true;
-        Ok(())
-    }
-    pub fn selected_tab(&self, container: WidgetId) -> Option<usize> {
-        self.tabs.get(&container).map(|s| s.selected)
+        self.set_selected_tab(container, selected)
     }
     /// Remove a control subtree. A composite editor's required editor and a
     /// ListBox's required content cannot be removed individually; remove their
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.preflight_group_removal(id)?;
+        self.preflight_tab_removal(id)?;
         self.preflight_rich_removal(id)?;
         self.runtime.apply(Mutation::Remove(id))?;
         self.controls
@@ -1906,7 +1848,8 @@ impl Controls {
             self.pressed = None;
             self.keyboard_pressed = false;
         }
-        self.refresh_radio_tab_stops()
+        self.refresh_radio_tab_stops()?;
+        self.refresh_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
         self.refresh_paints()?;
@@ -2026,9 +1969,13 @@ impl Controls {
             _ => None,
         };
         let restore_radio_stops = self.prepare_radio_tab_exit(&event)?;
+        let restore_tab_stops = self.prepare_tab_exit(&event)?;
         let report = self.runtime.dispatch(event.clone());
         if restore_radio_stops {
             self.refresh_radio_tab_stops()?;
+        }
+        if restore_tab_stops {
+            self.refresh_tab_stops()?;
         }
         if let Some(error) = report.errors.into_iter().next() {
             return Err(error.into());
@@ -2125,8 +2072,15 @@ impl Controls {
                             && !modifiers.super_key
                         {
                             self.radio_arrow(id, matches!(key, Key::ArrowRight | Key::ArrowDown))?;
-                        } else if matches!(key, Key::ArrowLeft | Key::ArrowRight) {
-                            self.tab_arrow(id, key == Key::ArrowRight)?;
+                        } else if matches!(
+                            key,
+                            Key::ArrowLeft | Key::ArrowRight | Key::Home | Key::End
+                        ) && !report.default_prevented
+                            && !modifiers.control
+                            && !modifiers.alt
+                            && !modifiers.super_key
+                        {
+                            self.tab_key(id, key)?;
                         }
                     } else if matches!(
                         self.controls.get(&id).map(|c| &c.kind),
@@ -2234,31 +2188,6 @@ impl Controls {
         let target = members[next];
         self.runtime.apply(Mutation::Focus(Some(target)))?;
         self.activate(target)
-    }
-    fn tab_arrow(&mut self, id: WidgetId, forward: bool) -> Result<(), ControlError> {
-        let Some(Control {
-            kind: Kind::Tab { group, index },
-            ..
-        }) = self.controls.get(&id)
-        else {
-            return Ok(());
-        };
-        let (group, index) = (*group, *index);
-        let Some(tabs) = self.tabs.get(&group) else {
-            return Ok(());
-        };
-        if tabs.tabs.is_empty() {
-            return Ok(());
-        }
-        let next = if forward {
-            (index + 1) % tabs.tabs.len()
-        } else {
-            (index + tabs.tabs.len() - 1) % tabs.tabs.len()
-        };
-        let next_id = tabs.tabs[next];
-        self.select_tab(group, next)?;
-        self.runtime.apply(Mutation::Focus(Some(next_id)))?;
-        Ok(())
     }
     fn scroll_ancestor(&self, mut id: WidgetId) -> Option<WidgetId> {
         loop {
@@ -2772,6 +2701,12 @@ impl Controls {
             };
             let paint = node.props.paint;
             if self.paint_group(id, bounds, clip)? {
+                if let Some(custom) = self.custom_scenes.get(&id) {
+                    append_clipped(&mut self.scene, custom, clip);
+                }
+                continue;
+            }
+            if self.paint_tabbed_group(id, bounds, clip)? {
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
                 }

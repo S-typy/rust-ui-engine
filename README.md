@@ -75,8 +75,9 @@ WrapPanel, DockPanel, Border and two-axis ScrollViewer arrange the form.
 See [editors, bindings and layout](docs/public/forms.md) for syntax and contracts.
 
 The [groups form](examples/xaml-form/GroupsWindow.xaml), opened with `--groups`,
-shows GroupBox and Expander in Card, Outline and Plain appearances. Nested
-sections retain their editors and bindings when collapsed. See
+shows GroupBox, Expander and TabbedGroup: cards, classic captioned frames,
+compact or accented headers, icons and headerless surfaces. Nested sections
+and inactive pages retain their editors and bindings. See
 [groups and expandable sections](docs/public/groups.md).
 
 ## Run the docking workspace

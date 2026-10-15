@@ -41,19 +41,45 @@ fn track(value: &x::GridLength) -> GridTrack {
         x::GridLength::Star(v) => GridTrack::Fr(*v),
     }
 }
-fn group_settings(
-    header: &str,
-    appearance: x::GroupBoxAppearanceDefinition,
-    padding: [f32; 4],
-) -> GroupSettings {
+fn group_appearance(appearance: x::GroupBoxAppearanceDefinition) -> GroupAppearance {
+    match appearance {
+        x::GroupBoxAppearanceDefinition::Card => GroupAppearance::Card,
+        x::GroupBoxAppearanceDefinition::Outline => GroupAppearance::Outline,
+        x::GroupBoxAppearanceDefinition::Plain => GroupAppearance::Plain,
+        x::GroupBoxAppearanceDefinition::Standard => GroupAppearance::Standard,
+    }
+}
+fn group_header_style(style: x::GroupHeaderStyleDefinition) -> GroupHeaderStyle {
+    match style {
+        x::GroupHeaderStyleDefinition::Normal => GroupHeaderStyle::Normal,
+        x::GroupHeaderStyleDefinition::Light => GroupHeaderStyle::Light,
+        x::GroupHeaderStyleDefinition::Accent => GroupHeaderStyle::Accent,
+    }
+}
+pub(super) fn group_settings(group: &x::GroupBoxDefinition) -> GroupSettings {
     GroupSettings {
-        header: header.into(),
-        appearance: match appearance {
-            x::GroupBoxAppearanceDefinition::Card => GroupAppearance::Card,
-            x::GroupBoxAppearanceDefinition::Outline => GroupAppearance::Outline,
-            x::GroupBoxAppearanceDefinition::Plain => GroupAppearance::Plain,
-        },
-        padding: edges(padding),
+        header: group.header.clone(),
+        appearance: group_appearance(group.appearance),
+        padding: edges(group.padding),
+        header_style: group_header_style(group.header_style),
+        header_icon: group.header_icon.map(icon_symbol),
+        show_header: group.show_header,
+        corner_radius: group.corner_radius,
+        header_foreground: group.header_foreground.map(color),
+        header_background: group.header_background.map(color),
+    }
+}
+pub(super) fn expander_settings(group: &x::ExpanderDefinition) -> GroupSettings {
+    GroupSettings {
+        header: group.header.clone(),
+        appearance: group_appearance(group.appearance),
+        padding: edges(group.padding),
+        header_style: group_header_style(group.header_style),
+        header_icon: group.header_icon.map(icon_symbol),
+        show_header: group.show_header,
+        corner_radius: group.corner_radius,
+        header_foreground: group.header_foreground.map(color),
+        header_background: group.header_background.map(color),
     }
 }
 fn group_content_layout(ui: &mut Controls, content: WidgetId) -> Result<(), String> {
@@ -164,13 +190,13 @@ impl MountedView {
                     Length::Px(value) => value,
                     _ => (width - element.common.margin[0] - element.common.margin[2]).max(0.0),
                 };
-                let parts = ui
-                    .group_box(
-                        parent,
-                        group_settings(&group.header, group.appearance, group.padding),
-                        style,
-                    )
-                    .map_err(err)?;
+                let settings = group_settings(group);
+                let parts = if group.is_collapsible {
+                    ui.collapsible_group_box(parent, settings, group.is_expanded, style)
+                } else {
+                    ui.group_box(parent, settings, style)
+                }
+                .map_err(err)?;
                 group_content_layout(ui, parts.content)?;
                 if let Some(child) = &group.child {
                     self.mount_element(
@@ -190,12 +216,7 @@ impl MountedView {
                     _ => (width - element.common.margin[0] - element.common.margin[2]).max(0.0),
                 };
                 let parts = ui
-                    .expander(
-                        parent,
-                        group_settings(&group.header, group.appearance, group.padding),
-                        group.is_expanded,
-                        style,
-                    )
+                    .expander(parent, expander_settings(group), group.is_expanded, style)
                     .map_err(err)?;
                 group_content_layout(ui, parts.content)?;
                 if let Some(child) = &group.child {
@@ -207,6 +228,51 @@ impl MountedView {
                         (width - group.padding[0] - group.padding[2]).max(0.0),
                         context,
                     )?;
+                }
+                return Ok(parts.container);
+            }
+            ElementKind::TabbedGroup(group) => {
+                let width = match style.width {
+                    Length::Px(value) => value,
+                    _ => (width - element.common.margin[0] - element.common.margin[2]).max(0.0),
+                };
+                let parts = ui
+                    .tabbed_group(
+                        parent,
+                        group
+                            .tabs
+                            .iter()
+                            .map(|tab| GroupTab {
+                                header: tab.header.clone(),
+                                icon: tab.header_icon.map(icon_symbol),
+                                enabled: tab.is_enabled,
+                            })
+                            .collect(),
+                        group.selected_index,
+                        style,
+                    )
+                    .map_err(err)?;
+                for (tab, content) in group.tabs.iter().zip(parts.contents) {
+                    group_content_layout(ui, content)?;
+                    let mut content_style =
+                        ui.runtime.tree().node(content).unwrap().props.style.clone();
+                    content_style.padding = edges(group.padding);
+                    ui.runtime
+                        .apply(Mutation::SetStyle {
+                            node: content,
+                            style: content_style,
+                        })
+                        .map_err(err)?;
+                    if let Some(child) = &tab.child {
+                        self.mount_element(
+                            ui,
+                            content,
+                            child,
+                            Axis::Vertical,
+                            (width - group.padding[0] - group.padding[2]).max(0.0),
+                            context,
+                        )?;
+                    }
                 }
                 return Ok(parts.container);
             }

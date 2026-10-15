@@ -6,6 +6,7 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
         "Border" => ElementKind::Border(BorderDefinition::default()),
         "GroupBox" => ElementKind::GroupBox(GroupBoxDefinition::default()),
         "Expander" => ElementKind::Expander(ExpanderDefinition::default()),
+        "TabbedGroup" => ElementKind::TabbedGroup(TabbedGroupDefinition::default()),
         "ScrollViewer" => ElementKind::ScrollViewer(ScrollViewerDefinition::default()),
         "WrapPanel" => ElementKind::WrapPanel(StackPanelDefinition {
             orientation: Orientation::Horizontal,
@@ -34,8 +35,9 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         return true;
     }
     match kind {
-        ElementKind::GroupBox(_) => name == "Header",
+        ElementKind::GroupBox(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::Expander(_) => matches!(name, "Header" | "IsExpanded"),
+        ElementKind::TabbedGroup(_) => name == "SelectedIndex",
         ElementKind::TextBox(_) | ElementKind::ButtonEdit(_) => {
             matches!(name, "Text" | "IsReadOnly" | "PlaceholderText")
         }
@@ -269,13 +271,30 @@ pub(super) fn property(
 ) -> Result<bool, Diagnostic> {
     let metric = || editor_metric(document, attr, MAX_DIMENSION, true);
     match kind {
-        ElementKind::GroupBox(group) => group_property(
-            document,
-            attr,
-            &mut group.header,
-            &mut group.appearance,
-            &mut group.padding,
-        ),
+        ElementKind::GroupBox(group) => {
+            match attr.name() {
+                "IsCollapsible" => group.is_collapsible = boolean(document, attr)?,
+                "IsExpanded" => group.is_expanded = boolean(document, attr)?,
+                _ => {
+                    return group_property(
+                        document,
+                        attr,
+                        GroupPropertiesMut {
+                            header: &mut group.header,
+                            appearance: &mut group.appearance,
+                            padding: &mut group.padding,
+                            header_style: &mut group.header_style,
+                            header_icon: &mut group.header_icon,
+                            show_header: &mut group.show_header,
+                            corner_radius: &mut group.corner_radius,
+                            header_foreground: &mut group.header_foreground,
+                            header_background: &mut group.header_background,
+                        },
+                    );
+                }
+            }
+            Ok(true)
+        }
         ElementKind::Expander(expander) => {
             if attr.name() == "IsExpanded" {
                 expander.is_expanded = boolean(document, attr)?;
@@ -284,11 +303,40 @@ pub(super) fn property(
                 group_property(
                     document,
                     attr,
-                    &mut expander.header,
-                    &mut expander.appearance,
-                    &mut expander.padding,
+                    GroupPropertiesMut {
+                        header: &mut expander.header,
+                        appearance: &mut expander.appearance,
+                        padding: &mut expander.padding,
+                        header_style: &mut expander.header_style,
+                        header_icon: &mut expander.header_icon,
+                        show_header: &mut expander.show_header,
+                        corner_radius: &mut expander.corner_radius,
+                        header_foreground: &mut expander.header_foreground,
+                        header_background: &mut expander.header_background,
+                    },
                 )
             }
+        }
+        ElementKind::TabbedGroup(group) => {
+            match attr.name() {
+                "SelectedIndex" => {
+                    let value = attr.value();
+                    group.selected_index = value
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|_| !value.is_empty() && value.bytes().all(|c| c.is_ascii_digit()))
+                        .ok_or_else(|| {
+                            at_attribute(
+                                document,
+                                attr,
+                                "SelectedIndex must be an unsigned integer",
+                            )
+                        })?;
+                }
+                "Padding" => group.padding = thickness(document, attr)?,
+                _ => return Ok(false),
+            }
+            Ok(true)
         }
         ElementKind::ListBox(selection) | ElementKind::ComboBox(selection) => {
             selection_property(document, attr, selection)
@@ -378,26 +426,58 @@ pub(super) fn property(
     }
 }
 
+struct GroupPropertiesMut<'a> {
+    header: &'a mut String,
+    appearance: &'a mut GroupBoxAppearanceDefinition,
+    padding: &'a mut [f32; 4],
+    header_style: &'a mut GroupHeaderStyleDefinition,
+    header_icon: &'a mut Option<IconSymbol>,
+    show_header: &'a mut bool,
+    corner_radius: &'a mut Option<f32>,
+    header_foreground: &'a mut Option<[u8; 4]>,
+    header_background: &'a mut Option<[u8; 4]>,
+}
+
 fn group_property(
     document: &Document<'_>,
     attr: Attribute<'_, '_>,
-    header: &mut String,
-    appearance: &mut GroupBoxAppearanceDefinition,
-    padding: &mut [f32; 4],
+    group: GroupPropertiesMut<'_>,
 ) -> Result<bool, Diagnostic> {
     match attr.name() {
-        "Header" => *header = attr.value().into(),
-        "Padding" => *padding = thickness(document, attr)?,
-        "Appearance" => {
-            *appearance = match attr.value() {
-                "Card" => GroupBoxAppearanceDefinition::Card,
-                "Outline" => GroupBoxAppearanceDefinition::Outline,
-                "Plain" => GroupBoxAppearanceDefinition::Plain,
+        "Header" => *group.header = attr.value().into(),
+        "Padding" => *group.padding = thickness(document, attr)?,
+        "HeaderIcon" => *group.header_icon = Some(icon_symbol(document, attr)?),
+        "ShowHeader" => *group.show_header = boolean(document, attr)?,
+        "CornerRadius" => {
+            *group.corner_radius = Some(editor_metric(document, attr, MAX_DIMENSION, true)?)
+        }
+        "HeaderForeground" => *group.header_foreground = Some(color(document, attr)?),
+        "HeaderBackground" => *group.header_background = Some(color(document, attr)?),
+        "HeaderStyle" => {
+            *group.header_style = match attr.value() {
+                "Normal" => GroupHeaderStyleDefinition::Normal,
+                "Light" => GroupHeaderStyleDefinition::Light,
+                "Accent" => GroupHeaderStyleDefinition::Accent,
                 _ => {
                     return Err(at_attribute(
                         document,
                         attr,
-                        "Appearance must be Card, Outline or Plain",
+                        "HeaderStyle must be Normal, Light or Accent",
+                    ));
+                }
+            };
+        }
+        "Appearance" => {
+            *group.appearance = match attr.value() {
+                "Card" => GroupBoxAppearanceDefinition::Card,
+                "Outline" => GroupBoxAppearanceDefinition::Outline,
+                "Plain" => GroupBoxAppearanceDefinition::Plain,
+                "Standard" => GroupBoxAppearanceDefinition::Standard,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attr,
+                        "Appearance must be Card, Outline, Plain or Standard",
                     ));
                 }
             };
@@ -668,6 +748,63 @@ pub(super) fn parse_children(
             }
         } else {
             match kind {
+                ElementKind::TabbedGroup(group) => {
+                    require_element(child, "GroupTab")?;
+                    *count += 1;
+                    if group.tabs.len() >= 64
+                        || *count > MAX_ELEMENTS
+                        || depth + 1 > MAX_ELEMENT_DEPTH
+                    {
+                        return Err(at_node(
+                            child,
+                            "TabbedGroup exceeds page count or content depth limit",
+                        ));
+                    }
+                    let tab_parent = *count;
+                    let mut tab = GroupTabDefinition::default();
+                    for attr in child.attributes() {
+                        if attr.namespace().is_some() {
+                            return Err(at_attribute(
+                                child.document(),
+                                attr,
+                                "GroupTab does not support directives",
+                            ));
+                        }
+                        reject_extension(child.document(), attr)?;
+                        match attr.name() {
+                            "Header" => tab.header = attr.value().into(),
+                            "HeaderIcon" => {
+                                tab.header_icon = Some(icon_symbol(child.document(), attr)?)
+                            }
+                            "IsEnabled" => tab.is_enabled = boolean(child.document(), attr)?,
+                            _ => {
+                                return Err(at_attribute(
+                                    child.document(),
+                                    attr,
+                                    "unsupported GroupTab property",
+                                ));
+                            }
+                        }
+                    }
+                    for content in child.children() {
+                        if !content.is_element() {
+                            require_empty_content(content)?;
+                            continue;
+                        }
+                        if tab.child.is_some() {
+                            return Err(at_node(content, "GroupTab accepts at most one child"));
+                        }
+                        tab.child = Some(Box::new(parse_element(
+                            content,
+                            depth + 2,
+                            tab_parent,
+                            count,
+                            names,
+                            groups,
+                        )?));
+                    }
+                    group.tabs.push(tab);
+                }
                 ElementKind::ListBox(selection) | ElementKind::ComboBox(selection) => {
                     *count += 1;
                     selection.items.push(item(child)?);
@@ -810,10 +947,19 @@ pub(super) fn validate(
     }
     match kind {
         ElementKind::GroupBox(group) => {
-            validate_group_box(group).map_err(|message| at_node(node, message))?
+            validate_group_box(group).map_err(|message| at_node(node, message))?;
+            if !group.is_collapsible && common.bindings.contains_key("IsExpanded") {
+                return Err(at_node(
+                    node,
+                    "GroupBox IsExpanded binding requires IsCollapsible=True",
+                ));
+            }
         }
         ElementKind::Expander(expander) => {
             validate_expander(expander).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::TabbedGroup(group) => {
+            validate_tabbed_group(group).map_err(|message| at_node(node, message))?
         }
         ElementKind::LookupEdit(lookup) => {
             if let (Some(display), Some(first)) = (

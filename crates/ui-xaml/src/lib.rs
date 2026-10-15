@@ -306,6 +306,11 @@ impl ElementDefinition {
             ElementKind::Border(p) => vec![&p.child],
             ElementKind::GroupBox(p) => p.child.as_deref().into_iter().collect(),
             ElementKind::Expander(p) => p.child.as_deref().into_iter().collect(),
+            ElementKind::TabbedGroup(p) => p
+                .tabs
+                .iter()
+                .filter_map(|tab| tab.child.as_deref())
+                .collect(),
             ElementKind::ScrollViewer(p) => vec![&p.child],
             ElementKind::DockWorkspace(p) => p
                 .panes()
@@ -341,6 +346,11 @@ impl ElementDefinition {
             ElementKind::Border(p) => vec![&mut p.child],
             ElementKind::GroupBox(p) => p.child.as_deref_mut().into_iter().collect(),
             ElementKind::Expander(p) => p.child.as_deref_mut().into_iter().collect(),
+            ElementKind::TabbedGroup(p) => p
+                .tabs
+                .iter_mut()
+                .filter_map(|tab| tab.child.as_deref_mut())
+                .collect(),
             ElementKind::ScrollViewer(p) => vec![&mut p.child],
             ElementKind::DockWorkspace(p) => {
                 let mut output = Vec::new();
@@ -361,6 +371,7 @@ pub enum ElementKind {
     Border(BorderDefinition),
     GroupBox(GroupBoxDefinition),
     Expander(ExpanderDefinition),
+    TabbedGroup(TabbedGroupDefinition),
     ScrollViewer(ScrollViewerDefinition),
     DockPanel(DockPanelDefinition),
     ListBox(SelectionDefinition),
@@ -889,11 +900,17 @@ fn parse_element(
             }
             let editable = matches!(
                 property,
-                "Text" | "Value" | "SelectedValue" | "SelectedValues" | "IsChecked" | "IsExpanded"
+                "Text"
+                    | "Value"
+                    | "SelectedValue"
+                    | "SelectedValues"
+                    | "IsChecked"
+                    | "IsExpanded"
+                    | "SelectedIndex"
             ) && !matches!(kind, ElementKind::TextBlock(_));
             let immediate = matches!(
                 property,
-                "SelectedValue" | "SelectedValues" | "IsChecked" | "IsExpanded"
+                "SelectedValue" | "SelectedValues" | "IsChecked" | "IsExpanded" | "SelectedIndex"
             );
             let trigger = if editable && !immediate {
                 UpdateSourceTrigger::LostFocus
@@ -1163,6 +1180,7 @@ fn parse_element(
             | ElementKind::Border(_)
             | ElementKind::GroupBox(_)
             | ElementKind::Expander(_)
+            | ElementKind::TabbedGroup(_)
             | ElementKind::ScrollViewer(_)
             | ElementKind::DockPanel(_)
             | ElementKind::ListBox(_)

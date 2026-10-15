@@ -8,6 +8,19 @@ pub enum GroupAppearance {
     Card,
     Outline,
     Plain,
+    /// The caption interrupts the top edge of an otherwise transparent frame.
+    Standard,
+}
+
+/// Presentation of the retained group header, independent of its outer frame.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GroupHeaderStyle {
+    #[default]
+    Normal,
+    /// A compact 36-pixel header with lighter typography.
+    Light,
+    /// A theme-relative highlighted header.
+    Accent,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -15,6 +28,15 @@ pub struct GroupSettings {
     /// Plain text; at most 4096 UTF-8 bytes. Long captions are clipped.
     pub header: String,
     pub appearance: GroupAppearance,
+    pub header_style: GroupHeaderStyle,
+    /// A decorative symbol from the built-in vector icon set.
+    pub header_icon: Option<IconSymbol>,
+    /// Only static groups may hide their header.
+    pub show_header: bool,
+    /// `None` follows the theme. Explicit values use logical pixels.
+    pub corner_radius: Option<f32>,
+    pub header_foreground: Option<Color>,
+    pub header_background: Option<Color>,
     /// Insets of the retained content host, independent of header spacing.
     pub padding: Edges,
 }
@@ -24,6 +46,12 @@ impl Default for GroupSettings {
         Self {
             header: String::new(),
             appearance: GroupAppearance::Card,
+            header_style: GroupHeaderStyle::Normal,
+            header_icon: None,
+            show_header: true,
+            corner_radius: None,
+            header_foreground: None,
+            header_background: None,
             padding: Edges::all(16.0),
         }
     }
@@ -35,6 +63,27 @@ impl GroupSettings {
             return Err(ControlError::Invalid(
                 "Group Header exceeds 4096 UTF-8 bytes".into(),
             ));
+        }
+        if self
+            .corner_radius
+            .is_some_and(|value| !value.is_finite() || !(0.0..=16_384.0).contains(&value))
+        {
+            return Err(ControlError::Invalid(
+                "Group CornerRadius must be finite and in 0..=16384".into(),
+            ));
+        }
+        for color in [self.header_foreground, self.header_background]
+            .into_iter()
+            .flatten()
+        {
+            if [color.r, color.g, color.b, color.a]
+                .into_iter()
+                .any(|value| !value.is_finite() || !(0.0..=1.0).contains(&value))
+            {
+                return Err(ControlError::Invalid(
+                    "Group header colors must have finite channels in 0..=1".into(),
+                ));
+            }
         }
         if [
             self.padding.left,
@@ -50,6 +99,14 @@ impl GroupSettings {
             ));
         }
         Ok(())
+    }
+
+    fn header_height(&self) -> f32 {
+        if self.header_style == GroupHeaderStyle::Light {
+            36.0
+        } else {
+            48.0
+        }
     }
 }
 
@@ -100,6 +157,17 @@ impl Controls {
         })
     }
 
+    /// A GroupBox with the same retained disclosure lifecycle as an Expander.
+    pub fn collapsible_group_box(
+        &mut self,
+        parent: WidgetId,
+        settings: GroupSettings,
+        is_expanded: bool,
+        style: LayoutStyle,
+    ) -> Result<GroupBox, ControlError> {
+        self.add_group(parent, settings, Some(is_expanded), style)
+    }
+
     fn add_group(
         &mut self,
         parent: WidgetId,
@@ -108,6 +176,11 @@ impl Controls {
         mut style: LayoutStyle,
     ) -> Result<GroupBox, ControlError> {
         settings.validate()?;
+        if expanded.is_some() && !settings.show_header {
+            return Err(ControlError::Invalid(
+                "A collapsible group must show its header".into(),
+            ));
+        }
         style.kind = LayoutKind::Flex(Axis::Vertical);
         style.padding = Edges::default();
         style.gap = 0.0;
@@ -116,7 +189,7 @@ impl Controls {
         self.controls.get_mut(&container).unwrap().label = settings.header.clone();
         self.set_surface(container, SurfaceKind::Transparent)?;
         let header_style = LayoutStyle {
-            height: Length::Px(48.0),
+            height: Length::Px(settings.header_height()),
             flex_shrink: 0.0,
             ..Default::default()
         };
@@ -125,6 +198,9 @@ impl Controls {
         } else {
             self.label(container, &settings.header, header_style)?
         };
+        if !settings.show_header {
+            self.edit_props(header, |props| props.collapsed = true)?;
+        }
         let content = self.panel(
             container,
             LayoutStyle {
@@ -198,10 +274,19 @@ impl Controls {
             .group_owner(id)
             .ok_or_else(|| ControlError::Invalid("Unknown group".into()))?;
         let group = &self.groups[&owner];
+        if group.expanded.is_some() && !settings.show_header {
+            return Err(ControlError::Invalid(
+                "A collapsible group must show its header".into(),
+            ));
+        }
         if group.settings == settings {
             return Ok(());
         }
         let parts = group.parts;
+        self.edit_props(parts.header, |props| {
+            props.style.height = Length::Px(settings.header_height());
+            props.collapsed = !settings.show_header;
+        })?;
         self.edit_props(parts.content, |props| {
             props.style.padding = settings.padding
         })?;
@@ -348,13 +433,57 @@ impl Controls {
             return Ok(false);
         };
         let group = &self.groups[&owner];
+        let settings = group.settings.clone();
+        let expanded = group.expanded;
+        let header_id = group.parts.header;
         let chrome = self.theme.chrome();
-        let radius = if self.theme.is_fluent() { 8.0 } else { 0.0 };
+        let radius =
+            settings
+                .corner_radius
+                .unwrap_or(if self.theme.is_fluent() { 8.0 } else { 0.0 });
         if id == owner {
-            if group.settings.appearance == GroupAppearance::Card {
+            if settings.appearance == GroupAppearance::Card {
                 editor_fill(&mut self.scene, bounds, clip, radius, chrome.card_surface);
             }
-            if group.settings.appearance != GroupAppearance::Plain {
+            if settings.appearance == GroupAppearance::Standard
+                && settings.show_header
+                && let Some(header) = self.runtime.bounds(header_id)
+            {
+                let (_, caption_end) =
+                    self.group_caption(&settings, header, clip, expanded, true)?;
+                let top = (header.y + header.height / 2.0).min(bounds.y + bounds.height);
+                let frame = Rect::new(bounds.x, top, bounds.width, bounds.y + bounds.height - top);
+                let gap_start = (header.x + 12.0).min(bounds.x + bounds.width);
+                let gap_end = caption_end.max(gap_start).min(bounds.x + bounds.width);
+                // Three disjoint clips leave an actual transparent caption gap.
+                // No assumed ancestor background is painted over the frame.
+                for region in [
+                    Rect::new(bounds.x, top, gap_start - bounds.x, frame.height),
+                    Rect::new(
+                        gap_end,
+                        top,
+                        bounds.x + bounds.width - gap_end,
+                        frame.height,
+                    ),
+                    Rect::new(
+                        gap_start,
+                        top + 1.0,
+                        gap_end - gap_start,
+                        (frame.height - 1.0).max(0.0),
+                    ),
+                ] {
+                    if let Some(region) = region.intersection(clip) {
+                        shape_border(
+                            &mut self.scene,
+                            frame,
+                            region,
+                            radius,
+                            1.0,
+                            chrome.surface_border,
+                        );
+                    }
+                }
+            } else if settings.appearance != GroupAppearance::Plain {
                 shape_border(
                     &mut self.scene,
                     bounds,
@@ -367,26 +496,56 @@ impl Controls {
             return Ok(true);
         }
         let enabled = self.is_enabled(id);
-        let expanded = group.expanded;
-        let appearance = group.settings.appearance;
-        let label = group
-            .settings
-            .header
-            .chars()
-            .map(|character| {
-                if single_line_separator(character) {
-                    ' '
-                } else {
-                    character
-                }
-            })
-            .collect::<String>();
         let tokens = self.theme.tokens();
         let color = if enabled {
-            tokens.text
+            settings.header_foreground.unwrap_or(tokens.text)
         } else {
             chrome.disabled_text
         };
+        let standard = settings.appearance == GroupAppearance::Standard;
+        let (run, caption_end) = self.group_caption(&settings, bounds, clip, expanded, enabled)?;
+        let header_surface = if standard {
+            Rect::new(
+                bounds.x + 12.0_f32.min(bounds.width),
+                bounds.y + (bounds.height - 28.0).max(0.0) / 2.0,
+                (caption_end - bounds.x - 12.0).max(0.0),
+                28.0_f32.min(bounds.height),
+            )
+        } else {
+            inset(bounds, 2.0)
+        };
+        if let Some(background) = settings.header_background.or_else(|| {
+            (settings.header_style == GroupHeaderStyle::Accent).then_some(tokens.selected)
+        }) {
+            editor_fill(
+                &mut self.scene,
+                header_surface,
+                clip,
+                if standard {
+                    4.0_f32.min(radius)
+                } else {
+                    (radius - 2.0).max(0.0)
+                },
+                background,
+            );
+        }
+        if settings.header_style == GroupHeaderStyle::Accent {
+            fill_clipped(
+                &mut self.scene,
+                Rect::new(
+                    header_surface.x,
+                    header_surface.y + 8.0,
+                    3.0_f32.min(header_surface.width),
+                    (header_surface.height - 16.0).max(0.0),
+                ),
+                clip,
+                if enabled {
+                    tokens.focus
+                } else {
+                    chrome.disabled_text
+                },
+            );
+        }
         if expanded.is_some() && enabled {
             let fill = if self.pressed == Some(id) {
                 Some(chrome.subtle_pressed)
@@ -398,7 +557,7 @@ impl Controls {
             if let Some(fill) = fill {
                 editor_fill(
                     &mut self.scene,
-                    inset(bounds, 2.0),
+                    header_surface,
                     clip,
                     (radius - 2.0).max(0.0),
                     fill,
@@ -407,7 +566,7 @@ impl Controls {
             if self.runtime.focused() == Some(id) {
                 shape_border(
                     &mut self.scene,
-                    inset(bounds, 3.0),
+                    inset(header_surface, 1.0),
                     clip,
                     4.0,
                     2.0,
@@ -415,7 +574,11 @@ impl Controls {
                 );
             }
         }
-        if appearance != GroupAppearance::Plain && expanded != Some(false) {
+        if matches!(
+            settings.appearance,
+            GroupAppearance::Card | GroupAppearance::Outline
+        ) && expanded != Some(false)
+        {
             fill_clipped(
                 &mut self.scene,
                 Rect::new(
@@ -428,22 +591,104 @@ impl Controls {
                 chrome.divider,
             );
         }
-        let end_inset = if expanded.is_some() { 46.0 } else { 16.0 };
+        self.scene.text(run);
+        let glyph_clip = bounds
+            .intersection(clip)
+            .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+        if let Some(icon) = settings.header_icon {
+            let start = 16.0
+                + if standard && expanded.is_some() {
+                    24.0
+                } else {
+                    0.0
+                };
+            crate::primitives::paint_icon(
+                &mut self.scene,
+                icon,
+                Rect::new(
+                    bounds.x + start,
+                    bounds.y + (bounds.height - 16.0) / 2.0,
+                    16.0,
+                    16.0,
+                ),
+                glyph_clip,
+                color,
+            );
+        }
+        if let Some(expanded) = expanded {
+            let symbol = if expanded {
+                IconSymbol::ChevronDown
+            } else {
+                IconSymbol::ChevronRight
+            };
+            let arrow = Rect::new(
+                bounds.x
+                    + if standard {
+                        16.0
+                    } else {
+                        (bounds.width - 32.0).max(0.0)
+                    },
+                bounds.y + (bounds.height - 16.0) / 2.0,
+                16.0,
+                16.0,
+            );
+            crate::primitives::paint_icon(&mut self.scene, symbol, arrow, glyph_clip, color);
+        }
+        Ok(true)
+    }
+
+    fn group_caption(
+        &mut self,
+        settings: &GroupSettings,
+        bounds: Rect,
+        clip: Rect,
+        expanded: Option<bool>,
+        enabled: bool,
+    ) -> Result<(TextRun, f32), ControlError> {
+        let standard = settings.appearance == GroupAppearance::Standard;
+        let leading =
+            16.0 + if settings.header_icon.is_some() {
+                24.0
+            } else {
+                0.0
+            } + if standard && expanded.is_some() {
+                24.0
+            } else {
+                0.0
+            };
+        let trailing = if expanded.is_some() && !standard {
+            46.0
+        } else {
+            16.0
+        };
         let text_bounds = Rect::new(
-            bounds.x + 16.0,
+            bounds.x + leading,
             bounds.y,
-            (bounds.width - 16.0 - end_inset).max(0.0),
+            (bounds.width - leading - trailing).max(0.0),
             bounds.height,
         );
+        let tokens = self.theme.tokens();
         let mut run = TextRun {
             bounds: text_bounds,
             clip: text_bounds
                 .intersection(clip)
                 .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
-            text: label,
+            text: settings
+                .header
+                .chars()
+                .map(|c| if single_line_separator(c) { ' ' } else { c })
+                .collect(),
             font_size: tokens.font_size,
-            color,
-            weight: 600,
+            color: if enabled {
+                settings.header_foreground.unwrap_or(tokens.text)
+            } else {
+                self.theme.chrome().disabled_text
+            },
+            weight: if settings.header_style == GroupHeaderStyle::Light {
+                500
+            } else {
+                600
+            },
             align: TextAlign::Start,
             wrap: false,
         };
@@ -452,22 +697,9 @@ impl Controls {
             .prepare(&run, 1.0)
             .map_err(|error| ControlError::Text(error.to_string()))?;
         run.bounds.y += ((bounds.height - prepared.height) / 2.0).max(0.0);
-        self.scene.text(run);
-        if let Some(expanded) = expanded {
-            let symbol = if expanded {
-                IconSymbol::ChevronDown
-            } else {
-                IconSymbol::ChevronRight
-            };
-            let arrow = Rect::new(
-                bounds.x + (bounds.width - 32.0).max(0.0),
-                bounds.y + (bounds.height - 16.0) / 2.0,
-                16.0,
-                16.0,
-            );
-            crate::primitives::paint_icon(&mut self.scene, symbol, arrow, clip, color);
-        }
-        Ok(true)
+        let caption_end = (text_bounds.x + prepared.width.min(text_bounds.width) + 8.0)
+            .min(bounds.x + (bounds.width - 12.0).max(0.0));
+        Ok((run, caption_end))
     }
 }
 

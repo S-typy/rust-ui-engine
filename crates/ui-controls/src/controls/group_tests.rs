@@ -474,6 +474,7 @@ fn appearances_follow_themes_and_narrow_headers_remain_clipped() {
         GroupAppearance::Card,
         GroupAppearance::Outline,
         GroupAppearance::Plain,
+        GroupAppearance::Standard,
     ] {
         let mut ui = ui();
         let group = ui
@@ -501,8 +502,14 @@ fn appearances_follow_themes_and_narrow_headers_remain_clipped() {
             .unwrap();
         assert!(run.is_valid());
         assert!(!run.wrap);
+        let reserved = if appearance == GroupAppearance::Standard {
+            16.0
+        } else {
+            32.0
+        };
         assert!(
-            run.clip.x >= header.x && run.clip.x + run.clip.width <= header.x + header.width - 32.0
+            run.clip.x >= header.x
+                && run.clip.x + run.clip.width <= header.x + header.width - reserved
         );
         let container = ui.runtime.bounds(group.container).unwrap();
         let filled = ui
@@ -516,5 +523,311 @@ fn appearances_follow_themes_and_narrow_headers_remain_clipped() {
         assert_ne!(ui.scene(), &light);
         assert_eq!(ui.runtime.bounds(group.container), Some(container));
         assert_eq!(frame(&mut ui), FrameStats::default());
+    }
+}
+
+#[test]
+fn hidden_static_header_reclaims_space_and_preserves_its_accessible_group_name() {
+    let mut ui = ui();
+    let group = ui
+        .group_box(
+            ui.root(),
+            GroupSettings {
+                show_header: false,
+                ..settings("Accessible group")
+            },
+            LayoutStyle {
+                height: Length::Px(200.0),
+                ..style()
+            },
+        )
+        .unwrap();
+    let editor = ui
+        .edit_box(group.content, "Name", "retained", LayoutStyle::default())
+        .unwrap();
+    frame(&mut ui);
+    let children = ui.runtime.tree().preorder();
+    let container = ui.runtime.bounds(group.container).unwrap();
+    assert_eq!(ui.runtime.bounds(group.header), None);
+    assert_eq!(ui.runtime.bounds(group.content), Some(container));
+    assert_eq!(
+        ui.semantics()
+            .iter()
+            .find(|n| n.id == group.container)
+            .unwrap()
+            .label,
+        "Accessible group"
+    );
+    assert!(!ui.semantics().iter().any(|n| n.id == group.header));
+    ui.set_group_settings(group.container, settings("Visible group"))
+        .unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.runtime.bounds(group.header).unwrap().height, 48.0);
+    assert_eq!(ui.runtime.bounds(group.content).unwrap().height, 152.0);
+    assert_eq!(ui.runtime.tree().preorder(), children);
+    assert_eq!(ui.document(editor).unwrap().text(), "retained");
+}
+
+#[test]
+fn compact_header_changes_geometry_without_remounting_or_changing_expansion() {
+    let mut ui = ui();
+    let group = ui
+        .collapsible_group_box(
+            ui.root(),
+            GroupSettings {
+                header_style: GroupHeaderStyle::Light,
+                ..settings("Compact")
+            },
+            false,
+            style(),
+        )
+        .unwrap();
+    let editor = ui
+        .edit_box(group.content, "Value", "draft", LayoutStyle::default())
+        .unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.runtime.bounds(group.container).unwrap().height, 36.0);
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .find(|t| t.text == "Compact")
+            .unwrap()
+            .weight,
+        500
+    );
+    ui.perform_action(group.header, SemanticAction::Expand, None)
+        .unwrap();
+    frame(&mut ui);
+    assert!(ui.runtime.bounds(editor).is_some());
+    let nodes = ui.runtime.tree().preorder();
+    ui.set_group_settings(group.container, settings("Normal"))
+        .unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.runtime.bounds(group.header).unwrap().height, 48.0);
+    assert_eq!(ui.runtime.tree().preorder(), nodes);
+    assert_eq!(ui.expander_expanded(group.container), Some(true));
+    assert_eq!(ui.document(editor).unwrap().text(), "draft");
+}
+
+#[test]
+fn standard_frame_leaves_a_real_transparent_caption_gap() {
+    let mut ui = ui();
+    let group = ui
+        .group_box(
+            ui.root(),
+            GroupSettings {
+                appearance: GroupAppearance::Standard,
+                header_icon: Some(IconSymbol::FolderOpen),
+                ..settings("Document")
+            },
+            LayoutStyle {
+                height: Length::Px(180.0),
+                ..style()
+            },
+        )
+        .unwrap();
+    frame(&mut ui);
+    let container = ui.runtime.bounds(group.container).unwrap();
+    let header = ui.runtime.bounds(group.header).unwrap();
+    let line_y = header.y + header.height / 2.0 + 0.5;
+    let gap_x = header.x + 52.0;
+    let borders: Vec<_> = ui
+        .scene()
+        .rounded_rectangles
+        .iter()
+        .filter(|r| r.stroke_width == Some(1.0))
+        .collect();
+    assert_eq!(borders.len(), 3);
+    assert!(
+        borders
+            .iter()
+            .all(|r| r.bounds.y == header.y + header.height / 2.0)
+    );
+    assert!(!borders.iter().any(|r| r.clip.contains(gap_x, line_y)));
+    assert!(borders.iter().any(|r| {
+        r.clip
+            .contains(container.x + container.width - 10.0, line_y)
+    }));
+    assert!(
+        borders
+            .iter()
+            .any(|r| r.clip.contains(gap_x, container.y + container.height - 0.5))
+    );
+    assert!(
+        !ui.scene()
+            .rounded_rectangles
+            .iter()
+            .any(|r| r.stroke_width.is_none() && r.bounds.intersection(header).is_some())
+    );
+    let caption = ui
+        .scene()
+        .texts
+        .iter()
+        .find(|t| t.text == "Document")
+        .unwrap();
+    assert_eq!(caption.bounds.x, header.x + 40.0);
+    assert!(!ui.scene().stroke_paths.is_empty());
+}
+
+#[test]
+fn header_overrides_preserve_alpha_and_radius_across_theme_changes_but_disabled_text_wins() {
+    let mut ui = ui();
+    let foreground = Color::rgb(92, 35, 144);
+    let background = Color {
+        a: 0.35,
+        ..Color::rgb(115, 210, 150)
+    };
+    let group = ui
+        .group_box(
+            ui.root(),
+            GroupSettings {
+                header_style: GroupHeaderStyle::Accent,
+                corner_radius: Some(13.0),
+                header_foreground: Some(foreground),
+                header_background: Some(background),
+                ..settings("Custom")
+            },
+            LayoutStyle {
+                height: Length::Px(180.0),
+                ..style()
+            },
+        )
+        .unwrap();
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        frame(&mut ui);
+        assert_eq!(
+            ui.scene()
+                .texts
+                .iter()
+                .find(|t| t.text == "Custom")
+                .unwrap()
+                .color,
+            foreground
+        );
+        assert!(
+            ui.scene()
+                .rounded_rectangles
+                .iter()
+                .any(|r| r.color == background)
+        );
+        let bounds = ui.runtime.bounds(group.container).unwrap();
+        assert!(
+            ui.scene()
+                .rounded_rectangles
+                .iter()
+                .any(|r| r.bounds == bounds && r.radius == 13.0)
+        );
+    }
+    ui.set_enabled(group.container, false).unwrap();
+    frame(&mut ui);
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .find(|t| t.text == "Custom")
+            .unwrap()
+            .color,
+        Theme::FluentDark.chrome().disabled_text
+    );
+}
+
+#[test]
+fn invalid_header_settings_and_hidden_disclosure_are_rejected_before_mutation() {
+    let mut ui = ui();
+    let group = ui
+        .collapsible_group_box(ui.root(), settings("Retain"), true, style())
+        .unwrap();
+    frame(&mut ui);
+    let nodes = ui.runtime.tree().preorder();
+    let scene = ui.scene().clone();
+    for value in [f32::NAN, f32::INFINITY, -1.0, 16_385.0] {
+        let invalid = GroupSettings {
+            corner_radius: Some(value),
+            ..settings("Bad")
+        };
+        assert!(
+            ui.set_group_settings(group.container, invalid.clone())
+                .is_err()
+        );
+        assert!(ui.group_box(ui.root(), invalid, style()).is_err());
+    }
+    for value in [f32::NAN, f32::INFINITY, -0.1, 1.1] {
+        for background in [false, true] {
+            let mut invalid = settings("Bad");
+            let color = Color {
+                a: value,
+                ..Color::rgb(50, 50, 50)
+            };
+            if background {
+                invalid.header_background = Some(color);
+            } else {
+                invalid.header_foreground = Some(color);
+            }
+            assert!(
+                ui.set_group_settings(group.container, invalid.clone())
+                    .is_err()
+            );
+            assert!(ui.group_box(ui.root(), invalid, style()).is_err());
+        }
+    }
+    let hidden = GroupSettings {
+        show_header: false,
+        ..settings("Hidden")
+    };
+    assert!(
+        ui.set_group_settings(group.container, hidden.clone())
+            .is_err()
+    );
+    assert!(
+        ui.expander(ui.root(), hidden.clone(), true, style())
+            .is_err()
+    );
+    assert!(
+        ui.collapsible_group_box(ui.root(), hidden, false, style())
+            .is_err()
+    );
+    assert_eq!(ui.runtime.tree().preorder(), nodes);
+    assert_eq!(ui.scene(), &scene);
+    assert_eq!(ui.group_header(group.container), Some("Retain"));
+    assert_eq!(frame(&mut ui), FrameStats::default());
+}
+
+#[test]
+fn collapsible_group_box_retains_editor_draft_and_supports_header_and_container_aliases() {
+    let mut ui = ui();
+    let group = ui
+        .collapsible_group_box(
+            ui.root(),
+            GroupSettings {
+                appearance: GroupAppearance::Standard,
+                header_icon: Some(IconSymbol::Edit),
+                ..settings("Document")
+            },
+            true,
+            style(),
+        )
+        .unwrap();
+    let editor = ui
+        .edit_box(group.content, "Name", "accepted", LayoutStyle::default())
+        .unwrap();
+    frame(&mut ui);
+    ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+    ui.text_input(" draft").unwrap();
+    let draft = ui.document(editor).unwrap().text().to_owned();
+    ui.set_expander_expanded(group.header, false).unwrap();
+    assert_eq!(ui.runtime.focused(), Some(group.header));
+    assert_eq!(ui.accepted_value(editor), Some("accepted"));
+    frame(&mut ui);
+    click(&mut ui, group.header);
+    assert_eq!(ui.expander_expanded(group.container), Some(true));
+    assert_eq!(ui.drain_activated(), [group.header]);
+    frame(&mut ui);
+    assert_eq!(ui.document(editor).unwrap().text(), draft);
+    for id in [group.container, group.header] {
+        let node = ui.semantics().into_iter().find(|n| n.id == id).unwrap();
+        assert_eq!(node.expanded, Some(true));
+        assert!(node.actions.contains(&SemanticAction::Collapse));
     }
 }

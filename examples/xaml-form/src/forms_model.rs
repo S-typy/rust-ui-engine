@@ -42,6 +42,7 @@ pub(crate) fn model() -> Result<Rc<RefCell<BindingContext>>, String> {
                 ("Note", "Заметка к документу".into()),
                 ("GroupHeader", "Основные сведения".into()),
                 ("DetailsExpanded", true.into()),
+                ("GroupTab", 0.0.into()),
             ]),
         ),
         ("Status", "Данные загружены".into()),

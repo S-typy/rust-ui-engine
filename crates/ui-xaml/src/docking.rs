@@ -116,8 +116,18 @@ fn validate_entries(
         match entry {
             Entry::Element(element) => {
                 match &element.kind {
-                    ElementKind::GroupBox(group) => crate::validate_group_box(group)?,
+                    ElementKind::GroupBox(group) => {
+                        crate::validate_group_box(group)?;
+                        if !group.is_collapsible
+                            && element.common.bindings.contains_key("IsExpanded")
+                        {
+                            return Err(
+                                "GroupBox IsExpanded binding requires IsCollapsible=True".into()
+                            );
+                        }
+                    }
                     ElementKind::Expander(expander) => crate::validate_expander(expander)?,
+                    ElementKind::TabbedGroup(group) => crate::validate_tabbed_group(group)?,
                     _ => {}
                 }
                 if let Some(name) = &element.common.name
@@ -126,6 +136,15 @@ fn validate_entries(
                     return Err(format!("Duplicate XAML name '{name}' in this Window"));
                 }
                 match &element.kind {
+                    ElementKind::TabbedGroup(group) => {
+                        check_pending(group.tabs.len(), count)?;
+                        for tab in &group.tabs {
+                            pending.push((Entry::Count, depth + 1, in_pane));
+                            if let Some(child) = &tab.child {
+                                pending.push((Entry::Element(child), depth + 2, in_pane));
+                            }
+                        }
+                    }
                     ElementKind::DockWorkspace(workspace) => {
                         if in_pane {
                             return Err("DockPane content cannot contain a DockWorkspace".into());

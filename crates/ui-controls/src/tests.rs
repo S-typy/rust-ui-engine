@@ -270,7 +270,7 @@ fn tab_pages_hide_and_remove_their_focus_candidates() {
     focus(&mut ui, first);
     ui.select_tab(tabs.container, 1).unwrap();
     frame(&mut ui);
-    assert_eq!(ui.runtime.focused(), None);
+    assert_eq!(ui.runtime.focused(), Some(tabs.tabs[1]));
     assert!(ui.runtime.bounds(first).is_none());
     assert!(ui.runtime.bounds(second).is_some());
     focus(&mut ui, tabs.tabs[1]);

@@ -94,7 +94,9 @@ fn start() -> Result<(), String> {
                 println!(
                     "--editors opens EditorsWindow.xaml with selection, typed values and data bindings."
                 );
-                println!("--groups opens GroupsWindow.xaml with GroupBox and Expander containers.");
+                println!(
+                    "--groups opens GroupsWindow.xaml with GroupBox, Expander and TabbedGroup containers."
+                );
                 println!(
                     "--diagnostics logs input, values and validation for automated input tests."
                 );

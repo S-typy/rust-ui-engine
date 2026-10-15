@@ -1,5 +1,21 @@
 # Runtime matrix и протокол проверки alpha
 
+## Варианты групп и вкладки — Windows, 2026-10-15
+
+Расширенные GroupBox/Expander и TabbedGroup проверены локально: 845 workspace
+tests и 2 doctests PASS; fmt, clippy all-targets, release, rustdoc с запретом
+warnings, licenses/inventory PASS. Добавлено 38 регрессий; два hardware unit
+tests остаются ignored. Совместимость прежней геометрии TabControl проверена
+отдельной регрессией и всеми 18 неизменёнными тестами controls-gallery.
+
+NVIDIA GeForce RTX 3090, scale=1.5: DX12/Vulkan × Light/Dark, четыре capture
+и четыре smoke PASS. Capture: 1040 glyphs, missing=0, client 1800×1320.
+Снимки обеих тем просмотрены. Дополнительные DX12 smoke для controls-gallery
+(100000 строк), основной формы и формы редакторов PASS, resize/redraw пройдены.
+Оконные проверки не генерировали мышь/клавиатуру или действия фокуса.
+Native input, IME, screen reader, mixed-DPI и Linux/macOS остаются отдельными
+проверками. Контракт — [группы и вкладки](groups.md).
+
 ## Группы форм — Windows, 2026-10-15
 
 `GroupBox`, `Expander` и пример `xaml-form --groups` проверены локально:

@@ -93,12 +93,14 @@ impl MountedView {
             view.mount_element(ui, parent, element, Axis::Vertical, available_width, "")?;
         if element.common.height.is_none()
             && !element.common.bindings.contains_key("Height")
+            && !matches!(&element.kind, ElementKind::GroupBox(group) if group.is_collapsible)
             && element.common.vertical_alignment == rust_desktop_ui_xaml::Alignment::Stretch
             && matches!(
                 element.kind,
                 ElementKind::Grid(_)
                     | ElementKind::Border(_)
                     | ElementKind::GroupBox(_)
+                    | ElementKind::TabbedGroup(_)
                     | ElementKind::ScrollViewer(_)
                     | ElementKind::DockPanel(_)
             )
@@ -149,6 +151,7 @@ impl MountedView {
                 | ElementKind::Border(_)
                 | ElementKind::GroupBox(_)
                 | ElementKind::Expander(_)
+                | ElementKind::TabbedGroup(_)
                 | ElementKind::ScrollViewer(_)
                 | ElementKind::WrapPanel(_)
                 | ElementKind::DockPanel(_)
@@ -211,6 +214,7 @@ impl MountedView {
             | ElementKind::Border(_)
             | ElementKind::GroupBox(_)
             | ElementKind::Expander(_)
+            | ElementKind::TabbedGroup(_)
             | ElementKind::ScrollViewer(_)
             | ElementKind::WrapPanel(_)
             | ElementKind::DockPanel(_) => {
@@ -517,6 +521,7 @@ impl MountedView {
                 | ElementKind::DateEdit(_)
                 | ElementKind::TimeEdit(_) => Role::Group,
                 ElementKind::GroupBox(_) | ElementKind::Expander(_) => Role::Group,
+                ElementKind::TabbedGroup(_) => Role::Group,
                 ElementKind::DockWorkspace(_) => Role::Panel,
                 ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) => Role::TextBox,
@@ -540,7 +545,7 @@ impl MountedView {
             self.automation_names.insert(id, name.clone());
             if matches!(
                 element.kind,
-                ElementKind::GroupBox(_) | ElementKind::Expander(_)
+                ElementKind::GroupBox(_) | ElementKind::Expander(_) | ElementKind::TabbedGroup(_)
             ) {
                 // The retained header is an internal part and inherits the
                 // group's accessible name independently of the XAML name map.
@@ -589,18 +594,42 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         | ElementKind::TimeEdit(_) => Ok(240.0),
         ElementKind::GroupBox(group) => group_desired_width(
             ui,
-            &group.header,
-            group.padding,
+            &forms::group_settings(group),
             group.child.as_deref(),
-            false,
+            group.is_collapsible,
         ),
         ElementKind::Expander(group) => group_desired_width(
             ui,
-            &group.header,
-            group.padding,
+            &forms::expander_settings(group),
             group.child.as_deref(),
             true,
         ),
+        ElementKind::TabbedGroup(group) => {
+            let mut content_width = 0.0_f32;
+            let mut header_width = 0.0_f32;
+            for tab in &group.tabs {
+                if let Some(child) = tab.child.as_deref() {
+                    content_width = content_width.max(
+                        desired_width(ui, child)? + child.common.margin[0] + child.common.margin[2],
+                    );
+                }
+                header_width += ui
+                    .measure_styled_text(
+                        &single_line_caption(&tab.header),
+                        16384.0,
+                        TextStyle {
+                            wrap: false,
+                            font_weight: Some(600),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(err)?
+                    .width
+                    + 32.0
+                    + if tab.header_icon.is_some() { 24.0 } else { 0.0 };
+            }
+            Ok(header_width.max(content_width + group.padding[0] + group.padding[2]))
+        }
         ElementKind::Grid(_)
         | ElementKind::Border(_)
         | ElementKind::ScrollViewer(_)
@@ -668,26 +697,52 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
     }
 }
 
+fn single_line_caption(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| {
+            if matches!(c, '\r' | '\n' | '\t' | '\u{85}' | '\u{2028}' | '\u{2029}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
 fn group_desired_width(
     ui: &mut Controls,
-    header: &str,
-    padding: [f32; 4],
+    settings: &rust_desktop_ui_controls::GroupSettings,
     child: Option<&ElementDefinition>,
     expander: bool,
 ) -> Result<f32, String> {
-    let header_width = ui
-        .measure_styled_text(
-            header,
+    let header_width = if settings.show_header {
+        ui.measure_styled_text(
+            &single_line_caption(&settings.header),
             16384.0,
             TextStyle {
-                font_weight: Some(600),
+                font_weight: Some(
+                    if settings.header_style == rust_desktop_ui_controls::GroupHeaderStyle::Light {
+                        500
+                    } else {
+                        600
+                    },
+                ),
                 wrap: false,
                 ..Default::default()
             },
         )
         .map_err(err)?
         .width
-        + if expander { 64.0 } else { 32.0 };
+            + if expander { 64.0 } else { 32.0 }
+            + if settings.header_icon.is_some() {
+                24.0
+            } else {
+                0.0
+            }
+    } else {
+        0.0
+    };
     let child_width = child
         .map(|child| {
             desired_width(ui, child)
@@ -695,7 +750,7 @@ fn group_desired_width(
         })
         .transpose()?
         .unwrap_or(0.0);
-    Ok(header_width.max(child_width + padding[0] + padding[2]))
+    Ok(header_width.max(child_width + settings.padding.left + settings.padding.right))
 }
 
 // Match the width assigned by mount_element. Auto stretches vertically, while
@@ -762,6 +817,22 @@ fn validate_ribbon_width(
                     )
                 }));
             }
+            ElementKind::TabbedGroup(group) => {
+                let width = resolved_width(ui, element, parent_axis, available_width)?;
+                pending.extend(
+                    group
+                        .tabs
+                        .iter()
+                        .filter_map(|tab| tab.child.as_deref())
+                        .map(|child| {
+                            (
+                                child,
+                                Axis::Vertical,
+                                (width - group.padding[0] - group.padding[2]).max(0.0),
+                            )
+                        }),
+                );
+            }
             _ => pending.extend(
                 element
                     .children()
@@ -800,8 +871,22 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         match &element.kind {
-            ElementKind::GroupBox(group) => rust_desktop_ui_xaml::validate_group_box(group)?,
+            ElementKind::GroupBox(group) => {
+                rust_desktop_ui_xaml::validate_group_box(group)?;
+                if !group.is_collapsible && element.common.bindings.contains_key("IsExpanded") {
+                    return Err("GroupBox IsExpanded binding requires IsCollapsible=True".into());
+                }
+            }
             ElementKind::Expander(group) => rust_desktop_ui_xaml::validate_expander(group)?,
+            ElementKind::TabbedGroup(group) => {
+                rust_desktop_ui_xaml::validate_tabbed_group(group)?;
+                count += group.tabs.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || depth + 1 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH
+                {
+                    return Err("XAML tabbed group exceeds the element count or depth limit".into());
+                }
+            }
             ElementKind::DockWorkspace(_) => {
                 return Err("DockWorkspace requires the docking window coordinator".into());
             }
@@ -920,12 +1005,21 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             }
             _ => {}
         }
-        pending.extend(
-            element
-                .children()
-                .into_iter()
-                .map(|child| (child, depth + 1, count)),
-        );
+        if let ElementKind::TabbedGroup(group) = &element.kind {
+            let first_tab = count - group.tabs.len() + 1;
+            pending.extend(group.tabs.iter().enumerate().filter_map(|(index, tab)| {
+                tab.child
+                    .as_deref()
+                    .map(|child| (child, depth + 2, first_tab + index))
+            }));
+        } else {
+            pending.extend(
+                element
+                    .children()
+                    .into_iter()
+                    .map(|child| (child, depth + 1, count)),
+            );
+        }
     }
     Ok(())
 }

@@ -26,6 +26,7 @@ fn property(name: &str) -> Result<BindingProperty, String> {
         "Text" | "Content" => BindingProperty::Text,
         "Header" => BindingProperty::Header,
         "IsExpanded" => BindingProperty::IsExpanded,
+        "SelectedIndex" => BindingProperty::SelectedIndex,
         "Value" => BindingProperty::Value,
         "SelectedValue" => BindingProperty::SelectedValue,
         "SelectedValues" => BindingProperty::SelectedValues,
@@ -69,6 +70,13 @@ fn fallback(
             }
         },
         BindingProperty::Width | BindingProperty::Height if value == "Auto" => DataValue::Null,
+        BindingProperty::SelectedIndex => {
+            let index: f64 = value.parse().map_err(err)?;
+            if !index.is_finite() || index.fract() != 0.0 || !(0.0..=63.0).contains(&index) {
+                return Err("SelectedIndex FallbackValue must be an integer in 0..=63".into());
+            }
+            DataValue::Number(index)
+        }
         BindingProperty::Width | BindingProperty::Height => {
             DataValue::Number(value.parse().map_err(err)?)
         }
