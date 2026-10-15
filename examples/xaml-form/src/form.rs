@@ -21,6 +21,7 @@ pub(crate) struct Form {
     pub(crate) view: MountedView,
     pub(crate) accessible: Accessibility,
     title: String,
+    chrome: crate::form_chrome::FormChrome,
     status_text: String,
     last_notice: &'static str,
     checked: HashMap<WidgetId, bool>,
@@ -33,6 +34,7 @@ pub(crate) struct Form {
 
 impl Form {
     pub(crate) fn new(definition: WindowDefinition, diagnostics: bool) -> Result<Self, String> {
+        rust_desktop_ui_xaml::validate_window_chrome(&definition)?;
         let theme = match definition.theme {
             rust_desktop_ui_xaml::Theme::Light => Theme::FluentLight,
             rust_desktop_ui_xaml::Theme::Dark => Theme::FluentDark,
@@ -127,6 +129,7 @@ impl Form {
             view,
             accessible: Accessibility::default(),
             title: definition.title,
+            chrome: crate::form_chrome::FormChrome::new(definition.title_bar),
             status_text: String::new(),
             last_notice: "Изменений нет.",
             checked,
@@ -324,6 +327,8 @@ impl DesktopApp for Form {
         self.ui.update(viewport).map_err(err)?;
         self.application_events()?;
         if let Some(mounted) = &mut self.view.ribbon {
+            self.chrome
+                .configure(&mut mounted.ribbon, &self.title, viewport)?;
             mounted.update(&mut self.ui)?;
             self.ui.update(viewport).map_err(err)?;
         }
@@ -352,6 +357,12 @@ impl DesktopApp for Form {
     }
     fn title(&self) -> String {
         self.title.clone()
+    }
+    fn title_bar(&self) -> Option<rust_desktop_ui_platform_winit::TitleBar> {
+        self.chrome.title_bar(&self.ui, self.view.ribbon.as_ref())
+    }
+    fn window_chrome_changed(&mut self, chrome: rust_desktop_ui_platform_winit::WindowChrome) {
+        self.chrome.set_native(chrome, self.diagnostics);
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
         if self.diagnostics

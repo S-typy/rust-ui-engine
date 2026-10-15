@@ -1,6 +1,7 @@
 //! A native form whose structure and initial properties are compiled from XAML.
 mod accessibility;
 mod form;
+mod form_chrome;
 mod popup_diagnostics;
 #[cfg(test)]
 mod ribbon_tests;
@@ -36,6 +37,7 @@ fn start() -> Result<(), String> {
     let mut smoke_test = false;
     let mut diagnostics = false;
     let mut ribbon_minimized = false;
+    let mut native_title_bar = false;
     for argument in std::env::args().skip(1) {
         match argument.as_str() {
             "--dark" => theme = Some(Theme::Dark),
@@ -44,9 +46,10 @@ fn start() -> Result<(), String> {
             "--smoke-test" => smoke_test = true,
             "--diagnostics" => diagnostics = true,
             "--ribbon-minimized" => ribbon_minimized = true,
+            "--native-title-bar" => native_title_bar = true,
             "--help" | "-h" => {
                 println!(
-                    "xaml-form [--controls] [--ribbon-minimized] [--light | --dark] [--smoke-test] [--diagnostics]"
+                    "xaml-form [--controls] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
                 );
                 println!(
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
@@ -67,6 +70,9 @@ fn start() -> Result<(), String> {
     if let Some(theme) = theme {
         definition.theme = theme;
     }
+    if native_title_bar {
+        definition.title_bar = rust_desktop_ui_xaml::TitleBar::Native;
+    }
     if ribbon_minimized {
         fn minimize(element: &mut rust_desktop_ui_xaml::ElementDefinition) {
             use rust_desktop_ui_xaml::ElementKind;
@@ -85,7 +91,8 @@ fn start() -> Result<(), String> {
     let options = RunOptions {
         width: definition.width,
         height: definition.height,
-        min_size: None,
+        min_size: (definition.title_bar == rust_desktop_ui_xaml::TitleBar::Ribbon)
+            .then_some(rust_desktop_ui_core::Size::new(240.0, 240.0)),
         show_render_stats: diagnostics,
         smoke_test,
     };

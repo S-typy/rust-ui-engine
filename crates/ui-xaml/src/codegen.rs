@@ -13,6 +13,7 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         height: {height:?},
         padding: {padding:?},
         theme: rust_desktop_ui_xaml::Theme::{theme:?},
+        title_bar: rust_desktop_ui_xaml::TitleBar::{title_bar:?},
         content: {content},
     }}
 }}
@@ -22,6 +23,7 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         height = window.height,
         padding = window.padding,
         theme = window.theme,
+        title_bar = window.title_bar,
         content = element(&window.content),
     )
 }

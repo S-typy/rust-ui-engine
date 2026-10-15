@@ -1,5 +1,21 @@
 use super::*;
 
+#[test]
+fn ribbon_title_limit_is_checked_before_native_window_creation() {
+    let source = |title: &str| {
+        format!(
+            r#"<Window xmlns="urn:rust-ui-engine:ui" TitleBar="Ribbon" Padding="0" Title="{title}"><Ribbon><RibbonTab Id="Home" Header="Home" KeyTip="H"><RibbonGroup Id="G" Header="G"><Button Command="Save" KeyTip="S" /></RibbonGroup></RibbonTab></Ribbon></Window>"#
+        )
+    };
+    assert!(parse(&source(&"я".repeat(2048))).is_ok());
+    assert!(
+        parse(&source(&"я".repeat(2049)))
+            .unwrap_err()
+            .to_string()
+            .contains("4096")
+    );
+}
+
 fn form(content: &str) -> String {
     format!("<Window xmlns='{UI_NAMESPACE}' xmlns:x='{XAML_NAMESPACE}'>{content}</Window>")
 }
@@ -15,6 +31,174 @@ fn definition(content: &str) -> RibbonDefinition {
         panic!("Ribbon");
     };
     ribbon
+}
+
+fn chrome_form(window_attributes: &str, content: &str) -> String {
+    format!("<Window xmlns='{UI_NAMESPACE}' {window_attributes}>{content}</Window>")
+}
+
+#[test]
+fn native_title_bar_is_compatible_with_existing_content_placement() {
+    for attributes in ["", "TitleBar='Native'"] {
+        let source = chrome_form(
+            attributes,
+            "<StackPanel Orientation='Horizontal' Padding='12' Margin='6' Width='400' Height='300'><TextBox/></StackPanel>",
+        );
+        let window = parse(&source).unwrap();
+        assert_eq!(window.title_bar, TitleBar::Native);
+        assert_eq!(window.padding, [32.0; 4]);
+        validate_window_chrome(&window).unwrap();
+        assert!(
+            compile(&source)
+                .unwrap()
+                .contains("title_bar: rust_desktop_ui_xaml::TitleBar::Native,")
+        );
+    }
+}
+
+#[test]
+fn ribbon_title_bar_accepts_flush_direct_and_first_child_placement() {
+    let ribbon = ribbon("<Button Command='Save' KeyTip='S'/>");
+    for content in [
+        ribbon.clone(),
+        format!(
+            "<StackPanel Spacing='12' Surface='Card'>{ribbon}<TextBox Margin='16' Width='320' Height='40'/></StackPanel>"
+        ),
+    ] {
+        let source = chrome_form("TitleBar='Ribbon' Padding='0'", &content);
+        let window = parse(&source).unwrap();
+        assert_eq!(window.title_bar, TitleBar::Ribbon);
+        validate_window_chrome(&window).unwrap();
+        assert!(
+            compile(&source)
+                .unwrap()
+                .contains("title_bar: rust_desktop_ui_xaml::TitleBar::Ribbon,")
+        );
+    }
+}
+
+#[test]
+fn title_bar_values_are_explicit_and_diagnostic_points_to_the_attribute() {
+    for value in ["", "native", "ribbon", "Custom", " Ribbon "] {
+        let source = chrome_form(&format!("\n  TitleBar='{value}'"), "<TextBox/>");
+        let error = parse(&source).unwrap_err();
+        assert_eq!((error.line, error.column), (2, 3));
+        assert_eq!(error.message, "TitleBar must be Native or Ribbon");
+    }
+}
+
+#[test]
+fn ribbon_title_bar_rejects_offsets_fixed_sizes_and_nonleading_ribbons() {
+    let ribbon = ribbon("<Button Command='Save' KeyTip='S'/>");
+    for (attributes, expected) in [
+        ("", "Padding=0"),
+        ("Padding='1'", "Padding=0"),
+        ("Padding='0,0,0,1'", "Padding=0"),
+    ] {
+        let source = chrome_form(&format!("TitleBar='Ribbon' {attributes}"), &ribbon);
+        assert!(parse(&source).unwrap_err().message.contains(expected));
+    }
+    let mut invalid = vec![
+        ("<TextBox/>".to_owned(), "requires a Ribbon"),
+        ("<StackPanel/>".to_owned(), "first StackPanel child"),
+        (
+            format!("<StackPanel><TextBlock/>{ribbon}</StackPanel>"),
+            "first StackPanel child",
+        ),
+        (
+            format!("<StackPanel><StackPanel>{ribbon}</StackPanel></StackPanel>"),
+            "first StackPanel child",
+        ),
+        (
+            format!("<StackPanel Orientation='Horizontal'>{ribbon}</StackPanel>"),
+            "vertical root StackPanel",
+        ),
+        (
+            format!("<StackPanel Padding='0,0,1,0'>{ribbon}</StackPanel>"),
+            "root StackPanel Padding=0",
+        ),
+    ];
+    for attribute in ["Margin='0,0,0,1'", "Width='640'", "Height='360'"] {
+        invalid.push((
+            format!("<StackPanel {attribute}>{ribbon}</StackPanel>"),
+            "root StackPanel Margin=0 and automatic Width/Height",
+        ));
+        let placed = ribbon.replacen("<Ribbon>", &format!("<Ribbon {attribute}>"), 1);
+        invalid.push((placed.clone(), "Ribbon Margin=0 and automatic Width/Height"));
+        invalid.push((
+            format!("<StackPanel>{placed}<TextBox/></StackPanel>"),
+            "Ribbon Margin=0 and automatic Width/Height",
+        ));
+    }
+    for (content, expected) in invalid {
+        let source = chrome_form("TitleBar='Ribbon' Padding='0'", &content);
+        let error = parse(&source).unwrap_err();
+        assert!(error.message.contains(expected), "{source}: {error}");
+        assert!(compile(&source).is_err());
+    }
+}
+
+#[test]
+fn manual_window_chrome_validation_rejects_invalid_geometry_and_duplicate_ribbons() {
+    let source = chrome_form(
+        "TitleBar='Ribbon' Padding='0'",
+        &format!(
+            "<StackPanel>{}<TextBox/></StackPanel>",
+            ribbon("<Button Command='Save' KeyTip='S'/>")
+        ),
+    );
+    let valid = parse(&source).unwrap();
+    for padding in [[1.0; 4], [f32::NAN; 4], [f32::INFINITY; 4]] {
+        let mut invalid = valid.clone();
+        invalid.padding = padding;
+        assert!(
+            validate_window_chrome(&invalid)
+                .unwrap_err()
+                .contains("Padding=0")
+        );
+    }
+    for (margin, width, height) in [
+        ([1.0; 4], None, None),
+        ([f32::NAN; 4], None, None),
+        ([0.0; 4], Some(640.0), None),
+        ([0.0; 4], None, Some(360.0)),
+    ] {
+        for root in [true, false] {
+            let mut invalid = valid.clone();
+            let common = if root {
+                &mut invalid.content.common
+            } else {
+                let ElementKind::StackPanel(panel) = &mut invalid.content.kind else {
+                    unreachable!();
+                };
+                &mut panel.children[0].common
+            };
+            common.margin = margin;
+            common.width = width;
+            common.height = height;
+            assert!(
+                validate_window_chrome(&invalid)
+                    .unwrap_err()
+                    .contains("Margin=0 and automatic Width/Height")
+            );
+        }
+    }
+    let mut invalid = valid;
+    let ElementKind::StackPanel(panel) = &mut invalid.content.kind else {
+        unreachable!();
+    };
+    panel.children.push(ElementDefinition {
+        kind: ElementKind::StackPanel(StackPanelDefinition {
+            children: vec![panel.children[0].clone()],
+            ..Default::default()
+        }),
+        ..Default::default()
+    });
+    assert!(
+        validate_window_chrome(&invalid)
+            .unwrap_err()
+            .contains("exactly one Ribbon")
+    );
 }
 
 #[test]

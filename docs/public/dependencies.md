@@ -18,6 +18,7 @@
 | accesskit | `=0.25.1` | Семантическое дерево и actions | MIT OR Apache-2.0 |
 | accesskit_winit | `=0.34.1` | Native accessibility adapter | Apache-2.0 |
 | arboard | `=3.6.1` | Текстовый системный clipboard | MIT OR Apache-2.0 |
+| windows-sys | `=0.61.2`, только Windows | Системные DWM/Win32 API интегрированного заголовка | MIT OR Apache-2.0 |
 
 Версии и лицензии сверены с опубликованными пакетами:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/source/Cargo.toml),
@@ -30,7 +31,8 @@
 [unicode-segmentation](https://docs.rs/crate/unicode-segmentation/1.13.3/source/Cargo.toml),
 [AccessKit](https://docs.rs/crate/accesskit/0.25.1/source/Cargo.toml),
 [AccessKit winit](https://docs.rs/crate/accesskit_winit/0.34.1/source/Cargo.toml),
-[arboard](https://docs.rs/crate/arboard/3.6.1/source/Cargo.toml).
+[arboard](https://docs.rs/crate/arboard/3.6.1/source/Cargo.toml),
+[windows-sys](https://docs.rs/crate/windows-sys/0.61.2/source/Cargo.toml).
 `pollster` использует старую запись `Apache-2.0/MIT`, эквивалентную выбору одной
 из двух лицензий. Это преобразование отмечено отдельно в inventory.
 

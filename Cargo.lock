@@ -2185,6 +2185,7 @@ dependencies = [
  "pollster",
  "rust-desktop-ui-core",
  "rust-desktop-ui-render-wgpu",
+ "windows-sys 0.61.2",
  "winit",
 ]
 

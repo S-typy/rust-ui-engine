@@ -7,6 +7,197 @@ use std::{cell::Cell, rc::Rc};
 // thousandth of a logical pixel; actual visible glyph clipping still fails.
 const TEXT_GEOMETRY_EPSILON: f32 = 0.001;
 
+fn header(title: &str) -> RibbonHeader {
+    RibbonHeader {
+        title: title.into(),
+        height: 40.0,
+        leading_inset: 12.0,
+        trailing_inset: 138.0,
+    }
+}
+
+fn remove_root_padding(ui: &mut Controls) {
+    let root = ui.root();
+    let mut style = ui.runtime.tree().node(root).unwrap().props.style.clone();
+    style.padding = Edges::default();
+    ui.runtime
+        .apply(Mutation::SetStyle { node: root, style })
+        .unwrap();
+}
+
+#[test]
+fn integrated_header_shares_one_row_and_keeps_native_caption_reserve() {
+    let (mut ui, mut ribbon, _) = fixture();
+    remove_root_padding(&mut ui);
+    let title = "Документ с очень длинным именем · Rust UI";
+    ribbon.set_header(Some(header(title))).unwrap();
+    for command in ["flag", "plain"] {
+        ribbon
+            .set_command_appearance(
+                command,
+                RibbonCommandAppearance {
+                    icon: Some(ButtonIcon::new(crate::IconSymbol::Save)),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+    }
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        for width in [900.0, 300.0, 180.0, 140.0, 900.0] {
+            frame(&mut ui, &mut ribbon, width);
+            let regions = ribbon.header_regions(&ui).unwrap();
+            assert_eq!(regions.bounds.x, 0.0);
+            assert_eq!(regions.bounds.y, 0.0);
+            assert_eq!(regions.bounds.width, width);
+            assert_eq!(regions.bounds.height, 40.0);
+            for interactive in regions.interactive {
+                assert!(interactive.x >= 0.0);
+                assert!(
+                    interactive.x + interactive.width
+                        <= (width - 138.0).max(0.0) + TEXT_GEOMETRY_EPSILON
+                );
+                assert!(interactive.y >= regions.bounds.y);
+                assert!(interactive.y + interactive.height <= regions.bounds.height);
+            }
+            let container = ribbon.container().unwrap();
+            assert_eq!(
+                ui.runtime.tree().children(container).unwrap().len(),
+                3,
+                "header, tabs and body only"
+            );
+            let semantic_title = ui
+                .semantics()
+                .into_iter()
+                .find(|node| node.label == title)
+                .unwrap();
+            assert!(!semantic_title.actions.contains(&SemanticAction::Focus));
+            for run in &ui.scene().texts {
+                if run.bounds.intersection(semantic_title.bounds).is_some() {
+                    assert!(
+                        run.bounds.x + run.bounds.width
+                            <= (width - 138.0).max(0.0) + TEXT_GEOMETRY_EPSILON
+                    );
+                    assert!(!run.wrap);
+                }
+            }
+            if width == 300.0 {
+                assert!(
+                    ui.scene()
+                        .texts
+                        .iter()
+                        .any(|run| run.text.ends_with('…') && run.bounds.y < 40.0)
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn empty_qat_has_no_empty_row_and_header_minimization_preserves_height() {
+    let (mut ui, mut ribbon, _) = fixture();
+    remove_root_padding(&mut ui);
+    for command in ["flag", "plain"] {
+        assert!(ribbon.remove_quick_access(&command.into()));
+    }
+    frame(&mut ui, &mut ribbon, 900.0);
+    let container = ribbon.container().unwrap();
+    let children = ui.runtime.tree().children(container).unwrap();
+    assert_eq!(children.len(), 2);
+    assert_eq!(ui.runtime.bounds(children[0]).unwrap().y, 6.0);
+    let plain_height = ui.runtime.bounds(container).unwrap().height;
+    ribbon.set_header(Some(header("Document"))).unwrap();
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_eq!(
+        ui.runtime.bounds(container).unwrap().height,
+        plain_height + 40.0 + 4.0 - 6.0
+    );
+    let expanded_header = ribbon.header_regions(&ui).unwrap();
+    assert!(expanded_header.interactive.is_empty());
+    ribbon.set_minimized(true);
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_eq!(ribbon.header_regions(&ui), Some(expanded_header));
+    assert_eq!(ui.runtime.tree().children(container).unwrap().len(), 2);
+    ribbon.set_header(None).unwrap();
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert!(ribbon.header_regions(&ui).is_none());
+    assert_eq!(ui.runtime.tree().children(container).unwrap().len(), 1);
+}
+
+#[test]
+fn header_validation_preserves_settings_tree_and_focus_atomically() {
+    let (mut ui, mut ribbon, _) = fixture();
+    let valid = header("Document");
+    ribbon.set_header(Some(valid.clone())).unwrap();
+    frame(&mut ui, &mut ribbon, 900.0);
+    let qat = placements(&ui, &ribbon, "flag")[0];
+    ui.runtime.apply(Mutation::Focus(Some(qat))).unwrap();
+    let tree = ui.runtime.tree().preorder();
+    for invalid in [
+        RibbonHeader {
+            height: f32::NAN,
+            ..valid.clone()
+        },
+        RibbonHeader {
+            height: 0.0,
+            ..valid.clone()
+        },
+        RibbonHeader {
+            leading_inset: -1.0,
+            ..valid.clone()
+        },
+        RibbonHeader {
+            trailing_inset: f32::INFINITY,
+            ..valid.clone()
+        },
+        RibbonHeader {
+            title: "x".repeat(4097),
+            ..valid.clone()
+        },
+    ] {
+        assert!(ribbon.set_header(Some(invalid)).is_err());
+        assert_eq!(ribbon.header(), Some(&valid));
+        assert_eq!(ui.runtime.tree().preorder(), tree);
+        assert_eq!(ui.runtime.focused(), Some(qat));
+        assert!(!ribbon.dirty);
+    }
+}
+
+#[test]
+fn integrated_header_overflow_and_keytips_activate_the_same_toggle_once() {
+    let (mut ui, mut ribbon, callbacks) = fixture();
+    remove_root_padding(&mut ui);
+    ribbon.set_header(Some(header("Document"))).unwrap();
+    frame(&mut ui, &mut ribbon, 200.0);
+    let qat = ribbon.header_qat.unwrap();
+    let overflow = ui.runtime.tree().children(qat).unwrap()[0];
+    assert!(matches!(ribbon.actions[&overflow], Action::Dropdown));
+    ui.activate(overflow).unwrap();
+    assert!(ribbon.process(&mut ui).unwrap().is_empty());
+    let flag = menu_item(&ui, "flag");
+    ui.activate(flag).unwrap();
+    ribbon.process(&mut ui).unwrap();
+    assert_invocation(&mut ui, "flag", Some(true));
+    for key in [Key::F10, Key::Character("1".into())] {
+        assert!(
+            ribbon
+                .handle_input(
+                    &mut ui,
+                    &InputEvent::KeyDown {
+                        key,
+                        modifiers: Modifiers::default(),
+                        repeat: false,
+                    }
+                )
+                .unwrap()
+        );
+    }
+    assert_invocation(&mut ui, "flag", Some(false));
+    assert_eq!(callbacks.get(), 2);
+    frame(&mut ui, &mut ribbon, 900.0);
+    assert_state(&ui, "flag", &placements(&ui, &ribbon, "flag"), Some(false));
+}
+
 #[test]
 fn progressive_sizes_restore_preferred_and_preserve_command_behavior() {
     let (mut ui, _, callbacks) = fixture();

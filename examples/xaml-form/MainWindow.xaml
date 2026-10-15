@@ -1,7 +1,7 @@
 <Window xmlns="urn:rust-ui-engine:ui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Документ · Rust UI" Width="1040" Height="720"
-        Padding="12" Theme="Light">
+        TitleBar="Ribbon" Padding="0" Theme="Light">
     <StackPanel x:Name="Shell" Spacing="20">
         <Ribbon x:Name="MainRibbon" SelectedTab="Home" AutomationName="Лента команд">
             <Ribbon.QuickAccessToolbar>
@@ -52,7 +52,7 @@
                 </RibbonGroup>
             </RibbonTab>
         </Ribbon>
-        <StackPanel x:Name="Form" Surface="Card" Spacing="12" Padding="20" Margin="4,0,4,0">
+        <StackPanel x:Name="Form" Surface="Card" Spacing="12" Padding="20" Margin="16,0,16,16">
             <StackPanel Spacing="4" Margin="0,0,0,8">
                 <TextBlock Text="Документ без имени" FontSize="22" FontWeight="SemiBold" />
                 <TextBlock Text="Содержимое и параметры документа" FontSize="13" TextTone="Secondary" />

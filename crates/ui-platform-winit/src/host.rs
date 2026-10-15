@@ -1,4 +1,7 @@
-use crate::{ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, RunOptions, input};
+use crate::{
+    ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, RunOptions, WindowChrome,
+    chrome::NativeChrome, input,
+};
 use accesskit::{Node, NodeId, TreeId};
 use accesskit_winit::{
     Adapter, Event as AccessibilityEvent, WindowEvent as AccessibilityWindowEvent,
@@ -51,6 +54,7 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
         options,
         proxy,
         window: None,
+        chrome: None,
         renderer: None,
         adapter: None,
         accessible_nodes: HashMap::new(),
@@ -78,6 +82,7 @@ struct Host<A> {
     options: RunOptions,
     proxy: EventLoopProxy<AccessibilityEvent>,
     window: Option<Arc<Window>>,
+    chrome: Option<NativeChrome>,
     renderer: Option<GpuRenderer>,
     adapter: Option<Adapter>,
     accessible_nodes: HashMap<NodeId, Node>,
@@ -142,6 +147,11 @@ impl<A: DesktopApp> Host<A> {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => self.fail(event_loop, error),
             }
+        }
+        // Popup and layout changes must reach native hit testing before the next
+        // queued mouse message, not only when a later redraw happens to arrive.
+        if let Some(chrome) = &self.chrome {
+            chrome.update(self.app.title_bar());
         }
     }
 
@@ -224,6 +234,15 @@ impl<A: DesktopApp> Host<A> {
         }
         let scale = window.scale_factor();
         let logical = physical.to_logical::<f32>(scale);
+        let chrome = self.chrome.as_ref().map_or(
+            WindowChrome {
+                maximized: window.is_maximized(),
+                focused: self.focused,
+                ..WindowChrome::default()
+            },
+            |chrome| chrome.state(&window, self.focused),
+        );
+        self.app.window_chrome_changed(chrome);
         if let Err(error) = self
             .app
             .update(Size::new(logical.width, logical.height), scale as f32)
@@ -243,7 +262,16 @@ impl<A: DesktopApp> Host<A> {
         let Some(renderer) = &mut self.renderer else {
             return;
         };
-        match renderer.render(self.app.scene(), scale as f32) {
+        // Opaque GPU swapchains cover DWM's caption glyph pixels. Paint our own
+        // vectors at the native button bounds while Windows retains hit testing,
+        // accessibility and all system actions. Ordinary windows avoid the copy.
+        let decorated_scene = self.chrome.as_ref().map(|chrome| {
+            let mut scene = self.app.scene().clone();
+            chrome.paint(&mut scene, self.focused);
+            scene
+        });
+        let scene = decorated_scene.as_ref().unwrap_or_else(|| self.app.scene());
+        match renderer.render(scene, scale as f32) {
             Ok(RenderOutcome::Presented { .. }) => {
                 self.frames += 1;
                 self.recoveries = 0;
@@ -278,7 +306,11 @@ impl<A: DesktopApp> Host<A> {
                             physical.height.saturating_sub(80).max(300),
                         );
                         self.smoke_resize = Some(target);
-                        if let Some(actual) = window.request_inner_size(target) {
+                        let actual = self.chrome.as_ref().map_or_else(
+                            || window.request_inner_size(target),
+                            |chrome| chrome.request_inner_size(target),
+                        );
+                        if let Some(actual) = actual {
                             self.smoke_resized = actual == target;
                             if let Err(error) = self
                                 .renderer
@@ -364,6 +396,12 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
                 return;
             }
         };
+        if let Some(bar) = self.app.title_bar() {
+            match NativeChrome::attach(window.clone(), bar, self.options.min_size) {
+                Ok(chrome) => self.chrome = chrome,
+                Err(error) => eprintln!("Using native title bar: {error}"),
+            }
+        }
         // AccessKit requires creating its adapter before the native window becomes visible.
         self.adapter = Some(Adapter::with_event_loop_proxy(
             event_loop,
@@ -383,6 +421,7 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
         self.retry_at = None;
         self.adapter = None;
         self.renderer = None;
+        self.chrome = None;
         self.window = None;
     }
 

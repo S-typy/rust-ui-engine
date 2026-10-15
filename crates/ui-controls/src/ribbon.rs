@@ -13,6 +13,11 @@ mod menu;
 pub use menu::RibbonMenuEntry;
 use menu::{group_entries, item_entries};
 
+#[path = "ribbon_header.rs"]
+mod header;
+use header::HeaderMeasurements;
+pub use header::{RibbonHeader, RibbonHeaderRegions};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RibbonItemKind {
     /// Large presentation; registered command state determines activation.
@@ -152,6 +157,8 @@ struct RibbonMetrics {
     qat: f32,
     tab: f32,
     groups: f32,
+    top: f32,
+    top_padding: f32,
 }
 
 impl RibbonMetrics {
@@ -262,10 +269,21 @@ impl RibbonMetrics {
             qat,
             tab: tab_height,
             groups: large + caption + 18.0,
+            top: if model.quick_access.is_empty() {
+                0.0
+            } else {
+                qat
+            },
+            top_padding: 6.0,
         })
     }
     fn total(self, expanded: bool) -> f32 {
-        self.qat + self.tab + 16.0 + if expanded { self.groups + 4.0 } else { 0.0 }
+        self.top
+            + self.tab
+            + self.top_padding
+            + 6.0
+            + if self.top > 0.0 { 4.0 } else { 0.0 }
+            + if expanded { self.groups + 4.0 } else { 0.0 }
     }
 }
 
@@ -303,6 +321,7 @@ use layout::{MeasuredGroup, RibbonWidths};
 struct RibbonMeasurements {
     metrics: RibbonMetrics,
     widths: RibbonWidths,
+    header: Option<HeaderMeasurements>,
 }
 
 /// Retained Ribbon composition; application logic stays in the command registry.
@@ -333,6 +352,9 @@ pub struct Ribbon {
     owned_menu_open: bool,
     item_anchors: HashMap<String, WidgetId>,
     group_anchors: HashMap<String, WidgetId>,
+    header: Option<RibbonHeader>,
+    header_row: Option<WidgetId>,
+    header_qat: Option<WidgetId>,
 }
 
 impl Ribbon {
@@ -454,6 +476,9 @@ impl Ribbon {
             owned_menu_open: false,
             item_anchors: HashMap::new(),
             group_anchors: HashMap::new(),
+            header: None,
+            header_row: None,
+            header_qat: None,
         })
     }
     pub fn model(&self) -> &RibbonModel {
@@ -645,7 +670,21 @@ impl Ribbon {
             widths.adapt(tab, (width - 12.0).max(0.0));
         }
         let available = (width - 12.0).max(0.0);
-        let capacity = widths.qat_capacity(available);
+        let mut metrics =
+            RibbonMetrics::measure(ui, &self.model, &widths, &self.command_appearances)?;
+        let header = self
+            .header
+            .as_ref()
+            .map(|header| HeaderMeasurements::measure(ui, header, width, &widths, metrics.qat))
+            .transpose()?;
+        if let Some(header) = &header {
+            metrics.top = header.height;
+            metrics.top_padding = 0.0;
+        }
+        let qat_available = header
+            .as_ref()
+            .map_or(available, |header| header.qat_available);
+        let capacity = widths.qat_capacity(qat_available);
         let overflow_count = self.model.quick_access.len().saturating_sub(capacity);
         if overflow_count > crate::MAX_MENU_ITEMS {
             return Err(ControlError::Invalid(format!(
@@ -695,8 +734,9 @@ impl Ribbon {
             }
         }
         Ok(RibbonMeasurements {
-            metrics: RibbonMetrics::measure(ui, &self.model, &widths, &self.command_appearances)?,
+            metrics,
             widths,
+            header,
         })
     }
     fn visible_tabs(&self) -> Vec<&RibbonTab> {
@@ -791,6 +831,8 @@ impl Ribbon {
         self.item_anchors.clear();
         self.group_anchors.clear();
         self.body = None;
+        self.header_row = None;
+        self.header_qat = None;
         self.ensure_active();
         self.width = width;
         self.theme = Some(ui.theme());
@@ -799,7 +841,10 @@ impl Ribbon {
             height: Length::Px(metrics.total(self.is_expanded())),
             flex_shrink: 0.0,
             gap: 4.0,
-            padding: Edges::all(6.0),
+            padding: Edges {
+                top: metrics.top_padding,
+                ..Edges::all(6.0)
+            },
             ..Default::default()
         };
         let container = if let Some(container) = self.container {
@@ -813,70 +858,17 @@ impl Ribbon {
         };
         self.container = Some(container);
         let available = (width - 12.0).max(0.0);
-        let qat = ui.transparent_panel(
-            container,
-            LayoutStyle {
-                kind: LayoutKind::Flex(Axis::Horizontal),
-                height: Length::Px(metrics.qat),
-                flex_shrink: 0.0,
-                gap: 4.0,
-                ..Default::default()
-            },
-        )?;
-        ui.set_role(qat, Role::Group);
-        let capacity = measured.widths.qat_capacity(available);
-        for (index, command) in self.model.quick_access.iter().take(capacity).enumerate() {
-            let label = ui
-                .commands()
-                .label(command)
-                .unwrap_or(&command.0)
-                .to_owned();
-            let id = ui.button(
-                qat,
-                label.clone(),
-                Some(command.clone()),
-                LayoutStyle {
-                    width: Length::Px(measured.widths.qat[index]),
-                    height: Length::Px(metrics.qat),
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
+        if let Some(header) = &measured.header {
+            self.mount_header(ui, container, header, &measured.widths, metrics.qat)?;
+        } else if !self.model.quick_access.is_empty() {
+            self.mount_quick_access(
+                ui,
+                container,
+                available,
+                available,
+                metrics.qat,
+                &measured.widths,
             )?;
-            self.apply_command_appearance(ui, id, command, &label, ButtonContentLayout::IconOnly)?;
-            if index < 9 {
-                self.tip_nodes
-                    .insert(id, (Tips::Tabs, (index + 1).to_string()));
-            }
-            self.actions.insert(id, Action::Command(command.clone()));
-        }
-        if self.model.quick_access.len() > capacity {
-            let items: Vec<_> = self
-                .model
-                .quick_access
-                .iter()
-                .skip(capacity)
-                .map(|command| {
-                    MenuEntry::Item(MenuItem::new(
-                        ui.commands().label(command).unwrap_or(&command.0),
-                        command.clone(),
-                    ))
-                })
-                .collect();
-            let id = ui.dropdown_button(
-                qat,
-                "",
-                &items,
-                LayoutStyle {
-                    width: Length::Px(available.min(QAT_TARGET)),
-                    height: Length::Px(metrics.qat),
-                    flex_shrink: 0.0,
-                    ..Default::default()
-                },
-            )?;
-            ui.set_automation_name(id, "More")?;
-            ui.set_button_style(id, ribbon_button_style())?;
-            ui.set_button_chrome(id, ButtonChrome::Flat)?;
-            self.actions.insert(id, Action::Dropdown);
         }
         let visible: Vec<_> = self.visible_tabs().into_iter().cloned().collect();
         let minimize_width = 32.0_f32.min(available);

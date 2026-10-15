@@ -33,6 +33,13 @@ surfaces. Subtle hover and pressed states, aligned small commands and restrained
 icon accents keep the Ribbon readable. Text blocks support font size, weight,
 secondary text and wrapping; panels can use a theme-relative card surface.
 
+On Windows, `TitleBar="Ribbon"` combines the title and quick-access commands
+inside the native window frame. Caption buttons use native system actions with
+the host's own vector symbols and retain their reserved
+space; narrow headers move quick-access commands into overflow and shorten the
+title. Use `--native-title-bar` for the standard title bar. Other platforms keep
+their existing native decorations.
+
 The compiled profile also provides nested stack panels,
 labels, single-line edit boxes, buttons, toggle buttons, checkboxes and radio groups. Buttons
 share theme-relative styling and Fluent hover, press, checked and focus states.

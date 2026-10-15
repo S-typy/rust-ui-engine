@@ -67,6 +67,19 @@ pub enum Theme {
     Dark,
 }
 
+/// Placement of the native window title bar.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum TitleBar {
+    /// A platform-provided title bar above the form's content.
+    #[default]
+    Native,
+    /// The title and native window controls share the Ribbon's header row.
+    ///
+    /// Requires a flush, automatically sized Ribbon at the content origin;
+    /// see [`validate_window_chrome`]. Platform support is supplied by the host.
+    Ribbon,
+}
+
 /// Validated startup properties for a native form.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WindowDefinition {
@@ -76,6 +89,7 @@ pub struct WindowDefinition {
     /// Left, top, right, bottom padding in logical pixels.
     pub padding: [f32; 4],
     pub theme: Theme,
+    pub title_bar: TitleBar,
     pub content: ElementDefinition,
 }
 
@@ -87,9 +101,81 @@ impl Default for WindowDefinition {
             height: 360.0,
             padding: [32.0; 4],
             theme: Theme::Light,
+            title_bar: TitleBar::Native,
             content: ElementDefinition::default(),
         }
     }
+}
+
+/// Validate the content placement required by a Ribbon-integrated title bar.
+///
+/// [`TitleBar::Ribbon`] requires zero Window padding. Its content must be a
+/// Ribbon or a vertical StackPanel whose first child is the sole Ribbon. Both
+/// the Ribbon and its optional parent must have zero margin and automatic
+/// width/height; the parent also requires zero padding. Its spacing and surface
+/// remain configurable, and later children may use ordinary layout properties.
+///
+/// Native title bars add no placement restrictions. This function does not
+/// validate other element properties; hosts accepting manually constructed
+/// definitions must also perform their normal content and command validation.
+pub fn validate_window_chrome(window: &WindowDefinition) -> Result<(), String> {
+    if window.title_bar == TitleBar::Native {
+        return Ok(());
+    }
+    if window.title.len() > 4096 {
+        return Err("Window TitleBar=Ribbon requires Title of at most 4096 UTF-8 bytes".into());
+    }
+    if window.padding != [0.0; 4] {
+        return Err("Window TitleBar=Ribbon requires Padding=0".into());
+    }
+    let root = &window.content;
+    let ribbon = match &root.kind {
+        ElementKind::Ribbon(_) => root,
+        ElementKind::StackPanel(panel) => {
+            if panel.orientation != Orientation::Vertical {
+                return Err("Window TitleBar=Ribbon requires a vertical root StackPanel".into());
+            }
+            validate_chrome_placement(&root.common, "root StackPanel")?;
+            if panel.padding != [0.0; 4] {
+                return Err("Window TitleBar=Ribbon requires root StackPanel Padding=0".into());
+            }
+            panel
+                .children
+                .first()
+                .filter(|child| matches!(child.kind, ElementKind::Ribbon(_)))
+                .ok_or("Window TitleBar=Ribbon requires Ribbon as the first StackPanel child")?
+        }
+        _ => {
+            return Err(
+                "Window TitleBar=Ribbon requires a Ribbon or a vertical root StackPanel".into(),
+            );
+        }
+    };
+    validate_chrome_placement(&ribbon.common, "Ribbon")?;
+    let mut elements = vec![root];
+    let mut ribbon_count = 0;
+    while let Some(element) = elements.pop() {
+        match &element.kind {
+            ElementKind::Ribbon(_) => {
+                ribbon_count += 1;
+                if ribbon_count > 1 {
+                    return Err("Window TitleBar=Ribbon requires exactly one Ribbon".into());
+                }
+            }
+            ElementKind::StackPanel(panel) => elements.extend(&panel.children),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn validate_chrome_placement(common: &CommonProperties, element: &str) -> Result<(), String> {
+    if common.margin != [0.0; 4] || common.width.is_some() || common.height.is_some() {
+        return Err(format!(
+            "Window TitleBar=Ribbon requires {element} Margin=0 and automatic Width/Height"
+        ));
+    }
+    Ok(())
 }
 
 /// Properties shared by every content element in a Window.
@@ -514,6 +600,19 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
             "Width" => definition.width = dimension(&document, attribute)?,
             "Height" => definition.height = dimension(&document, attribute)?,
             "Padding" => definition.padding = thickness(&document, attribute)?,
+            "TitleBar" => {
+                definition.title_bar = match attribute.value() {
+                    "Native" => TitleBar::Native,
+                    "Ribbon" => TitleBar::Ribbon,
+                    _ => {
+                        return Err(at_attribute(
+                            &document,
+                            attribute,
+                            "TitleBar must be Native or Ribbon",
+                        ));
+                    }
+                };
+            }
             "Theme" => {
                 definition.theme = match attribute.value() {
                     "Light" => Theme::Light,
@@ -565,6 +664,7 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
     if ribbon::count(&definition.content) > 1 {
         return Err(at_node(window, "Window supports at most one Ribbon"));
     }
+    validate_window_chrome(&definition).map_err(|message| at_node(window, message))?;
     Ok(definition)
 }
 

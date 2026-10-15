@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Exercise the compiled XAML Ribbon through its own native Windows child.
 
-The fixture observes opt-in diagnostics and uses acknowledged native cursor
+The fixture uses --native-title-bar to exercise very narrow Ribbon overflow
+below the integrated header's minimum width. It does not verify custom chrome.
+It observes opt-in diagnostics and uses acknowledged native cursor
 moves, posted child-only mouse/key messages, and bounded client captures. It
 does not use the system clipboard or send global keyboard input.
 """
@@ -422,10 +424,10 @@ class RibbonSession(PopupSession):
         self.windows.resize_client(self.hwnd, *target)
         self.wait("native Ribbon client resize", lambda: self.windows.client_size(self.hwnd) == target)
         self.ribbon_snapshot(f"Ribbon reflows at {width}px", lambda state:
-                             abs(state["bounds"][2] - (width - 32)) < 1)
+                             abs(state["bounds"][2] - width) < 1)
         # Await a snapshot from the new geometry, not the previous frame.
         self.snapshot("controls match resized Ribbon", lambda state: any(
-            item["role"] == "TextBox" and abs(item["bounds"][2] - (width - 64)) < 1
+            item["role"] == "TextBox" and abs(item["bounds"][2] - (width - 72)) < 1
             for item in state["controls"]))
 
     def adaptive_resize(self):
@@ -844,7 +846,7 @@ def main():
         windows = RibbonWindows(args.dark)
         cursor = windows.cursor_position()
         with (output / "stdout.log").open("wb") as stdout, (output / "stderr.log").open("wb") as stderr:
-            process = subprocess.Popen([str(executable), "--diagnostics"] + (["--dark"] if args.dark else [])
+            process = subprocess.Popen([str(executable), "--diagnostics", "--native-title-bar"] + (["--dark"] if args.dark else [])
                                        + (["--ribbon-minimized"] if args.ribbon_minimized else []),
                                        stdout=stdout, stderr=stderr, creationflags=subprocess.CREATE_NO_WINDOW)
             report["process_id"] = process.pid

@@ -69,8 +69,21 @@ pub(crate) fn ribbon_snapshot(
         })
         .collect::<Vec<_>>()
         .join(",");
+    let header = mounted.ribbon.header_regions(ui);
+    let header_bounds = header
+        .as_ref()
+        .map_or_else(|| "null".into(), |header| rectangle(header.bounds));
+    let header_interactive = header.as_ref().map_or_else(String::new, |header| {
+        header
+            .interactive
+            .iter()
+            .copied()
+            .map(rectangle)
+            .collect::<Vec<_>>()
+            .join(",")
+    });
     format!(
-        "{{\"active_tab\":{},\"key_tips\":{},\"key_tip_labels\":[{}],\"bounds\":{},\"presentations\":{},\"minimized\":{},\"body_visible\":{},\"item_presentations\":[{}]}}",
+        "{{\"active_tab\":{},\"key_tips\":{},\"key_tip_labels\":[{}],\"bounds\":{},\"presentations\":{},\"minimized\":{},\"body_visible\":{},\"item_presentations\":[{}],\"header_bounds\":{},\"header_interactive\":[{}]}}",
         string(mounted.ribbon.active_tab()),
         mounted.ribbon.key_tips_visible(),
         key_tip_labels,
@@ -81,10 +94,12 @@ pub(crate) fn ribbon_snapshot(
         mounted.ribbon.is_minimized(),
         mounted.ribbon.is_expanded(),
         items,
+        header_bounds,
+        header_interactive,
     )
 }
 
-fn rectangle(rect: Rect) -> String {
+pub(crate) fn rectangle(rect: Rect) -> String {
     format!("[{},{},{},{}]", rect.x, rect.y, rect.width, rect.height)
 }
 

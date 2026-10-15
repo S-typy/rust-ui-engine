@@ -1,11 +1,13 @@
 //! Native desktop host. UI and application models remain independent of the window system.
 //! Accessibility bounds and IME anchors are updated on every rendered frame and DPI change.
 
+mod chrome;
 mod host;
 mod ime;
 mod input;
 
 pub use accesskit;
+pub use chrome::{TitleBar, WindowChrome};
 pub use host::run;
 use rust_desktop_ui_core::{InputEvent, Rect, Scene, Size};
 pub use rust_desktop_ui_render_wgpu::RendererStats;
@@ -52,6 +54,19 @@ pub trait DesktopApp {
     fn scene(&self) -> &Scene;
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String>;
     fn title(&self) -> String;
+    /// Opt into an integrated Windows title bar at window creation. Other
+    /// platforms retain their native decorations. The initial `Some`/`None`
+    /// choice is fixed for the window lifetime; geometry and theme are refreshed
+    /// after each `update`. The system still owns caption buttons and resizing.
+    fn title_bar(&self) -> Option<TitleBar> {
+        None
+    }
+    /// Current native chrome geometry, delivered before every `update`. Reserve
+    /// `caption_buttons` in the scene when `custom_title_bar` is true. Native
+    /// button bounds can be unavailable before the first visible native frame.
+    fn window_chrome_changed(&mut self, chrome: WindowChrome) {
+        let _ = chrome;
+    }
     /// A caret in logical client coordinates. `None` disables native IME input.
     fn ime_cursor(&self) -> Option<Rect> {
         None
