@@ -1,5 +1,7 @@
 //! Several native windows compose the same long-lived panel documents.
+mod drag;
 mod input;
+pub(crate) mod storage;
 #[cfg(test)]
 mod tests;
 
@@ -15,8 +17,8 @@ use rust_desktop_ui_core::{
     Axis, InputEvent, LayoutKind, LayoutStyle, Length, Mutation, Point, Rect, Scene, Size, WidgetId,
 };
 use rust_desktop_ui_platform_winit::{
-    self as platform, DesktopApp, DesktopApplication, EventResponse, PlatformEvent, RunOptions,
-    WindowKey, WindowSpec, accesskit,
+    self as platform, DesktopApp, DesktopApplication, DesktopPointer, EventResponse, PlatformEvent,
+    RunOptions, WindowGeometry, WindowKey, WindowSpec, accesskit,
 };
 use rust_desktop_ui_xaml::{self as xaml, DockNodeDefinition, ElementKind, WindowDefinition};
 use std::{
@@ -40,6 +42,12 @@ struct Workspace {
     alive: bool,
     diagnostics: bool,
     native_bounds: HashMap<DockWindowId, Rect>,
+    native_geometry: HashMap<DockWindowId, WindowGeometry>,
+    drop_targets: HashMap<DockWindowId, DockDropTargets>,
+    drag: Option<drag::DragSession>,
+    layout_file: Option<std::path::PathBuf>,
+    layout_status: String,
+    placement_revision: u64,
 }
 
 impl Workspace {
@@ -158,7 +166,12 @@ impl Workspace {
                 self.layout
                     .restore_snapshot(self.initial.clone())
                     .map_err(err)?;
+                self.drag = None;
+                self.drop_targets.clear();
+                self.placement_revision = self.placement_revision.wrapping_add(1);
             }
+            "DockSaveLayout" => self.layout_command(false)?,
+            "DockLoadLayout" => self.layout_command(true)?,
             "DockRestore" => {
                 for pane in self.layout.snapshot().closed {
                     // Restoring many panes must not build an unbounded chain
@@ -315,6 +328,12 @@ impl DockApplication {
                 alive: true,
                 diagnostics,
                 native_bounds: HashMap::new(),
+                native_geometry: HashMap::new(),
+                drop_targets: HashMap::new(),
+                drag: None,
+                layout_file: None,
+                layout_status: "Расположение сохраняется только по команде «Сохранить».".into(),
+                placement_revision: 0,
             })),
             windows: BTreeMap::new(),
             definition,
@@ -322,6 +341,10 @@ impl DockApplication {
             options,
             gap,
         })
+    }
+
+    pub(crate) fn set_layout_file(&mut self, path: std::path::PathBuf) {
+        self.state.borrow_mut().layout_file = Some(path);
     }
 }
 
@@ -384,6 +407,7 @@ impl DesktopApplication for DockApplication {
             return Ok(Vec::new());
         }
         let floating = state.layout.floating().to_vec();
+        let placement_revision = state.placement_revision;
         drop(state);
         let mut specs = vec![WindowSpec::new(WindowKey::MAIN, self.options.clone())];
         for float in floating {
@@ -398,6 +422,7 @@ impl DesktopApplication for DockApplication {
             );
             spec.position = Some(Point::new(float.bounds.x, float.bounds.y));
             spec.owner = Some(WindowKey::MAIN);
+            spec.placement_revision = placement_revision;
             specs.push(spec);
         }
         for spec in &specs {
@@ -436,6 +461,8 @@ impl DesktopApplication for DockApplication {
     }
     fn close_requested(&mut self, key: WindowKey) -> Result<(), String> {
         let mut state = self.state.borrow_mut();
+        state.drag = None;
+        state.drop_targets.remove(&DockWindowId(key.0));
         if key == WindowKey::MAIN {
             state.alive = false;
         } else if state.layout.root(DockWindowId(key.0)).is_some() {
@@ -448,10 +475,20 @@ impl DesktopApplication for DockApplication {
     }
     fn window_closed(&mut self, key: WindowKey) {
         self.windows.remove(&key);
-        self.state
-            .borrow_mut()
-            .native_bounds
-            .remove(&DockWindowId(key.0));
+        let mut state = self.state.borrow_mut();
+        let window = DockWindowId(key.0);
+        state.native_bounds.remove(&window);
+        state.native_geometry.remove(&window);
+        state.drop_targets.remove(&window);
+        if state.drag.as_ref().is_some_and(|drag| {
+            drag.source == window
+                || drag
+                    .target
+                    .as_ref()
+                    .is_some_and(|(target, _)| *target == window)
+        }) {
+            state.drag = None;
+        }
     }
 }
 
@@ -472,6 +509,12 @@ struct DockWindow {
     native_focused: bool,
     last_diagnostic: String,
     gap: f32,
+    desktop_pointer: Option<DesktopPointer>,
+    cross_drag_started: bool,
+    layout_status: WidgetId,
+    observed_revision: u64,
+    applied_placement_revision: u64,
+    layout_pending: bool,
 }
 
 impl DockWindow {
@@ -498,6 +541,8 @@ impl DockWindow {
             ("DockBack", "Закрепить"),
             ("DockReset", "Сбросить расположение"),
             ("DockRestore", "Показать панели"),
+            ("DockSaveLayout", "Сохранить"),
+            ("DockLoadLayout", "Восстановить"),
             ("Light", "Светлая тема"),
             ("Dark", "Тёмная тема"),
         ] {
@@ -526,6 +571,17 @@ impl DockWindow {
         };
         let root = ui.root();
         let dock = DockView::new(&mut ui, root, id).map_err(err)?;
+        let layout_status = ui.label(root, "", LayoutStyle::default()).map_err(err)?;
+        ui.set_text_style(
+            layout_status,
+            TextStyle {
+                font_size: Some(12.0),
+                tone: TextTone::Secondary,
+                wrap: false,
+                ..Default::default()
+            },
+        )
+        .map_err(err)?;
         Ok(Self {
             state,
             id,
@@ -543,6 +599,12 @@ impl DockWindow {
             native_focused: false,
             last_diagnostic: String::new(),
             gap,
+            desktop_pointer: None,
+            cross_drag_started: false,
+            layout_status,
+            observed_revision: 0,
+            applied_placement_revision: 0,
+            layout_pending: false,
         })
     }
 
@@ -596,6 +658,17 @@ impl DockWindow {
 
 impl DesktopApp for DockWindow {
     fn update(&mut self, viewport: Size, scale: f32) -> Result<(), String> {
+        self.sync_layout_revision()?;
+        if self.cross_drag_started
+            && self
+                .state
+                .borrow()
+                .drag
+                .as_ref()
+                .is_none_or(|drag| drag.source != self.id)
+        {
+            self.cancel_dock_drag()?;
+        }
         let mut state = self.state.borrow_mut();
         if self.id != DockWindowId::MAIN && state.layout.root(self.id).is_none() {
             return Ok(());
@@ -615,6 +688,27 @@ impl DesktopApp for DockWindow {
             &"DockRestore".into(),
             !state.layout.snapshot().closed.is_empty(),
         );
+        for command in ["DockSaveLayout", "DockLoadLayout"] {
+            self.ui
+                .commands_mut()
+                .set_enabled(&command.into(), state.layout_file.is_some());
+        }
+        let footer_height = 26.0_f32.min(viewport.height);
+        self.ui
+            .set_label(self.layout_status, &state.layout_status)
+            .map_err(err)?;
+        self.ui
+            .runtime
+            .apply(Mutation::SetStyle {
+                node: self.layout_status,
+                style: LayoutStyle {
+                    offset: Point::new(12.0, (viewport.height - footer_height).max(0.0)),
+                    width: Length::Px((viewport.width - 24.0).max(0.0)),
+                    height: Length::Px(footer_height),
+                    ..Default::default()
+                },
+            })
+            .map_err(err)?;
         self.ui.update(viewport).map_err(err)?;
         let mut top = 0.0;
         if let Some(mounted) = &mut self.ribbon {
@@ -647,12 +741,34 @@ impl DesktopApp for DockWindow {
             8.0_f32.min(viewport.width),
             content_top.min(viewport.height),
             (viewport.width - 16.0).max(0.0),
-            (viewport.height - content_top - 8.0).max(0.0),
+            (viewport.height - content_top - footer_height - 8.0).max(0.0),
         );
         let geometry = self
             .dock
             .update(&mut self.ui, &state.layout, bounds)
             .map_err(err)?;
+        let popup_open = self.ui.popup_open()
+            || geometry
+                .groups
+                .iter()
+                .any(|group| state.panes[&group.active].ui.popup_open());
+        if !popup_open && let Some(targets) = self.dock.drop_targets() {
+            state.drop_targets.insert(self.id, targets);
+        } else {
+            state.drop_targets.remove(&self.id);
+        }
+        state.refresh_drag_target();
+        let preview = state
+            .drag
+            .as_ref()
+            .and_then(|drag| drag.target.as_ref())
+            .filter(|(window, _)| *window == self.id)
+            .map(|(_, preview)| *preview);
+        if (state.drag.is_some() || self.dock.tab_drag().is_none())
+            && self.dock.set_external_preview(preview).is_err()
+        {
+            self.dock.set_external_preview(None).map_err(err)?;
+        }
         self.ui.update(viewport).map_err(err)?;
         self.scene = self.ui.base_scene().clone();
         for group in &geometry.groups {
@@ -709,6 +825,7 @@ impl DesktopApp for DockWindow {
             }
         }
         self.geometry = Some(geometry);
+        self.layout_pending = false;
         Ok(())
     }
     fn scene(&self) -> &Scene {
@@ -728,12 +845,50 @@ impl DesktopApp for DockWindow {
         let mut state = self.state.borrow_mut();
         let bounds = Rect::new(position.x, position.y, size.width, size.height);
         state.native_bounds.insert(self.id, bounds);
-        if self.id != DockWindowId::MAIN {
+        if self.id != DockWindowId::MAIN
+            && self.applied_placement_revision == state.placement_revision
+        {
             let _ = state.layout.update_floating_bounds(self.id, bounds);
         }
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
         self.handle_event(event)
+    }
+    fn desktop_geometry_changed(&mut self, geometry: WindowGeometry) {
+        let mut state = self.state.borrow_mut();
+        if state.native_geometry.get(&self.id).is_none_or(|old| {
+            old.client_size != geometry.client_size || old.scale != geometry.scale
+        }) {
+            state.drop_targets.remove(&self.id);
+        }
+        state.native_geometry.insert(self.id, geometry);
+        state.refresh_drag_target();
+    }
+    fn desktop_pointer_changed(&mut self, pointer: DesktopPointer) {
+        self.desktop_pointer = Some(pointer);
+    }
+    fn window_placement_applied(&mut self, revision: u64) {
+        self.applied_placement_revision = revision;
+    }
+    fn pointer_capture_lost(&mut self) -> Result<EventResponse, String> {
+        self.sync_layout_revision()?;
+        self.cancel_dock_drag()?;
+        self.ui.cancel_pointer_interaction().map_err(err)?;
+        let mut state = self.state.borrow_mut();
+        let panes = state.layout.window_panes(self.id).unwrap_or_default();
+        for pane in panes {
+            state
+                .panes
+                .get_mut(&pane)
+                .expect("catalog pane")
+                .ui
+                .cancel_pointer_interaction()
+                .map_err(err)?;
+        }
+        Ok(EventResponse {
+            redraw: true,
+            ..Default::default()
+        })
     }
     fn ime_target(&self) -> Option<WidgetId> {
         let pane = self.focused_pane()?;

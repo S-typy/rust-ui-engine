@@ -5,12 +5,28 @@ use std::time::Instant;
 
 impl DockWindow {
     pub(super) fn handle_event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
+        self.sync_layout_revision()?;
         // A retiring floating HWND can deliver focus/IME events after its pane
         // has already been transferred. It must not blur the new owner's arena.
         if self.id != DockWindowId::MAIN && self.state.borrow().layout.root(self.id).is_none() {
             return Ok(EventResponse::default());
         }
         let mut response = EventResponse::default();
+        if self.layout_pending {
+            // Pointer and accessibility coordinates belong to the old layout.
+            // Native lifecycle still follows the model's current pane owner.
+            response.redraw = true;
+            match event {
+                PlatformEvent::Input(InputEvent::WindowFocused(focused)) => {
+                    self.route_window_focus(focused, &mut response)?;
+                }
+                PlatformEvent::ImeCancel => {
+                    self.deliver_focused_lifecycle(PlatformEvent::ImeCancel, &mut response)?;
+                }
+                _ => {}
+            }
+            return Ok(response);
+        }
         match event {
             PlatformEvent::Input(input) => {
                 response.redraw = true;
@@ -62,6 +78,9 @@ impl DockWindow {
         input: InputEvent,
         response: &mut EventResponse,
     ) -> Result<(), String> {
+        if self.route_desktop_drag(&input)? {
+            return Ok(());
+        }
         if !matches!(
             input,
             InputEvent::PointerMoved { .. } | InputEvent::WindowFocused(true)
@@ -69,34 +88,7 @@ impl DockWindow {
             self.ui.dismiss_tooltip();
         }
         if let InputEvent::WindowFocused(focused) = input {
-            let was_focused = std::mem::replace(&mut self.native_focused, focused);
-            self.suppress_text = false;
-            if let Some(mounted) = &mut self.ribbon {
-                mounted
-                    .ribbon
-                    .handle_input(&mut self.ui, &input)
-                    .map_err(err)?;
-            }
-            let (_, requests) = self
-                .dock
-                .handle_input(&mut self.ui, &input, &self.state.borrow().layout)
-                .map_err(err)?;
-            self.apply_requests(requests)?;
-            self.ui.dispatch(input.clone()).map_err(err)?;
-            // NOACTIVATE creation reports an initial false state. A pane moved
-            // into that new window has not lost focus there, so forwarding it
-            // would incorrectly commit its retained editor session.
-            if (focused || was_focused)
-                && let Some(pane) = self.live_focused_pane()
-            {
-                self.deliver_pane(&pane, PlatformEvent::Input(input), response)?;
-                if !focused {
-                    self.deliver_pane(&pane, PlatformEvent::ImeCancel, response)?;
-                }
-            }
-            if !focused {
-                self.set_hovered_pane(None, response)?;
-            }
+            self.route_window_focus(focused, response)?;
             return Ok(());
         }
         if matches!(input, InputEvent::PointerLeft) {
@@ -232,6 +224,7 @@ impl DockWindow {
             .dock
             .handle_input(&mut self.ui, &input, &self.state.borrow().layout)
             .map_err(err)?;
+        self.update_desktop_drag(&input)?;
         if consumed {
             if matches!(input, InputEvent::PointerDown { .. }) {
                 self.state.borrow_mut().focus_pane(self.id, None)?;
@@ -270,6 +263,64 @@ impl DockWindow {
             self.deliver_pane(&pane, PlatformEvent::Input(input), response)?;
         } else {
             self.ui.dispatch(input).map_err(err)?;
+        }
+        Ok(())
+    }
+
+    fn route_window_focus(
+        &mut self,
+        focused: bool,
+        response: &mut EventResponse,
+    ) -> Result<(), String> {
+        let input = InputEvent::WindowFocused(focused);
+        let was_focused = std::mem::replace(&mut self.native_focused, focused);
+        self.suppress_text = false;
+        if let Some(mounted) = &mut self.ribbon {
+            mounted
+                .ribbon
+                .handle_input(&mut self.ui, &input)
+                .map_err(err)?;
+        }
+        let (_, requests) = self
+            .dock
+            .handle_input(&mut self.ui, &input, &self.state.borrow().layout)
+            .map_err(err)?;
+        self.apply_requests(requests)?;
+        self.ui.dispatch(input.clone()).map_err(err)?;
+        // Initial NOACTIVATE false belongs to the shell only. A retained pane
+        // newly moved here has not lost native focus in this window yet.
+        if focused || was_focused {
+            self.deliver_focused_lifecycle(PlatformEvent::Input(input), response)?;
+            if !focused {
+                self.deliver_focused_lifecycle(PlatformEvent::ImeCancel, response)?;
+            }
+        }
+        if !focused {
+            self.set_hovered_pane(None, response)?;
+        }
+        Ok(())
+    }
+
+    /// Focus and IME cancellation need ownership, not potentially stale bounds.
+    fn deliver_focused_lifecycle(
+        &mut self,
+        event: PlatformEvent,
+        response: &mut EventResponse,
+    ) -> Result<(), String> {
+        let mut state = self.state.borrow_mut();
+        let pane = state.focused.as_ref().and_then(|(window, pane)| {
+            (*window == self.id
+                && state.layout.window_for(pane) == Some(self.id)
+                && state
+                    .layout
+                    .root(self.id)
+                    .is_some_and(|root| active_in(root, pane)))
+            .then(|| pane.clone())
+        });
+        if let Some(pane) = pane
+            && let Some(form) = state.panes.get_mut(&pane)
+        {
+            merge(response, form.event(event)?);
         }
         Ok(())
     }
@@ -768,6 +819,205 @@ mod tests {
         assert_eq!(form.text(), "retained draft");
         assert_eq!(form.ui.accepted_value(editor), Some("retained draft"));
         assert_eq!(form.ui.runtime.focused(), None);
+    }
+
+    #[test]
+    fn pending_restore_routes_focus_loss_without_using_old_geometry() {
+        let mut window = fixture();
+        let id = pane("A");
+        window
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+            .unwrap();
+        click_editor(&mut window, &id);
+        window
+            .handle_event(PlatformEvent::Text("accepted on blur".into()))
+            .unwrap();
+        let editor = window.state.borrow().panes[&id].editor();
+        window
+            .state
+            .borrow_mut()
+            .command(DockWindowId::MAIN, "DockReset")
+            .unwrap();
+        window
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+            .unwrap();
+        assert!(window.layout_pending && window.geometry.is_none());
+        assert!(!window.native_focused);
+        let tab = window.dock.tab_widget(&id).unwrap();
+        assert!(window.ui.runtime.apply(Mutation::Focus(Some(tab))).is_err());
+        let state = window.state.borrow();
+        let form = &state.panes[&id];
+        assert_eq!(form.ui.accepted_value(editor), Some("accepted on blur"));
+        assert_eq!(form.ui.runtime.focused(), None);
+    }
+
+    #[test]
+    fn pending_restore_blocks_text_and_accessibility_but_delivers_ime_cancel() {
+        let mut window = fixture();
+        let id = pane("A");
+        window
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+            .unwrap();
+        click_editor(&mut window, &id);
+        window
+            .handle_event(PlatformEvent::Text("draft".into()))
+            .unwrap();
+        window.accessibility(1.0);
+        let (editor, target) = {
+            let mut state = window.state.borrow_mut();
+            let form = state.panes.get_mut(&id).unwrap();
+            form.ui
+                .ime_preedit("候補", Some((0, "候補".len())))
+                .unwrap();
+            (form.editor(), form.accessible.id(form.editor()).unwrap())
+        };
+        let old_point = editor_point(&window, &pane("B"));
+        window
+            .state
+            .borrow_mut()
+            .command(DockWindowId::MAIN, "DockReset")
+            .unwrap();
+        window
+            .handle_event(PlatformEvent::Text("must not arrive".into()))
+            .unwrap();
+        pointer(&mut window, old_point, true);
+        window
+            .handle_event(PlatformEvent::Accessibility(accesskit::ActionRequest {
+                action: accesskit::Action::SetValue,
+                target_tree: accesskit::TreeId::ROOT,
+                target_node: target,
+                data: Some(accesskit::ActionData::Value("must not arrive".into())),
+            }))
+            .unwrap();
+        assert!(window.layout_pending && window.geometry.is_none());
+        assert!(
+            window.state.borrow().panes[&id]
+                .ui
+                .document(editor)
+                .unwrap()
+                .composition()
+                .is_some()
+        );
+        window.handle_event(PlatformEvent::ImeCancel).unwrap();
+        let state = window.state.borrow();
+        let form = &state.panes[&id];
+        assert_eq!(form.text(), "draft");
+        assert_eq!(form.ui.accepted_value(editor), Some(""));
+        assert_eq!(form.ui.runtime.focused(), Some(editor));
+        assert!(form.ui.document(editor).unwrap().composition().is_none());
+    }
+
+    #[test]
+    fn restored_new_float_processes_initial_false_for_shell_without_committing_pane() {
+        let mut main = fixture();
+        let id = pane("A");
+        main.handle_event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+            .unwrap();
+        click_editor(&mut main, &id);
+        main.handle_event(PlatformEvent::Text("retained after restore".into()))
+            .unwrap();
+        let editor = main.state.borrow().panes[&id].editor();
+        let owner = {
+            let mut state = main.state.borrow_mut();
+            state
+                .request(DockWindowId::MAIN, DockRequest::Float(id.clone()))
+                .unwrap();
+            let snapshot = state.layout.snapshot();
+            state.layout.restore_snapshot(snapshot).unwrap();
+            state.placement_revision += 1;
+            state.layout.window_for(&id).unwrap()
+        };
+        let mut floating = DockWindow::new(
+            main.state.clone(),
+            owner,
+            "Restored",
+            None,
+            xaml::TitleBar::Native,
+            0.0,
+        )
+        .unwrap();
+        floating
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+            .unwrap();
+        assert!(floating.layout_pending && floating.geometry.is_none());
+        {
+            let state = main.state.borrow();
+            let form = &state.panes[&id];
+            assert_eq!(form.ui.runtime.focused(), Some(editor));
+            assert_eq!(form.ui.accepted_value(editor), Some(""));
+            assert_eq!(form.text(), "retained after restore");
+        }
+        floating.update(Size::new(640.0, 440.0), 1.0).unwrap();
+        let tab = floating.dock.tab_widget(&id).unwrap();
+        assert!(
+            floating
+                .ui
+                .runtime
+                .apply(Mutation::Focus(Some(tab)))
+                .is_err()
+        );
+        floating
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+            .unwrap();
+        floating
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+            .unwrap();
+        assert_eq!(
+            main.state.borrow().panes[&id].ui.accepted_value(editor),
+            Some("retained after restore")
+        );
+    }
+
+    #[test]
+    fn retired_float_cannot_deliver_pending_epoch_blur_or_ime_cancel_to_moved_pane() {
+        let mut main = fixture();
+        let id = pane("A");
+        main.handle_event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+            .unwrap();
+        click_editor(&mut main, &id);
+        main.handle_event(PlatformEvent::Text("retained draft".into()))
+            .unwrap();
+        main.state
+            .borrow_mut()
+            .request(DockWindowId::MAIN, DockRequest::Float(id.clone()))
+            .unwrap();
+        let owner = main.state.borrow().layout.window_for(&id).unwrap();
+        let mut floating = DockWindow::new(
+            main.state.clone(),
+            owner,
+            "Retiring",
+            None,
+            xaml::TitleBar::Native,
+            0.0,
+        )
+        .unwrap();
+        floating.update(Size::new(640.0, 440.0), 1.0).unwrap();
+        floating
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+            .unwrap();
+        let editor = {
+            let mut state = main.state.borrow_mut();
+            let form = state.panes.get_mut(&id).unwrap();
+            form.ui
+                .ime_preedit("候補", Some((0, "候補".len())))
+                .unwrap();
+            let editor = form.editor();
+            state.layout.redock_window(owner).unwrap();
+            state.reconcile_focus().unwrap();
+            state.placement_revision += 1;
+            editor
+        };
+        floating
+            .handle_event(PlatformEvent::Input(InputEvent::WindowFocused(false)))
+            .unwrap();
+        floating.handle_event(PlatformEvent::ImeCancel).unwrap();
+        let state = main.state.borrow();
+        let form = &state.panes[&id];
+        assert_eq!(state.focused, Some((DockWindowId::MAIN, id.clone())));
+        assert_eq!(form.ui.runtime.focused(), Some(editor));
+        assert_eq!(form.ui.accepted_value(editor), Some(""));
+        assert_eq!(form.text(), "retained draft");
+        assert!(form.ui.document(editor).unwrap().composition().is_some());
     }
 
     #[test]

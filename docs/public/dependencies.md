@@ -18,7 +18,9 @@
 | accesskit | `=0.25.1` | Семантическое дерево и actions | MIT OR Apache-2.0 |
 | accesskit_winit | `=0.34.1` | Native accessibility adapter | Apache-2.0 |
 | arboard | `=3.6.1` | Текстовый системный clipboard | MIT OR Apache-2.0 |
-| windows-sys | `=0.61.2`, только Windows | Системные DWM/Win32 API интегрированного заголовка | MIT OR Apache-2.0 |
+| windows-sys | `=0.61.2`, только Windows | Системные DWM/Win32 API заголовка, окон, мониторов и захвата указателя | MIT OR Apache-2.0 |
+| serde | `=1.0.229`, `derive` | Типизированное представление файла расположения docking | MIT OR Apache-2.0 |
+| serde_json | `=1.0.154`, `float_roundtrip` | Чтение и запись versioned JSON расположения docking | MIT OR Apache-2.0 |
 
 Версии и лицензии сверены с опубликованными пакетами:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/source/Cargo.toml),
@@ -32,7 +34,9 @@
 [AccessKit](https://docs.rs/crate/accesskit/0.25.1/source/Cargo.toml),
 [AccessKit winit](https://docs.rs/crate/accesskit_winit/0.34.1/source/Cargo.toml),
 [arboard](https://docs.rs/crate/arboard/3.6.1/source/Cargo.toml),
-[windows-sys](https://docs.rs/crate/windows-sys/0.61.2/source/Cargo.toml).
+[windows-sys](https://docs.rs/crate/windows-sys/0.61.2/source/Cargo.toml),
+[serde](https://docs.rs/crate/serde/1.0.229/source/Cargo.toml),
+[serde_json](https://docs.rs/crate/serde_json/1.0.154/source/Cargo.toml).
 `pollster` использует старую запись `Apache-2.0/MIT`, эквивалентную выбору одной
 из двух лицензий. Это преобразование отмечено отдельно в inventory.
 
@@ -60,6 +64,17 @@ Block, float layout, parser и serde Taffy не включены.
 `version_check`; wgpu/winit принадлежат renderer и примеру. Ни GPU-типы, ни
 типы Taffy не входят в независимые API core. Text/controls/TreeGrid также не
 зависят от winit/wgpu; native host находится в отдельном пакете.
+
+В `ui-controls` Serde и serde_json обслуживают только переносимый формат
+расположения docking: идентификаторы панелей, дерево разделителей, порядок
+вкладок и геометрию плавающих окон. Файлового I/O в controls нет. У serde_json
+включены стандартный `std` и `float_roundtrip`; стандартная защита глубины
+парсера сохранена, `unbounded_depth` и `arbitrary_precision` не включены.
+Версия serde уже присутствовала в lockfile; новый JSON codec добавляет
+`serde_json 1.0.154`, `itoa 1.0.18` и `zmij 1.0.23`. Тексты MIT/Apache-2.0
+для serde_json и itoa, MIT для zmij проверены в архивах пакетов и включены
+в source-license inventory. Это библиотеки формата данных и преобразования
+чисел, без UI-компонентов или ресурсов тем.
 
 Parley включает `system` и `complex-scripts`; Swash — `std`, `scale`, `render`,
 default features обеих библиотек отключены. Shaping/font parsing/rasterization
@@ -150,8 +165,8 @@ metadata не доказывает компиляцию этой зависим�
 заменяет проверку назначения новой библиотеки; успешная автоматическая проверка
 не равна проверке всех исходников и условий бинарной поставки.
 
-Инвентаризация alpha от 2026-10-09 соответствует текущему Cargo.lock: **349**
-сторонних registry packages и девять workspace packages. Для 303 пакетов
+Инвентаризация от 2026-10-15 соответствует текущему Cargo.lock: **352**
+сторонних registry packages и 11 workspace packages. Для 306 пакетов
 найдены и хешированы license/notice files в архиве; для ещё 45 проверены
 материалы точного upstream revision. Единственный прежний manifest-only случай —
 `dispatch 0.2.0` с декларацией MIT. Его attribution packaging и условия Apple SDK,
@@ -159,7 +174,7 @@ metadata не доказывает компиляцию этой зависим�
 AccessKit evidence включает LICENSE.chromium и AUTHORS наряду с MIT/Apache
 текстами: одной SPDX-декларации manifest недостаточно для упаковки notices.
 
-Финальная проверка `cargo deny --locked --log-level error check` этого
+Историческая проверка `cargo deny --locked --log-level error check`
 349-package snapshot завершилась 2026-10-09 с exit code 0 после проверки и
 разрешения BSL-1.0. Режим error не выдаёт счётчик duplicate warnings;
 это не утверждение об их отсутствии. Исторический M1 audit 239 пакетов

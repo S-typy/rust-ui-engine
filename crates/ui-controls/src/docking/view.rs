@@ -3,7 +3,7 @@
 use super::model::*;
 use crate::{
     ButtonChrome, ButtonContentLayout, ButtonIcon, ButtonStyle, ControlError, Controls, IconSymbol,
-    Role,
+    Role, TextStyle,
 };
 use rust_desktop_ui_core::{
     Axis, Color, Edges, InputEvent, Key, LayoutKind, LayoutStyle, Length, Modifiers, Mutation,
@@ -34,6 +34,46 @@ pub enum DockRequest {
 pub struct DockDropPreview {
     pub placement: DockPlacement,
     pub bounds: Rect,
+}
+
+/// A captured tab gesture. `dragging` becomes true only after the five-pixel
+/// threshold; a simple press must not move a pane to another native window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DockTabDrag {
+    pub pane: DockPaneId,
+    pub widget: WidgetId,
+    pub dragging: bool,
+}
+
+/// Immutable window-local drop geometry, independent of a Controls arena.
+/// Refresh this projection after layout changes and validate the live model
+/// before committing a placement calculated from a previously stored snapshot.
+#[derive(Clone, Debug)]
+pub struct DockDropTargets {
+    window: DockWindowId,
+    bounds: Rect,
+    groups: Vec<DockGroupGeometry>,
+    tab_bounds: HashMap<DockPaneId, Rect>,
+}
+
+impl DockDropTargets {
+    pub fn window(&self) -> DockWindowId {
+        self.window
+    }
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+    /// Accepts any pane, including one owned by another native window.
+    /// Positions and preview bounds use logical coordinates of this window.
+    pub fn target_at(&self, position: Point) -> Option<DockDropPreview> {
+        drop_target(
+            self.window,
+            self.bounds,
+            &self.groups,
+            &self.tab_bounds,
+            position,
+        )
+    }
 }
 
 struct GroupChrome {
@@ -89,6 +129,7 @@ pub struct DockView {
     gesture: Option<Gesture>,
     preview: Option<DockDropPreview>,
     overlay: Scene,
+    preview_accent: Color,
     pending_tab_focus: Option<DockPaneId>,
 }
 
@@ -124,6 +165,7 @@ impl DockView {
             gesture: None,
             preview: None,
             overlay: Scene::default(),
+            preview_accent: ui.theme().tokens().focus,
             pending_tab_focus: None,
         })
     }
@@ -145,6 +187,89 @@ impl DockView {
     }
     pub fn is_interacting(&self) -> bool {
         self.gesture.is_some()
+    }
+    /// Read after routing the current event through `handle_input`, which
+    /// discards gestures whose capture was lost. Splitter gestures return None.
+    pub fn tab_drag(&self) -> Option<DockTabDrag> {
+        match &self.gesture {
+            Some(Gesture::Tab {
+                pane,
+                widget,
+                dragging,
+                ..
+            }) => Some(DockTabDrag {
+                pane: pane.clone(),
+                widget: *widget,
+                dragging: *dragging,
+            }),
+            _ => None,
+        }
+    }
+    /// Copy the latest geometry for a coordinator that cannot borrow this view
+    /// while routing input through another native window.
+    pub fn drop_targets(&self) -> Option<DockDropTargets> {
+        let geometry = self.geometry.as_ref()?;
+        Some(DockDropTargets {
+            window: self.window,
+            bounds: geometry.bounds,
+            groups: geometry.groups.clone(),
+            tab_bounds: self.tab_bounds.clone(),
+        })
+    }
+    pub fn drop_target_at(&self, position: Point) -> Option<DockDropPreview> {
+        let geometry = self.geometry.as_ref()?;
+        drop_target(
+            self.window,
+            geometry.bounds,
+            &geometry.groups,
+            &self.tab_bounds,
+            position,
+        )
+    }
+    /// Replace only the painted drop preview, without focus, capture or model
+    /// changes. `None` also hides a source window's local preview during a drag.
+    /// Invalid or stale geometry is rejected without replacing the old preview.
+    pub fn set_external_preview(
+        &mut self,
+        preview: Option<DockDropPreview>,
+    ) -> Result<(), ControlError> {
+        if preview.is_some_and(|preview| !self.valid_preview(preview)) {
+            return Err(ControlError::Invalid(
+                "Drop preview does not match this window's current geometry".into(),
+            ));
+        }
+        self.preview = preview;
+        self.paint_preview(self.preview_accent);
+        Ok(())
+    }
+    /// End only a tab gesture, releasing its capture and clearing its preview.
+    /// Returns the pane only after the drag threshold and while capture still
+    /// belongs to this tab. Never emits Move/Float; the coordinator owns commit.
+    /// A splitter gesture and another widget's capture are left untouched.
+    pub fn finish_tab_drag(
+        &mut self,
+        ui: &mut Controls,
+    ) -> Result<Option<DockPaneId>, ControlError> {
+        if !matches!(self.gesture, Some(Gesture::Tab { .. })) {
+            return Ok(None);
+        }
+        let Some(Gesture::Tab {
+            pane,
+            widget,
+            dragging,
+            ..
+        }) = self.gesture.take()
+        else {
+            unreachable!("matched tab gesture");
+        };
+        let captured = ui.runtime.captured() == Some(widget);
+        if captured {
+            ui.runtime.apply(Mutation::CapturePointer(None))?;
+        }
+        self.pending_tab_focus = None;
+        self.preview = None;
+        self.overlay.clear();
+        Ok((dragging && captured).then_some(pane))
     }
     pub fn tab_widget(&self, pane: &DockPaneId) -> Option<WidgetId> {
         self.tabs.get(pane).copied()
@@ -324,6 +449,14 @@ impl DockView {
         }
         ui.set_custom_scene(self.root, scene)?;
         self.geometry = Some(geometry.clone());
+        self.preview_accent = ui.theme().tokens().focus;
+        if self
+            .preview
+            .is_some_and(|preview| !self.valid_preview(preview))
+        {
+            self.preview = None;
+        }
+        self.paint_preview(self.preview_accent);
         if let Some(pane) = self.pending_tab_focus.take()
             && self.tab_bounds.contains_key(&pane)
         {
@@ -358,8 +491,8 @@ impl DockView {
             .iter()
             .map(|id| {
                 let pane = layout.pane(id).expect("validated pane");
-                ui.measure_text(&pane.title, 4096.0, false)
-                    .map(|size| (size.width + 24.0).clamp(84.0, 180.0))
+                measure_title(ui, &pane.title, id == &group.active)
+                    .map(|width| (width + 24.0).clamp(84.0, 180.0))
             })
             .collect::<Result<_, _>>()?;
         let overflow = desired.iter().sum::<f32>() > (w - 6.0 - base as f32 * 26.0).max(0.0);
@@ -439,7 +572,7 @@ impl DockView {
                     }
                 })
                 .unwrap_or("");
-            let label = fit_title(ui, title, (width - 16.0).max(0.0))?;
+            let label = fit_title(ui, title, (width - 16.0).max(0.0), pane == &group.active)?;
             ui.set_label(widget, label)?;
             ui.set_checked(widget, pane == &group.active)?;
             set_bounds(ui, widget, Rect::new(x, 0.0, width, h), Point::ZERO)?;
@@ -475,7 +608,7 @@ impl DockView {
                 key: Key::Escape,
                 ..
             }
-        ) && self.gesture.is_some()
+        ) && (self.gesture.is_some() || self.preview.is_some())
         {
             return Ok((true, self.cancel(ui, layout)?));
         }
@@ -567,7 +700,7 @@ impl DockView {
                     *dragging |=
                         (position.x - start.x).powi(2) + (position.y - start.y).powi(2) >= 25.0;
                     if *dragging {
-                        self.preview = self.target_at(*position);
+                        self.preview = self.drop_target_at(*position);
                         self.paint_preview(ui.theme().tokens().focus);
                     }
                 }
@@ -588,7 +721,7 @@ impl DockView {
                         dragging: true,
                         ..
                     } => {
-                        if let Some(target) = self.target_at(*position) {
+                        if let Some(target) = self.drop_target_at(*position) {
                             vec![DockRequest::Move {
                                 pane,
                                 placement: target.placement,
@@ -743,65 +876,32 @@ impl DockView {
         Ok(requests)
     }
 
-    fn target_at(&self, position: Point) -> Option<DockDropPreview> {
-        let geometry = self.geometry.as_ref()?;
-        let bounds = geometry.bounds;
-        if !bounds.contains(position.x, position.y) {
-            return None;
-        }
-        let group = geometry
-            .groups
-            .iter()
-            .find(|group| group.bounds.contains(position.x, position.y));
-        // The first row of tabs also lies at the workspace's outer edge. Tab
-        // insertion must win there, otherwise ordinary reordering creates a split.
-        if let Some(group) = group.filter(|group| group.tab_strip.contains(position.x, position.y))
+    fn valid_preview(&self, preview: DockDropPreview) -> bool {
+        let Some(geometry) = &self.geometry else {
+            return false;
+        };
+        if !preview.bounds.is_valid() || preview.bounds.width <= 0.0 || preview.bounds.height <= 0.0
         {
-            let index = group
-                .panes
-                .iter()
-                .enumerate()
-                .find_map(|(index, pane)| {
-                    self.tab_bounds
-                        .get(pane)
-                        .filter(|rect| position.x < rect.x + rect.width / 2.0)
-                        .map(|_| index)
-                })
-                .unwrap_or(group.panes.len());
-            return Some(DockDropPreview {
-                placement: DockPlacement::Tab {
-                    group: group.id,
-                    index,
-                },
-                bounds: group.bounds,
-            });
+            return false;
         }
-        if let Some(edge) = edge_at(bounds, position, 18.0) {
-            return Some(DockDropPreview {
-                placement: DockPlacement::Root {
-                    window: self.window,
-                    edge,
-                },
-                bounds: edge_half(bounds, edge),
-            });
-        }
-        let group = group?;
-        if let Some(edge) = edge_at(group.content, position, 48.0) {
-            Some(DockDropPreview {
-                placement: DockPlacement::Split {
-                    group: group.id,
-                    edge,
-                },
-                bounds: edge_half(group.bounds, edge),
-            })
-        } else {
-            Some(DockDropPreview {
-                placement: DockPlacement::Tab {
-                    group: group.id,
-                    index: group.panes.len(),
-                },
-                bounds: group.bounds,
-            })
+        match preview.placement {
+            DockPlacement::Tab { group, index } => geometry.groups.iter().any(|candidate| {
+                candidate.id == group
+                    && index <= candidate.panes.len()
+                    && preview.bounds == candidate.bounds
+            }),
+            DockPlacement::Split { group, edge } => geometry.groups.iter().any(|candidate| {
+                candidate.id == group && preview.bounds == edge_half(candidate.bounds, edge)
+            }),
+            DockPlacement::Root { window, edge } => {
+                window == self.window
+                    && preview.bounds
+                        == if geometry.groups.is_empty() {
+                            geometry.bounds
+                        } else {
+                            edge_half(geometry.bounds, edge)
+                        }
+            }
         }
     }
 
@@ -817,6 +917,80 @@ impl DockView {
             self.overlay
                 .rounded_stroke(preview.bounds, preview.bounds, 5.0, 2.0, accent);
         }
+    }
+}
+
+fn drop_target(
+    window: DockWindowId,
+    bounds: Rect,
+    groups: &[DockGroupGeometry],
+    tab_bounds: &HashMap<DockPaneId, Rect>,
+    position: Point,
+) -> Option<DockDropPreview> {
+    if !position.is_finite()
+        || bounds.width <= 0.0
+        || bounds.height <= 0.0
+        || !bounds.contains(position.x, position.y)
+    {
+        return None;
+    }
+    // An empty main workspace is a full-size target even away from its edges.
+    if groups.is_empty() {
+        return Some(DockDropPreview {
+            placement: DockPlacement::Root {
+                window,
+                edge: DockEdge::Right,
+            },
+            bounds,
+        });
+    }
+    let group = groups
+        .iter()
+        .find(|group| group.bounds.contains(position.x, position.y));
+    // Tab insertion wins over an outer edge so reordering does not create splits.
+    if let Some(group) = group.filter(|group| group.tab_strip.contains(position.x, position.y)) {
+        let index = group
+            .panes
+            .iter()
+            .enumerate()
+            .find_map(|(index, pane)| {
+                tab_bounds
+                    .get(pane)
+                    .filter(|rect| position.x < rect.x + rect.width / 2.0)
+                    .map(|_| index)
+            })
+            .unwrap_or(group.panes.len());
+        return Some(DockDropPreview {
+            placement: DockPlacement::Tab {
+                group: group.id,
+                index,
+            },
+            bounds: group.bounds,
+        });
+    }
+    if let Some(edge) = edge_at(bounds, position, 18.0) {
+        return Some(DockDropPreview {
+            placement: DockPlacement::Root { window, edge },
+            bounds: edge_half(bounds, edge),
+        });
+    }
+    let group = group?;
+    if let Some(edge) = edge_at(group.content, position, 48.0) {
+        Some(DockDropPreview {
+            placement: DockPlacement::Split {
+                group: group.id,
+                edge,
+            },
+            bounds: edge_half(group.bounds, edge),
+        })
+    } else {
+        Some(DockDropPreview {
+            placement: DockPlacement::Tab {
+                group: group.id,
+                index: group.panes.len(),
+            },
+            bounds: group.bounds,
+        })
     }
 }
 
@@ -903,11 +1077,29 @@ fn set_bounds(
     })
 }
 
-fn fit_title(ui: &mut Controls, title: &str, width: f32) -> Result<String, ControlError> {
-    if ui.measure_text(title, 4096.0, false)?.width <= width {
+fn measure_title(ui: &mut Controls, title: &str, selected: bool) -> Result<f32, ControlError> {
+    ui.measure_styled_text(
+        title,
+        4096.0,
+        TextStyle {
+            font_weight: Some(if selected { 600 } else { 400 }),
+            wrap: false,
+            ..Default::default()
+        },
+    )
+    .map(|size| size.width)
+}
+
+fn fit_title(
+    ui: &mut Controls,
+    title: &str,
+    width: f32,
+    selected: bool,
+) -> Result<String, ControlError> {
+    if measure_title(ui, title, selected)? <= width {
         return Ok(title.to_owned());
     }
-    if ui.measure_text("…", 4096.0, false)?.width > width {
+    if measure_title(ui, "…", selected)? > width {
         return Ok(String::new());
     }
     let boundaries = TextDocument::new(title.to_owned()).grapheme_boundaries();
@@ -917,7 +1109,7 @@ fn fit_title(ui: &mut Controls, title: &str, width: f32) -> Result<String, Contr
     while low <= high {
         let mid = low + (high - low) / 2;
         let candidate = format!("{}…", &title[..boundaries[mid]]);
-        if ui.measure_text(&candidate, 4096.0, false)?.width <= width {
+        if measure_title(ui, &candidate, selected)? <= width {
             result = candidate;
             low = mid + 1;
         } else if mid == 0 {

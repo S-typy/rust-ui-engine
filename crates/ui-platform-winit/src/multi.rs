@@ -10,13 +10,19 @@ impl WindowKey {
     pub const MAIN: Self = Self(0);
 }
 
-/// Initial native placement. Existing windows retain user-controlled placement.
+/// Native placement. Existing windows retain user-controlled placement until
+/// `placement_revision` changes explicitly.
 #[derive(Clone, Debug)]
 pub struct WindowSpec {
     pub key: WindowKey,
     pub options: RunOptions,
     /// Initial outer position in logical screen coordinates.
     pub position: Option<Point>,
+    /// Change this value to apply position and size to an existing
+    /// window once. Unchanged revisions preserve interactive native placement.
+    /// Windows clamps requested placement to the nearest monitor's work area.
+    /// Minimum size and native owner are fixed for a window's lifetime.
+    pub placement_revision: u64,
     /// A native owner on Windows; it is not a child-window relationship.
     pub owner: Option<WindowKey>,
     /// Whether a newly created window may activate. False avoids stealing focus.
@@ -29,6 +35,7 @@ impl WindowSpec {
             key,
             options,
             position: None,
+            placement_revision: 0,
             owner: None,
             activate: false,
         }

@@ -23,6 +23,8 @@ mod appearance;
 #[cfg(test)]
 mod appearance_tests;
 mod button_presentation;
+#[cfg(test)]
+mod pointer_cancel_tests;
 mod popup;
 #[cfg(test)]
 mod scene_layer_tests;
@@ -1892,6 +1894,25 @@ impl Controls {
         add_stats(&mut self.total, delta);
         Ok(delta)
     }
+    /// Cancel native pointer capture without synthesizing a button release or
+    /// focus loss. Mouse selection and presses stop; keyboard presses, popup
+    /// levels, editor drafts, accepted values and IME composition remain intact.
+    /// The next update repaints cleared hover, pressed and tooltip feedback.
+    pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
+        self.selecting = None;
+        if !self.keyboard_pressed {
+            self.pressed = None;
+        }
+        self.runtime.apply(Mutation::CapturePointer(None))?;
+        let report = self.runtime.dispatch(InputEvent::PointerLeft);
+        self.dismiss_tooltip();
+        self.scene_dirty = true;
+        if let Some(error) = report.errors.into_iter().next() {
+            return Err(error.into());
+        }
+        self.refresh_paints()
+    }
+
     pub fn dispatch(&mut self, event: InputEvent) -> Result<(), ControlError> {
         self.tooltip_before_input(&event);
         if let InputEvent::WindowFocused(focused) = &event {

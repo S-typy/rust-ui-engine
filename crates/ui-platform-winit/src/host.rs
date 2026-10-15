@@ -1,6 +1,6 @@
 use crate::{
     ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, RunOptions, WindowChrome,
-    chrome::NativeChrome, input,
+    chrome::NativeChrome, desktop, input,
 };
 use accesskit::{Node, NodeId, TreeId};
 use accesskit_winit::{
@@ -55,6 +55,7 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
         proxy,
         window: None,
         chrome: None,
+        capture: None,
         renderer: None,
         adapter: None,
         accessible_nodes: HashMap::new(),
@@ -83,6 +84,7 @@ struct Host<A> {
     proxy: EventLoopProxy<AccessibilityEvent>,
     window: Option<Arc<Window>>,
     chrome: Option<NativeChrome>,
+    capture: Option<desktop::CaptureObserver>,
     renderer: Option<GpuRenderer>,
     adapter: Option<Adapter>,
     accessible_nodes: HashMap<NodeId, Node>,
@@ -124,18 +126,20 @@ impl<A: DesktopApp> Host<A> {
 
     fn geometry_changed(&mut self) {
         let Some(window) = &self.window else { return };
-        let Ok(position) = window.outer_position() else {
-            return;
-        };
-        let scale = window.scale_factor();
-        let position = position.to_logical::<f32>(scale);
-        let size = window.inner_size().to_logical::<f32>(scale);
-        if size.width > 0.0 && size.height > 0.0 {
-            self.app.window_geometry_changed(
-                Point::new(position.x, position.y),
-                Size::new(size.width, size.height),
-                scale as f32,
-            );
+        desktop::notify_geometry(window, &mut self.app);
+    }
+
+    fn drain_capture_loss(&mut self, event_loop: &ActiveEventLoop) {
+        if self
+            .capture
+            .as_ref()
+            .is_some_and(|capture| capture.take_lost())
+        {
+            match self.app.pointer_capture_lost() {
+                Ok(response) => self.effects(event_loop, response),
+                Err(error) => self.fail(event_loop, error),
+            }
+            self.sync_ime(event_loop);
         }
     }
 
@@ -419,6 +423,13 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
                 Err(error) => eprintln!("Using native title bar: {error}"),
             }
         }
+        match desktop::CaptureObserver::attach(window.clone()) {
+            Ok(capture) => self.capture = Some(capture),
+            Err(error) => {
+                self.fail(event_loop, error);
+                return;
+            }
+        }
         // AccessKit requires creating its adapter before the native window becomes visible.
         self.adapter = Some(Adapter::with_event_loop_proxy(
             event_loop,
@@ -428,6 +439,7 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
         self.accessible_nodes.clear();
         window.set_visible(true);
         self.window = Some(window);
+        self.app.window_placement_applied(0);
         self.geometry_changed();
         self.initialize_renderer(event_loop);
     }
@@ -440,10 +452,15 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
         self.adapter = None;
         self.renderer = None;
         self.chrome = None;
+        self.capture = None;
         self.window = None;
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AccessibilityEvent) {
+        self.drain_capture_loss(event_loop);
+        if self.failure.is_some() {
+            return;
+        }
         if self.window.as_ref().map(|w| w.id()) != Some(event.window_id) {
             return;
         }
@@ -463,9 +480,35 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        self.drain_capture_loss(event_loop);
+        if self.failure.is_some() {
+            return;
+        }
         let Some(window) = self.window.clone().filter(|w| w.id() == id) else {
             return;
         };
+        let pointer_position = match &event {
+            WindowEvent::CursorMoved { position, .. } => Some((position.x, position.y)),
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => Some(
+                self.capture
+                    .as_ref()
+                    .and_then(|capture| capture.pointer_position(&event, &window))
+                    .unwrap_or(self.cursor),
+            ),
+            _ => None,
+        };
+        if let Some(context) = pointer_position.and_then(|position| {
+            desktop::pointer(
+                &window,
+                position,
+                std::iter::once((crate::WindowKey::MAIN, window.as_ref())),
+            )
+        }) {
+            self.app.desktop_pointer_changed(context);
+        }
+        if let Some(position) = pointer_position {
+            self.cursor = position;
+        }
         if let Some(adapter) = &mut self.adapter {
             adapter.process_event(&window, &event);
         }
@@ -615,6 +658,10 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        self.drain_capture_loss(event_loop);
+        if self.failure.is_some() {
+            return;
+        }
         let now = Instant::now();
         if self.smoke_deadline.is_some_and(|at| at <= now) {
             self.fail(

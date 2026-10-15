@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
   "review_date": "2026-10-15",
-  "cargo_lock_sha256": "598effc38afaaa6298344a57411ece93aa11a6529d1aefc327b4e2149363d31c",
+  "cargo_lock_sha256": "4a4c80df4b715566743b91e90cd7a53a8a9ced65ca186baa975c42d8555033c1",
   "scope": "All resolved registry packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
   "features_scope": "Resolution features reported by cargo metadata for all targets; verify actual compilation features with cargo tree for the selected package and target.",
   "license_scope": "Manifest SPDX declarations, package license/notice file hashes and selected exact-revision upstream evidence. Not a line-by-line copyright or binary redistribution clearance.",
-  "registry_package_count": 349,
+  "registry_package_count": 352,
   "packages": [
     {
       "license_files": [],
@@ -6338,6 +6338,34 @@
       ]
     },
     {
+      "license_files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ],
+      "upstream_license_evidence": [],
+      "source_revision": "af77385d0daf4d0e949e81f2588be2e44f69f086",
+      "path_in_source_repository": "",
+      "native_source_or_archive_files": [],
+      "name": "itoa",
+      "version": "1.0.18",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+      "repository": "https://github.com/dtolnay/itoa",
+      "license_declared": "MIT OR Apache-2.0",
+      "license_spdx": "MIT OR Apache-2.0",
+      "rust_version_declared": "1.68",
+      "features_all_targets": [],
+      "links": null,
+      "build_scripts": [],
+      "dependencies": []
+    },
+    {
       "name": "jni",
       "version": "0.22.4",
       "source": "registry+https://github.com/rust-lang/crates.io-index",
@@ -12436,6 +12464,86 @@
         },
         {
           "package": "syn@3.0.6",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "license_files": [
+        {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ],
+      "upstream_license_evidence": [],
+      "source_revision": "20572a6d066958542d79cdd6cf1a7cd9f0c8e1f8",
+      "path_in_source_repository": "",
+      "native_source_or_archive_files": [],
+      "name": "serde_json",
+      "version": "1.0.154",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6",
+      "repository": "https://github.com/serde-rs/json",
+      "license_declared": "MIT OR Apache-2.0",
+      "license_spdx": "MIT OR Apache-2.0",
+      "rust_version_declared": "1.71",
+      "features_all_targets": [
+        "default",
+        "float_roundtrip",
+        "std"
+      ],
+      "links": null,
+      "build_scripts": [
+        "build.rs"
+      ],
+      "dependencies": [
+        {
+          "package": "itoa@1.0.18",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "memchr@2.8.3",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "serde@1.0.229",
+          "kinds": [
+            {
+              "kind": null,
+              "target": "cfg(any())"
+            }
+          ]
+        },
+        {
+          "package": "serde_core@1.0.229",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "zmij@1.0.23",
           "kinds": [
             {
               "kind": null,
@@ -20167,6 +20275,32 @@
           ]
         }
       ]
+    },
+    {
+      "license_files": [
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ],
+      "upstream_license_evidence": [],
+      "source_revision": "7b7cc48b58028e8af7be87e94c0c1c8936f1a57c",
+      "path_in_source_repository": "",
+      "native_source_or_archive_files": [],
+      "name": "zmij",
+      "version": "1.0.23",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b",
+      "repository": "https://github.com/dtolnay/zmij",
+      "license_declared": "MIT",
+      "license_spdx": "MIT",
+      "rust_version_declared": "1.71",
+      "features_all_targets": [],
+      "links": null,
+      "build_scripts": [
+        "build.rs"
+      ],
+      "dependencies": []
     },
     {
       "license_files": [

@@ -2,6 +2,7 @@
 //! Accessibility bounds and IME anchors are updated on every rendered frame and DPI change.
 
 mod chrome;
+mod desktop;
 mod host;
 mod ime;
 mod input;
@@ -10,6 +11,7 @@ mod multi_host;
 
 pub use accesskit;
 pub use chrome::{TitleBar, WindowChrome};
+pub use desktop::{DesktopPointer, WindowGeometry};
 pub use host::run;
 pub use multi::{DesktopApplication, WindowKey, WindowSpec, run_multi};
 use rust_desktop_ui_core::{InputEvent, Rect, Scene, Size};
@@ -80,6 +82,29 @@ pub trait DesktopApp {
         scale: f32,
     ) {
         let _ = (position, size, scale);
+    }
+    /// A requested native placement is applied. Called before its geometry
+    /// notification, including initial creation (revision zero for `run`).
+    /// Applications may ignore stale geometry while awaiting a newer revision.
+    fn window_placement_applied(&mut self, revision: u64) {
+        let _ = revision;
+    }
+    /// Screen geometry for transforming points between native windows. The
+    /// client origin is physical; client size and outer position are logical.
+    /// This callback is omitted where the window system hides global positions.
+    fn desktop_geometry_changed(&mut self, geometry: WindowGeometry) {
+        let _ = geometry;
+    }
+    /// Windows supplies this immediately before each pointer move, button or
+    /// wheel event. Hit testing follows native stacking and client boundaries,
+    /// including during capture. Other platforms do not supply this context yet.
+    fn desktop_pointer_changed(&mut self, pointer: DesktopPointer) {
+        let _ = pointer;
+    }
+    /// Native capture was cancelled or transferred. Normal release after the
+    /// final mouse-up does not call this method. No pointer-up is synthesized.
+    fn pointer_capture_lost(&mut self) -> Result<EventResponse, String> {
+        Ok(EventResponse::default())
     }
     /// A caret in logical client coordinates. `None` disables native IME input.
     fn ime_cursor(&self) -> Option<Rect> {

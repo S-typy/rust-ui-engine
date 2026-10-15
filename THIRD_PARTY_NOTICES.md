@@ -1,7 +1,7 @@
 # Third-party notices
 
 Snapshot: 2026-10-15. The project code is licensed under Apache-2.0. Dependencies
-retain the licenses declared below. The table covers all 349 registry packages in
+retain the licenses declared below. The table covers all 352 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
 
@@ -158,6 +158,7 @@ not constitute a complete binary redistribution review.
 | icu_segmenter | 2.3.0 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/icu_segmenter/2.3.0/source/LICENSE) |
 | icu_segmenter_data | 2.3.0 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/icu_segmenter_data/2.3.0/source/LICENSE) |
 | indexmap | 2.14.2 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/indexmap/2.14.2/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/indexmap/2.14.2/source/LICENSE-MIT) |
+| itoa | 1.0.18 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/itoa/1.0.18/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/itoa/1.0.18/source/LICENSE-MIT) |
 | jni | 0.22.4 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/jni-rs/jni-rs/5ae9458a4ec44c5318f37ddc7569c1d4ae8a69e7/LICENSE-MIT) |
 | jni-macros | 0.22.4 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/jni-rs/jni-rs/33045a124105c939d1e2cbdcb5a39e5d868ffa03/LICENSE-MIT) |
 | jni-sys | 0.3.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/jni-sys/0.3.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/jni-sys/0.3.1/source/LICENSE-MIT) |
@@ -271,6 +272,7 @@ not constitute a complete binary redistribution review.
 | serde | 1.0.229 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/serde/1.0.229/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/serde/1.0.229/source/LICENSE-MIT) |
 | serde_core | 1.0.229 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/serde_core/1.0.229/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/serde_core/1.0.229/source/LICENSE-MIT) |
 | serde_derive | 1.0.229 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/serde_derive/1.0.229/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/serde_derive/1.0.229/source/LICENSE-MIT) |
+| serde_json | 1.0.154 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/serde_json/1.0.154/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/serde_json/1.0.154/source/LICENSE-MIT) |
 | serde_repr | 0.1.21 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/serde_repr/0.1.21/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/serde_repr/0.1.21/source/LICENSE-MIT) |
 | shlex | 2.0.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/shlex/2.0.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/shlex/2.0.1/source/LICENSE-MIT) |
 | signal-hook-registry | 1.4.8 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/signal-hook-registry/1.4.8/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/signal-hook-registry/1.4.8/source/LICENSE-MIT) |
@@ -391,6 +393,7 @@ not constitute a complete binary redistribution review.
 | zerotrie | 0.2.5 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/zerotrie/0.2.5/source/LICENSE) |
 | zerovec | 0.11.8 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/zerovec/0.11.8/source/LICENSE) |
 | zerovec-derive | 0.11.6 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/zerovec-derive/0.11.6/source/LICENSE) |
+| zmij | 1.0.23 | MIT | [LICENSE-MIT](https://docs.rs/crate/zmij/1.0.23/source/LICENSE-MIT) |
 | zvariant | 5.15.0 | MIT | [LICENSE](https://docs.rs/crate/zvariant/5.15.0/source/LICENSE) |
 | zvariant_derive | 5.15.0 | MIT | [LICENSE](https://docs.rs/crate/zvariant_derive/5.15.0/source/LICENSE) |
 | zvariant_utils | 4.2.0 | MIT | [LICENSE](https://docs.rs/crate/zvariant_utils/4.2.0/source/LICENSE) |

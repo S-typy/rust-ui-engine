@@ -77,13 +77,26 @@ The same retained editors survive these placement changes.
 cargo run --release --locked -p xaml-form -- --docking
 cargo run --release --locked -p xaml-form -- --docking --float-pane Properties
 cargo run --release --locked -p xaml-form -- --docking --dark
+cargo run --release --locked -p xaml-form -- --docking --layout-file "layouts/workspace.json"
 ```
 
 Drag tabs to reorder or dock beside another group; drag splitters to resize.
-The panel header and Ribbon provide floating, redocking and restoration actions.
-Direct dragging between separate native windows, auto-hide and a layout file
-format remain outside this initial profile. See the [docking contract](docs/public/docking.md)
-for model, host lifecycle and current validation limits.
+On Windows, tabs can also move directly between existing native windows.
+Escape, focus loss and pointer capture loss cancel an unfinished drag.
+The panel header and Ribbon provide floating, redocking and panel restoration.
+
+Ribbon and QAT Save/Restore commands explicitly save or load placement JSON.
+The default Windows file is `%LOCALAPPDATA%/rust-ui-engine/docking-layout.json`;
+`--layout-file PATH` selects another file. Startup and close perform no layout
+file I/O. The file preserves tabs, splits and floating bounds, without editor
+contents; errors appear in the status bar.
+
+Auto-hide and main-window geometry persistence remain outside this profile.
+Exact placement restoration across differing monitor DPI is not guaranteed.
+Direct native dragging, mixed-DPI behavior and the new Save/Restore window flow
+still require runtime validation; Linux/macOS cross-window hit testing is not
+implemented. See the [docking contract](docs/public/docking.md) for model,
+host lifecycle, strict JSON limits and current validation boundaries.
 
 ## Run the gallery
 

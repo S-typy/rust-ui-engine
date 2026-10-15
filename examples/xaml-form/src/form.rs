@@ -364,6 +364,13 @@ impl DesktopApp for Form {
     fn window_chrome_changed(&mut self, chrome: rust_desktop_ui_platform_winit::WindowChrome) {
         self.chrome.set_native(chrome, self.diagnostics);
     }
+    fn pointer_capture_lost(&mut self) -> Result<EventResponse, String> {
+        self.ui.cancel_pointer_interaction().map_err(err)?;
+        Ok(EventResponse {
+            redraw: true,
+            ..Default::default()
+        })
+    }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
         if self.diagnostics
             && matches!(

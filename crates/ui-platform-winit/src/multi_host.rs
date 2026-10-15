@@ -1,6 +1,6 @@
 use crate::{
     ClipboardRequest, DesktopApp, DesktopApplication, EventResponse, PlatformEvent, WindowChrome,
-    WindowKey, WindowSpec, chrome::NativeChrome, input, multi::validate_specs,
+    WindowKey, WindowSpec, chrome::NativeChrome, desktop, input, multi::validate_specs,
 };
 use accesskit::{Node, NodeId, TreeId};
 use accesskit_winit::{
@@ -57,6 +57,7 @@ struct MultiHost<A> {
 struct WindowState {
     renderer: Option<GpuRenderer>,
     adapter: Adapter,
+    capture: desktop::CaptureObserver,
     chrome: Option<NativeChrome>,
     window: Arc<Window>,
     spec: WindowSpec,
@@ -111,6 +112,22 @@ impl<A: DesktopApplication> MultiHost<A> {
         }
     }
 
+    fn drain_capture_loss(&mut self) -> Result<(), String> {
+        let lost: Vec<_> = self
+            .windows
+            .iter()
+            .filter_map(|(key, state)| state.capture.take_lost().then_some(*key))
+            .collect();
+        for key in lost {
+            self.with_view(key, |state, app, clipboard| {
+                let response = app.pointer_capture_lost()?;
+                let redraw = state.effects(app, clipboard, response)?;
+                Ok(state.sync_ime(app, clipboard)? || redraw)
+            })?;
+        }
+        Ok(())
+    }
+
     fn with_view(
         &mut self,
         key: WindowKey,
@@ -148,6 +165,13 @@ impl<A: DesktopApplication> MultiHost<A> {
                 && state.spec.owner != spec.owner
             {
                 return Err("Changing a live native window owner requires a new WindowKey".into());
+            }
+            if let Some(state) = self.windows.get(&spec.key)
+                && state.spec.options.min_size != spec.options.min_size
+            {
+                return Err(
+                    "Changing a live native window minimum size requires a new WindowKey".into(),
+                );
             }
         }
         let wanted: HashSet<_> = specs.iter().map(|spec| spec.key).collect();
@@ -190,6 +214,22 @@ impl<A: DesktopApplication> MultiHost<A> {
         if specs.is_empty() {
             event_loop.exit();
             return Ok(());
+        }
+        for spec in &specs {
+            if self
+                .windows
+                .get(&spec.key)
+                .is_some_and(|state| state.spec.placement_revision != spec.placement_revision)
+            {
+                self.with_view(spec.key, |state, app, _| {
+                    desktop::apply_placement(&state.window, spec, false)?;
+                    state.spec = spec.clone();
+                    app.window_placement_applied(spec.placement_revision);
+                    state.geometry_changed(app);
+                    state.window.request_redraw();
+                    Ok(true)
+                })?;
+            }
         }
         let mut pending: Vec<_> = specs
             .into_iter()
@@ -237,10 +277,14 @@ impl<A: DesktopApplication> MultiHost<A> {
             } else {
                 None
             };
+            desktop::apply_placement(&window, &spec, true)?;
+            app.window_placement_applied(spec.placement_revision);
+            let capture = desktop::CaptureObserver::attach(window.clone())?;
             let adapter = Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
             let mut state = WindowState {
                 renderer: None,
                 adapter,
+                capture,
                 chrome,
                 window,
                 accessible_nodes: HashMap::new(),
@@ -327,20 +371,7 @@ impl WindowState {
     }
 
     fn geometry_changed(&self, app: &mut dyn DesktopApp) {
-        let Ok(position) = self.window.outer_position() else {
-            return;
-        };
-        let scale = self.window.scale_factor();
-        let position = position.to_logical::<f32>(scale);
-        let size = self.window.inner_size().to_logical::<f32>(scale);
-        if size.width <= 0.0 || size.height <= 0.0 {
-            return;
-        }
-        app.window_geometry_changed(
-            Point::new(position.x, position.y),
-            Size::new(size.width, size.height),
-            scale as f32,
-        );
+        desktop::notify_geometry(&self.window, app);
     }
 
     fn effects(
@@ -761,6 +792,10 @@ impl<A: DesktopApplication> ApplicationHandler<AccessibilityEvent> for MultiHost
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AccessibilityEvent) {
+        if let Err(error) = self.drain_capture_loss() {
+            self.fail(event_loop, error);
+            return;
+        }
         let Some(key) = self.native_keys.get(&event.window_id).copied() else {
             return;
         };
@@ -787,15 +822,45 @@ impl<A: DesktopApplication> ApplicationHandler<AccessibilityEvent> for MultiHost
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Err(error) = self.drain_capture_loss() {
+            self.fail(event_loop, error);
+            return;
+        }
         let Some(key) = self.native_keys.get(&id).copied() else {
             return;
         };
+        let source = &self.windows[&key];
+        let pointer_position = match &event {
+            WindowEvent::CursorMoved { position, .. } => Some((position.x, position.y)),
+            WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => Some(
+                source
+                    .capture
+                    .pointer_position(&event, &source.window)
+                    .unwrap_or(source.cursor),
+            ),
+            _ => None,
+        };
+        let context = pointer_position.and_then(|position| {
+            desktop::pointer(
+                &source.window,
+                position,
+                self.windows
+                    .iter()
+                    .map(|(key, state)| (*key, state.window.as_ref())),
+            )
+        });
         let result = if matches!(event, WindowEvent::CloseRequested) {
             self.app
                 .close_requested(key)
                 .and_then(|()| self.reconcile(event_loop))
         } else {
             self.with_view(key, |state, app, clipboard| {
+                if let Some(position) = pointer_position {
+                    state.cursor = position;
+                }
+                if let Some(context) = context {
+                    app.desktop_pointer_changed(context);
+                }
                 state.event(app, clipboard, event)
             })
         };
@@ -805,6 +870,10 @@ impl<A: DesktopApplication> ApplicationHandler<AccessibilityEvent> for MultiHost
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Err(error) = self.drain_capture_loss() {
+            self.fail(event_loop, error);
+            return;
+        }
         if let Err(error) = self.reconcile(event_loop) {
             self.fail(event_loop, error);
             return;

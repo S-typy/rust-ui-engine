@@ -1,7 +1,7 @@
 use super::*;
 use rust_desktop_ui_core::{Key, Modifiers};
 
-fn application(float: Option<&str>) -> DockApplication {
+pub(super) fn application(float: Option<&str>) -> DockApplication {
     DockApplication::new(
         crate::generated_docking::window_definition(),
         RunOptions::default(),

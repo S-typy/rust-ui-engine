@@ -41,6 +41,7 @@ fn start() -> Result<(), String> {
     let mut controls = false;
     let mut docking = false;
     let mut float_pane = None;
+    let mut layout_file = None;
     let mut smoke_test = false;
     let mut diagnostics = false;
     let mut ribbon_minimized = false;
@@ -55,19 +56,27 @@ fn start() -> Result<(), String> {
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
             }
+            "--layout-file" => {
+                layout_file = Some(std::path::PathBuf::from(
+                    arguments.next().ok_or("--layout-file requires a path")?,
+                ));
+            }
             "--smoke-test" => smoke_test = true,
             "--diagnostics" => diagnostics = true,
             "--ribbon-minimized" => ribbon_minimized = true,
             "--native-title-bar" => native_title_bar = true,
             "--help" | "-h" => {
                 println!(
-                    "xaml-form [--controls | --docking [--float-pane ID]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
+                    "xaml-form [--controls | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
                 );
                 println!(
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
                 );
                 println!(
                     "--diagnostics logs input, values and validation for automated input tests."
+                );
+                println!(
+                    "--layout-file selects the file for explicit Save/Restore commands; no automatic loading or saving."
                 );
                 return Ok(());
             }
@@ -79,6 +88,9 @@ fn start() -> Result<(), String> {
     }
     if float_pane.is_some() && !docking {
         return Err("--float-pane requires --docking".into());
+    }
+    if layout_file.is_some() && !docking {
+        return Err("--layout-file requires --docking".into());
     }
     let mut definition = if docking {
         generated_docking::window_definition()
@@ -117,12 +129,16 @@ fn start() -> Result<(), String> {
         smoke_test,
     };
     if docking {
-        let app = docking_app::DockApplication::new(
+        let mut app = docking_app::DockApplication::new(
             definition,
             options,
             diagnostics,
             float_pane.as_deref(),
         )?;
+        let path = layout_file
+            .map(Ok)
+            .unwrap_or_else(docking_app::storage::default_path)?;
+        app.set_layout_file(path);
         return rust_desktop_ui_platform_winit::run_multi(app);
     }
     let app = form::Form::new(definition, diagnostics)?;
