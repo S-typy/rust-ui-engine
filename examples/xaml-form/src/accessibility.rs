@@ -244,7 +244,8 @@ fn bounds(rect: Rect, scale: f32) -> accesskit::Rect {
 }
 fn role(role: ControlRole) -> Role {
     match role {
-        ControlRole::Panel | ControlRole::Group => Role::GenericContainer,
+        ControlRole::Panel => Role::GenericContainer,
+        ControlRole::Group => Role::Group,
         ControlRole::Label => Role::Label,
         ControlRole::Button | ControlRole::ToggleButton => Role::Button,
         ControlRole::CheckBox => Role::CheckBox,

@@ -115,6 +115,11 @@ fn validate_entries(
         }
         match entry {
             Entry::Element(element) => {
+                match &element.kind {
+                    ElementKind::GroupBox(group) => crate::validate_group_box(group)?,
+                    ElementKind::Expander(expander) => crate::validate_expander(expander)?,
+                    _ => {}
+                }
                 if let Some(name) = &element.common.name
                     && !names.insert(name)
                 {

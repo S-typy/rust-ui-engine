@@ -699,3 +699,208 @@ fn alias_properties_cannot_bypass_duplicate_or_cycle_checks() {
             .is_err()
     );
 }
+
+#[test]
+fn group_header_and_expansion_bind_both_directions_without_replacing_child_documents() {
+    let (mut ui, data, mut bindings) = setup();
+    let group = ui
+        .expander(
+            ui.root(),
+            crate::GroupSettings::default(),
+            true,
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let editor = ui
+        .edit_box(group.content, "Child", "Accepted", LayoutStyle::default())
+        .unwrap();
+    let mut header = ControlBinding::new(group.container, BindingProperty::Header, "Name").unwrap();
+    header.mode = ControlBindingMode::TwoWay;
+    bindings.add(header).unwrap();
+    let mut expansion =
+        ControlBinding::new(group.container, BindingProperty::IsExpanded, "Checked").unwrap();
+    expansion.mode = ControlBindingMode::TwoWay;
+    bindings.add(expansion).unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    assert_eq!(ui.group_header(group.container), Some("Anna"));
+    assert_eq!(ui.expander_expanded(group.container), Some(false));
+    ui.set_text(editor, "Draft").unwrap();
+    data.borrow_mut().set("Checked", true.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.expander_expanded(group.container), Some(true));
+    assert_eq!(ui.document(editor).unwrap().text(), "Draft");
+    ui.activate(group.header).unwrap();
+    ui.set_group_header(group.header, "Updated").unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(
+        data.borrow().get("Checked").unwrap(),
+        &DataValue::Bool(false)
+    );
+    assert_eq!(data.borrow().get("Name").unwrap().as_str(), Some("Updated"));
+    assert_eq!(ui.document(editor).unwrap().text(), "Draft");
+    assert_eq!(ui.accepted_value(editor), Some("Accepted"));
+    assert!(ui.document(editor).unwrap().can_undo());
+    assert!(!bindings.sync(&mut ui));
+    assert!(bindings.diagnostics().is_empty());
+}
+
+#[test]
+fn hidden_group_children_continue_to_receive_binding_model_updates() {
+    let (mut ui, data, mut bindings) = setup();
+    let group = ui
+        .expander(
+            ui.root(),
+            crate::GroupSettings::default(),
+            false,
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let editor = ui
+        .edit_box(group.content, "Child", "Accepted", LayoutStyle::default())
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(editor, BindingProperty::Text, "Name").unwrap())
+        .unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    data.borrow_mut()
+        .set("Name", "Updated while collapsed".into())
+        .unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.expander_expanded(group.container), Some(false));
+    assert_eq!(
+        ui.document(editor).unwrap().text(),
+        "Updated while collapsed"
+    );
+    ui.set_expander_expanded(group.container, true).unwrap();
+    assert_eq!(ui.accepted_value(editor), Some("Updated while collapsed"));
+}
+
+#[test]
+fn header_bindings_validate_lengths_and_expander_requires_boolean() {
+    let (mut ui, data, mut bindings) = setup();
+    let group = ui
+        .expander(
+            ui.root(),
+            crate::GroupSettings::default(),
+            true,
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(group.container, BindingProperty::Header, "Name").unwrap())
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(group.container, BindingProperty::IsExpanded, "Checked").unwrap())
+        .unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    data.borrow_mut()
+        .set("Name", "я".repeat(2049).into())
+        .unwrap();
+    data.borrow_mut().set("Checked", "false".into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.group_header(group.container), Some("Anna"));
+    assert_eq!(ui.expander_expanded(group.container), Some(false));
+    assert_eq!(bindings.diagnostics().len(), 2);
+    data.borrow_mut().set("Name", "Recovered".into()).unwrap();
+    data.borrow_mut().set("Checked", true.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.group_header(group.container), Some("Recovered"));
+    assert_eq!(ui.expander_expanded(group.container), Some(true));
+    let plain = ui
+        .group_box(
+            ui.root(),
+            crate::GroupSettings::default(),
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let mut invalid = ControlBindings::new(data);
+    invalid
+        .add(ControlBinding::new(plain.container, BindingProperty::IsExpanded, "Checked").unwrap())
+        .unwrap();
+    assert!(invalid.initialize(&mut ui).is_err());
+}
+
+#[test]
+fn header_parts_cannot_bypass_binding_duplicate_or_cycle_validation() {
+    let (mut ui, data, mut bindings) = setup();
+    let group = ui
+        .expander(
+            ui.root(),
+            crate::GroupSettings {
+                header: "Original".into(),
+                ..Default::default()
+            },
+            true,
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(group.container, BindingProperty::Header, "Name").unwrap())
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(group.header, BindingProperty::Text, "Other").unwrap())
+        .unwrap();
+    assert!(bindings.initialize(&mut ui).is_err());
+    assert_eq!(ui.group_header(group.container), Some("Original"));
+    let mut cycle = ControlBindings::new(data.clone());
+    let mut link = ControlBinding::new(group.container, BindingProperty::Header, "Name").unwrap();
+    link.source = BindingSource::Element(BindingEndpoint {
+        widget: group.header,
+        property: BindingProperty::Text,
+    });
+    cycle.add(link).unwrap();
+    assert!(cycle.initialize(&mut ui).is_err());
+    assert_eq!(ui.group_header(group.container), Some("Original"));
+    let mut expansion = ControlBindings::new(data);
+    expansion
+        .add(ControlBinding::new(group.header, BindingProperty::IsExpanded, "Checked").unwrap())
+        .unwrap();
+    expansion
+        .add(ControlBinding::new(group.container, BindingProperty::IsExpanded, "Checked").unwrap())
+        .unwrap();
+    assert!(expansion.initialize(&mut ui).is_err());
+    assert_eq!(ui.expander_expanded(group.container), Some(true));
+}
+
+#[test]
+fn element_name_can_read_group_header_or_expansion_through_its_retained_header_part() {
+    let (mut ui, data, mut bindings) = setup();
+    let group = ui
+        .expander(
+            ui.root(),
+            crate::GroupSettings {
+                header: "Original".into(),
+                ..Default::default()
+            },
+            true,
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let label = ui.label(ui.root(), "", LayoutStyle::default()).unwrap();
+    let check = ui
+        .checkbox(ui.root(), "Expanded", false, LayoutStyle::default())
+        .unwrap();
+    let mut caption = ControlBinding::new(label, BindingProperty::Text, "Name").unwrap();
+    caption.source = BindingSource::Element(BindingEndpoint {
+        widget: group.header,
+        property: BindingProperty::Text,
+    });
+    bindings.add(caption).unwrap();
+    let mut expanded = ControlBinding::new(check, BindingProperty::IsChecked, "Checked").unwrap();
+    expanded.source = BindingSource::Element(BindingEndpoint {
+        widget: group.header,
+        property: BindingProperty::IsExpanded,
+    });
+    bindings.add(expanded).unwrap();
+    bindings
+        .add(ControlBinding::new(group.container, BindingProperty::Header, "Name").unwrap())
+        .unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    assert_eq!(ui.label_text(label), Some("Anna"));
+    assert_eq!(ui.checked(check), Some(true));
+    data.borrow_mut().set("Name", "Updated".into()).unwrap();
+    ui.set_expander_expanded(group.container, false).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.label_text(label), Some("Updated"));
+    assert_eq!(ui.checked(check), Some(false));
+}

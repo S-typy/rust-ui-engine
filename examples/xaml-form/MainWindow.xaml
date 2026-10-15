@@ -52,11 +52,9 @@
                 </RibbonGroup>
             </RibbonTab>
         </Ribbon>
-        <StackPanel x:Name="Form" Surface="Card" Spacing="12" Padding="20" Margin="16,0,16,16">
-            <StackPanel Spacing="4" Margin="0,0,0,8">
-                <TextBlock Text="Документ без имени" FontSize="22" FontWeight="SemiBold" />
-                <TextBlock Text="Содержимое и параметры документа" FontSize="13" TextTone="Secondary" />
-            </StackPanel>
+        <GroupBox x:Name="DocumentGroup" Header="Документ без имени" Padding="20" Margin="16,0,16,16">
+          <StackPanel x:Name="Form" Spacing="12">
+            <TextBlock Text="Содержимое и параметры документа" FontSize="13" TextTone="Secondary" />
             <TextBlock Text="Текст сообщения" FontSize="13" FontWeight="SemiBold" />
             <TextBox x:Name="Message" Height="36" FontSize="14" Padding="12,5"
                      CornerRadius="4" BorderThickness="1" MaxLength="64"
@@ -72,6 +70,7 @@
             <TextBlock x:Name="Help" FontSize="12" TextTone="Secondary"
                        Text="Alt или F10 — команды ленты · Enter — подтвердить · Escape — отменить" />
             <TextBlock x:Name="Status" FontSize="13" TextTone="Secondary" Text="Изменений нет." />
-        </StackPanel>
+          </StackPanel>
+        </GroupBox>
     </StackPanel>
 </Window>

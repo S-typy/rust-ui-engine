@@ -41,6 +41,35 @@ fn track(value: &x::GridLength) -> GridTrack {
         x::GridLength::Star(v) => GridTrack::Fr(*v),
     }
 }
+fn group_settings(
+    header: &str,
+    appearance: x::GroupBoxAppearanceDefinition,
+    padding: [f32; 4],
+) -> GroupSettings {
+    GroupSettings {
+        header: header.into(),
+        appearance: match appearance {
+            x::GroupBoxAppearanceDefinition::Card => GroupAppearance::Card,
+            x::GroupBoxAppearanceDefinition::Outline => GroupAppearance::Outline,
+            x::GroupBoxAppearanceDefinition::Plain => GroupAppearance::Plain,
+        },
+        padding: edges(padding),
+    }
+}
+fn group_content_layout(ui: &mut Controls, content: WidgetId) -> Result<(), String> {
+    // XAML has one content element. A single grid cell stretches that child
+    // inside an explicitly sized group while retaining its intrinsic Auto size.
+    let mut style = ui.runtime.tree().node(content).unwrap().props.style.clone();
+    style.kind = LayoutKind::Grid;
+    style.grid_columns = vec![GridTrack::Fr(1.0)];
+    style.grid_rows = vec![GridTrack::Fr(1.0)];
+    ui.runtime
+        .apply(Mutation::SetStyle {
+            node: content,
+            style,
+        })
+        .map_err(err)
+}
 fn grid_tracks(values: &[x::GridLength]) -> Vec<GridTrack> {
     // XAML Grid has one fill track on an omitted axis. The backend's
     // unconstrained auto-placement mode has different intrinsic sizing.
@@ -130,6 +159,57 @@ impl MountedView {
             .or(element.common.name.as_deref())
             .unwrap_or("Editor");
         let parts = match &element.kind {
+            ElementKind::GroupBox(group) => {
+                let width = match style.width {
+                    Length::Px(value) => value,
+                    _ => (width - element.common.margin[0] - element.common.margin[2]).max(0.0),
+                };
+                let parts = ui
+                    .group_box(
+                        parent,
+                        group_settings(&group.header, group.appearance, group.padding),
+                        style,
+                    )
+                    .map_err(err)?;
+                group_content_layout(ui, parts.content)?;
+                if let Some(child) = &group.child {
+                    self.mount_element(
+                        ui,
+                        parts.content,
+                        child,
+                        Axis::Vertical,
+                        (width - group.padding[0] - group.padding[2]).max(0.0),
+                        context,
+                    )?;
+                }
+                return Ok(parts.container);
+            }
+            ElementKind::Expander(group) => {
+                let width = match style.width {
+                    Length::Px(value) => value,
+                    _ => (width - element.common.margin[0] - element.common.margin[2]).max(0.0),
+                };
+                let parts = ui
+                    .expander(
+                        parent,
+                        group_settings(&group.header, group.appearance, group.padding),
+                        group.is_expanded,
+                        style,
+                    )
+                    .map_err(err)?;
+                group_content_layout(ui, parts.content)?;
+                if let Some(child) = &group.child {
+                    self.mount_element(
+                        ui,
+                        parts.content,
+                        child,
+                        Axis::Vertical,
+                        (width - group.padding[0] - group.padding[2]).max(0.0),
+                        context,
+                    )?;
+                }
+                return Ok(parts.container);
+            }
             ElementKind::ListBox(selection) => {
                 let list = ui
                     .list_box(

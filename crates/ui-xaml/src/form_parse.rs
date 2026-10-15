@@ -4,6 +4,8 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
     Some(match name {
         "Grid" => ElementKind::Grid(GridDefinition::default()),
         "Border" => ElementKind::Border(BorderDefinition::default()),
+        "GroupBox" => ElementKind::GroupBox(GroupBoxDefinition::default()),
+        "Expander" => ElementKind::Expander(ExpanderDefinition::default()),
         "ScrollViewer" => ElementKind::ScrollViewer(ScrollViewerDefinition::default()),
         "WrapPanel" => ElementKind::WrapPanel(StackPanelDefinition {
             orientation: Orientation::Horizontal,
@@ -32,6 +34,8 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         return true;
     }
     match kind {
+        ElementKind::GroupBox(_) => name == "Header",
+        ElementKind::Expander(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::TextBox(_) | ElementKind::ButtonEdit(_) => {
             matches!(name, "Text" | "IsReadOnly" | "PlaceholderText")
         }
@@ -136,7 +140,12 @@ pub(super) fn common_property(
         }
         "DataContext" => {
             let path = if value.trim_start().starts_with('{') {
-                let parsed = binding::parse_binding(document, attr, false)?;
+                let parsed = binding::parse_binding(
+                    document,
+                    attr,
+                    false,
+                    UpdateSourceTrigger::PropertyChanged,
+                )?;
                 if parsed.element_name.is_some()
                     || parsed.converter.is_some()
                     || parsed.fallback_value.is_some()
@@ -260,6 +269,27 @@ pub(super) fn property(
 ) -> Result<bool, Diagnostic> {
     let metric = || editor_metric(document, attr, MAX_DIMENSION, true);
     match kind {
+        ElementKind::GroupBox(group) => group_property(
+            document,
+            attr,
+            &mut group.header,
+            &mut group.appearance,
+            &mut group.padding,
+        ),
+        ElementKind::Expander(expander) => {
+            if attr.name() == "IsExpanded" {
+                expander.is_expanded = boolean(document, attr)?;
+                Ok(true)
+            } else {
+                group_property(
+                    document,
+                    attr,
+                    &mut expander.header,
+                    &mut expander.appearance,
+                    &mut expander.padding,
+                )
+            }
+        }
         ElementKind::ListBox(selection) | ElementKind::ComboBox(selection) => {
             selection_property(document, attr, selection)
         }
@@ -346,6 +376,35 @@ pub(super) fn property(
         }
         _ => Ok(false),
     }
+}
+
+fn group_property(
+    document: &Document<'_>,
+    attr: Attribute<'_, '_>,
+    header: &mut String,
+    appearance: &mut GroupBoxAppearanceDefinition,
+    padding: &mut [f32; 4],
+) -> Result<bool, Diagnostic> {
+    match attr.name() {
+        "Header" => *header = attr.value().into(),
+        "Padding" => *padding = thickness(document, attr)?,
+        "Appearance" => {
+            *appearance = match attr.value() {
+                "Card" => GroupBoxAppearanceDefinition::Card,
+                "Outline" => GroupBoxAppearanceDefinition::Outline,
+                "Plain" => GroupBoxAppearanceDefinition::Plain,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attr,
+                        "Appearance must be Card, Outline or Plain",
+                    ));
+                }
+            };
+        }
+        _ => return Ok(false),
+    }
+    Ok(true)
 }
 
 fn surface(
@@ -633,9 +692,12 @@ pub(super) fn parse_children(
                     names,
                     groups,
                 )?),
-                ElementKind::Border(_) | ElementKind::ScrollViewer(_) => {
+                ElementKind::Border(_)
+                | ElementKind::ScrollViewer(_)
+                | ElementKind::GroupBox(_)
+                | ElementKind::Expander(_) => {
                     if single.is_some() {
-                        return Err(at_node(child, "container requires exactly one child"));
+                        return Err(at_node(child, "container accepts at most one child"));
                     }
                     single = Some(parse_element(
                         child,
@@ -657,6 +719,8 @@ pub(super) fn parse_children(
         }
     }
     match kind {
+        ElementKind::GroupBox(group) => group.child = single.map(Box::new),
+        ElementKind::Expander(expander) => expander.child = single.map(Box::new),
         ElementKind::Border(border) => {
             *border.child = single.ok_or_else(|| at_node(node, "Border requires one child"))?
         }
@@ -745,6 +809,12 @@ pub(super) fn validate(
         }
     }
     match kind {
+        ElementKind::GroupBox(group) => {
+            validate_group_box(group).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::Expander(expander) => {
+            validate_expander(expander).map_err(|message| at_node(node, message))?
+        }
         ElementKind::LookupEdit(lookup) => {
             if let (Some(display), Some(first)) = (
                 &lookup.selection.display_member_path,

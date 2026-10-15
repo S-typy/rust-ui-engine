@@ -304,6 +304,8 @@ impl ElementDefinition {
             ElementKind::Grid(p) => p.children.iter().collect(),
             ElementKind::DockPanel(p) => p.children.iter().collect(),
             ElementKind::Border(p) => vec![&p.child],
+            ElementKind::GroupBox(p) => p.child.as_deref().into_iter().collect(),
+            ElementKind::Expander(p) => p.child.as_deref().into_iter().collect(),
             ElementKind::ScrollViewer(p) => vec![&p.child],
             ElementKind::DockWorkspace(p) => p
                 .panes()
@@ -337,6 +339,8 @@ impl ElementDefinition {
             ElementKind::Grid(p) => p.children.iter_mut().collect(),
             ElementKind::DockPanel(p) => p.children.iter_mut().collect(),
             ElementKind::Border(p) => vec![&mut p.child],
+            ElementKind::GroupBox(p) => p.child.as_deref_mut().into_iter().collect(),
+            ElementKind::Expander(p) => p.child.as_deref_mut().into_iter().collect(),
             ElementKind::ScrollViewer(p) => vec![&mut p.child],
             ElementKind::DockWorkspace(p) => {
                 let mut output = Vec::new();
@@ -355,6 +359,8 @@ pub enum ElementKind {
     WrapPanel(StackPanelDefinition),
     Grid(GridDefinition),
     Border(BorderDefinition),
+    GroupBox(GroupBoxDefinition),
+    Expander(ExpanderDefinition),
     ScrollViewer(ScrollViewerDefinition),
     DockPanel(DockPanelDefinition),
     ListBox(SelectionDefinition),
@@ -883,14 +889,18 @@ fn parse_element(
             }
             let editable = matches!(
                 property,
-                "Text" | "Value" | "SelectedValue" | "SelectedValues" | "IsChecked"
+                "Text" | "Value" | "SelectedValue" | "SelectedValues" | "IsChecked" | "IsExpanded"
             ) && !matches!(kind, ElementKind::TextBlock(_));
-            let mut binding = binding::parse_binding(document, attribute, editable)?;
-            if matches!(property, "SelectedValue" | "SelectedValues" | "IsChecked")
-                && !attribute.value().contains("UpdateSourceTrigger")
-            {
-                binding.update_source_trigger = UpdateSourceTrigger::PropertyChanged;
-            }
+            let immediate = matches!(
+                property,
+                "SelectedValue" | "SelectedValues" | "IsChecked" | "IsExpanded"
+            );
+            let trigger = if editable && !immediate {
+                UpdateSourceTrigger::LostFocus
+            } else {
+                UpdateSourceTrigger::PropertyChanged
+            };
+            let binding = binding::parse_binding(document, attribute, editable, trigger)?;
             common.bindings.insert(property.into(), binding);
             continue;
         }
@@ -1151,6 +1161,8 @@ fn parse_element(
         kind,
         ElementKind::Grid(_)
             | ElementKind::Border(_)
+            | ElementKind::GroupBox(_)
+            | ElementKind::Expander(_)
             | ElementKind::ScrollViewer(_)
             | ElementKind::DockPanel(_)
             | ElementKind::ListBox(_)
@@ -1885,6 +1897,8 @@ pub fn compile_file(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result
 mod docking_tests;
 #[cfg(test)]
 mod form_tests;
+#[cfg(test)]
+mod group_tests;
 #[cfg(test)]
 mod ribbon_tests;
 #[cfg(test)]

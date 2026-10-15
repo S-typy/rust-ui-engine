@@ -46,6 +46,8 @@ commit передаются отдельно: `text_input`, `ime_preedit`, `ime_
 | Builder | Поведение |
 |---|---|
 | `panel` | Контейнер с padding/layout/clip; default layout — вертикальный Stack |
+| `group_box` | Постоянная группа с заголовком, оформлением и контейнером содержимого |
+| `expander` | Раскрывающаяся группа с сохранением содержимого, фокусом и expanded state |
 | `transparent_panel` | Такой же контейнер без фоновой заливки, в том числе при смене темы и отключении |
 | `label` | Текст, не получающий focus и pointer hit |
 | `icon` | Собственная векторная геометрия; без focus, pointer hit и действий |
@@ -647,6 +649,9 @@ PreparedText для рисования, прокрутки, hit-testing и ка�
 возможностями.
 
 ## Модель и привязки форм
+
+Группы поддерживают `Header` и `IsExpanded` в привязках. Их Rust API,
+клавиатурное поведение и ограничения описаны в [контракте групп](groups.md).
 
 `BindingContext` хранит наблюдаемые значения, `ValueSchema` и `BindingValidator`
 проверяют атомарные изменения. `ControlBindings` связывает свойства Controls

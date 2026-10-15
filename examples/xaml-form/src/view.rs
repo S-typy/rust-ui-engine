@@ -98,6 +98,7 @@ impl MountedView {
                 element.kind,
                 ElementKind::Grid(_)
                     | ElementKind::Border(_)
+                    | ElementKind::GroupBox(_)
                     | ElementKind::ScrollViewer(_)
                     | ElementKind::DockPanel(_)
             )
@@ -146,6 +147,8 @@ impl MountedView {
                 ElementKind::StackPanel(_)
                 | ElementKind::Grid(_)
                 | ElementKind::Border(_)
+                | ElementKind::GroupBox(_)
+                | ElementKind::Expander(_)
                 | ElementKind::ScrollViewer(_)
                 | ElementKind::WrapPanel(_)
                 | ElementKind::DockPanel(_)
@@ -206,6 +209,8 @@ impl MountedView {
             | ElementKind::TimeEdit(_)
             | ElementKind::Grid(_)
             | ElementKind::Border(_)
+            | ElementKind::GroupBox(_)
+            | ElementKind::Expander(_)
             | ElementKind::ScrollViewer(_)
             | ElementKind::WrapPanel(_)
             | ElementKind::DockPanel(_) => {
@@ -511,6 +516,7 @@ impl MountedView {
                 | ElementKind::SpinBox(_)
                 | ElementKind::DateEdit(_)
                 | ElementKind::TimeEdit(_) => Role::Group,
+                ElementKind::GroupBox(_) | ElementKind::Expander(_) => Role::Group,
                 ElementKind::DockWorkspace(_) => Role::Panel,
                 ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) => Role::TextBox,
@@ -532,6 +538,14 @@ impl MountedView {
         }
         if let Some(name) = &common.automation_name {
             self.automation_names.insert(id, name.clone());
+            if matches!(
+                element.kind,
+                ElementKind::GroupBox(_) | ElementKind::Expander(_)
+            ) {
+                // The retained header is an internal part and inherits the
+                // group's accessible name independently of the XAML name map.
+                ui.set_automation_name(id, name).map_err(err)?;
+            }
         }
         self.record_bindings(id, element, context);
         Ok(id)
@@ -573,6 +587,20 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         | ElementKind::SpinBox(_)
         | ElementKind::DateEdit(_)
         | ElementKind::TimeEdit(_) => Ok(240.0),
+        ElementKind::GroupBox(group) => group_desired_width(
+            ui,
+            &group.header,
+            group.padding,
+            group.child.as_deref(),
+            false,
+        ),
+        ElementKind::Expander(group) => group_desired_width(
+            ui,
+            &group.header,
+            group.padding,
+            group.child.as_deref(),
+            true,
+        ),
         ElementKind::Grid(_)
         | ElementKind::Border(_)
         | ElementKind::ScrollViewer(_)
@@ -640,6 +668,36 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
     }
 }
 
+fn group_desired_width(
+    ui: &mut Controls,
+    header: &str,
+    padding: [f32; 4],
+    child: Option<&ElementDefinition>,
+    expander: bool,
+) -> Result<f32, String> {
+    let header_width = ui
+        .measure_styled_text(
+            header,
+            16384.0,
+            TextStyle {
+                font_weight: Some(600),
+                wrap: false,
+                ..Default::default()
+            },
+        )
+        .map_err(err)?
+        .width
+        + if expander { 64.0 } else { 32.0 };
+    let child_width = child
+        .map(|child| {
+            desired_width(ui, child)
+                .map(|width| width + child.common.margin[0] + child.common.margin[2])
+        })
+        .transpose()?
+        .unwrap_or(0.0);
+    Ok(header_width.max(child_width + padding[0] + padding[2]))
+}
+
 // Match the width assigned by mount_element. Auto stretches vertically, while
 // horizontal children retain their measured desired width (flex_shrink = 0).
 fn resolved_width(
@@ -684,6 +742,26 @@ fn validate_ribbon_width(
                         .map(|child| (child, axis, child_width)),
                 );
             }
+            ElementKind::GroupBox(group) => {
+                let width = resolved_width(ui, element, parent_axis, available_width)?;
+                pending.extend(group.child.as_deref().map(|child| {
+                    (
+                        child,
+                        Axis::Vertical,
+                        (width - group.padding[0] - group.padding[2]).max(0.0),
+                    )
+                }));
+            }
+            ElementKind::Expander(group) => {
+                let width = resolved_width(ui, element, parent_axis, available_width)?;
+                pending.extend(group.child.as_deref().map(|child| {
+                    (
+                        child,
+                        Axis::Vertical,
+                        (width - group.padding[0] - group.padding[2]).max(0.0),
+                    )
+                }));
+            }
             _ => pending.extend(
                 element
                     .children()
@@ -722,6 +800,8 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         match &element.kind {
+            ElementKind::GroupBox(group) => rust_desktop_ui_xaml::validate_group_box(group)?,
+            ElementKind::Expander(group) => rust_desktop_ui_xaml::validate_expander(group)?,
             ElementKind::DockWorkspace(_) => {
                 return Err("DockWorkspace requires the docking window coordinator".into());
             }

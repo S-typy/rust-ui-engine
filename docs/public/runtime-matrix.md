@@ -1,5 +1,24 @@
 # Runtime matrix и протокол проверки alpha
 
+## Группы форм — Windows, 2026-10-15
+
+`GroupBox`, `Expander` и пример `xaml-form --groups` проверены локально:
+807 workspace tests и 2 doctests PASS; fmt, clippy, release, rustdoc без warnings,
+проверки лицензий и зависимостей пройдены. Добавлено 38 регрессий; два отдельных
+hardware unit tests остаются ignored.
+
+На NVIDIA GeForce RTX 3090 выполнены DX12/Vulkan × Light/Dark: четыре
+capture-прогона и четыре GPU smoke с resize/redraw, все exit 0. В каждом
+capture 717 glyphs, missing=0, scale=1.5. Снимки светлой и тёмной форм просмотрены.
+Основное окно с Ribbon/GroupBox прошло дополнительный DX12 Light capture/smoke;
+форма `--editors` — DX12 Light smoke.
+
+Системный ввод и действия фокуса при оконной проверке не генерировались.
+Клики, клавиши, focus/IME lifecycle и accessibility projection покрыты
+unit/integration-тестами; native input, экранный диктор, IME и mixed-DPI
+остаются отдельными проверками. Linux/macOS этим срезом не проверены.
+Контракт — [группы и раскрывающиеся секции](groups.md).
+
 ## Формы и данные — Windows, 2026-10-15
 
 Новый пример `xaml-form --editors` проверен локально: 769 workspace tests,

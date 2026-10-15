@@ -1,0 +1,82 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Fluent Forms — группы и секции" Width="1060" Height="800" Padding="24">
+  <Grid Spacing="20">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Группы и секции" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Карточки, рамки и сворачиваемые разделы. Значения полей сохраняются при сворачивании." TextTone="Secondary"/>
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+      <Grid Spacing="20">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+        <StackPanel Spacing="16" DataContext="{Binding Form}">
+          <GroupBox x:Name="PrimaryGroup" Header="{Binding GroupHeader}" Appearance="Card">
+            <StackPanel Spacing="10">
+              <TextBlock Text="Card · спокойная поверхность и общий заголовок" FontSize="13" TextTone="Secondary"/>
+              <TextBlock Text="Название документа" FontSize="13" FontWeight="SemiBold"/>
+              <TextBox x:Name="GroupTitleEditor" Text="{Binding Title}" IsRequired="True" MaxLength="80"/>
+              <TextBlock Text="Заголовок группы · измените и подтвердите" FontSize="13"/>
+              <TextBox x:Name="GroupHeaderEditor" Text="{Binding GroupHeader}" MaxLength="64"/>
+            </StackPanel>
+          </GroupBox>
+          <GroupBox x:Name="OutlineGroup" Header="Параметры документа" Appearance="Outline">
+            <StackPanel Spacing="12">
+              <TextBlock Text="Outline · прозрачная область с тонкой рамкой" FontSize="13" TextTone="Secondary"/>
+              <Grid Spacing="12">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel Spacing="6"><TextBlock Text="Количество" FontSize="13"/><SpinBox Value="{Binding Quantity}" Minimum="1" Maximum="1000"/></StackPanel>
+                <StackPanel Grid.Column="1" Spacing="6"><TextBlock Text="Дата" FontSize="13"/><DateEdit Value="{Binding Date}"/></StackPanel>
+              </Grid>
+              <GroupBox x:Name="PlainGroup" Header="Уведомления" Appearance="Plain" Padding="0,8,0,0">
+                <StackPanel Spacing="4">
+                  <CheckBox Content="Сообщать об изменениях" IsChecked="True"/>
+                  <TextBlock Text="Plain · вложенная группа без дополнительной рамки" FontSize="12" TextTone="Secondary"/>
+                </StackPanel>
+              </GroupBox>
+            </StackPanel>
+          </GroupBox>
+        </StackPanel>
+        <StackPanel Grid.Column="1" Spacing="16">
+          <Expander x:Name="DetailsGroup" Header="Дополнительные сведения" IsExpanded="{Binding Form.DetailsExpanded}">
+            <StackPanel Spacing="10" DataContext="{Binding Form}">
+              <TextBlock Text="Expander · нажмите заголовок или Enter / Space" FontSize="13" TextTone="Secondary"/>
+              <TextBlock Text="Заметка" FontSize="13" FontWeight="SemiBold"/>
+              <TextBox x:Name="GroupNoteEditor" Text="{Binding Note}" PlaceholderText="Текст останется после сворачивания"/>
+              <TextBlock Text="Время" FontSize="13"/>
+              <TimeEdit x:Name="GroupTimeEditor" Value="{Binding Time}"/>
+            </StackPanel>
+          </Expander>
+          <CheckBox x:Name="DetailsToggle" Content="Показать дополнительные сведения" IsChecked="{Binding Form.DetailsExpanded}"/>
+          <Expander x:Name="AdvancedGroup" Header="Архив и история" IsExpanded="False" Appearance="Outline">
+            <StackPanel Spacing="10">
+              <TextBlock Text="Эта секция изначально свёрнута." TextTone="Secondary"/>
+              <TextBox x:Name="ArchiveEditor" Text="Новая версия документа"/>
+            </StackPanel>
+          </Expander>
+          <GroupBox x:Name="ReadOnlyGroup" Header="Сводка" Appearance="Plain" Padding="0,8,0,0">
+            <StackPanel Spacing="10">
+              <TextBlock Text="{Binding Header, ElementName=PrimaryGroup}" FontSize="16" FontWeight="SemiBold"/>
+              <TextBlock Text="{Binding Form.Title}"/>
+              <TextBlock Text="Заголовки и состояние секций поддерживают привязки к модели и ElementName." FontSize="13" TextTone="Secondary"/>
+            </StackPanel>
+          </GroupBox>
+        </StackPanel>
+      </Grid>
+    </ScrollViewer>
+    <DockPanel Grid.Row="2">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" Spacing="8">
+        <Button Content="Светлая" Command="Light"/>
+        <Button Content="Тёмная" Command="Dark"/>
+        <Button Content="Обновить данные" Command="ReloadForm"/>
+      </StackPanel>
+      <TextBlock Text="GroupBox · Expander · Fluent Light / Dark" FontSize="13" TextTone="Secondary" VerticalAlignment="Center"/>
+    </DockPanel>
+  </Grid>
+</Window>

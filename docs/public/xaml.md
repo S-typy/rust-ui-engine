@@ -10,6 +10,8 @@
 `LookupEdit`, `ButtonEdit`, `SpinBox`, `DateEdit` и `TimeEdit`, привязки данных,
 Grid/WrapPanel/DockPanel/Border/ScrollViewer описаны в
 [контракте форм](forms.md).
+`GroupBox` и `Expander` объединяют содержимое под заголовком, поддерживают
+вложенность и привязки; см. [группы и раскрывающиеся секции](groups.md).
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -21,6 +23,7 @@ cargo run -p xaml-form --locked -- --dark
 cargo run -p xaml-form --locked -- --light --smoke-test
 cargo run -p xaml-form --locked -- --controls
 cargo run -p xaml-form --locked -- --editors
+cargo run -p xaml-form --locked -- --groups
 ```
 
 По умолчанию открывается [MainWindow.xaml](../../examples/xaml-form/MainWindow.xaml)

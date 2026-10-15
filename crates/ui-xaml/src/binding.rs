@@ -72,6 +72,7 @@ pub(crate) fn parse_binding(
     document: &Document<'_>,
     attribute: Attribute<'_, '_>,
     editable: bool,
+    default_trigger: UpdateSourceTrigger,
 ) -> Result<BindingDefinition, Diagnostic> {
     let fail = |message: &str| at_attribute(document, attribute, message);
     let source = attribute.value().trim();
@@ -85,10 +86,12 @@ pub(crate) fn parse_binding(
             "nested markup extensions are not supported in Binding",
         ));
     }
-    let mut result = BindingDefinition::default();
+    let mut result = BindingDefinition {
+        update_source_trigger: default_trigger,
+        ..Default::default()
+    };
     if editable {
         result.mode = BindingMode::TwoWay;
-        result.update_source_trigger = UpdateSourceTrigger::LostFocus;
     }
     let mut seen = std::collections::HashSet::new();
     let mut parts = Vec::new();

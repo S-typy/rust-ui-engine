@@ -56,6 +56,7 @@ cargo run --release --locked -p xaml-form -- --dark
 cargo run --release --locked -p xaml-form -- --ribbon-minimized
 cargo run --release --locked -p xaml-form -- --controls
 cargo run --release --locked -p xaml-form -- --editors
+cargo run --release --locked -p xaml-form -- --groups
 ```
 
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
@@ -72,6 +73,11 @@ editor buttons, SpinBox, date and time fields. Two-way bindings share typed data
 validate values before acceptance, and preserve drafts until commit. Grid,
 WrapPanel, DockPanel, Border and two-axis ScrollViewer arrange the form.
 See [editors, bindings and layout](docs/public/forms.md) for syntax and contracts.
+
+The [groups form](examples/xaml-form/GroupsWindow.xaml), opened with `--groups`,
+shows GroupBox and Expander in Card, Outline and Plain appearances. Nested
+sections retain their editors and bindings when collapsed. See
+[groups and expandable sections](docs/public/groups.md).
 
 ## Run the docking workspace
 

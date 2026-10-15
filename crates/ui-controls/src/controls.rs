@@ -24,6 +24,10 @@ mod appearance;
 mod appearance_tests;
 mod button_presentation;
 #[cfg(test)]
+mod group_tests;
+mod groups;
+pub use groups::{Expander, GroupAppearance, GroupBox, GroupSettings};
+#[cfg(test)]
 mod pointer_cancel_tests;
 mod popup;
 mod scroll;
@@ -358,6 +362,7 @@ pub struct Controls {
     custom_scenes: HashMap<WidgetId, Scene>,
     rich: selection::RichControls,
     scroll_drag: Option<scroll::ScrollDrag>,
+    groups: HashMap<WidgetId, groups::GroupState>,
 }
 
 impl Controls {
@@ -423,6 +428,7 @@ impl Controls {
             custom_scenes: HashMap::new(),
             rich: Default::default(),
             scroll_drag: None,
+            groups: HashMap::new(),
         })
     }
     pub fn root(&self) -> WidgetId {
@@ -915,6 +921,9 @@ impl Controls {
         id: WidgetId,
         label: impl Into<String>,
     ) -> Result<(), ControlError> {
+        if self.group_owner(id).is_some() {
+            return self.set_group_header(id, label);
+        }
         self.controls
             .get_mut(&id)
             .ok_or_else(|| ControlError::Invalid("Unknown control".into()))?
@@ -1594,6 +1603,7 @@ impl Controls {
     /// ListBox's required content cannot be removed individually; remove their
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.preflight_group_removal(id)?;
         self.preflight_rich_removal(id)?;
         self.runtime.apply(Mutation::Remove(id))?;
         self.controls
@@ -1601,6 +1611,7 @@ impl Controls {
         self.tabs
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.retain_rich_controls();
+        self.groups.retain(|id, _| self.controls.contains_key(id));
         if self.rich.popup.as_ref().is_some_and(|popup| {
             !self.rich.composites.contains_key(&popup.owner)
                 || !self.controls.contains_key(&popup.surface)
@@ -2162,6 +2173,9 @@ impl Controls {
     pub fn activate(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.sync_popup_availability()?;
         if !self.activation_available(id) || !self.controls[&id].kind.clickable() {
+            return Ok(());
+        }
+        if self.activate_group_header(id)? {
             return Ok(());
         }
         if self.activate_rich_control(id)? {
@@ -2757,6 +2771,12 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            if self.paint_group(id, bounds, clip)? {
+                if let Some(custom) = self.custom_scenes.get(&id) {
+                    append_clipped(&mut self.scene, custom, clip);
+                }
+                continue;
+            }
             if self.paint_rich_surface(id, bounds, clip)? {
                 continue;
             }
@@ -3487,6 +3507,13 @@ impl Controls {
                 let mut actions = Vec::new();
                 let enabled = self.is_enabled(id);
                 if enabled && !matches!(control.kind, Kind::Icon { .. } | Kind::Separator { .. }) {
+                    if let Some(expanded) = self.expander_expanded(id) {
+                        actions.push(if expanded {
+                            SemanticAction::Collapse
+                        } else {
+                            SemanticAction::Expand
+                        });
+                    }
                     if let Some(expanded) = self.popup_expanded(id)
                         && !self.rich_read_only(id)
                     {
@@ -3516,9 +3543,9 @@ impl Controls {
                     id,
                     parent: self.runtime.tree().parent(id),
                     role,
-                    label: control
-                        .automation_name
-                        .as_deref()
+                    label: self
+                        .group_automation_name(id)
+                        .or(control.automation_name.as_deref())
                         .unwrap_or_else(|| control.display_label(&self.commands))
                         .to_owned(),
                     value,
@@ -3528,7 +3555,9 @@ impl Controls {
                     read_only: control.editor.is_read_only || self.rich_read_only(id),
                     validation_error: control.validation_error.clone(),
                     has_popup: self.popup_expanded(id).is_some(),
-                    expanded: self.popup_expanded(id),
+                    expanded: self
+                        .expander_expanded(id)
+                        .or_else(|| self.popup_expanded(id)),
                     tooltip: control.tooltip.clone(),
                     focused: self.runtime.focused() == Some(id),
                     bounds,
@@ -3553,6 +3582,12 @@ impl Controls {
         match action {
             SemanticAction::Focus => self.runtime.apply(Mutation::Focus(Some(id)))?,
             SemanticAction::Activate | SemanticAction::Toggle => self.activate(id)?,
+            SemanticAction::Expand if self.expander_expanded(id).is_some() => {
+                self.set_expander_expanded(id, true)?;
+            }
+            SemanticAction::Collapse if self.expander_expanded(id).is_some() => {
+                self.set_expander_expanded(id, false)?;
+            }
             SemanticAction::Expand => self.expand_popup(id)?,
             SemanticAction::Collapse => self.collapse_popup(id)?,
             SemanticAction::SetValue => {

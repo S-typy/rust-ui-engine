@@ -169,6 +169,20 @@ fn validate_levels(levels: &[Level], commands: &CommandRegistry) -> Result<(), C
 }
 
 impl Controls {
+    pub(super) fn group_popup_focused(&self) -> bool {
+        let (Some(popup), Some(mut focused)) = (&self.popup, self.runtime.focused()) else {
+            return false;
+        };
+        loop {
+            if popup.levels.iter().any(|level| level.container == focused) {
+                return true;
+            }
+            let Some(parent) = self.runtime.tree().parent(focused) else {
+                return false;
+            };
+            focused = parent;
+        }
+    }
     pub(crate) fn preflight_menu(&mut self, entries: &[MenuEntry]) -> Result<(), ControlError> {
         validate_entries(entries, &self.commands, 1, &mut 0, &mut 0)?;
         let mut pending = vec![entries];

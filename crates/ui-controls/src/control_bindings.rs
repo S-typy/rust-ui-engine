@@ -15,6 +15,8 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BindingProperty {
     Text,
+    Header,
+    IsExpanded,
     Value,
     SelectedValue,
     SelectedValues,
@@ -187,6 +189,10 @@ impl ControlBindings {
                         (link.binding.target.property, binding.target.property),
                         (BindingProperty::Text, BindingProperty::Value)
                             | (BindingProperty::Value, BindingProperty::Text)
+                            | (BindingProperty::Text, BindingProperty::Header)
+                            | (BindingProperty::Header, BindingProperty::Text)
+                            | (BindingProperty::Value, BindingProperty::Header)
+                            | (BindingProperty::Header, BindingProperty::Value)
                             | (
                                 BindingProperty::SelectedValue,
                                 BindingProperty::SelectedValues
@@ -227,6 +233,7 @@ impl ControlBindings {
         if self.installed {
             return Ok(());
         }
+        self.normalize_group_endpoints(ui)?;
         self.evaluation_order = self.order()?;
         for link in &self.links {
             let binding = &link.binding;
@@ -260,6 +267,47 @@ impl ControlBindings {
         }
         self.installed = true;
         self.sync(ui);
+        Ok(())
+    }
+
+    fn normalize_group_endpoints(&mut self, ui: &Controls) -> Result<(), BindingError> {
+        let canonical = |mut endpoint: BindingEndpoint| {
+            if matches!(
+                endpoint.property,
+                BindingProperty::Text | BindingProperty::Header | BindingProperty::IsExpanded
+            ) && let Some(owner) = ui.group_owner(endpoint.widget)
+            {
+                endpoint.widget = owner;
+            }
+            endpoint
+        };
+        let mut targets = HashSet::new();
+        let mut normalized = Vec::with_capacity(self.links.len());
+        for link in &self.links {
+            let mut binding = link.binding.clone();
+            binding.target = canonical(binding.target);
+            if !targets.insert(dependency_endpoint(binding.target)) {
+                return Err(invalid(
+                    "A property can have only one binding, including group header aliases",
+                ));
+            }
+            if let BindingSource::Element(source) = &mut binding.source {
+                *source = canonical(*source);
+            }
+            normalized.push(binding);
+        }
+        let previous: Vec<_> = self
+            .links
+            .iter_mut()
+            .zip(normalized)
+            .map(|(link, normalized)| std::mem::replace(&mut link.binding, normalized))
+            .collect();
+        if let Err(error) = self.order() {
+            for (link, previous) in self.links.iter_mut().zip(previous) {
+                link.binding = previous;
+            }
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -783,6 +831,14 @@ fn read_property(
         return editor_parser(ui, endpoint).parse(text);
     }
     match endpoint.property {
+        BindingProperty::Header => ui
+            .group_header(id)
+            .map(DataValue::from)
+            .ok_or_else(|| invalid("Header requires a group or expander")),
+        BindingProperty::IsExpanded => ui
+            .expander_expanded(id)
+            .map(DataValue::Bool)
+            .ok_or_else(|| invalid("IsExpanded requires an expander")),
         BindingProperty::Text => ui
             .label_text(id)
             .map(DataValue::from)
@@ -896,6 +952,12 @@ fn write_property(
         return accepted(outcome);
     }
     match endpoint.property {
+        BindingProperty::Header => ui
+            .set_group_header(id, string(value)?)
+            .map_err(control_error),
+        BindingProperty::IsExpanded => ui
+            .set_expander_expanded(id, boolean(value)?)
+            .map_err(control_error),
         BindingProperty::Text => ui.set_label(id, string(value)?).map_err(control_error),
         BindingProperty::Value => Err(invalid("Value requires an editor")),
         BindingProperty::SelectedValue | BindingProperty::SelectedValues => {
@@ -1159,7 +1221,7 @@ fn invalid(message: &str) -> BindingError {
 
 fn dependency_endpoint(mut endpoint: BindingEndpoint) -> BindingEndpoint {
     endpoint.property = match endpoint.property {
-        BindingProperty::Value => BindingProperty::Text,
+        BindingProperty::Value | BindingProperty::Header => BindingProperty::Text,
         BindingProperty::SelectedValues => BindingProperty::SelectedValue,
         property => property,
     };

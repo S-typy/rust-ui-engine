@@ -1,4 +1,4 @@
-//! Application data for EditorsWindow.xaml; no product-specific behavior lives in Controls.
+//! Application data for the editors and groups examples.
 use rust_desktop_ui_controls::{BindingContext, BindingValidator, DataValue};
 use std::{cell::RefCell, rc::Rc};
 
@@ -40,6 +40,8 @@ pub(crate) fn model() -> Result<Rc<RefCell<BindingContext>>, String> {
                 ("Time", "09:30:00".into()),
                 ("ReadOnly", false.into()),
                 ("Note", "Заметка к документу".into()),
+                ("GroupHeader", "Основные сведения".into()),
+                ("DetailsExpanded", true.into()),
             ]),
         ),
         ("Status", "Данные загружены".into()),

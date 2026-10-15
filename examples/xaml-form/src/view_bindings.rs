@@ -24,6 +24,8 @@ pub(super) fn context_path(parent: &str, child: Option<&str>) -> String {
 fn property(name: &str) -> Result<BindingProperty, String> {
     Ok(match name {
         "Text" | "Content" => BindingProperty::Text,
+        "Header" => BindingProperty::Header,
+        "IsExpanded" => BindingProperty::IsExpanded,
         "Value" => BindingProperty::Value,
         "SelectedValue" => BindingProperty::SelectedValue,
         "SelectedValues" => BindingProperty::SelectedValues,
@@ -45,13 +47,14 @@ fn fallback(
     value: &str,
 ) -> Result<DataValue, String> {
     Ok(match property {
-        BindingProperty::IsChecked | BindingProperty::IsEnabled | BindingProperty::IsReadOnly => {
-            match value.to_ascii_lowercase().as_str() {
-                "true" => DataValue::Bool(true),
-                "false" => DataValue::Bool(false),
-                _ => return Err("Boolean FallbackValue must be True or False".into()),
-            }
-        }
+        BindingProperty::IsChecked
+        | BindingProperty::IsEnabled
+        | BindingProperty::IsReadOnly
+        | BindingProperty::IsExpanded => match value.to_ascii_lowercase().as_str() {
+            "true" => DataValue::Bool(true),
+            "false" => DataValue::Bool(false),
+            _ => return Err("Boolean FallbackValue must be True or False".into()),
+        },
         BindingProperty::Visibility => match value.to_ascii_lowercase().as_str() {
             "true" => DataValue::Bool(true),
             "false" => DataValue::Bool(false),
