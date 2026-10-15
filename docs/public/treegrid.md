@@ -1,5 +1,10 @@
 # TreeGrid alpha
 
+Для плоских таблиц из коллекций Rust и SQLite доступен retained
+[GridControl](grid-control.md) с общим редактором, bindings и XAML.
+Он использует эту модель виртуализации; иерархический TreeGrid сохраняет
+самостоятельный контракт `TreeDataSource`.
+
 `rust-desktop-ui-treegrid` содержит независимые data source, модель состояния
 и viewport view. Crate зависит только от `rust-desktop-ui-core`; wgpu, winit,
 база данных и async runtime не входят в его API. Текст и прямоугольники view

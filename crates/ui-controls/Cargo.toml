@@ -10,5 +10,7 @@ repository.workspace = true
 rust-desktop-ui-core = { version = "0.1.0", path = "../ui-core" }
 rust-desktop-ui-layout = { version = "0.1.0", path = "../ui-layout" }
 rust-desktop-ui-text = { version = "0.1.0", path = "../ui-text" }
+rust-desktop-ui-data = { version = "0.1.0", path = "../ui-data", default-features = false }
+rust-desktop-ui-treegrid = { version = "0.1.0", path = "../ui-treegrid" }
 serde.workspace = true
 serde_json.workspace = true

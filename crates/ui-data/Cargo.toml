@@ -1,0 +1,15 @@
+[package]
+name = "rust-desktop-ui-data"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Typed bounded data sources and adapters for desktop forms"
+
+[features]
+default = []
+sqlite = ["dep:rusqlite"]
+
+[dependencies]
+rusqlite = { workspace = true, optional = true }

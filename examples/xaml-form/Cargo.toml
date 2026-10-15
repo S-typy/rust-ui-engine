@@ -10,6 +10,8 @@ publish = false
 [dependencies]
 rust-desktop-ui-core = { path = "../../crates/ui-core", version = "0.1.0" }
 rust-desktop-ui-controls = { path = "../../crates/ui-controls", version = "0.1.0" }
+rust-desktop-ui-data = { path = "../../crates/ui-data", version = "0.1.0", features = ["sqlite"] }
+rust-desktop-ui-treegrid = { path = "../../crates/ui-treegrid", version = "0.1.0" }
 rust-desktop-ui-platform-winit = { path = "../../crates/ui-platform-winit", version = "0.1.0" }
 rust-desktop-ui-xaml = { path = "../../crates/ui-xaml", version = "0.1.0" }
 

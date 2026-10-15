@@ -152,6 +152,8 @@ enum ColumnDrag {
 /// the selected range once, preserving stable keys across sorting/collapse.
 pub struct TreeGrid {
     pub palette: GridPalette,
+    /// Flat tables omit the hierarchy gutter; hierarchical geometry is the default.
+    pub flat_presentation: bool,
     pub(crate) columns: Vec<GridColumn>,
     pub(crate) config: GridConfig,
     pub(crate) regular: Vec<usize>,
@@ -197,6 +199,7 @@ impl TreeGrid {
         let focused_column = Some(tree_column);
         let mut grid = Self {
             palette: GridPalette::default(),
+            flat_presentation: false,
             columns,
             config,
             regular: Vec::new(),
@@ -231,6 +234,15 @@ impl TreeGrid {
     pub fn columns(&self) -> &[GridColumn] {
         &self.columns
     }
+    pub fn set_column_editable(&mut self, id: ColumnId, editable: bool) -> Result<(), GridError> {
+        let column = self
+            .columns
+            .iter_mut()
+            .find(|column| column.id == id)
+            .ok_or(GridError::UnknownColumn(id))?;
+        column.editable = editable;
+        Ok(())
+    }
     pub fn config(&self) -> GridConfig {
         self.config
     }
@@ -260,6 +272,14 @@ impl TreeGrid {
     }
     pub fn query(&self) -> &GridQuery {
         &self.query
+    }
+    /// Synchronize an already executed source query without invoking the adapter.
+    /// The caller refreshes the indexed source first. Unknown columns are omitted.
+    pub fn set_query_presentation(&mut self, mut query: GridQuery) {
+        query
+            .sort
+            .retain(|sort| self.columns.iter().any(|column| column.id == sort.column));
+        self.query = query;
     }
     pub fn tree_column(&self) -> ColumnId {
         self.tree_column
@@ -697,7 +717,33 @@ impl TreeGrid {
         self.require_column(column)?;
         self.select(source, row, modifiers)?;
         self.focused_column = Some(column);
+        if self.flat_presentation {
+            self.ensure_column_visible(column);
+        }
         Ok(())
+    }
+
+    fn ensure_column_visible(&mut self, column: ColumnId) {
+        let Some(position) = self
+            .regular
+            .iter()
+            .position(|index| self.columns[*index].id == column)
+        else {
+            return;
+        };
+        let start = if position == 0 {
+            0.0
+        } else {
+            self.column_ends[position - 1]
+        };
+        let end = self.column_ends[position];
+        let available = (f64::from(self.viewport.width) - self.pinned_width).max(0.0);
+        if end - start > available || start < self.scroll_x {
+            self.scroll_x = start;
+        } else if end > self.scroll_x + available {
+            self.scroll_x = end - available;
+        }
+        self.clamp_scroll();
     }
 
     pub fn clear_selection(&mut self) {
@@ -865,6 +911,9 @@ impl TreeGrid {
         self.focused = Some(row);
         self.focused_column = Some(column);
         self.ensure_visible(position);
+        if self.flat_presentation {
+            self.ensure_column_visible(column);
+        }
         Ok(())
     }
 

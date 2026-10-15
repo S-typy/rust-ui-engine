@@ -655,6 +655,11 @@ PreparedText для рисования, прокрутки, hit-testing и ка�
 
 ## Модель и привязки форм
 
+Типизированные табличные данные находятся в отдельном [ui-data](data.md).
+`Controls::register_data_source` связывает имя и общий `Rc<RefCell<DataSource>>`;
+`Controls::grid_control` создаёт виртуальную таблицу с единым TextBox для ячейки.
+Колонки, запросы, клавиатура и bindings описаны в [GridControl](grid-control.md).
+
 Группы поддерживают `Header`, `IsExpanded` и `SelectedIndex` в привязках. Их Rust API,
 клавиатурное поведение и ограничения описаны в [контракте групп](groups.md).
 

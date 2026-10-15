@@ -20,9 +20,13 @@ use std::{
 };
 
 mod appearance;
+mod grid;
+pub use grid::{DataSourceHandle, GridControlColumn, GridControlSettings};
 #[cfg(test)]
 mod appearance_tests;
 mod button_presentation;
+#[cfg(test)]
+mod grid_tests;
 #[cfg(test)]
 mod group_tests;
 mod groups;
@@ -107,6 +111,7 @@ pub enum Role {
     StatusBar,
     ProgressBar,
     Slider,
+    Grid,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SemanticAction {
@@ -345,6 +350,8 @@ struct Tabs {
 /// For registered controls, enabled state belongs to `set_enabled` and the command
 /// registry; runtime node properties are refreshed from those sources on update.
 pub struct Controls {
+    grids: HashMap<WidgetId, grid::GridState>,
+    data_sources: HashMap<String, DataSourceHandle>,
     pub runtime: UiRuntime,
     layout: TaffyLayout,
     engine: TextEngine,
@@ -412,6 +419,8 @@ impl Controls {
             },
         )?;
         Ok(Self {
+            grids: HashMap::new(),
+            data_sources: HashMap::new(),
             runtime,
             layout: TaffyLayout::new(),
             engine: TextEngine::new(),
@@ -621,6 +630,9 @@ impl Controls {
     /// Application calls are permitted for read-only/disabled editors; user
     /// keyboard and focus routes are gated by editability.
     pub fn commit_edit(&mut self, id: WidgetId) -> Result<CommitOutcome, ControlError> {
+        if let Some(grid) = self.grid_owner_of_editor(id) {
+            return self.commit_grid_editor(grid);
+        }
         self.editor_control(id)?;
         let document = self.document(id).unwrap();
         if document.composition().is_some() {
@@ -1554,6 +1566,7 @@ impl Controls {
     /// ListBox's required content cannot be removed individually; remove their
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.preflight_grid_removal(id)?;
         self.preflight_status_removal(id)?;
         self.preflight_group_removal(id)?;
         self.preflight_tab_removal(id)?;
@@ -1564,6 +1577,7 @@ impl Controls {
         self.tabs
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.retain_rich_controls();
+        self.grids.retain(|id, _| self.controls.contains_key(id));
         self.groups.retain(|id, _| self.controls.contains_key(id));
         self.retain_status_controls()?;
         if self.rich.popup.as_ref().is_some_and(|popup| {
@@ -1891,6 +1905,10 @@ impl Controls {
         }
         add_stats(&mut delta, self.sync_popup_layout()?);
         add_stats(&mut delta, self.sync_rich_layout()?);
+        self.sync_grids()?;
+        if self.runtime.needs_update() {
+            add_stats(&mut delta, self.runtime.update(&mut self.layout, viewport)?);
+        }
         self.tooltip_sync();
         if delta.paint_passes > 0 || self.scene_dirty {
             self.rebuild_scene()?;
@@ -1908,6 +1926,7 @@ impl Controls {
     /// levels, editor drafts, accepted values and IME composition remain intact.
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
+        self.cancel_grid_pointers();
         self.cancel_zoom_gesture()?;
         self.selecting = None;
         self.scroll_drag = None;
@@ -1931,6 +1950,9 @@ impl Controls {
         }
         self.update(self.viewport)?;
         self.caret_visible = true;
+        if self.grid_before_input(&event)? {
+            return Ok(());
+        }
         if self.scroll_before_input(&event)? {
             return Ok(());
         }
@@ -3514,8 +3536,14 @@ impl Controls {
                     disabled: !enabled,
                     read_only: control.editor.is_read_only
                         || self.rich_read_only(id)
+                        || self
+                            .grid_settings(id)
+                            .is_some_and(|settings| settings.is_read_only)
                         || self.progress_settings(id).is_some(),
-                    validation_error: control.validation_error.clone(),
+                    validation_error: control
+                        .validation_error
+                        .clone()
+                        .or_else(|| self.grid_error(id).map(str::to_owned)),
                     has_popup: self.popup_expanded(id).is_some(),
                     expanded: self
                         .expander_expanded(id)

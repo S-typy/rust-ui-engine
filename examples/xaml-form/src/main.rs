@@ -2,6 +2,9 @@
 mod accessibility;
 #[cfg(test)]
 mod binding_adapter_tests;
+#[cfg(test)]
+mod data_adapter_tests;
+mod data_model;
 mod docking_accessibility;
 mod docking_app;
 mod form;
@@ -38,6 +41,9 @@ mod generated_groups {
 mod generated_status {
     include!(concat!(env!("OUT_DIR"), "/status_window.rs"));
 }
+mod generated_data {
+    include!(concat!(env!("OUT_DIR"), "/data_window.rs"));
+}
 mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
 }
@@ -62,6 +68,7 @@ fn start() -> Result<(), String> {
     let mut editors = false;
     let mut groups = false;
     let mut status = false;
+    let mut data = false;
     let mut docking = false;
     let mut float_pane = None;
     let mut layout_file = None;
@@ -78,6 +85,7 @@ fn start() -> Result<(), String> {
             "--editors" => editors = true,
             "--groups" => groups = true,
             "--status" => status = true,
+            "--data" => data = true,
             "--docking" => docking = true,
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
@@ -93,7 +101,7 @@ fn start() -> Result<(), String> {
             "--native-title-bar" => native_title_bar = true,
             "--help" | "-h" => {
                 println!(
-                    "xaml-form [--controls | --editors | --groups | --status | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
+                    "xaml-form [--controls | --editors | --groups | --status | --data | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
                 );
                 println!(
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
@@ -108,6 +116,9 @@ fn start() -> Result<(), String> {
                     "--status opens StatusWindow.xaml with StatusBar, RibbonStatusBar, progress and zoom bindings."
                 );
                 println!(
+                    "--data opens DataWindow.xaml with typed Rust collection and in-memory SQLite tables."
+                );
+                println!(
                     "--diagnostics logs input, values and validation for automated input tests."
                 );
                 println!(
@@ -118,14 +129,14 @@ fn start() -> Result<(), String> {
             _ => return Err(format!("Unknown argument: {argument}")),
         }
     }
-    if [controls, docking, editors, groups, status]
+    if [controls, docking, editors, groups, status, data]
         .into_iter()
         .filter(|v| *v)
         .count()
         > 1
     {
         return Err(
-            "--controls, --editors, --groups, --status and --docking are mutually exclusive".into(),
+            "--controls, --editors, --groups, --status, --data and --docking are mutually exclusive".into(),
         );
     }
     if float_pane.is_some() && !docking {
@@ -142,6 +153,8 @@ fn start() -> Result<(), String> {
         generated_groups::window_definition()
     } else if status {
         generated_status::window_definition()
+    } else if data {
+        generated_data::window_definition()
     } else if controls {
         generated_controls::window_definition()
     } else {
@@ -186,7 +199,10 @@ fn start() -> Result<(), String> {
         app.set_layout_file(path);
         return rust_desktop_ui_platform_winit::run_multi(app);
     }
-    let app = if editors || groups || status {
+    let app = if data {
+        let (context, sources) = data_model::model()?;
+        form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
+    } else if editors || groups || status {
         form::Form::new_with_model(definition, diagnostics, Some(forms_model::model()?))?
     } else {
         form::Form::new(definition, diagnostics)?

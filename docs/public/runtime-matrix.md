@@ -1,5 +1,23 @@
 # Runtime matrix и протокол проверки alpha
 
+## Источники данных и GridControl — Windows, 2026-10-16
+
+Коллекции Rust, SQLite, GridControl и XAML-адаптеры проверены локально:
+963 workspace tests и 2 doctests PASS, два hardware tests ignored.
+80 новых регрессий: типы/ключи, limits, SQLite rollback и conflicts, виртуализация
+100 000 строк, query/selection, edit sessions, bindings, layout и accessibility.
+fmt, clippy all-targets, release, rustdoc с запретом warnings, лицензии и
+инвентаризация пройдены. SQLite optional feature отдельно проверен выключенным.
+
+NVIDIA GeForce RTX 3090, scale=1.5: `--data` прошёл DX12/Vulkan × Light/Dark —
+четыре capture и четыре smoke с native resize/redraw. 1211 glyphs, missing=0,
+client 1800×1170. Обе темы просмотрены, пиксели соответствующих тем совпадают
+между backend. Дополнительно MainWindow и controls-gallery прошли DX12 smoke.
+
+Системный ввод/фокус не генерировались. Настоящие клики, header/scrollbar drag,
+IME, screen reader, mixed-DPI и Linux/macOS этим срезом не проверены.
+Контракты — [источники данных](data.md) и [GridControl](grid-control.md).
+
 ## Строки состояния — Windows, 2026-10-15
 
 StatusBar, RibbonStatusBar, ProgressBar, ZoomControl и XAML-адаптеры проверены:

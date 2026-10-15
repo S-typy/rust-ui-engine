@@ -1,0 +1,64 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Fluent Forms — данные и таблицы" Width="1200" Height="780" Padding="0">
+  <Grid>
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+    <StackPanel Margin="24,20,24,16" Spacing="6">
+      <TextBlock Text="Данные и таблицы" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Типизированные источники · сортировка · фильтр · редактирование ячеек" TextTone="Secondary"/>
+    </StackPanel>
+    <Grid Grid.Row="1" Margin="24,0,24,16" Spacing="12">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBox x:Name="DataFilter" Text="{Binding Filter, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Поиск по обеим таблицам…" AutomationName="Фильтр таблиц"/>
+      <CheckBox Grid.Column="1" Content="Только чтение" IsChecked="{Binding ReadOnly}" Width="156"/>
+      <Button Grid.Column="2" Content="Обновить" Command="ReloadData" Width="134"/>
+    </Grid>
+    <Grid Grid.Row="2" Margin="24,0,24,0" Spacing="16">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <GroupBox Header="Коллекция Rust" HeaderIcon="FolderOpen" Padding="0">
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <GridControl x:Name="CollectionGrid" DataSource="Products" AutomationName="Товары из коллекции Rust"
+                       FilterText="{Binding Filter}" SelectedValue="{Binding CollectionKey}" IsReadOnly="{Binding ReadOnly}">
+            <GridColumn FieldName="Code" Header="Артикул" Width="94" IsPinned="True"/>
+            <GridColumn FieldName="Product" Header="Наименование" Width="174"/>
+            <GridColumn FieldName="Quantity" Header="Кол-во" Width="78"/>
+            <GridColumn FieldName="Price" Header="Цена" Width="90"/>
+            <GridColumn FieldName="Available" Header="В наличии" Width="104"/>
+            <GridColumn FieldName="Note" Header="Примечание" Width="180"/>
+          </GridControl>
+          <TextBlock Grid.Row="1" Margin="12,8" Text="{Binding CollectionKey}" FontSize="12" TextTone="Secondary" AutomationName="Ключ строки коллекции"/>
+        </Grid>
+      </GroupBox>
+      <GroupBox Grid.Column="1" Header="SQLite · в памяти" HeaderIcon="Save" Padding="0">
+        <Grid>
+          <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <GridControl x:Name="SqliteGrid" DataSource="SqliteProducts" AutomationName="Товары из SQLite"
+                       FilterText="{Binding Filter}" SelectedValue="{Binding SqliteKey}" IsReadOnly="{Binding ReadOnly}">
+            <GridControl.Columns>
+              <GridColumn FieldName="Code" Header="Артикул" Width="94" IsPinned="True"/>
+              <GridColumn FieldName="Product" Header="Наименование" Width="174"/>
+              <GridColumn FieldName="Quantity" Header="Кол-во" Width="78"/>
+              <GridColumn FieldName="Price" Header="Цена" Width="90"/>
+              <GridColumn FieldName="Available" Header="В наличии" Width="104"/>
+              <GridColumn FieldName="Note" Header="Примечание" Width="180"/>
+            </GridControl.Columns>
+          </GridControl>
+          <TextBlock Grid.Row="1" Margin="12,8" Text="{Binding SqliteKey}" FontSize="12" TextTone="Secondary" AutomationName="Ключ строки SQLite"/>
+        </Grid>
+      </GroupBox>
+    </Grid>
+    <Grid Grid.Row="3" Margin="24,12,24,12" Spacing="12">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock Text="Заголовок — сортировка · F2 — изменить · Enter — принять · Esc — отменить" FontSize="12" TextTone="Secondary"/>
+      <Button Grid.Column="1" Content="Светлая" Command="Light" Icon="Sun" Width="112" Height="30"/>
+      <Button Grid.Column="2" Content="Тёмная" Command="Dark" Icon="Moon" Width="112" Height="30"/>
+    </Grid>
+    <StatusBar Grid.Row="4" AutomationName="Состояние данных">
+      <StatusBarItem><TextBlock x:Name="Status" Text="{Binding Status}" FontSize="12"/></StatusBarItem>
+      <StatusBarItem Placement="Right"><TextBlock Text="SQLite: изменения действуют до закрытия окна" FontSize="12" TextTone="Secondary"/></StatusBarItem>
+    </StatusBar>
+  </Grid>
+</Window>

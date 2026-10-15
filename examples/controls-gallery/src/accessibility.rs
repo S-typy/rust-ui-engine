@@ -395,5 +395,6 @@ fn role(role: ControlRole) -> Role {
         ControlRole::StatusBar => Role::Status,
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
+        ControlRole::Grid => Role::Grid,
     }
 }

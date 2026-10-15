@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet};
 mod bindings;
 #[path = "view_forms.rs"]
 mod forms;
+#[path = "view_grid.rs"]
+mod grid;
 #[path = "view_status.rs"]
 mod status;
 
@@ -100,6 +102,7 @@ impl MountedView {
             && matches!(
                 element.kind,
                 ElementKind::Grid(_)
+                    | ElementKind::GridControl(_)
                     | ElementKind::Border(_)
                     | ElementKind::GroupBox(_)
                     | ElementKind::TabbedGroup(_)
@@ -165,6 +168,7 @@ impl MountedView {
                 ElementKind::ProgressBar(_) => Length::Px(16.0),
                 ElementKind::ZoomControl(_) => Length::Px(28.0),
                 ElementKind::ListBox(_) => Length::Px(160.0),
+                ElementKind::GridControl(_) => Length::Auto,
                 ElementKind::TextBox(_)
                 | ElementKind::ComboBox(_)
                 | ElementKind::LookupEdit(_)
@@ -210,6 +214,13 @@ impl MountedView {
             ..Default::default()
         };
         let id = match &element.kind {
+            ElementKind::GridControl(definition) => self.mount_grid_control(
+                ui,
+                parent,
+                definition,
+                style,
+                common.bindings.contains_key("Height"),
+            )?,
             ElementKind::StatusBar(_)
             | ElementKind::RibbonStatusBar(_)
             | ElementKind::StatusBarItem(_)
@@ -529,6 +540,7 @@ impl MountedView {
                 | ElementKind::DockPanel(_) => Role::Panel,
                 ElementKind::ScrollViewer(_) => Role::ScrollView,
                 ElementKind::ListBox(_) => Role::ListBox,
+                ElementKind::GridControl(_) => Role::Grid,
                 ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
                 ElementKind::ButtonEdit(_)
                 | ElementKind::SpinBox(_)
@@ -595,6 +607,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         }),
         ElementKind::ProgressBar(_) => Ok(120.0),
         ElementKind::ZoomControl(_) => Ok(220.0),
+        ElementKind::GridControl(_) => Ok(560.0),
         ElementKind::DockWorkspace(_) => {
             Err("DockWorkspace requires the docking window coordinator".into())
         }
@@ -903,6 +916,19 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         match &element.kind {
+            ElementKind::GridControl(grid) => {
+                rust_desktop_ui_xaml::validate_grid_control_bindings(&element.common)?;
+                grid::validate_source(ui, grid)?;
+                count += grid.columns.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || (!grid.columns.is_empty()
+                        && depth + 1 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH)
+                {
+                    return Err(
+                        "GridControl columns exceed the element count or depth limit".into(),
+                    );
+                }
+            }
             ElementKind::GroupBox(group) => {
                 rust_desktop_ui_xaml::validate_group_box(group)?;
                 if !group.is_collapsible && element.common.bindings.contains_key("IsExpanded") {

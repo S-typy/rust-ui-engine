@@ -85,6 +85,13 @@ The [status bars form](examples/xaml-form/StatusWindow.xaml), opened with
 shared commands, progress and a keyboard-accessible zoom slider. The main Ribbon
 example anchors its status bar below the document. See [status bars](docs/public/status-bars.md).
 
+The [data form](examples/xaml-form/DataWindow.xaml), opened with `--data`, shows
+virtual GridControls backed by a Rust collection and an in-memory SQLite database.
+Typed sorting, filtering, stable integer keys and transactional cell edits share
+one data source contract. See [data adapters](docs/public/data.md) and
+[GridControl](docs/public/grid-control.md). The SQLite demo is disposable;
+applications can connect an existing database file explicitly.
+
 ## Run the docking workspace
 
 [DockWindow.xaml](examples/xaml-form/DockWindow.xaml) declares a document area,
@@ -180,6 +187,7 @@ protocols; client-side window decorations are not implemented.
 | `crates/ui-render-wgpu` | Rectangle batches, glyph atlas, ordered GPU drawing and surface lifecycle |
 | `crates/ui-platform-winit` | Single/multiple native windows, input, IME, clipboard and AccessKit host |
 | `crates/ui-xaml` | Independent compiler for the Window and control-tree XAML profile |
+| `crates/ui-data` | Typed bounded tables, Rust collection and optional SQLite adapters; no UI dependencies |
 | `examples/xaml-form` | Native Fluent form built from MainWindow.xaml |
 | `examples/controls-gallery` | Integrated controls and book-library demonstration |
 | `examples/gpu-shell` | Earlier retained and rectangle rendering diagnostics |

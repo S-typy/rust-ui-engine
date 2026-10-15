@@ -34,10 +34,15 @@ mod binding;
 mod codegen;
 mod form_parse;
 mod forms;
+mod grid_control;
 mod panels;
 mod status_bar;
 pub use binding::{BindingDefinition, BindingMode, UpdateSourceTrigger};
 pub use forms::*;
+pub use grid_control::{
+    GridColumnDefinition, GridControlDefinition, MAX_GRID_COLUMNS, MAX_GRID_TEXT_BYTES,
+    validate_grid_control, validate_grid_control_bindings,
+};
 pub use panels::*;
 pub use status_bar::*;
 mod docking;
@@ -416,6 +421,7 @@ pub enum ElementKind {
     StackPanel(StackPanelDefinition),
     WrapPanel(StackPanelDefinition),
     Grid(GridDefinition),
+    GridControl(GridControlDefinition),
     Border(BorderDefinition),
     GroupBox(GroupBoxDefinition),
     Expander(ExpanderDefinition),
@@ -960,13 +966,19 @@ fn parse_element(
                     | "IsChecked"
                     | "IsExpanded"
                     | "SelectedIndex"
+                    | "FilterText"
             ) && !matches!(
                 kind,
                 ElementKind::TextBlock(_) | ElementKind::ProgressBar(_)
             );
             let immediate = matches!(
                 property,
-                "SelectedValue" | "SelectedValues" | "IsChecked" | "IsExpanded" | "SelectedIndex"
+                "SelectedValue"
+                    | "SelectedValues"
+                    | "IsChecked"
+                    | "IsExpanded"
+                    | "SelectedIndex"
+                    | "FilterText"
             ) || matches!(kind, ElementKind::ZoomControl(_)) && property == "Value";
             let trigger = if editable && !immediate {
                 UpdateSourceTrigger::LostFocus
@@ -1230,6 +1242,8 @@ fn parse_element(
         *workspace = docking::parse_workspace(node, depth, count, names, checked_radio_groups)?;
     } else if let ElementKind::Ribbon(ribbon) = &mut kind {
         ribbon::parse_children(node, depth, count, ribbon)?;
+    } else if let ElementKind::GridControl(grid) = &mut kind {
+        grid_control::parse_children(node, depth, count, grid)?;
     } else if matches!(
         kind,
         ElementKind::Grid(_)
@@ -1989,6 +2003,8 @@ pub fn compile_file(input: impl AsRef<Path>, output: impl AsRef<Path>) -> Result
 mod docking_tests;
 #[cfg(test)]
 mod form_tests;
+#[cfg(test)]
+mod grid_control_tests;
 #[cfg(test)]
 mod group_tests;
 #[cfg(test)]

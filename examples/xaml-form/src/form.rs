@@ -41,12 +41,23 @@ impl Form {
         diagnostics: bool,
         context: Option<std::rc::Rc<std::cell::RefCell<rust_desktop_ui_controls::BindingContext>>>,
     ) -> Result<Self, String> {
+        Self::new_with_sources(definition, diagnostics, context, Vec::new())
+    }
+    pub(crate) fn new_with_sources(
+        definition: WindowDefinition,
+        diagnostics: bool,
+        context: Option<std::rc::Rc<std::cell::RefCell<rust_desktop_ui_controls::BindingContext>>>,
+        sources: Vec<(String, crate::data_model::SharedSource)>,
+    ) -> Result<Self, String> {
         rust_desktop_ui_xaml::validate_window_chrome(&definition)?;
         let theme = match definition.theme {
             rust_desktop_ui_xaml::Theme::Light => Theme::FluentLight,
             rust_desktop_ui_xaml::Theme::Dark => Theme::FluentDark,
         };
         let mut ui = Controls::new(theme).map_err(err)?;
+        for (name, source) in sources {
+            ui.register_data_source(name, source).map_err(err)?;
+        }
         // Application-owned registration; the generic mount never invents handlers.
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
@@ -59,6 +70,7 @@ impl Form {
             ("ReloadForm", "Обновить данные"),
             ("SaveForm", "Сохранить заметку"),
             ("ChooseReference", "Выбрать документ"),
+            ("ReloadData", "Обновить таблицы"),
         ] {
             ui.commands_mut().register(id, label);
         }
@@ -277,6 +289,34 @@ impl Form {
                             ("Form.Quantity", 24.0.into()),
                             ("Status", "Модель обновлена — поля синхронизированы".into()),
                         ])
+                        .map_err(err)?;
+                }
+            } else if invocation.id.0 == "ReloadData" {
+                let grids: Vec<_> = self
+                    .view
+                    .roles
+                    .iter()
+                    .filter_map(|(id, role)| (*role == Role::Grid).then_some(*id))
+                    .collect();
+                let message = if grids.iter().any(|id| self.ui.grid_editor(*id).is_some()) {
+                    "Завершите или отмените редактирование перед обновлением.".to_owned()
+                } else {
+                    let result = grids.iter().try_for_each(|id| {
+                        self.ui
+                            .grid_source(*id)
+                            .ok_or("Источник недоступен".to_owned())?
+                            .borrow_mut()
+                            .refresh()
+                            .map(|_| ())
+                            .map_err(err)
+                    });
+                    result.err().unwrap_or_else(|| "Источники обновлены".into())
+                };
+                if let Some(engine) = &self.view.bindings {
+                    engine
+                        .context()
+                        .borrow_mut()
+                        .set("Status", message.into())
                         .map_err(err)?;
                 }
             } else if invocation.id.0 == "ChooseReference" {

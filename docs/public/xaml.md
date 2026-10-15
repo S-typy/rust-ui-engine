@@ -13,6 +13,8 @@ Grid/WrapPanel/DockPanel/Border/ScrollViewer описаны в
 `GroupBox` и `Expander` объединяют содержимое под настраиваемым заголовком,
 `TabbedGroup` / `GroupTab` предоставляют постоянные страницы с выбором вкладки.
 Поддерживаются вложенность и привязки; см. [группы и раскрывающиеся секции](groups.md).
+`GridControl` и `GridColumn` подключают именованный типизированный источник,
+зарегистрированный приложением; см. [таблицы данных](grid-control.md).
 Пример [xaml-form](../../examples/xaml-form/MainWindow.xaml) подключает это
 описание к существующим retained controls, платформенному host и GPU renderer.
 
@@ -25,6 +27,8 @@ cargo run -p xaml-form --locked -- --light --smoke-test
 cargo run -p xaml-form --locked -- --controls
 cargo run -p xaml-form --locked -- --editors
 cargo run -p xaml-form --locked -- --groups
+cargo run -p xaml-form --locked -- --status
+cargo run -p xaml-form --locked -- --data
 ```
 
 По умолчанию открывается [MainWindow.xaml](../../examples/xaml-form/MainWindow.xaml)

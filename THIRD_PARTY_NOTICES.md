@@ -1,7 +1,7 @@
 # Third-party notices
 
 Snapshot: 2026-10-15. The project code is licensed under Apache-2.0. Dependencies
-retain the licenses declared below. The table covers all 352 registry packages in
+retain the licenses declared below. The table covers all 357 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
 
@@ -40,6 +40,13 @@ not constitute a complete binary redistribution review.
   The former's license was retrieved from its exact source revision because the
   crate archive omits it; the latter includes LICENSE. System fonts are discovered
   locally and are not bundled by this source repository.
+- The optional SQLite adapter uses MIT-licensed `rusqlite` and `libsqlite3-sys`.
+  The latter's bundled SQLite 3.53.2 C implementation has a separate
+  [public-domain dedication](https://www.sqlite.org/copyright.html); it is not
+  covered solely by the Rust wrapper's MIT notice. The inventory records hashes
+  of the bundled amalgamation and header. No encryption package or rusqlite
+  extension-loading feature is enabled. Preserve the wrapper notices when
+  distributing binaries.
 
 ## Resolved dependencies
 
@@ -119,6 +126,8 @@ not constitute a complete binary redistribution review.
 | error-code | 3.4.0 | BSL-1.0 | [LICENSE](https://docs.rs/crate/error-code/3.4.0/source/LICENSE) |
 | event-listener | 5.4.2 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/event-listener/5.4.2/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/event-listener/5.4.2/source/LICENSE-MIT) |
 | event-listener-strategy | 0.5.4 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/event-listener-strategy/0.5.4/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/event-listener-strategy/0.5.4/source/LICENSE-MIT) |
+| fallible-iterator | 0.3.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/fallible-iterator/0.3.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/fallible-iterator/0.3.0/source/LICENSE-MIT) |
+| fallible-streaming-iterator | 0.1.9 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/fallible-streaming-iterator/0.1.9/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/fallible-streaming-iterator/0.1.9/source/LICENSE-MIT) |
 | fastrand | 2.5.0 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/fastrand/2.5.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/fastrand/2.5.0/source/LICENSE-MIT) |
 | find-msvc-tools | 0.1.14 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/find-msvc-tools/0.1.14/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/find-msvc-tools/0.1.14/source/LICENSE-MIT) |
 | fixedbitset | 0.5.7 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/fixedbitset/0.5.7/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/fixedbitset/0.5.7/source/LICENSE-MIT) |
@@ -170,6 +179,7 @@ not constitute a complete binary redistribution review.
 | libloading | 0.8.9 | ISC | [LICENSE](https://docs.rs/crate/libloading/0.8.9/source/LICENSE) |
 | libm | 0.2.16 | MIT | [LICENSE.txt](https://docs.rs/crate/libm/0.2.16/source/LICENSE.txt) |
 | libredox | 0.1.25 | MIT | [LICENSE](https://docs.rs/crate/libredox/0.1.25/source/LICENSE) |
+| libsqlite3-sys | 0.38.2 | MIT | [LICENSE](https://docs.rs/crate/libsqlite3-sys/0.38.2/source/LICENSE), [sqlcipher/LICENSE](https://docs.rs/crate/libsqlite3-sys/0.38.2/source/sqlcipher/LICENSE) |
 | linebender_resource_handle | 0.1.1 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/linebender_resource_handle/0.1.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/linebender_resource_handle/0.1.1/source/LICENSE-MIT) |
 | linux-raw-sys | 0.12.1 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [COPYRIGHT](https://docs.rs/crate/linux-raw-sys/0.12.1/source/COPYRIGHT), [LICENSE-APACHE](https://docs.rs/crate/linux-raw-sys/0.12.1/source/LICENSE-APACHE), [LICENSE-Apache-2.0_WITH_LLVM-exception](https://docs.rs/crate/linux-raw-sys/0.12.1/source/LICENSE-Apache-2.0_WITH_LLVM-exception), [LICENSE-MIT](https://docs.rs/crate/linux-raw-sys/0.12.1/source/LICENSE-MIT) |
 | linux-raw-sys | 0.4.15 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [COPYRIGHT](https://docs.rs/crate/linux-raw-sys/0.4.15/source/COPYRIGHT), [LICENSE-APACHE](https://docs.rs/crate/linux-raw-sys/0.4.15/source/LICENSE-APACHE), [LICENSE-Apache-2.0_WITH_LLVM-exception](https://docs.rs/crate/linux-raw-sys/0.4.15/source/LICENSE-Apache-2.0_WITH_LLVM-exception), [LICENSE-MIT](https://docs.rs/crate/linux-raw-sys/0.4.15/source/LICENSE-MIT) |
@@ -260,6 +270,7 @@ not constitute a complete binary redistribution review.
 | redox_syscall | 0.9.4 | MIT | [LICENSE](https://docs.rs/crate/redox_syscall/0.9.4/source/LICENSE) |
 | renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/renderdoc-sys/1.1.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/renderdoc-sys/1.1.0/source/LICENSE-MIT) |
 | roxmltree | 0.21.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/roxmltree/0.21.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/roxmltree/0.21.1/source/LICENSE-MIT) |
+| rusqlite | 0.40.2 | MIT | [LICENSE](https://docs.rs/crate/rusqlite/0.40.2/source/LICENSE) |
 | rustc-hash | 1.1.0 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/rustc-hash/1.1.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/rustc-hash/1.1.0/source/LICENSE-MIT) |
 | rustc_version | 0.4.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/rustc_version/0.4.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/rustc_version/0.4.1/source/LICENSE-MIT) |
 | rustix | 0.38.44 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [COPYRIGHT](https://docs.rs/crate/rustix/0.38.44/source/COPYRIGHT), [LICENSE-APACHE](https://docs.rs/crate/rustix/0.38.44/source/LICENSE-APACHE), [LICENSE-Apache-2.0_WITH_LLVM-exception](https://docs.rs/crate/rustix/0.38.44/source/LICENSE-Apache-2.0_WITH_LLVM-exception), [LICENSE-MIT](https://docs.rs/crate/rustix/0.38.44/source/LICENSE-MIT) |
@@ -313,6 +324,7 @@ not constitute a complete binary redistribution review.
 | unicode-width | 0.2.2 | MIT OR Apache-2.0 | [COPYRIGHT](https://docs.rs/crate/unicode-width/0.2.2/source/COPYRIGHT), [LICENSE-APACHE](https://docs.rs/crate/unicode-width/0.2.2/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/unicode-width/0.2.2/source/LICENSE-MIT) |
 | utf8_iter | 1.0.4 | Apache-2.0 OR MIT | [COPYRIGHT](https://docs.rs/crate/utf8_iter/1.0.4/source/COPYRIGHT), [LICENSE-APACHE](https://docs.rs/crate/utf8_iter/1.0.4/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/utf8_iter/1.0.4/source/LICENSE-MIT) |
 | uuid | 1.27.0 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/uuid/1.27.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/uuid/1.27.0/source/LICENSE-MIT) |
+| vcpkg | 0.2.15 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/vcpkg/0.2.15/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/vcpkg/0.2.15/source/LICENSE-MIT) |
 | version_check | 0.9.5 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/version_check/0.9.5/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/version_check/0.9.5/source/LICENSE-MIT) |
 | walkdir | 2.5.0 | Unlicense OR MIT | [COPYING](https://docs.rs/crate/walkdir/2.5.0/source/COPYING), [LICENSE-MIT](https://docs.rs/crate/walkdir/2.5.0/source/LICENSE-MIT) |
 | wasip2 | 1.0.4+wasi-0.2.12 | Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/wasip2/1.0.4%2Bwasi-0.2.12/source/LICENSE-APACHE), [LICENSE-Apache-2.0_WITH_LLVM-exception](https://docs.rs/crate/wasip2/1.0.4%2Bwasi-0.2.12/source/LICENSE-Apache-2.0_WITH_LLVM-exception), [LICENSE-MIT](https://docs.rs/crate/wasip2/1.0.4%2Bwasi-0.2.12/source/LICENSE-MIT) |

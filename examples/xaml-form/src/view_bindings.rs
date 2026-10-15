@@ -29,6 +29,7 @@ fn property(name: &str) -> Result<BindingProperty, String> {
         "SelectedIndex" => BindingProperty::SelectedIndex,
         "Value" => BindingProperty::Value,
         "SelectedValue" => BindingProperty::SelectedValue,
+        "FilterText" => BindingProperty::FilterText,
         "SelectedValues" => BindingProperty::SelectedValues,
         "ItemsSource" => BindingProperty::ItemsSource,
         "IsChecked" => BindingProperty::IsChecked,

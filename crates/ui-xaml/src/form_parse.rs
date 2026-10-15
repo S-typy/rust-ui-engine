@@ -3,6 +3,7 @@ use crate::*;
 pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
     Some(match name {
         "Grid" => ElementKind::Grid(GridDefinition::default()),
+        "GridControl" => ElementKind::GridControl(GridControlDefinition::default()),
         "Border" => ElementKind::Border(BorderDefinition::default()),
         "GroupBox" => ElementKind::GroupBox(GroupBoxDefinition::default()),
         "Expander" => ElementKind::Expander(ExpanderDefinition::default()),
@@ -40,6 +41,9 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         return true;
     }
     match kind {
+        ElementKind::GridControl(_) => {
+            matches!(name, "FilterText" | "SelectedValue" | "IsReadOnly")
+        }
         ElementKind::ProgressBar(_) | ElementKind::ZoomControl(_) => name == "Value",
         ElementKind::GroupBox(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::Expander(_) => matches!(name, "Header" | "IsExpanded"),
@@ -285,6 +289,16 @@ pub(super) fn property(
 ) -> Result<bool, Diagnostic> {
     let metric = || editor_metric(document, attr, MAX_DIMENSION, true);
     match kind {
+        ElementKind::GridControl(grid) => {
+            match attr.name() {
+                "DataSource" => grid.data_source = attr.value().into(),
+                "IsReadOnly" => grid.is_read_only = boolean(document, attr)?,
+                "FilterText" => grid.filter_text = attr.value().into(),
+                "SelectedValue" => grid.selected_value = Some(attr.value().into()),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        }
         ElementKind::StatusBarItem(item) => {
             if attr.name() != "Placement" {
                 return Ok(false);
@@ -1009,6 +1023,10 @@ pub(super) fn validate(
         }
     }
     match kind {
+        ElementKind::GridControl(grid) => {
+            validate_grid_control(grid).map_err(|message| at_node(node, message))?;
+            validate_grid_control_bindings(common).map_err(|message| at_node(node, message))?;
+        }
         ElementKind::ProgressBar(progress) => {
             validate_progress_bar(progress).map_err(|message| at_node(node, message))?;
             if common.bindings.get("Value").is_some_and(|binding| {

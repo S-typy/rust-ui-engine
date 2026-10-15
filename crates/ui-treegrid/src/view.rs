@@ -387,7 +387,7 @@ fn paint_row(
             },
         });
         let mut padding = 8.0;
-        if column.id == grid.tree_column() {
+        if !grid.flat_presentation && column.id == grid.tree_column() {
             padding += row.depth as f32 * 16.0 + 18.0;
             if grid.has_children(source, key) {
                 let marker = Rect::new(

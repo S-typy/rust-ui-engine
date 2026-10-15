@@ -15,6 +15,7 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BindingProperty {
     Text,
+    FilterText,
     Header,
     IsExpanded,
     SelectedIndex,
@@ -718,10 +719,31 @@ impl ControlBindings {
             };
             source_check(value)
         };
-        if matches!(
+        if binding.target.property == BindingProperty::SelectedValue
+            && ui.grid_settings(binding.target.widget).is_some()
+        {
+            ui.chain_grid_selection_validator(
+                binding.target.widget,
+                SelectionValidator::new(move |keys| {
+                    validate(
+                        keys.first()
+                            .map(|key| DataValue::String(key.clone()))
+                            .unwrap_or(DataValue::Null),
+                    )
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::FilterText {
+            ui.chain_grid_filter_validator(
+                binding.target.widget,
+                EditorValidator::new(move |text| validate(DataValue::String(text.to_owned()))),
+            )
+            .map_err(control_error)?;
+        } else if matches!(
             binding.target.property,
             BindingProperty::SelectedValue | BindingProperty::SelectedValues
-        ) {
+        ) && ui.grid_settings(binding.target.widget).is_none()
+        {
             let endpoint = binding.target;
             let items = Rc::clone(&self.items);
             ui.chain_selection_validator(
@@ -843,6 +865,10 @@ fn read_property(
         return editor_parser(ui, endpoint).parse(text);
     }
     match endpoint.property {
+        BindingProperty::FilterText => ui
+            .grid_filter(id)
+            .map(DataValue::from)
+            .ok_or_else(|| invalid("FilterText requires GridControl")),
         BindingProperty::SelectedIndex => ui
             .selected_tab(id)
             .map(|index| DataValue::Number(index as f64))
@@ -865,6 +891,13 @@ fn read_property(
             .map(DataValue::Number)
             .ok_or_else(|| invalid("Value requires an editor, ProgressBar or ZoomControl")),
         BindingProperty::SelectedValue | BindingProperty::SelectedValues => {
+            if endpoint.property == BindingProperty::SelectedValue && ui.grid_settings(id).is_some()
+            {
+                return Ok(ui
+                    .grid_selected_key(id)
+                    .map(|key| DataValue::String(key.to_string()))
+                    .unwrap_or(DataValue::Null));
+            }
             let keys = ui
                 .selected_keys(id)
                 .ok_or_else(|| invalid("SelectedValue requires a selection control"))?;
@@ -918,6 +951,7 @@ fn read_property(
             .composite_read_only(id)
             .or_else(|| ui.is_read_only(id))
             .or_else(|| ui.selection_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.grid_settings(id).map(|s| s.is_read_only))
             .map(DataValue::Bool)
             .ok_or_else(|| invalid("IsReadOnly requires an editor or list")),
         BindingProperty::PlaceholderText => {
@@ -972,6 +1006,9 @@ fn write_property(
         return accepted(outcome);
     }
     match endpoint.property {
+        BindingProperty::FilterText => ui
+            .set_grid_filter(id, string(value)?)
+            .map_err(control_error),
         BindingProperty::SelectedIndex => {
             let index = number(value)?;
             if !(0.0..=63.0).contains(&index) || index.fract() != 0.0 {
@@ -1000,6 +1037,21 @@ fn write_property(
             }
         }
         BindingProperty::SelectedValue | BindingProperty::SelectedValues => {
+            if endpoint.property == BindingProperty::SelectedValue && ui.grid_settings(id).is_some()
+            {
+                let key = match value {
+                    DataValue::Null => None,
+                    DataValue::String(text) => Some(text.parse::<i64>().map_err(|_| {
+                        invalid("Grid SelectedValue requires a signed integer string")
+                    })?),
+                    _ => {
+                        return Err(invalid(
+                            "Grid SelectedValue requires a signed integer string or null",
+                        ));
+                    }
+                };
+                return ui.set_grid_selected_key(id, key).map_err(control_error);
+            }
             let selected = if endpoint.property == BindingProperty::SelectedValues {
                 value
                     .as_list()
@@ -1049,7 +1101,9 @@ fn write_property(
         BindingProperty::IsEnabled => ui.set_enabled(id, boolean(value)?).map_err(control_error),
         BindingProperty::IsReadOnly => {
             let value = boolean(value)?;
-            if ui.composite_editor(id).is_some() {
+            if ui.grid_settings(id).is_some() {
+                ui.set_grid_read_only(id, value).map_err(control_error)
+            } else if ui.composite_editor(id).is_some() {
                 ui.set_composite_read_only(id, value).map_err(control_error)
             } else if let Some(settings) = ui.selection_settings(id) {
                 let mut settings = settings.clone();
@@ -1087,6 +1141,12 @@ fn write_property(
                 props.collapsed = collapsed;
             } else {
                 let dimension = match value {
+                    DataValue::Null
+                        if endpoint.property == BindingProperty::Height
+                            && ui.grid_settings(id).is_some() =>
+                    {
+                        Length::Px(320.0)
+                    }
                     DataValue::Null => Length::Auto,
                     _ => {
                         let value = number(value)?;

@@ -7,11 +7,15 @@ use std::collections::{HashMap, HashSet};
 
 const WINDOW: NodeId = NodeId(1);
 
+#[path = "accessibility_grid.rs"]
+mod grid;
+
 pub(crate) struct Accessibility {
     root: NodeId,
     widgets: HashMap<WidgetId, NodeId>,
     errors: HashMap<WidgetId, NodeId>,
     next: u64,
+    grids: grid::GridAccessibility,
 }
 impl Default for Accessibility {
     fn default() -> Self {
@@ -20,6 +24,7 @@ impl Default for Accessibility {
             widgets: HashMap::new(),
             errors: HashMap::new(),
             next: 2,
+            grids: grid::GridAccessibility::default(),
         }
     }
 }
@@ -32,6 +37,7 @@ impl Accessibility {
             next: base + 1,
             widgets: HashMap::new(),
             errors: HashMap::new(),
+            grids: grid::GridAccessibility::default(),
         }
     }
 
@@ -50,6 +56,7 @@ impl Accessibility {
         scale: f32,
     ) -> accesskit::TreeUpdate {
         let semantics = ui.semantics();
+        self.grids.begin();
         let present: HashSet<_> = semantics.iter().map(|node| node.id).collect();
         self.widgets
             .retain(|widget, _| ui.runtime.tree().node(*widget).is_some());
@@ -199,8 +206,15 @@ impl Accessibility {
             if semantic.focused {
                 focus = id;
             }
+            if let Some(grid_focus) =
+                self.grids
+                    .project(ui, widget, scale, &mut self.next, &mut node, &mut nodes)
+            {
+                focus = grid_focus;
+            }
             nodes.push((id, node));
         }
+        self.grids.finish();
         accesskit::TreeUpdate {
             nodes,
             tree: Some(accesskit::TreeInfo::new(self.root)),
@@ -217,6 +231,9 @@ impl Accessibility {
         if request.target_tree != accesskit::TreeId::ROOT {
             return Ok(());
         }
+        if self.grids.action(ui, &request)? {
+            return Ok(());
+        }
         let Some(widget) = self
             .widgets
             .iter()
@@ -224,6 +241,9 @@ impl Accessibility {
         else {
             return Ok(());
         };
+        if grid::scroll(ui, widget, request.action)? {
+            return Ok(());
+        }
         let action = match request.action {
             Action::Focus => SemanticAction::Focus,
             Action::Click => SemanticAction::Activate,
@@ -304,6 +324,7 @@ fn role(role: ControlRole) -> Role {
         ControlRole::StatusBar => Role::Status,
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
+        ControlRole::Grid => Role::Grid,
     }
 }
 

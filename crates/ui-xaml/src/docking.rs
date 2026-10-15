@@ -121,6 +121,10 @@ fn validate_entries(
         match entry {
             Entry::Element(element) => {
                 match &element.kind {
+                    ElementKind::GridControl(grid) => {
+                        crate::validate_grid_control(grid)?;
+                        crate::validate_grid_control_bindings(&element.common)?;
+                    }
                     ElementKind::GroupBox(group) => {
                         crate::validate_group_box(group)?;
                         if !group.is_collapsible
@@ -141,6 +145,14 @@ fn validate_entries(
                     return Err(format!("Duplicate XAML name '{name}' in this Window"));
                 }
                 match &element.kind {
+                    ElementKind::GridControl(grid) => {
+                        check_pending(grid.columns.len(), count)?;
+                        pending.extend(
+                            grid.columns
+                                .iter()
+                                .map(|_| (Entry::Count, depth + 1, in_pane)),
+                        );
+                    }
                     ElementKind::TabbedGroup(group) => {
                         check_pending(group.tabs.len(), count)?;
                         for tab in &group.tabs {
