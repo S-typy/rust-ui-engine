@@ -2,7 +2,12 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Документ · Rust UI" Width="1040" Height="720"
         TitleBar="Ribbon" Padding="0" Theme="Light">
-    <StackPanel x:Name="Shell" Spacing="20">
+    <Grid x:Name="Shell">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
         <Ribbon x:Name="MainRibbon" SelectedTab="Home" AutomationName="Лента команд">
             <Ribbon.QuickAccessToolbar>
                 <Button Command="Confirm" />
@@ -52,7 +57,7 @@
                 </RibbonGroup>
             </RibbonTab>
         </Ribbon>
-        <GroupBox x:Name="DocumentGroup" Header="Документ без имени" Padding="20" Margin="16,0,16,16">
+        <GroupBox x:Name="DocumentGroup" Grid.Row="1" Header="Документ без имени" Padding="20" Margin="16,20,16,16">
           <StackPanel x:Name="Form" Spacing="12">
             <TextBlock Text="Содержимое и параметры документа" FontSize="13" TextTone="Secondary" />
             <TextBlock Text="Текст сообщения" FontSize="13" FontWeight="SemiBold" />
@@ -69,8 +74,19 @@
             <Separator />
             <TextBlock x:Name="Help" FontSize="12" TextTone="Secondary"
                        Text="Alt или F10 — команды ленты · Enter — подтвердить · Escape — отменить" />
-            <TextBlock x:Name="Status" FontSize="13" TextTone="Secondary" Text="Изменений нет." />
           </StackPanel>
         </GroupBox>
-    </StackPanel>
+        <RibbonStatusBar x:Name="DocumentStatusBar" Grid.Row="2" AutomationName="Состояние документа">
+            <StatusBarItem>
+                <TextBlock x:Name="Status" FontSize="12" TextTone="Secondary" Text="Изменений нет." />
+            </StatusBarItem>
+            <StatusBarItem Placement="Right">
+                <ToggleButton x:Name="StatusPin" Content="Закрепить" Command="Pin" Icon="Pin" Height="26" Background="#00000000" BorderThickness="0" FontSize="12" Padding="6,2" />
+            </StatusBarItem>
+            <StatusBarItem Placement="Right" Width="1"><Separator Orientation="Vertical" Height="20" /></StatusBarItem>
+            <StatusBarItem Placement="Right" Width="224">
+                <ZoomControl x:Name="DocumentZoom" Minimum="50" Maximum="200" Value="100" Step="10" AutomationName="Масштаб текста" />
+            </StatusBarItem>
+        </RibbonStatusBar>
+    </Grid>
 </Window>

@@ -13,6 +13,11 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
             ..Default::default()
         }),
         "DockPanel" => ElementKind::DockPanel(DockPanelDefinition::default()),
+        "StatusBar" => ElementKind::StatusBar(StatusBarDefinition::default()),
+        "RibbonStatusBar" => ElementKind::RibbonStatusBar(StatusBarDefinition::default()),
+        "StatusBarItem" => ElementKind::StatusBarItem(StatusBarItemDefinition::default()),
+        "ProgressBar" => ElementKind::ProgressBar(ProgressBarDefinition::default()),
+        "ZoomControl" => ElementKind::ZoomControl(ZoomControlDefinition::default()),
         "ListBox" => ElementKind::ListBox(SelectionDefinition::default()),
         "ComboBox" => ElementKind::ComboBox(SelectionDefinition::default()),
         "LookupEdit" => ElementKind::LookupEdit(LookupDefinition::default()),
@@ -35,6 +40,7 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         return true;
     }
     match kind {
+        ElementKind::ProgressBar(_) | ElementKind::ZoomControl(_) => name == "Value",
         ElementKind::GroupBox(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::Expander(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::TabbedGroup(_) => name == "SelectedIndex",
@@ -264,6 +270,14 @@ fn number(document: &Document<'_>, attr: Attribute<'_, '_>) -> Result<f64, Diagn
         })
 }
 
+fn finite_number(document: &Document<'_>, attr: Attribute<'_, '_>) -> Result<f64, Diagnostic> {
+    attr.value()
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| at_attribute(document, attr, "number must be finite"))
+}
+
 pub(super) fn property(
     document: &Document<'_>,
     attr: Attribute<'_, '_>,
@@ -271,6 +285,42 @@ pub(super) fn property(
 ) -> Result<bool, Diagnostic> {
     let metric = || editor_metric(document, attr, MAX_DIMENSION, true);
     match kind {
+        ElementKind::StatusBarItem(item) => {
+            if attr.name() != "Placement" {
+                return Ok(false);
+            }
+            item.placement = match attr.value() {
+                "Left" => StatusBarPlacement::Left,
+                "Right" => StatusBarPlacement::Right,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attr,
+                        "Placement must be Left or Right",
+                    ));
+                }
+            };
+            Ok(true)
+        }
+        ElementKind::ProgressBar(progress) => {
+            match attr.name() {
+                "Minimum" => progress.minimum = finite_number(document, attr)?,
+                "Maximum" => progress.maximum = finite_number(document, attr)?,
+                "Value" => progress.value = finite_number(document, attr)?,
+                _ => return Ok(false),
+            }
+            Ok(true)
+        }
+        ElementKind::ZoomControl(zoom) => {
+            match attr.name() {
+                "Minimum" => zoom.minimum = finite_number(document, attr)?,
+                "Maximum" => zoom.maximum = finite_number(document, attr)?,
+                "Value" => zoom.value = finite_number(document, attr)?,
+                "Step" => zoom.step = finite_number(document, attr)?,
+                _ => return Ok(false),
+            }
+            Ok(true)
+        }
         ElementKind::GroupBox(group) => {
             match attr.name() {
                 "IsCollapsible" => group.is_collapsible = boolean(document, attr)?,
@@ -748,6 +798,17 @@ pub(super) fn parse_children(
             }
         } else {
             match kind {
+                ElementKind::StatusBar(bar) | ElementKind::RibbonStatusBar(bar) => {
+                    require_element(child, "StatusBarItem")?;
+                    bar.items.push(parse_element(
+                        child,
+                        depth + 1,
+                        parent,
+                        count,
+                        names,
+                        groups,
+                    )?);
+                }
                 ElementKind::TabbedGroup(group) => {
                     require_element(child, "GroupTab")?;
                     *count += 1;
@@ -832,6 +893,7 @@ pub(super) fn parse_children(
                 ElementKind::Border(_)
                 | ElementKind::ScrollViewer(_)
                 | ElementKind::GroupBox(_)
+                | ElementKind::StatusBarItem(_)
                 | ElementKind::Expander(_) => {
                     if single.is_some() {
                         return Err(at_node(child, "container accepts at most one child"));
@@ -856,6 +918,7 @@ pub(super) fn parse_children(
         }
     }
     match kind {
+        ElementKind::StatusBarItem(item) => item.child = single.map(Box::new),
         ElementKind::GroupBox(group) => group.child = single.map(Box::new),
         ElementKind::Expander(expander) => expander.child = single.map(Box::new),
         ElementKind::Border(border) => {
@@ -946,6 +1009,20 @@ pub(super) fn validate(
         }
     }
     match kind {
+        ElementKind::ProgressBar(progress) => {
+            validate_progress_bar(progress).map_err(|message| at_node(node, message))?;
+            if common.bindings.get("Value").is_some_and(|binding| {
+                !matches!(binding.mode, BindingMode::OneWay | BindingMode::OneTime)
+            }) {
+                return Err(at_node(
+                    node,
+                    "ProgressBar Value supports only OneWay or OneTime binding",
+                ));
+            }
+        }
+        ElementKind::ZoomControl(zoom) => {
+            validate_zoom_control(zoom).map_err(|message| at_node(node, message))?
+        }
         ElementKind::GroupBox(group) => {
             validate_group_box(group).map_err(|message| at_node(node, message))?;
             if !group.is_collapsible && common.bindings.contains_key("IsExpanded") {

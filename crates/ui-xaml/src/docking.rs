@@ -80,14 +80,19 @@ impl DockWorkspaceDefinition {
 /// controls. Nested workspaces and Ribbon controls inside panes are unsupported.
 /// Command registration and individual control settings remain the host's job.
 pub fn validate_docking(workspace: &DockWorkspaceDefinition) -> Result<(), String> {
-    validate_entries(vec![(Entry::Dock(&workspace.root), 2, true)], 1, false)
+    validate_entries(vec![(Entry::Dock(&workspace.root), 2, true)], 1, false)?;
+    for pane in workspace.panes() {
+        crate::validate_status_bars(&pane.content)?;
+    }
+    Ok(())
 }
 
 /// Validate a complete Window's docking structure, shared names and element/depth
 /// budgets. At most one workspace is supported; ordinary forms may contain none.
 /// This also checks manually constructed definitions before any pane is mounted.
 pub fn validate_window_docking(window: &WindowDefinition) -> Result<(), String> {
-    validate_entries(vec![(Entry::Element(&window.content), 1, false)], 0, true)
+    validate_entries(vec![(Entry::Element(&window.content), 1, false)], 0, true)?;
+    crate::validate_status_bars(&window.content)
 }
 
 enum Entry<'a> {

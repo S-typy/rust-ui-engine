@@ -6,6 +6,7 @@ fn main() {
         ("DockWindow.xaml", "dock_window.rs"),
         ("EditorsWindow.xaml", "editors_window.rs"),
         ("GroupsWindow.xaml", "groups_window.rs"),
+        ("StatusWindow.xaml", "status_window.rs"),
     ] {
         println!("cargo:rerun-if-changed={source}");
         if let Err(error) = rust_desktop_ui_xaml::compile_file(source, out.join(generated)) {

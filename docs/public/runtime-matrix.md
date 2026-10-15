@@ -1,5 +1,23 @@
 # Runtime matrix и протокол проверки alpha
 
+## Строки состояния — Windows, 2026-10-15
+
+StatusBar, RibbonStatusBar, ProgressBar, ZoomControl и XAML-адаптеры проверены:
+883 workspace tests и 2 doctests PASS, два hardware tests ignored.
+fmt, workspace clippy all-targets, release, rustdoc с warnings-as-errors,
+лицензии и инвентаризация зависимостей пройдены. Новых зависимостей нет.
+
+NVIDIA GeForce RTX 3090, scale=1.5: галерея `--status` прошла четыре capture
+и четыре GPU smoke DX12/Vulkan × Light/Dark. Capture: 387 glyphs, missing=0,
+client 1590×1140; снимки Light/Dark просмотрены, пиксели двух backend совпадают.
+Основное окно с RibbonStatusBar: ещё два DX12 capture/smoke Light/Dark,
+311 glyphs, missing=0. Дополнительный controls-gallery DX12 smoke PASS.
+Smoke подтверждает аппаратную отрисовку, native resize и redraw.
+
+Системный ввод и действия фокуса не генерировались. Настоящие клики,
+перетаскивание, IME, screen reader, mixed-DPI и Linux/macOS runtime не проверены.
+Контракт — [строки состояния](status-bars.md).
+
 ## Варианты групп и вкладки — Windows, 2026-10-15
 
 Расширенные GroupBox/Expander и TabbedGroup проверены локально: 845 workspace

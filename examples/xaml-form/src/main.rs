@@ -17,6 +17,8 @@ mod popup_diagnostics;
 #[cfg(test)]
 mod ribbon_tests;
 #[cfg(test)]
+mod status_adapter_tests;
+#[cfg(test)]
 mod tests;
 mod view;
 mod view_ribbon;
@@ -32,6 +34,9 @@ mod generated_editors {
 }
 mod generated_groups {
     include!(concat!(env!("OUT_DIR"), "/groups_window.rs"));
+}
+mod generated_status {
+    include!(concat!(env!("OUT_DIR"), "/status_window.rs"));
 }
 mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
@@ -56,6 +61,7 @@ fn start() -> Result<(), String> {
     let mut controls = false;
     let mut editors = false;
     let mut groups = false;
+    let mut status = false;
     let mut docking = false;
     let mut float_pane = None;
     let mut layout_file = None;
@@ -71,6 +77,7 @@ fn start() -> Result<(), String> {
             "--controls" => controls = true,
             "--editors" => editors = true,
             "--groups" => groups = true,
+            "--status" => status = true,
             "--docking" => docking = true,
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
@@ -86,7 +93,7 @@ fn start() -> Result<(), String> {
             "--native-title-bar" => native_title_bar = true,
             "--help" | "-h" => {
                 println!(
-                    "xaml-form [--controls | --editors | --groups | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
+                    "xaml-form [--controls | --editors | --groups | --status | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
                 );
                 println!(
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
@@ -96,6 +103,9 @@ fn start() -> Result<(), String> {
                 );
                 println!(
                     "--groups opens GroupsWindow.xaml with GroupBox, Expander and TabbedGroup containers."
+                );
+                println!(
+                    "--status opens StatusWindow.xaml with StatusBar, RibbonStatusBar, progress and zoom bindings."
                 );
                 println!(
                     "--diagnostics logs input, values and validation for automated input tests."
@@ -108,13 +118,15 @@ fn start() -> Result<(), String> {
             _ => return Err(format!("Unknown argument: {argument}")),
         }
     }
-    if [controls, docking, editors, groups]
+    if [controls, docking, editors, groups, status]
         .into_iter()
         .filter(|v| *v)
         .count()
         > 1
     {
-        return Err("--controls, --editors, --groups and --docking are mutually exclusive".into());
+        return Err(
+            "--controls, --editors, --groups, --status and --docking are mutually exclusive".into(),
+        );
     }
     if float_pane.is_some() && !docking {
         return Err("--float-pane requires --docking".into());
@@ -128,6 +140,8 @@ fn start() -> Result<(), String> {
         generated_editors::window_definition()
     } else if groups {
         generated_groups::window_definition()
+    } else if status {
+        generated_status::window_definition()
     } else if controls {
         generated_controls::window_definition()
     } else {
@@ -172,7 +186,7 @@ fn start() -> Result<(), String> {
         app.set_layout_file(path);
         return rust_desktop_ui_platform_winit::run_multi(app);
     }
-    let app = if editors || groups {
+    let app = if editors || groups || status {
         form::Form::new_with_model(definition, diagnostics, Some(forms_model::model()?))?
     } else {
         form::Form::new(definition, diagnostics)?

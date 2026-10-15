@@ -990,3 +990,115 @@ fn selected_index_element_alias_is_evaluated_after_its_model_writer() {
     bindings.sync(&mut ui);
     assert_eq!(ui.selected_tab(second.container), Some(0));
 }
+
+#[test]
+fn progress_binding_is_typed_one_way_and_recovers_after_out_of_range_source() {
+    let (mut ui, data, mut bindings) = setup();
+    let progress = ui
+        .progress_bar(
+            ui.root(),
+            crate::ProgressBarSettings::default(),
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    bindings
+        .add(ControlBinding::new(progress, BindingProperty::Value, "Count").unwrap())
+        .unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    assert_eq!(ui.progress_value(progress), Some(3.0));
+    data.borrow_mut().set("Count", 150.0.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.progress_value(progress), Some(3.0));
+    assert_eq!(bindings.diagnostics().len(), 1);
+    bindings.sync(&mut ui);
+    assert_eq!(bindings.diagnostics().len(), 1);
+    bindings.drain_diagnostics();
+    data.borrow_mut().set("Count", 75.0.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.progress_value(progress), Some(75.0));
+    assert!(bindings.diagnostics().is_empty());
+    for mode in [
+        ControlBindingMode::TwoWay,
+        ControlBindingMode::OneWayToSource,
+    ] {
+        let mut invalid = ControlBindings::new(Rc::clone(&data));
+        let mut link = ControlBinding::new(progress, BindingProperty::Value, "Count").unwrap();
+        link.mode = mode;
+        invalid.add(link).unwrap();
+        assert!(invalid.initialize(&mut ui).is_err());
+        assert_eq!(data.borrow().get("Count").unwrap().as_number(), Some(75.0));
+    }
+}
+
+#[test]
+fn zoom_two_way_binding_publishes_step_once_and_source_wins_simultaneous_change() {
+    let (mut ui, data, mut bindings) = setup();
+    data.borrow_mut().set("Count", 100.0.into()).unwrap();
+    let zoom = ui
+        .zoom_control(
+            ui.root(),
+            crate::ZoomControlSettings::default(),
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let mut link = ControlBinding::new(zoom, BindingProperty::Value, "Count").unwrap();
+    link.mode = ControlBindingMode::TwoWay;
+    bindings.add(link).unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    ui.update(rust_desktop_ui_core::Size::new(640.0, 240.0))
+        .unwrap();
+    ui.perform_action(zoom, crate::SemanticAction::Focus, None)
+        .unwrap();
+    ui.dispatch(rust_desktop_ui_core::InputEvent::KeyDown {
+        key: rust_desktop_ui_core::Key::ArrowRight,
+        modifiers: Default::default(),
+        repeat: false,
+    })
+    .unwrap();
+    assert!(bindings.sync(&mut ui));
+    assert_eq!(data.borrow().get("Count").unwrap().as_number(), Some(110.0));
+    let revision = data.borrow().revision();
+    assert!(!bindings.sync(&mut ui));
+    assert_eq!(data.borrow().revision(), revision);
+    ui.set_zoom_value(zoom, 130.0).unwrap();
+    data.borrow_mut().set("Count", 175.0.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.zoom_value(zoom), Some(175.0));
+}
+
+#[test]
+fn zoom_value_can_feed_progress_via_ordered_element_binding() {
+    let (mut ui, data, mut bindings) = setup();
+    data.borrow_mut().set("Count", 80.0.into()).unwrap();
+    let zoom = ui
+        .zoom_control(
+            ui.root(),
+            crate::ZoomControlSettings {
+                maximum: 100.0,
+                ..Default::default()
+            },
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let progress = ui
+        .progress_bar(
+            ui.root(),
+            crate::ProgressBarSettings::default(),
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    let mut dependent = ControlBinding::new(progress, BindingProperty::Value, "Count").unwrap();
+    dependent.source = BindingSource::Element(BindingEndpoint {
+        widget: zoom,
+        property: BindingProperty::Value,
+    });
+    bindings.add(dependent).unwrap();
+    bindings
+        .add(ControlBinding::new(zoom, BindingProperty::Value, "Count").unwrap())
+        .unwrap();
+    bindings.initialize(&mut ui).unwrap();
+    assert_eq!(ui.progress_value(progress), Some(80.0));
+    data.borrow_mut().set("Count", 45.0.into()).unwrap();
+    bindings.sync(&mut ui);
+    assert_eq!(ui.progress_value(progress), Some(45.0));
+}

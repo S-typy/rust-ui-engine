@@ -67,6 +67,9 @@ commit передаются отдельно: `text_input`, `ime_preedit`, `ime_
 | `spin_box` | Число с диапазоном и положительным шагом |
 | `date_edit` | Дата, локальный формат отображения и календарь |
 | `time_edit` | Время суток с настраиваемой точностью и шагом |
+| `status_bar`, `ribbon_status_bar` | Строка состояния с постоянными левой и правой областями |
+| `progress_bar` | Неинтерактивный индикатор выполнения с числовым диапазоном |
+| `zoom_control` | Масштаб: ползунок, минус/плюс, процент и клавиатура |
 | `scroll_view` | Viewport с clipped content, ограниченной прокруткой и keyboard navigation |
 | `tab_control` | Tab strip и overlay страниц; неактивные страницы не рисуются и не участвуют в focus |
 | `popup_menu` | Overlay menu, keyboard navigation, отключённые и toggle items, возврат focus к anchor |
@@ -74,6 +77,8 @@ commit передаются отдельно: `text_input`, `ime_preedit`, `ime_
 
 Label контейнера Panel/ScrollViewer используется для accessibility; его
 визуальное содержимое задаётся children или custom scene.
+
+Настройки и привязки панелей описаны в [строках состояния](status-bars.md).
 
 `measure_text(text, width, wrap)` возвращает размер содержимого в logical
 pixels по тем же системным шрифтам, теме и правилам shaping, что и renderer.

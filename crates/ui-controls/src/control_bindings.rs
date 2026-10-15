@@ -238,6 +238,12 @@ impl ControlBindings {
         self.evaluation_order = self.order()?;
         for link in &self.links {
             let binding = &link.binding;
+            if binding.target.property == BindingProperty::Value
+                && ui.progress_settings(binding.target.widget).is_some()
+                && binding.mode.writes_source()
+            {
+                return Err(invalid("ProgressBar Value supports OneWay or OneTime"));
+            }
             read_property(
                 ui,
                 binding.target,
@@ -853,7 +859,11 @@ fn read_property(
             .label_text(id)
             .map(DataValue::from)
             .ok_or_else(|| invalid("Text requires an editor or caption")),
-        BindingProperty::Value => Err(invalid("Value requires an editor")),
+        BindingProperty::Value => ui
+            .progress_value(id)
+            .or_else(|| ui.zoom_value(id))
+            .map(DataValue::Number)
+            .ok_or_else(|| invalid("Value requires an editor, ProgressBar or ZoomControl")),
         BindingProperty::SelectedValue | BindingProperty::SelectedValues => {
             let keys = ui
                 .selected_keys(id)
@@ -977,7 +987,18 @@ fn write_property(
             .set_expander_expanded(id, boolean(value)?)
             .map_err(control_error),
         BindingProperty::Text => ui.set_label(id, string(value)?).map_err(control_error),
-        BindingProperty::Value => Err(invalid("Value requires an editor")),
+        BindingProperty::Value => {
+            if ui.progress_settings(id).is_some() {
+                ui.set_progress_value(id, number(value)?)
+                    .map_err(control_error)
+            } else if ui.zoom_settings(id).is_some() {
+                ui.set_zoom_value(id, number(value)?).map_err(control_error)
+            } else {
+                Err(invalid(
+                    "Value requires an editor, ProgressBar or ZoomControl",
+                ))
+            }
+        }
         BindingProperty::SelectedValue | BindingProperty::SelectedValues => {
             let selected = if endpoint.property == BindingProperty::SelectedValues {
                 value

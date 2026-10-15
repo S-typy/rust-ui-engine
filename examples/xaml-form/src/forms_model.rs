@@ -46,6 +46,14 @@ pub(crate) fn model() -> Result<Rc<RefCell<BindingContext>>, String> {
             ]),
         ),
         ("Status", "Данные загружены".into()),
+        (
+            "Dashboard",
+            DataValue::object([
+                ("Message", "Все изменения сохранены".into()),
+                ("Progress", 65.0.into()),
+                ("Zoom", 100.0.into()),
+            ]),
+        ),
     ]))
     .map_err(|e| e.to_string())?;
     model

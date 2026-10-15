@@ -374,6 +374,20 @@ impl Form {
 impl DesktopApp for Form {
     fn update(&mut self, viewport: Size, _scale: f32) -> Result<(), String> {
         self.view.sync_bindings(&mut self.ui);
+        // This demo applies the document's zoom to its editor typography. The
+        // reusable ZoomControl owns only the numeric value and interaction.
+        if let (Some(zoom), Some(editor)) = (
+            self.find_name("DocumentZoom")
+                .and_then(|id| self.ui.zoom_value(id)),
+            self.find_name("Message"),
+        ) {
+            let mut style = *self
+                .ui
+                .edit_box_style(editor)
+                .expect("Message is a TextBox");
+            style.font_size = Some(14.0 * zoom as f32 / 100.0);
+            self.ui.set_edit_box_style(editor, style).map_err(err)?;
+        }
         self.consume_edit_events();
         self.refresh_status()?;
         self.ui.update(viewport).map_err(err)?;

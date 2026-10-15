@@ -35,9 +35,11 @@ mod codegen;
 mod form_parse;
 mod forms;
 mod panels;
+mod status_bar;
 pub use binding::{BindingDefinition, BindingMode, UpdateSourceTrigger};
 pub use forms::*;
 pub use panels::*;
+pub use status_bar::*;
 mod docking;
 mod ribbon;
 
@@ -129,10 +131,14 @@ impl Default for WindowDefinition {
 /// Validate the content placement required by a Ribbon-integrated title bar.
 ///
 /// [`TitleBar::Ribbon`] requires zero Window padding. Its content must be a
-/// Ribbon or a vertical StackPanel whose first child is the sole Ribbon. Both
+/// Ribbon, a vertical StackPanel, or a Grid whose first child is the sole Ribbon. Both
 /// the Ribbon and its optional parent must have zero margin and automatic
 /// width/height; the parent also requires zero padding. Its spacing and surface
 /// remain configurable, and later children may use ordinary layout properties.
+/// A Grid requires zero padding/spacing, a first Auto row, and no columns or one
+/// star column. The Ribbon occupies only cell (0, 0); all other children must
+/// occupy later rows in that same column with no column span. This reserves
+/// the complete first row for native chrome and prevents implicit columns.
 ///
 /// Native title bars add no placement restrictions. This function does not
 /// validate other element properties; hosts accepting manually constructed
@@ -164,9 +170,45 @@ pub fn validate_window_chrome(window: &WindowDefinition) -> Result<(), String> {
                 .filter(|child| matches!(child.kind, ElementKind::Ribbon(_)))
                 .ok_or("Window TitleBar=Ribbon requires Ribbon as the first StackPanel child")?
         }
+        ElementKind::Grid(grid) => {
+            validate_chrome_placement(&root.common, "root Grid")?;
+            if grid.padding != [0.0; 4] || grid.spacing != 0.0 {
+                return Err(
+                    "Window TitleBar=Ribbon requires root Grid Padding=0 and Spacing=0".into(),
+                );
+            }
+            if grid.rows.first() != Some(&GridLength::Auto)
+                || !(grid.columns.is_empty()
+                    || matches!(grid.columns.as_slice(), [GridLength::Star(weight)] if weight.is_finite() && *weight > 0.0))
+            {
+                return Err("Window TitleBar=Ribbon requires root Grid first row Auto and a single star column".into());
+            }
+            let ribbon = grid
+                .children
+                .first()
+                .filter(|child| matches!(child.kind, ElementKind::Ribbon(_)))
+                .ok_or("Window TitleBar=Ribbon requires Ribbon as the first Grid child")?;
+            if ribbon.common.grid_row != 0
+                || ribbon.common.grid_column != 0
+                || ribbon.common.grid_row_span != 1
+                || ribbon.common.grid_column_span != 1
+                || grid
+                    .children
+                    .iter()
+                    .skip(1)
+                    .any(|child| child.common.grid_row == 0)
+                || grid.children.iter().any(|child| {
+                    child.common.grid_column != 0 || child.common.grid_column_span != 1
+                })
+            {
+                return Err("Window TitleBar=Ribbon reserves root Grid row zero exclusively for Ribbon with no spans; all children require column zero with ColumnSpan=1".into());
+            }
+            ribbon
+        }
         _ => {
             return Err(
-                "Window TitleBar=Ribbon requires a Ribbon or a vertical root StackPanel".into(),
+                "Window TitleBar=Ribbon requires a Ribbon, vertical root StackPanel or root Grid"
+                    .into(),
             );
         }
     };
@@ -303,6 +345,8 @@ impl ElementDefinition {
             ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) => p.children.iter().collect(),
             ElementKind::Grid(p) => p.children.iter().collect(),
             ElementKind::DockPanel(p) => p.children.iter().collect(),
+            ElementKind::StatusBar(p) | ElementKind::RibbonStatusBar(p) => p.items.iter().collect(),
+            ElementKind::StatusBarItem(p) => p.child.as_deref().into_iter().collect(),
             ElementKind::Border(p) => vec![&p.child],
             ElementKind::GroupBox(p) => p.child.as_deref().into_iter().collect(),
             ElementKind::Expander(p) => p.child.as_deref().into_iter().collect(),
@@ -343,6 +387,10 @@ impl ElementDefinition {
             }
             ElementKind::Grid(p) => p.children.iter_mut().collect(),
             ElementKind::DockPanel(p) => p.children.iter_mut().collect(),
+            ElementKind::StatusBar(p) | ElementKind::RibbonStatusBar(p) => {
+                p.items.iter_mut().collect()
+            }
+            ElementKind::StatusBarItem(p) => p.child.as_deref_mut().into_iter().collect(),
             ElementKind::Border(p) => vec![&mut p.child],
             ElementKind::GroupBox(p) => p.child.as_deref_mut().into_iter().collect(),
             ElementKind::Expander(p) => p.child.as_deref_mut().into_iter().collect(),
@@ -383,6 +431,11 @@ pub enum ElementKind {
     TimeEdit(TemporalEditDefinition),
     DockWorkspace(DockWorkspaceDefinition),
     Ribbon(RibbonDefinition),
+    StatusBar(StatusBarDefinition),
+    RibbonStatusBar(StatusBarDefinition),
+    StatusBarItem(StatusBarItemDefinition),
+    ProgressBar(ProgressBarDefinition),
+    ZoomControl(ZoomControlDefinition),
     TextBox(EditBoxDefinition),
     TextBlock(TextBlockDefinition),
     Button(ButtonDefinition),
@@ -907,11 +960,14 @@ fn parse_element(
                     | "IsChecked"
                     | "IsExpanded"
                     | "SelectedIndex"
-            ) && !matches!(kind, ElementKind::TextBlock(_));
+            ) && !matches!(
+                kind,
+                ElementKind::TextBlock(_) | ElementKind::ProgressBar(_)
+            );
             let immediate = matches!(
                 property,
                 "SelectedValue" | "SelectedValues" | "IsChecked" | "IsExpanded" | "SelectedIndex"
-            );
+            ) || matches!(kind, ElementKind::ZoomControl(_)) && property == "Value";
             let trigger = if editable && !immediate {
                 UpdateSourceTrigger::LostFocus
             } else {
@@ -1190,6 +1246,11 @@ fn parse_element(
             | ElementKind::SpinBox(_)
             | ElementKind::DateEdit(_)
             | ElementKind::TimeEdit(_)
+            | ElementKind::StatusBar(_)
+            | ElementKind::RibbonStatusBar(_)
+            | ElementKind::StatusBarItem(_)
+            | ElementKind::ProgressBar(_)
+            | ElementKind::ZoomControl(_)
     ) {
         form_parse::parse_children(
             node,
@@ -1231,6 +1292,19 @@ fn parse_element(
             } else {
                 require_empty_content(child)?;
             }
+        }
+    }
+    if common.bindings.contains_key("Value") {
+        // A bound value is resolved by the host. Keep its construction-time
+        // placeholder valid even when a custom range excludes the default.
+        match &mut kind {
+            ElementKind::ProgressBar(progress) if progress.minimum < progress.maximum => {
+                progress.value = progress.value.clamp(progress.minimum, progress.maximum);
+            }
+            ElementKind::ZoomControl(zoom) if zoom.minimum < zoom.maximum => {
+                zoom.value = zoom.value.clamp(zoom.minimum, zoom.maximum);
+            }
+            _ => {}
         }
     }
     form_parse::validate(node, &kind, &common)?;
@@ -1919,5 +1993,7 @@ mod form_tests;
 mod group_tests;
 #[cfg(test)]
 mod ribbon_tests;
+#[cfg(test)]
+mod status_bar_tests;
 #[cfg(test)]
 mod tests;

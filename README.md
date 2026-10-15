@@ -80,6 +80,11 @@ compact or accented headers, icons and headerless surfaces. Nested sections
 and inactive pages retain their editors and bindings. See
 [groups and expandable sections](docs/public/groups.md).
 
+The [status bars form](examples/xaml-form/StatusWindow.xaml), opened with
+`--status`, demonstrates StatusBar and RibbonStatusBar with left/right sections,
+shared commands, progress and a keyboard-accessible zoom slider. The main Ribbon
+example anchors its status bar below the document. See [status bars](docs/public/status-bars.md).
+
 ## Run the docking workspace
 
 [DockWindow.xaml](examples/xaml-form/DockWindow.xaml) declares a document area,

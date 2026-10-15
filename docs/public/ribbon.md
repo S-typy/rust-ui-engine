@@ -1,5 +1,9 @@
 # Ribbon
 
+Для нижней части окна доступен [RibbonStatusBar](status-bars.md): команды,
+переключатели, прогресс и масштаб используют общие Controls и bindings.
+MainWindow размещает его в последней Auto-строке Grid под документом.
+
 ## Общая шапка с быстрыми командами
 
 `Ribbon::set_header(Some(RibbonHeader { title, height, leading_inset,

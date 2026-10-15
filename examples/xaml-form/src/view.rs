@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet};
 mod bindings;
 #[path = "view_forms.rs"]
 mod forms;
+#[path = "view_status.rs"]
+mod status;
 
 #[derive(Default)]
 pub(crate) struct MountedView {
@@ -157,6 +159,11 @@ impl MountedView {
                 | ElementKind::DockPanel(_)
                 | ElementKind::DockWorkspace(_)
                 | ElementKind::Ribbon(_) => Length::Auto,
+                ElementKind::StatusBar(_) => Length::Px(32.0),
+                ElementKind::RibbonStatusBar(_) => Length::Px(36.0),
+                ElementKind::StatusBarItem(_) => Length::Auto,
+                ElementKind::ProgressBar(_) => Length::Px(16.0),
+                ElementKind::ZoomControl(_) => Length::Px(28.0),
                 ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::TextBox(_)
                 | ElementKind::ComboBox(_)
@@ -203,6 +210,13 @@ impl MountedView {
             ..Default::default()
         };
         let id = match &element.kind {
+            ElementKind::StatusBar(_)
+            | ElementKind::RibbonStatusBar(_)
+            | ElementKind::StatusBarItem(_)
+            | ElementKind::ProgressBar(_)
+            | ElementKind::ZoomControl(_) => {
+                self.mount_status_element(ui, parent, element, style, available_width, &context)?
+            }
             ElementKind::ListBox(_)
             | ElementKind::ComboBox(_)
             | ElementKind::LookupEdit(_)
@@ -522,6 +536,10 @@ impl MountedView {
                 | ElementKind::TimeEdit(_) => Role::Group,
                 ElementKind::GroupBox(_) | ElementKind::Expander(_) => Role::Group,
                 ElementKind::TabbedGroup(_) => Role::Group,
+                ElementKind::StatusBar(_) | ElementKind::RibbonStatusBar(_) => Role::StatusBar,
+                ElementKind::StatusBarItem(_) => Role::Group,
+                ElementKind::ProgressBar(_) => Role::ProgressBar,
+                ElementKind::ZoomControl(_) => Role::Slider,
                 ElementKind::DockWorkspace(_) => Role::Panel,
                 ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) => Role::TextBox,
@@ -564,6 +582,19 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         return Ok(width);
     }
     match &element.kind {
+        ElementKind::StatusBar(_) | ElementKind::RibbonStatusBar(_) => {
+            let mut width = 24.0;
+            for child in element.children() {
+                width +=
+                    desired_width(ui, child)? + child.common.margin[0] + child.common.margin[2];
+            }
+            Ok(width)
+        }
+        ElementKind::StatusBarItem(item) => item.child.as_deref().map_or(Ok(0.0), |child| {
+            Ok(desired_width(ui, child)? + child.common.margin[0] + child.common.margin[2])
+        }),
+        ElementKind::ProgressBar(_) => Ok(120.0),
+        ElementKind::ZoomControl(_) => Ok(220.0),
         ElementKind::DockWorkspace(_) => {
             Err("DockWorkspace requires the docking window coordinator".into())
         }
@@ -845,6 +876,7 @@ fn validate_ribbon_width(
 }
 
 fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), String> {
+    rust_desktop_ui_xaml::validate_status_bars(root)?;
     let mut pending = vec![(root, 1, 0)];
     let mut names = HashSet::new();
     let mut checked_radio_groups = HashSet::new();

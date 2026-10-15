@@ -26,6 +26,10 @@ mod button_presentation;
 #[cfg(test)]
 mod group_tests;
 mod groups;
+mod status;
+#[cfg(test)]
+mod status_tests;
+pub use status::{ProgressBarSettings, StatusBar, ZoomControlSettings};
 #[cfg(test)]
 mod tabbed_group_tests;
 mod tabbed_groups;
@@ -100,6 +104,9 @@ pub enum Role {
     ListItem,
     ComboBox,
     SpinButton,
+    StatusBar,
+    ProgressBar,
+    Slider,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SemanticAction {
@@ -371,6 +378,7 @@ pub struct Controls {
     rich: selection::RichControls,
     scroll_drag: Option<scroll::ScrollDrag>,
     groups: HashMap<WidgetId, groups::GroupState>,
+    status: status::StatusControls,
 }
 
 impl Controls {
@@ -437,6 +445,7 @@ impl Controls {
             rich: Default::default(),
             scroll_drag: None,
             groups: HashMap::new(),
+            status: Default::default(),
         })
     }
     pub fn root(&self) -> WidgetId {
@@ -760,6 +769,7 @@ impl Controls {
         self.refresh_paints()?;
         self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
+        self.sync_zoom_gesture()?;
         self.sync_popup_availability()?;
         self.tooltip_sync();
         Ok(())
@@ -1544,6 +1554,7 @@ impl Controls {
     /// ListBox's required content cannot be removed individually; remove their
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.preflight_status_removal(id)?;
         self.preflight_group_removal(id)?;
         self.preflight_tab_removal(id)?;
         self.preflight_rich_removal(id)?;
@@ -1554,6 +1565,7 @@ impl Controls {
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.retain_rich_controls();
         self.groups.retain(|id, _| self.controls.contains_key(id));
+        self.retain_status_controls()?;
         if self.rich.popup.as_ref().is_some_and(|popup| {
             !self.rich.composites.contains_key(&popup.owner)
                 || !self.controls.contains_key(&popup.surface)
@@ -1853,6 +1865,7 @@ impl Controls {
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
         self.refresh_paints()?;
+        self.sync_zoom_gesture()?;
         self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
         let mut delta = self.runtime.update(&mut self.layout, viewport)?;
@@ -1895,6 +1908,7 @@ impl Controls {
     /// levels, editor drafts, accepted values and IME composition remain intact.
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
+        self.cancel_zoom_gesture()?;
         self.selecting = None;
         self.scroll_drag = None;
         if !self.keyboard_pressed {
@@ -1921,6 +1935,9 @@ impl Controls {
             return Ok(());
         }
         if self.rich_before_input(&event)? {
+            return Ok(());
+        }
+        if self.status_before_input(&event)? {
             return Ok(());
         }
         if let InputEvent::KeyDown {
@@ -2700,6 +2717,9 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            if self.paint_status_control(id, bounds, clip)? {
+                continue;
+            }
             if self.paint_group(id, bounds, clip)? {
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
@@ -3431,7 +3451,9 @@ impl Controls {
                     self.document(editor)
                         .map(|document| document.text().to_owned())
                 } else {
-                    None
+                    self.progress_value(id)
+                        .or_else(|| self.zoom_value(id))
+                        .map(|value| value.to_string())
                 };
                 let selected = match control.kind {
                     Kind::Tab { group, index } => {
@@ -3467,6 +3489,9 @@ impl Controls {
                     if matches!(control.kind, Kind::TextBox(_)) && !control.editor.is_read_only {
                         actions.push(SemanticAction::SetValue);
                     }
+                    if self.zoom_settings(id).is_some() {
+                        actions.push(SemanticAction::SetValue);
+                    }
                     if checked.is_some() && !matches!(control.kind, Kind::Radio { .. }) {
                         actions.push(SemanticAction::Toggle);
                     }
@@ -3487,7 +3512,9 @@ impl Controls {
                     checked,
                     selected,
                     disabled: !enabled,
-                    read_only: control.editor.is_read_only || self.rich_read_only(id),
+                    read_only: control.editor.is_read_only
+                        || self.rich_read_only(id)
+                        || self.progress_settings(id).is_some(),
                     validation_error: control.validation_error.clone(),
                     has_popup: self.popup_expanded(id).is_some(),
                     expanded: self
@@ -3526,7 +3553,16 @@ impl Controls {
             SemanticAction::Expand => self.expand_popup(id)?,
             SemanticAction::Collapse => self.collapse_popup(id)?,
             SemanticAction::SetValue => {
-                if self.is_text_editable(id) {
+                if self.zoom_settings(id).is_some() {
+                    // Native accessibility clients may submit malformed or
+                    // out-of-range values. Reject those without ending the host.
+                    if let Ok(value) = value.unwrap_or_default().parse::<f64>() {
+                        match self.set_zoom_value(id, value) {
+                            Ok(()) | Err(ControlError::Invalid(_)) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                } else if self.is_text_editable(id) {
                     // Accessibility is a user route: rejecting input must not close the host.
                     match self.set_text(id, value.unwrap_or_default()) {
                         Ok(()) | Err(ControlError::Edit(EditError::LimitExceeded { .. })) => {}

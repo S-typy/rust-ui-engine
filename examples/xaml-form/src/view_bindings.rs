@@ -80,7 +80,11 @@ fn fallback(
         BindingProperty::Width | BindingProperty::Height => {
             DataValue::Number(value.parse().map_err(err)?)
         }
-        BindingProperty::Value if ui.spin_settings(widget).is_some() => {
+        BindingProperty::Value
+            if ui.spin_settings(widget).is_some()
+                || ui.progress_settings(widget).is_some()
+                || ui.zoom_settings(widget).is_some() =>
+        {
             DataValue::Number(value.parse().map_err(err)?)
         }
         BindingProperty::Value if ui.date_settings(widget).is_some() => {

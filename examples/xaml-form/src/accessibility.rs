@@ -76,7 +76,8 @@ impl Accessibility {
         for semantic in semantics {
             let widget = semantic.id;
             let id = self.widgets[&widget];
-            let status = view.find_name("Status") == Some(widget);
+            let status =
+                semantic.role == ControlRole::Label && view.find_name("Status") == Some(widget);
             let mut node = Node::new(if status {
                 Role::Status
             } else if semantic.role == ControlRole::MenuItem && semantic.checked.is_some() {
@@ -93,9 +94,26 @@ impl Accessibility {
             node.set_bounds(bounds(semantic.bounds, scale));
             if status {
                 node.set_live(accesskit::Live::Polite);
+            } else if semantic.role == ControlRole::StatusBar {
+                // Only the message is announced. Interactive status children
+                // must not make the complete bar a repeated live announcement.
+                node.set_live(accesskit::Live::Off);
             }
             if let Some(value) = semantic.value {
                 node.set_value(value);
+            }
+            if let Some(settings) = ui.progress_settings(widget) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_read_only();
+            }
+            if let Some(settings) = ui.zoom_settings(widget) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_numeric_value_step(settings.step);
+                node.set_orientation(accesskit::Orientation::Horizontal);
             }
             if let Some(checked) = semantic.checked {
                 node.set_toggled(if checked {
@@ -222,11 +240,32 @@ impl Accessibility {
         {
             return Ok(());
         }
+        let numeric_value = match &request.data {
+            Some(accesskit::ActionData::NumericValue(value))
+                if value.is_finite() && ui.zoom_settings(widget).is_some() =>
+            {
+                Some(value.to_string())
+            }
+            _ => None,
+        };
         let value = match &request.data {
             Some(accesskit::ActionData::Value(value)) => Some(value.as_ref()),
+            Some(accesskit::ActionData::NumericValue(_)) => numeric_value.as_deref(),
             _ => None,
         };
         if action == SemanticAction::SetValue && value.is_none() {
+            return Ok(());
+        }
+        if action == SemanticAction::SetValue
+            && let Some(settings) = ui.zoom_settings(widget)
+            && value
+                .and_then(|value| value.parse::<f64>().ok())
+                .is_none_or(|value| {
+                    !value.is_finite() || !(settings.minimum..=settings.maximum).contains(&value)
+                })
+        {
+            // Native range requests are untrusted input. An invalid value
+            // preserves state without terminating the application event loop.
             return Ok(());
         }
         ui.perform_action(widget, action, value)
@@ -262,5 +301,238 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Tab => Role::Tab,
         ControlRole::Menu => Role::Menu,
         ControlRole::MenuItem => Role::MenuItem,
+        ControlRole::StatusBar => Role::Status,
+        ControlRole::ProgressBar => Role::ProgressIndicator,
+        ControlRole::Slider => Role::Slider,
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use rust_desktop_ui_controls::{ProgressBarSettings, Theme, ZoomControlSettings};
+    use rust_desktop_ui_core::{LayoutStyle, Length, Mutation, Size};
+
+    const VIEWPORT: Size = Size::new(800.0, 200.0);
+
+    struct Fixture {
+        ui: Controls,
+        view: MountedView,
+        accessibility: Accessibility,
+        bar: WidgetId,
+        message: WidgetId,
+        progress: WidgetId,
+        zoom: WidgetId,
+    }
+
+    impl Fixture {
+        fn new(ribbon: bool) -> Self {
+            let mut ui = Controls::new(Theme::FluentLight).unwrap();
+            let root = ui.root();
+            let style = LayoutStyle {
+                width: Length::Px(VIEWPORT.width),
+                ..Default::default()
+            };
+            let bar = if ribbon {
+                ui.ribbon_status_bar(root, style)
+            } else {
+                ui.status_bar(root, style)
+            }
+            .unwrap();
+            let message = ui
+                .label(
+                    bar.left,
+                    "Ready",
+                    LayoutStyle {
+                        width: Length::Px(180.0),
+                        height: Length::Px(20.0),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            let progress = ui
+                .progress_bar(
+                    bar.right,
+                    ProgressBarSettings {
+                        minimum: 10.0,
+                        maximum: 90.0,
+                        value: 45.0,
+                    },
+                    LayoutStyle::default(),
+                )
+                .unwrap();
+            let zoom = ui
+                .zoom_control(
+                    bar.right,
+                    ZoomControlSettings {
+                        minimum: 50.0,
+                        maximum: 200.0,
+                        value: 100.0,
+                        step: 5.0,
+                    },
+                    LayoutStyle::default(),
+                )
+                .unwrap();
+            let mut view = MountedView::default();
+            view.names.insert("Status".into(), message);
+            ui.update(VIEWPORT).unwrap();
+            Self {
+                ui,
+                view,
+                accessibility: Accessibility::default(),
+                bar: bar.container,
+                message,
+                progress,
+                zoom,
+            }
+        }
+
+        fn tree(&mut self) -> accesskit::TreeUpdate {
+            self.accessibility
+                .tree(&self.ui, &self.view, "Status controls", 1.5)
+        }
+
+        fn set_value(&mut self, widget: WidgetId, value: f64) -> Result<(), String> {
+            self.accessibility.action(
+                &mut self.ui,
+                accesskit::ActionRequest {
+                    action: Action::SetValue,
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: self.accessibility.id(widget).unwrap(),
+                    data: Some(accesskit::ActionData::NumericValue(value)),
+                },
+            )
+        }
+
+        fn node<'a>(&self, tree: &'a accesskit::TreeUpdate, widget: WidgetId) -> &'a Node {
+            let id = self.accessibility.id(widget).unwrap();
+            &tree.nodes.iter().find(|(node, _)| *node == id).unwrap().1
+        }
+    }
+
+    #[test]
+    fn status_containers_preserve_message_announcements_and_numeric_roles() {
+        for ribbon in [false, true] {
+            let mut fixture = Fixture::new(ribbon);
+            let tree = fixture.tree();
+            let bar = fixture.node(&tree, fixture.bar);
+            assert_eq!(bar.role(), Role::Status);
+            assert_eq!(bar.live(), Some(accesskit::Live::Off));
+            assert!(!bar.supports_action(Action::Focus));
+            let message = fixture.node(&tree, fixture.message);
+            assert_eq!(message.live(), Some(accesskit::Live::Polite));
+            assert_eq!(message.label(), Some("Ready"));
+            let progress = fixture.node(&tree, fixture.progress);
+            assert_eq!(progress.role(), Role::ProgressIndicator);
+            assert_eq!(progress.min_numeric_value(), Some(10.0));
+            assert_eq!(progress.max_numeric_value(), Some(90.0));
+            assert_eq!(progress.numeric_value(), Some(45.0));
+            assert!(progress.is_read_only());
+            assert!(!progress.supports_action(Action::Focus));
+            assert!(!progress.supports_action(Action::Click));
+            assert!(!progress.supports_action(Action::SetValue));
+            let zoom = fixture.node(&tree, fixture.zoom);
+            assert_eq!(zoom.role(), Role::Slider);
+            assert_eq!(zoom.min_numeric_value(), Some(50.0));
+            assert_eq!(zoom.max_numeric_value(), Some(200.0));
+            assert_eq!(zoom.numeric_value(), Some(100.0));
+            assert_eq!(zoom.numeric_value_step(), Some(5.0));
+            assert_eq!(zoom.orientation(), Some(accesskit::Orientation::Horizontal));
+            assert!(zoom.supports_action(Action::Focus));
+            assert!(zoom.supports_action(Action::SetValue));
+            fixture.view.names.insert("Status".into(), fixture.bar);
+            let tree = fixture.tree();
+            assert_eq!(
+                fixture.node(&tree, fixture.bar).live(),
+                Some(accesskit::Live::Off)
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_zoom_requests_ignore_nonfinite_disabled_and_unsupported_targets() {
+        let mut fixture = Fixture::new(true);
+        fixture.tree();
+        fixture.set_value(fixture.zoom, 137.5).unwrap();
+        assert_eq!(fixture.ui.zoom_value(fixture.zoom), Some(137.5));
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            fixture.set_value(fixture.zoom, value).unwrap();
+            assert_eq!(fixture.ui.zoom_value(fixture.zoom), Some(137.5));
+        }
+        fixture.set_value(fixture.zoom, 201.0).unwrap();
+        assert_eq!(fixture.ui.zoom_value(fixture.zoom), Some(137.5));
+        for value in ["NaN", "inf", "49", "201", "invalid"] {
+            fixture
+                .accessibility
+                .action(
+                    &mut fixture.ui,
+                    accesskit::ActionRequest {
+                        action: Action::SetValue,
+                        target_tree: accesskit::TreeId::ROOT,
+                        target_node: fixture.accessibility.id(fixture.zoom).unwrap(),
+                        data: Some(accesskit::ActionData::Value(value.into())),
+                    },
+                )
+                .unwrap();
+            assert_eq!(fixture.ui.zoom_value(fixture.zoom), Some(137.5));
+        }
+        let tree = fixture.tree();
+        assert_eq!(
+            fixture.node(&tree, fixture.zoom).numeric_value(),
+            Some(137.5)
+        );
+        fixture.set_value(fixture.progress, 60.0).unwrap();
+        assert_eq!(fixture.ui.progress_value(fixture.progress), Some(45.0));
+        fixture.set_value(fixture.message, 60.0).unwrap();
+        fixture.ui.set_enabled(fixture.bar, false).unwrap();
+        fixture.set_value(fixture.zoom, 150.0).unwrap();
+        assert_eq!(fixture.ui.zoom_value(fixture.zoom), Some(137.5));
+        fixture.ui.set_enabled(fixture.bar, true).unwrap();
+        fixture.set_value(fixture.zoom, 150.0).unwrap();
+        assert_eq!(fixture.ui.zoom_value(fixture.zoom), Some(150.0));
+    }
+
+    #[test]
+    fn numeric_zoom_requests_ignore_hidden_and_removed_nodes_with_stable_ids() {
+        let mut fixture = Fixture::new(false);
+        fixture.tree();
+        let zoom_id = fixture.accessibility.id(fixture.zoom);
+        let mut props = fixture
+            .ui
+            .runtime
+            .tree()
+            .node(fixture.bar)
+            .unwrap()
+            .props
+            .clone();
+        props.visible = false;
+        fixture
+            .ui
+            .runtime
+            .apply(Mutation::SetProps {
+                node: fixture.bar,
+                props: props.clone(),
+            })
+            .unwrap();
+        fixture.ui.update(VIEWPORT).unwrap();
+        fixture.set_value(fixture.zoom, 150.0).unwrap();
+        assert_eq!(fixture.ui.zoom_value(fixture.zoom), Some(100.0));
+        let hidden = fixture.tree();
+        assert!(hidden.nodes.iter().all(|(id, _)| Some(*id) != zoom_id));
+        props.visible = true;
+        fixture
+            .ui
+            .runtime
+            .apply(Mutation::SetProps {
+                node: fixture.bar,
+                props,
+            })
+            .unwrap();
+        fixture.ui.update(VIEWPORT).unwrap();
+        fixture.tree();
+        assert_eq!(fixture.accessibility.id(fixture.zoom), zoom_id);
+        fixture.ui.remove(fixture.bar).unwrap();
+        fixture.set_value(fixture.zoom, 180.0).unwrap();
+        assert_eq!(fixture.ui.zoom_value(fixture.zoom), None);
     }
 }

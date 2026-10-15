@@ -61,6 +61,9 @@ impl Gallery {
             });
             node.set_label(item.label);
             node.set_bounds(bounds(item.bounds, scale));
+            if item.role == ControlRole::StatusBar {
+                node.set_live(rust_desktop_ui_platform_winit::accesskit::Live::Off);
+            }
             if item.has_popup {
                 node.set_has_popup(if item.role == ControlRole::ComboBox {
                     HasPopup::Listbox
@@ -76,6 +79,21 @@ impl Gallery {
             }
             if let Some(value) = item.value {
                 node.set_value(value);
+            }
+            if let Some(settings) = self.ui.progress_settings(item.id) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_read_only();
+            }
+            if let Some(settings) = self.ui.zoom_settings(item.id) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_numeric_value_step(settings.step);
+                node.set_orientation(
+                    rust_desktop_ui_platform_winit::accesskit::Orientation::Horizontal,
+                );
             }
             if let Some(checked) = item.checked {
                 node.set_toggled(if checked {
@@ -303,9 +321,35 @@ impl Gallery {
                 };
                 let value = match &request.data {
                     Some(ActionData::Value(value)) => Some(value.to_string()),
+                    Some(ActionData::NumericValue(value))
+                        if value.is_finite() && self.ui.zoom_settings(widget).is_some() =>
+                    {
+                        Some(value.to_string())
+                    }
                     _ => None,
                 };
                 if let Some(action) = action {
+                    if !self
+                        .ui
+                        .semantics()
+                        .iter()
+                        .any(|node| node.id == widget && node.actions.contains(&action))
+                        || (action == SemanticAction::SetValue && value.is_none())
+                    {
+                        return Ok(());
+                    }
+                    if action == SemanticAction::SetValue
+                        && let Some(settings) = self.ui.zoom_settings(widget)
+                        && value
+                            .as_deref()
+                            .and_then(|value| value.parse::<f64>().ok())
+                            .is_none_or(|value| {
+                                !value.is_finite()
+                                    || !(settings.minimum..=settings.maximum).contains(&value)
+                            })
+                    {
+                        return Ok(());
+                    }
                     let value = if action == SemanticAction::Scroll {
                         self.ui
                             .runtime
@@ -348,5 +392,8 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Menu => Role::Menu,
         ControlRole::MenuItem => Role::MenuItem,
         ControlRole::Group => Role::Group,
+        ControlRole::StatusBar => Role::Status,
+        ControlRole::ProgressBar => Role::ProgressIndicator,
+        ControlRole::Slider => Role::Slider,
     }
 }
