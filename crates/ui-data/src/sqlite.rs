@@ -6,9 +6,15 @@ use rusqlite::{
 };
 
 use crate::{
-    CellValue, DataAdapter, DataError, DataLimits, DataRow, DataTable, FieldSchema, FieldType,
-    TableSchema,
+    CellValue, DataAdapter, DataError, DataLimits, DataRow, DataTable, DataWrite, FieldSchema,
+    FieldType, TableSchema, WriteCapabilities,
 };
+
+#[path = "sqlite_query.rs"]
+mod query;
+#[path = "sqlite_write.rs"]
+mod write;
+pub use query::SqliteQueryPage;
 
 /// SQLite connection type for application-owned schema creation and fixtures.
 pub use rusqlite::Connection as SqliteConnection;
@@ -70,6 +76,8 @@ pub struct SqliteAdapter {
     connection: Connection,
     config: SqliteTableConfig,
     limits: DataLimits,
+    query_schema_cookie: Option<i64>,
+    query_utf8: bool,
 }
 
 impl SqliteAdapter {
@@ -106,10 +114,13 @@ impl SqliteAdapter {
         connection
             .busy_timeout(Duration::from_millis(250))
             .map_err(adapter_error)?;
+        let query_utf8 = query::is_utf8(&connection)?;
         Ok(Self {
             connection,
             config,
             limits,
+            query_schema_cookie: None,
+            query_utf8,
         })
     }
 }
@@ -117,6 +128,26 @@ impl SqliteAdapter {
 impl DataAdapter for SqliteAdapter {
     fn load(&mut self) -> Result<DataTable, DataError> {
         read_table(&self.connection, &self.config, self.limits)
+    }
+    fn write_capabilities(&self) -> WriteCapabilities {
+        WriteCapabilities::transactional_crud()
+    }
+    fn write_batch(&mut self, operations: &[DataWrite]) -> Result<DataTable, DataError> {
+        write::write_batch(self, operations)
+    }
+    fn query_capabilities_for(&self, request: &crate::QueryRequest) -> crate::QueryCapabilities {
+        query::capabilities(self, request)
+    }
+    fn query_schema(&mut self) -> Result<Option<TableSchema>, DataError> {
+        self.query_schema_cookie = Some(query::schema_cookie(&self.connection)?);
+        self.query_utf8 = query::is_utf8(&self.connection)?;
+        Ok(Some(self.config.schema.clone()))
+    }
+    fn query_pushdown(
+        &mut self,
+        request: &crate::QueryRequest,
+    ) -> Result<crate::QueryResult, DataError> {
+        query::execute(self, request)
     }
     fn write_cell(
         &mut self,

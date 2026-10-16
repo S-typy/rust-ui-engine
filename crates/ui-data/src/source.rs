@@ -2,8 +2,8 @@ use std::{cmp::Ordering, collections::HashMap, rc::Rc};
 
 use crate::{
     CellValue, CollectionHandle, CollectionSubscription, DataChange, DataChangeSet, DataError,
-    DataRow, DataTable, MAX_CHANGE_RECORDS, ObservableCollection, QueryCapabilities, QueryEngine,
-    QueryRequest, QueryResult, TableSchema,
+    DataRow, DataTable, DataWrite, MAX_CHANGE_RECORDS, ObservableCollection, QueryCapabilities,
+    QueryEngine, QueryRequest, QueryResult, TableSchema, WriteCapabilities,
     observable::{ChangeJournal, NotificationHub},
 };
 
@@ -22,6 +22,21 @@ pub trait DataAdapter {
         expected: &CellValue,
         value: &CellValue,
     ) -> Result<DataTable, DataError>;
+    /// Atomic CRUD support is opt-in, independent of legacy cell writes.
+    fn write_capabilities(&self) -> WriteCapabilities {
+        WriteCapabilities::default()
+    }
+    /// Apply the entire nonempty batch or leave storage unchanged. Validate all
+    /// expectations under the same transaction and return its complete snapshot
+    /// with unchanged schema/limits. Returning an invalid snapshot after commit
+    /// violates the adapter contract: a source can reject it but cannot undo
+    /// arbitrary external effects. There is no sequential single-write fallback.
+    /// DataSource handles an empty batch without calling the adapter.
+    fn write_batch(&mut self, _operations: &[DataWrite]) -> Result<DataTable, DataError> {
+        Err(DataError::Adapter(
+            "atomic write batches are not supported".into(),
+        ))
+    }
     /// In-memory notification cursor. This getter must not perform I/O.
     /// Adapters without notifications retain explicit refresh semantics.
     fn notification_revision(&self) -> Option<u64> {
@@ -48,6 +63,12 @@ pub trait DataAdapter {
     /// adapters use the same local engine; SQL capability is never inferred.
     fn query_capabilities(&self) -> QueryCapabilities {
         QueryCapabilities::local_only()
+    }
+    /// Optional per-request refinement for providers supporting a precise AST
+    /// subset. The returned promise applies to this complete request only;
+    /// unsupported terms must choose local fallback, never partial execution.
+    fn query_capabilities_for(&self, _query: &QueryRequest) -> QueryCapabilities {
+        self.query_capabilities()
     }
     /// Schema metadata for a pushdown provider, without loading a row snapshot.
     /// None selects local fallback. A pushed execution must detect a concurrent
@@ -105,6 +126,14 @@ impl DataAdapter for CollectionAdapter {
         self.snapshot_revision = revision;
         Ok(snapshot)
     }
+    fn write_capabilities(&self) -> WriteCapabilities {
+        WriteCapabilities::transactional_crud()
+    }
+    fn write_batch(&mut self, operations: &[DataWrite]) -> Result<DataTable, DataError> {
+        let (snapshot, revision) = self.handle.write_batch_snapshot(operations)?;
+        self.snapshot_revision = revision;
+        Ok(snapshot)
+    }
     fn notification_revision(&self) -> Option<u64> {
         Some(self.handle.revision())
     }
@@ -145,6 +174,7 @@ pub struct DataQuery {
 /// Filtering performs Unicode lowercase substring search over displayed cells.
 /// Queries execute outside paint and never interpolate expressions into SQL.
 pub struct DataSource {
+    pub(crate) identity: Rc<()>,
     adapter: Box<dyn DataAdapter>,
     notifications: Rc<NotificationHub>,
     adapter_subscription: Option<CollectionSubscription>,
@@ -167,6 +197,7 @@ impl DataSource {
         let notifications = Rc::new(NotificationHub::default());
         let adapter_subscription = bridge_notifications(&adapter, &notifications)?;
         Ok(Self {
+            identity: Rc::new(()),
             adapter: Box::new(adapter),
             notifications,
             adapter_subscription,
@@ -193,6 +224,9 @@ impl DataSource {
     }
     pub fn query_capabilities(&self) -> QueryCapabilities {
         self.adapter.query_capabilities()
+    }
+    pub fn write_capabilities(&self) -> WriteCapabilities {
+        self.adapter.write_capabilities()
     }
     pub fn revision(&self) -> u64 {
         self.revision
@@ -359,6 +393,63 @@ impl DataSource {
         let result = self.edit_inner(key, field, Some(expected), value);
         self.record(result)
     }
+    /// Apply sequential optimistic inserts, updates and deletes atomically.
+    /// All operations use explicit expectations and do not consume draft data.
+    /// One accepted snapshot produces at most one source revision. Empty batches
+    /// clear a previous error and return false without loading or writing.
+    pub fn write_batch(&mut self, operations: &[DataWrite]) -> Result<bool, DataError> {
+        let result = self.write_batch_inner(operations);
+        self.record(result)
+    }
+    fn write_batch_inner(&mut self, operations: &[DataWrite]) -> Result<bool, DataError> {
+        if operations.is_empty() {
+            return Ok(false);
+        }
+        self.adapter.write_capabilities().validate(operations)?;
+        crate::write::validate_write_payload(self.table.schema(), self.table.limits(), operations)?;
+        // Reserve the publication revision before any provider mutation. At
+        // exhaustion even a potentially unchanged nonempty batch is rejected.
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(DataError::RevisionOverflow)?;
+        let notification = self.adapter.notification_revision();
+        let pending = if notification.is_some() && notification != self.adapter_revision {
+            let table = self.adapter.load()?;
+            self.check_write_snapshot(&table)?;
+            Some(table)
+        } else {
+            None
+        };
+        crate::write::apply_writes(pending.as_ref().unwrap_or(&self.table), operations)?;
+        // Providers recheck expectations in the transaction, even if the local
+        // candidate is unchanged: non-notifying storage can have changed.
+        let table = self.adapter.write_batch(operations)?;
+        self.check_write_snapshot(&table)?;
+        let (visible, positions) = query_index(&table, &self.query)?;
+        if table == self.table {
+            self.adapter_revision = self.adapter.snapshot_revision();
+            return Ok(false);
+        }
+        let changes = accepted_changes(&self.table, &table, &self.visible, &visible);
+        self.table = table;
+        self.visible = visible;
+        self.positions = positions;
+        self.revision = revision;
+        self.adapter_revision = self.adapter.snapshot_revision();
+        self.journal.push(revision, changes);
+        self.notifications.notify_coalesced(revision);
+        Ok(true)
+    }
+    fn check_write_snapshot(&self, table: &DataTable) -> Result<(), DataError> {
+        self.check_limits(table)?;
+        if table.schema() != self.table.schema() {
+            return Err(DataError::Conflict(
+                "source schema changed; refresh before writing".into(),
+            ));
+        }
+        Ok(())
+    }
     fn edit_inner(
         &mut self,
         key: i64,
@@ -489,9 +580,9 @@ fn accepted_changes(
     changes
 }
 
-type QueryIndex = (Vec<usize>, HashMap<i64, usize>);
+pub(crate) type QueryIndex = (Vec<usize>, HashMap<i64, usize>);
 
-fn query_index(table: &DataTable, query: &DataQuery) -> Result<QueryIndex, DataError> {
+pub(crate) fn query_index(table: &DataTable, query: &DataQuery) -> Result<QueryIndex, DataError> {
     if query.filter.len() > 4096
         || query.filter.contains('\0')
         || query.sort.len() > table.schema().fields().len()
@@ -551,4 +642,39 @@ fn query_index(table: &DataTable, query: &DataQuery) -> Result<QueryIndex, DataE
 
 fn compare(left: &CellValue, right: &CellValue) -> Ordering {
     crate::query::compare_values(left, right)
+}
+
+#[cfg(test)]
+mod write_revision_tests {
+    use super::*;
+
+    #[test]
+    fn exhausted_source_revision_rejects_batch_before_provider_mutation() {
+        let schema = TableSchema::new(vec![crate::FieldSchema::new(
+            "N",
+            crate::FieldType::Integer,
+        )])
+        .unwrap();
+        let adapter = CollectionAdapter::new(
+            DataTable::new(schema, vec![DataRow::new(1, vec![CellValue::Integer(0)])]).unwrap(),
+        );
+        let handle = adapter.handle();
+        let mut source = DataSource::new(adapter).unwrap();
+        source.revision = u64::MAX;
+        assert_eq!(
+            source.write_batch(&[DataWrite::Update {
+                key: 1,
+                field: "N".into(),
+                expected: CellValue::Integer(0),
+                value: CellValue::Integer(1)
+            }]),
+            Err(DataError::RevisionOverflow)
+        );
+        assert_eq!(handle.revision(), 0);
+        assert_eq!(
+            handle.snapshot().value(1, "N"),
+            Some(&CellValue::Integer(0))
+        );
+        assert!(!source.write_batch(&[]).unwrap());
+    }
 }

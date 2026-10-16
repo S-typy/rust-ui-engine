@@ -422,6 +422,29 @@ impl ObservableCollection {
             revision,
         ))
     }
+    /// Capture before callbacks, preserving pending reentrant changes for the
+    /// adapter's next synchronize boundary.
+    pub(crate) fn write_batch_snapshot(
+        &self,
+        operations: &[crate::DataWrite],
+    ) -> Result<(DataTable, u64), DataError> {
+        let mut state = self.state.borrow_mut();
+        let table = crate::write::apply_writes(&state.table, operations)?;
+        if table == state.table {
+            return Ok((table, state.revision));
+        }
+        let revision = state
+            .revision
+            .checked_add(1)
+            .ok_or(DataError::RevisionOverflow)?;
+        self.notifications.before_commit()?;
+        state.table = table.clone();
+        state.revision = revision;
+        state.journal.push(revision, vec![DataChange::Reset]);
+        drop(state);
+        self.notifications.notify(revision);
+        Ok((table, revision))
+    }
     pub fn clear(&self) -> Result<bool, DataError> {
         self.batch(vec![CollectionMutation::Clear])
     }

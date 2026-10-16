@@ -406,6 +406,41 @@ pub(super) fn execute(query: &CompiledQuery, table: &DataTable) -> Result<QueryR
     })
 }
 
+/// Validate exactly the scalar and working/result limits of a simple local
+/// query before a provider does filtering and ordering. No grouping/aggregate
+/// query can use this path. Only validation is shared; ordering runs in SQL.
+#[cfg(feature = "sqlite")]
+pub(super) fn validate_pushdown_snapshot(
+    query: &CompiledQuery,
+    table: &DataTable,
+) -> Result<(), DataError> {
+    if !query.group_by.is_empty() || !query.aggregates.is_empty() {
+        return Err(invalid("provider validation requires a simple query"));
+    }
+    let mut budget = Budget {
+        used: 0,
+        max: table.limits().max_bytes,
+    };
+    let mut indices: Vec<_> = (0..table.rows().len()).collect();
+    budget.add(indices.len() * size_of::<usize>())?;
+    indices.sort_by_key(|index| table.rows()[*index].key);
+    let mut matches = 0usize;
+    for index in indices {
+        let row = &table.rows()[index];
+        if let Some(filter) = &query.filter
+            && filter.evaluate(row, table.limits())? != TruthValue::True
+        {
+            continue;
+        }
+        budget.add(size_of::<EvaluatedRow>())?;
+        for (expression, _) in &query.order_by {
+            budget.values(&[expression.evaluate(row, table.limits())?])?;
+        }
+        matches += 1;
+    }
+    budget.add(matches * size_of::<i64>())
+}
+
 fn compare_vectors(left: &[CellValue], right: &[CellValue]) -> Ordering {
     left.iter()
         .zip(right)

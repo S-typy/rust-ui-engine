@@ -163,8 +163,9 @@ pub struct QueryResult {
 }
 
 /// A capability is a promise to preserve *all* operators and types in its
-/// category, including errors and deterministic key ordering. Unsupported
-/// expressions require complete local fallback, not a partially applied query.
+/// category, including errors and deterministic key ordering. A per-request
+/// capability applies to that complete request only. Unsupported expressions
+/// require complete local fallback, not a partially applied query.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct QueryCapabilities {
     pub semantics_version: u32,
@@ -243,6 +244,26 @@ impl CompiledQuery {
         }
         evaluate::execute(self, table)
     }
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn validate_pushdown_snapshot(&self, table: &DataTable) -> Result<(), DataError> {
+        evaluate::validate_pushdown_snapshot(self, table)
+    }
+    #[cfg(feature = "sqlite")]
+    pub(crate) fn validate_pushdown_row(
+        &self,
+        row: &crate::DataRow,
+        limits: crate::DataLimits,
+    ) -> Result<bool, DataError> {
+        if let Some(filter) = &self.filter
+            && filter.evaluate(row, limits)? != TruthValue::True
+        {
+            return Ok(false);
+        }
+        for (expression, _) in &self.order_by {
+            expression.evaluate(row, limits)?;
+        }
+        Ok(true)
+    }
 }
 
 /// Bounded, schema-checked local evaluation with no callbacks, scripts or SQL.
@@ -290,7 +311,7 @@ impl QueryEngine {
         adapter: &mut dyn DataAdapter,
         request: &QueryRequest,
     ) -> Result<QueryResult, DataError> {
-        let capabilities = adapter.query_capabilities();
+        let capabilities = adapter.query_capabilities_for(request);
         if capabilities.semantics_version == QUERY_SEMANTICS_VERSION {
             // A provider can expose cheap schema metadata. The default returns
             // None, so existing adapters do not incur an extra snapshot read.

@@ -142,15 +142,20 @@ synchronize. Ошибка вычисления возвращается вызы
 `DataSource::last_error`, поскольку это операция чтения.
 
 `QueryEngine::execute_provider(&mut adapter, request)` — отдельная явная операция
-чтения. Встроенные CollectionAdapter и SqliteAdapter объявляют
-`QueryCapabilities::local_only()`: загружают полный проверенный снимок
-и применяют одинаковый локальный движок. SQLite collation/affinity не меняет
-семантику запросов, и пользовательские критерии не превращаются в SQL.
+чтения. CollectionAdapter загружает полный проверенный снимок и применяет
+локальный движок. SqliteAdapter выбирает SQL для поддержанного запроса целиком
+либо полный локальный fallback. Его общий `query_capabilities()` остаётся
+консервативным; `query_capabilities_for(&request)` описывает конкретный AST.
+Настроенная SQLite collation/affinity не меняет типизированную семантику;
+литералы передаются SQL-параметрами. [SQLite](sqlite.md) описывает точный subset,
+проверки снимка и отдельный явный `query_page`.
 
 Провайдер может объявить `QueryCapabilities`: точную `semantics_version`
 и поддержку filtering, expressions, ordering, grouping, aggregates. Флаг
 означает поддержку всех типов и операторов категории, включая ошибки,
-лимиты и стабильный порядок. `CompiledQuery::required_capabilities()` показывает
+лимиты и стабильный порядок. `DataAdapter::query_capabilities_for(request)`
+позволяет провайдеру уточнить поддержку одного полного запроса; по умолчанию
+возвращает общие capabilities. `CompiledQuery::required_capabilities()` показывает
 потребности запроса; `execution(capabilities)` выбирает Local или Pushdown.
 Даже запрос без явного order_by требует ordering для устойчивого порядка ключей.
 
