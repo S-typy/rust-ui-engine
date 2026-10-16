@@ -15,6 +15,7 @@ mod data_model;
 mod density_adapter_tests;
 mod docking_accessibility;
 mod docking_app;
+mod font_model;
 mod form;
 mod form_chrome;
 mod forms_model;
@@ -28,6 +29,7 @@ mod group_adapter_tests;
 #[cfg(test)]
 mod layout_adapter_tests;
 mod popup_diagnostics;
+mod rating_model;
 #[cfg(test)]
 mod ribbon_tests;
 mod ribbon_workspace_model;
@@ -88,6 +90,12 @@ mod generated_ribbon_workspace {
 mod generated_selection {
     include!(concat!(env!("OUT_DIR"), "/selection_window.rs"));
 }
+mod generated_font {
+    include!(concat!(env!("OUT_DIR"), "/font_window.rs"));
+}
+mod generated_rating {
+    include!(concat!(env!("OUT_DIR"), "/rating_window.rs"));
+}
 mod generated_search {
     include!(concat!(env!("OUT_DIR"), "/search_window.rs"));
 }
@@ -129,6 +137,8 @@ fn start() -> Result<(), String> {
     let mut ribbon_workspace = false;
     let mut selection = false;
     let mut search = false;
+    let mut rating = false;
+    let mut font = false;
     let mut data_form = false;
     let mut tree = false;
     let mut grid_workspace = false;
@@ -178,6 +188,8 @@ fn start() -> Result<(), String> {
             "--ribbon-workspace" => ribbon_workspace = true,
             "--selection" => selection = true,
             "--search" => search = true,
+            "--rating" => rating = true,
+            "--font" => font = true,
             "--data-form" => data_form = true,
             "--tree" => tree = true,
             "--grid-workspace" => grid_workspace = true,
@@ -257,6 +269,8 @@ fn start() -> Result<(), String> {
         ribbon_workspace,
         selection,
         search,
+        rating,
+        font,
         data_form,
         tree,
         grid_workspace,
@@ -285,6 +299,10 @@ fn start() -> Result<(), String> {
         generated_data_form::window_definition()
     } else if tree {
         generated_tree::window_definition()
+    } else if font {
+        generated_font::window_definition()
+    } else if rating {
+        generated_rating::window_definition()
     } else if search {
         generated_search::window_definition()
     } else if selection {
@@ -375,6 +393,10 @@ fn start() -> Result<(), String> {
         form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
     } else if tree {
         form::Form::new_with_model(definition, diagnostics, Some(tree_model::model()?))?
+    } else if font {
+        form::Form::new_with_model(definition, diagnostics, Some(font_model::model()?))?
+    } else if rating {
+        form::Form::new_with_model(definition, diagnostics, Some(rating_model::model()?))?
     } else if search {
         form::Form::new_with_model(definition, diagnostics, Some(search_model::model()?))?
     } else if selection {

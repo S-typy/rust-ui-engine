@@ -1079,6 +1079,16 @@ impl ControlBindings {
             }
             BindingSource::Element(endpoint) => {
                 if endpoint.property == BindingProperty::Value
+                    && let Some(validator) = ui.rating_source_validator(endpoint.widget)
+                {
+                    Box::new(move |value| {
+                        validator.check(match value {
+                            DataValue::Null => None,
+                            DataValue::Number(value) => Some(value),
+                            _ => return Err("Rating requires number or null".into()),
+                        })
+                    })
+                } else if endpoint.property == BindingProperty::Value
                     && let Some(mode) = ui.calendar_selection(endpoint.widget)
                 {
                     let validator = ui.calendar_source_validator(endpoint.widget).unwrap();
@@ -1278,6 +1288,26 @@ impl ControlBindings {
                         items.borrow().get(&endpoint.widget),
                     );
                     validate(value)
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Value
+            && ui.rating_settings(binding.target.widget).is_some()
+        {
+            ui.chain_rating_validator(
+                binding.target.widget,
+                crate::RatingValidator::new(move |value| {
+                    validate(value.map_or(DataValue::Null, DataValue::Number))
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Value
+            && ui.font_value(binding.target.widget).is_some()
+        {
+            ui.chain_font_validator(
+                binding.target.widget,
+                crate::FontValidator::new(move |value| {
+                    validate(crate::font_descriptor_to_value(value))
                 }),
             )
             .map_err(control_error)?;
@@ -1552,6 +1582,13 @@ fn read_property(
                 Err(invalid("SelectedKey requires RadioGroup or tree"))
             }
         }
+        BindingProperty::Value if ui.rating_settings(id).is_some() => Ok(ui
+            .rating_value(id)
+            .unwrap()
+            .map_or(DataValue::Null, DataValue::Number)),
+        BindingProperty::Value if ui.font_value(id).is_some() => {
+            Ok(crate::font_descriptor_to_value(ui.font_value(id).unwrap()))
+        }
         BindingProperty::Value if ui.calendar_selection(id).is_some() => {
             Ok(calendar_data(ui.calendar_selection(id).unwrap()))
         }
@@ -1635,6 +1672,8 @@ fn read_property(
             .or_else(|| ui.selection_settings(id).map(|s| s.read_only))
             .or_else(|| ui.grid_settings(id).map(|s| s.is_read_only))
             .or_else(|| ui.tree_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.rating_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.font_picker_settings(id).map(|s| s.read_only))
             .or_else(|| ui.calendar_settings(id).map(|s| s.is_read_only))
             .map(DataValue::Bool)
             .ok_or_else(|| invalid("IsReadOnly requires an editor or list")),
@@ -1808,7 +1847,24 @@ fn write_property(
             )
             .map_err(control_error),
         BindingProperty::Value => {
-            if let Some(selection) = ui.calendar_selection(id) {
+            if ui.rating_settings(id).is_some() {
+                ui.set_rating_value(
+                    id,
+                    if *value == DataValue::Null {
+                        None
+                    } else {
+                        Some(number(value)?)
+                    },
+                )
+                .map_err(control_error)
+            } else if ui.font_value(id).is_some() {
+                ui.set_font_value(
+                    id,
+                    crate::font_descriptor_from_value(value).map_err(|e| invalid(&e))?,
+                )
+                .map(|_| ())
+                .map_err(control_error)
+            } else if let Some(selection) = ui.calendar_selection(id) {
                 ui.set_calendar_selection(id, parse_calendar_data(selection, value)?)
                     .map_err(control_error)
             } else if ui.slider_value(id).is_some() {
@@ -1913,7 +1969,11 @@ fn write_property(
         BindingProperty::IsEnabled => ui.set_enabled(id, boolean(value)?).map_err(control_error),
         BindingProperty::IsReadOnly => {
             let value = boolean(value)?;
-            if let Some(settings) = ui.tree_settings(id) {
+            if ui.rating_settings(id).is_some() {
+                ui.set_rating_read_only(id, value).map_err(control_error)
+            } else if ui.font_value(id).is_some() {
+                ui.set_font_read_only(id, value).map_err(control_error)
+            } else if let Some(settings) = ui.tree_settings(id) {
                 ui.set_tree_interaction(id, settings.allow_node_drag, value)
                     .map_err(control_error)
             } else if let Some(parts) = ui.search_parts(id) {

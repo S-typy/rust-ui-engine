@@ -58,7 +58,11 @@ pub use grid_extensions::{
 mod tree;
 pub use tree::{TreeColumnDefinition, TreeDefinition, validate_tree};
 mod data_form;
+mod rating;
+pub use rating::{RatingDefinition, validate_rating};
+mod font_picker;
 pub use data_form::{DataFormDefinition, DataFormFieldDefinition, validate_data_form};
+pub use font_picker::{FontPickerDefinition, validate_font_picker};
 mod panels;
 mod status_bar;
 mod styles;
@@ -566,6 +570,8 @@ pub enum ElementKind {
     Grid(GridDefinition),
     GridControl(GridControlDefinition),
     DataForm(DataFormDefinition),
+    Rating(RatingDefinition),
+    FontPicker(FontPickerDefinition),
     TreeView(TreeDefinition),
     TreeGrid(TreeDefinition),
     Border(BorderDefinition),
@@ -1236,7 +1242,10 @@ fn parse_element_properties(
                     | "Query"
             ) || matches!(
                 kind,
-                ElementKind::ZoomControl(_) | ElementKind::Slider(_) | ElementKind::Calendar(_)
+                ElementKind::ZoomControl(_)
+                    | ElementKind::Slider(_)
+                    | ElementKind::Calendar(_)
+                    | ElementKind::Rating(_)
             ) && property == "Value";
             let trigger = if editable && !immediate {
                 UpdateSourceTrigger::LostFocus
@@ -1768,6 +1777,8 @@ fn parse_element(
             | ElementKind::ButtonEdit(_)
             | ElementKind::MemoEdit(_)
             | ElementKind::SearchBox(_)
+            | ElementKind::Rating(_)
+            | ElementKind::FontPicker(_)
             | ElementKind::PasswordBox(_)
             | ElementKind::NumericEdit(_)
             | ElementKind::MaskEdit(_)

@@ -13,6 +13,8 @@ pub enum TextTrimming {
 /// checked again against grapheme boundaries by the shaping engine.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextSpan {
+    /// Full requested font; explicit size/weight fields below override it.
+    pub font: Option<crate::FontDescriptor>,
     pub range: std::ops::Range<usize>,
     pub font_size: Option<f32>,
     pub weight: Option<u16>,
@@ -24,7 +26,11 @@ pub fn valid_text_spans(text: &str, spans: &[TextSpan]) -> bool {
     let mut end = 0;
     spans.len() <= 256
         && spans.iter().all(|span| {
-            let valid = span.range.start >= end
+            let valid = span
+                .font
+                .as_ref()
+                .is_none_or(crate::FontDescriptor::is_valid)
+                && span.range.start >= end
                 && span.range.end > span.range.start
                 && span.range.end <= text.len()
                 && text.is_char_boundary(span.range.start)

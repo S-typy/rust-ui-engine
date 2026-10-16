@@ -7,3 +7,6 @@ mod engine;
 pub use display::*;
 pub use document::*;
 pub use engine::*;
+
+mod fonts;
+pub use fonts::*;

@@ -22,6 +22,15 @@ use std::{
 mod appearance;
 mod choices;
 mod data_form;
+mod font_picker;
+mod font_picker_data;
+pub use font_picker_data::{font_descriptor_from_value, font_descriptor_to_value};
+#[cfg(test)]
+mod font_picker_tests;
+pub use font_picker::{
+    FontChanged, FontDescriptor, FontFaceInfo, FontPicker, FontPickerSettings, FontResolution,
+    FontSlant, FontValidator,
+};
 mod data_form_model;
 #[cfg(test)]
 mod data_form_tests;
@@ -42,8 +51,12 @@ mod text_display;
 pub use text_display::{InlineSpan, TextDisplaySettings, TextTrimming, validate_text_inlines};
 mod bars;
 mod flyout;
+mod rating;
+#[cfg(test)]
+mod rating_tests;
 mod repeat;
 mod sliders;
+pub use rating::{RatingChanged, RatingPreview, RatingSettings, RatingValidator};
 mod splitter;
 pub use sliders::{RangeSliderSettings, SliderSettings, ThumbCrossing};
 mod custom_measure;
@@ -250,6 +263,7 @@ pub enum Role {
     Link,
     Switch,
     RangeSlider,
+    Rating,
     Splitter,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,6 +271,8 @@ pub enum SemanticAction {
     Focus,
     Activate,
     SetValue,
+    Increment,
+    Decrement,
     Toggle,
     Scroll,
     Expand,
@@ -493,6 +509,7 @@ pub struct Controls {
     caret_clock: Option<(WidgetId, std::time::Instant)>,
     text_displays: text_display::TextDisplays,
     sliders: sliders::Sliders,
+    ratings: rating::Ratings,
     button_contents: button_content::ButtonContents,
     progress_animation: progress::ProgressAnimation,
     async_editors: editor_async::AsyncEditorStore,
@@ -515,6 +532,7 @@ pub struct Controls {
     images: images::ImageControls,
     grids: HashMap<WidgetId, grid::GridState>,
     trees: tree::Trees,
+    font_pickers: font_picker::FontPickers,
     data_sources: HashMap<String, DataSourceHandle>,
     data_wake: grid::DataWake,
     pub runtime: UiRuntime,
@@ -593,6 +611,7 @@ impl Controls {
             progress_animation: Default::default(),
             button_contents: Default::default(),
             sliders: Default::default(),
+            ratings: Default::default(),
             text_displays: Default::default(),
             caret_clock: None,
             flyouts: Default::default(),
@@ -613,6 +632,7 @@ impl Controls {
             images: Default::default(),
             grids: HashMap::new(),
             trees: tree::Trees::default(),
+            font_pickers: font_picker::FontPickers::default(),
             data_sources: HashMap::new(),
             data_wake: grid::DataWake::default(),
             runtime,
@@ -1834,6 +1854,7 @@ impl Controls {
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.preflight_search_removal(id)?;
+        self.preflight_font_removal(id)?;
         self.preflight_bar_removal(id)?;
         self.preflight_flyout_removal(id)?;
         self.preflight_memo_removal(id)?;
@@ -1879,12 +1900,14 @@ impl Controls {
         self.retain_images();
         self.grids.retain(|id, _| self.controls.contains_key(id));
         self.prune_trees();
+        self.prune_font_pickers();
         self.sync_data_wakes()?;
         self.groups.retain(|id, _| self.controls.contains_key(id));
         self.retain_status_controls()?;
         self.retain_choices();
         self.retain_text_displays();
         self.retain_sliders()?;
+        self.retain_ratings()?;
         self.prune_button_contents();
         self.prune_list_item_content();
         self.prune_searches()?;
@@ -2245,6 +2268,7 @@ impl Controls {
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
         self.sync_searches()?;
+        self.sync_font_pickers()?;
         self.sync_passwords()?;
         self.poll_editor_validation()?;
         self.sync_memos()?;
@@ -2297,6 +2321,7 @@ impl Controls {
             self.sync_tab_headers()?;
             self.sync_status_bars()?;
             self.sync_sliders()?;
+            self.sync_ratings()?;
             self.sync_grids()?;
             self.sync_trees()?;
             let scrolls: Vec<_> = self
@@ -2340,6 +2365,7 @@ impl Controls {
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
         self.cancel_editor_scroll()?;
         self.cancel_slider_interaction()?;
+        self.cancel_rating_interaction()?;
         self.cancel_tab_drag()?;
         self.cancel_splitter_interaction()?;
         self.cancel_grid_pointers();
@@ -2374,6 +2400,7 @@ impl Controls {
         if self.runtime.drag_session().is_some() {
             self.cancel_splitter_interaction()?;
             self.cancel_slider_interaction()?;
+            self.cancel_rating_interaction()?;
             self.pressed = None;
             self.keyboard_pressed = false;
             self.selecting = None;
@@ -2430,6 +2457,9 @@ impl Controls {
             return Ok(());
         }
         self.repeat_before_input(&event);
+        if self.rating_before_input(&event)? {
+            return Ok(());
+        }
         if self.slider_before_input(&event)?
             || self.grid_before_input(&event)?
             || self.tree_before_input(&event)?
@@ -3155,6 +3185,9 @@ impl Controls {
                 continue;
             }
             if self.paint_text_display(id, bounds, clip)? {
+                continue;
+            }
+            if self.paint_rating(id, bounds, clip)? {
                 continue;
             }
             if self.paint_slider(id, bounds, clip)? {
@@ -3949,7 +3982,9 @@ impl Controls {
                         control.kind.role()
                     }
                 });
-                let value = if self.progress_indeterminate(id) == Some(true) {
+                let value = if let Some(value) = self.rating_semantic_value(id) {
+                    Some(value)
+                } else if self.progress_indeterminate(id) == Some(true) {
                     None
                 } else if let Kind::TextBox(document) = &control.kind {
                     Some(document.text().to_owned())
@@ -4006,6 +4041,16 @@ impl Controls {
                     if self.split_ratio(id).is_some() {
                         actions.extend([SemanticAction::Expand, SemanticAction::Collapse]);
                     }
+                    if self
+                        .rating_settings(id)
+                        .is_some_and(|settings| !settings.read_only)
+                    {
+                        actions.extend([
+                            SemanticAction::SetValue,
+                            SemanticAction::Increment,
+                            SemanticAction::Decrement,
+                        ]);
+                    }
                     if checked.is_some()
                         && !matches!(control.kind, Kind::Radio { .. })
                         && !self.list_item_is_radio(id)
@@ -4047,7 +4092,10 @@ impl Controls {
                         || self
                             .grid_settings(id)
                             .is_some_and(|settings| settings.is_read_only)
-                        || self.progress_settings(id).is_some(),
+                        || self.progress_settings(id).is_some()
+                        || self
+                            .rating_settings(id)
+                            .is_some_and(|settings| settings.read_only),
                     validation_error: control
                         .validation_error
                         .clone()
@@ -4077,6 +4125,9 @@ impl Controls {
         value: Option<&str>,
     ) -> Result<(), ControlError> {
         self.synchronize_editor_focus()?;
+        if self.rating_accessible_action(id, action, value)? {
+            return Ok(());
+        }
         // Native requests may outlive the projected node or its enabled state.
         // Validate capabilities without requiring a painted frame: applications
         // may focus a newly mounted control before its first layout. The native
@@ -4180,6 +4231,7 @@ impl Controls {
                     }
                 }
             }
+            SemanticAction::Increment | SemanticAction::Decrement => {}
             SemanticAction::Scroll => {
                 if let Ok(position) = value.unwrap_or("0").parse::<f32>()
                     && position.is_finite()

@@ -518,6 +518,8 @@ fn supports_action(
         {
             SemanticAction::SetValue
         }
+        accesskit::Action::Increment => SemanticAction::Increment,
+        accesskit::Action::Decrement => SemanticAction::Decrement,
         accesskit::Action::Expand => SemanticAction::Expand,
         accesskit::Action::Collapse => SemanticAction::Collapse,
         _ => return false,

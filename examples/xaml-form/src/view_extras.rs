@@ -354,6 +354,7 @@ pub(super) fn configure_text(
             text.inlines
                 .iter()
                 .map(|span| InlineSpan {
+                    font: None,
                     text: span.text.clone(),
                     font_size: span.font_size,
                     font_weight: span.font_weight,
@@ -464,6 +465,7 @@ pub(super) fn validate_extra(ui: &mut Controls, element: &ElementDefinition) -> 
             .inlines
             .iter()
             .map(|span| InlineSpan {
+                font: None,
                 text: span.text.clone(),
                 font_size: span.font_size,
                 font_weight: span.font_weight,

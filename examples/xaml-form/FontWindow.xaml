@@ -1,0 +1,49 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Выбор шрифта" Width="1200" Height="820" Padding="24">
+  <Grid Spacing="16">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Шрифт документа" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Системные семейства и начертания, размер и предварительный просмотр." TextTone="Secondary"/>
+    </StackPanel>
+    <WrapPanel Grid.Row="1" Spacing="8">
+      <Button x:Name="FontInstalled" Content="Системный курсив" Command="FontDemoInstalled"/>
+      <Button x:Name="FontMissing" Content="Отсутствующий шрифт" Command="FontDemoMissing"/>
+      <Button x:Name="FontReset" Content="Сбросить" Command="FontDemoReset"/>
+      <CheckBox x:Name="FontLocked" Content="Только чтение" IsChecked="{Binding Locked}"/>
+    </WrapPanel>
+    <Grid Grid.Row="2" Spacing="16">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <GroupBox Header="Семейство · начертание · размер" Padding="20">
+        <FontPicker x:Name="DocumentFont" AutomationName="Шрифт документа"
+                    Value="{Binding SelectedFont}" IsReadOnly="{Binding Locked}"
+                    PreviewText="Aa Бб 123 — Съешь ещё этих мягких французских булок" Height="190"/>
+      </GroupBox>
+      <Grid Grid.Row="1" Spacing="16">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="3*"/><ColumnDefinition Width="2*"/></Grid.ColumnDefinitions>
+        <Grid Surface="Card" Padding="20">
+          <StackPanel Spacing="16">
+            <TextBlock Text="Образец документа" FontSize="20" FontWeight="SemiBold"/>
+            <ScrollViewer Height="210"><TextBlock x:Name="FontDocumentPreview" Text="" TextWrapping="Wrap"/></ScrollViewer>
+            <TextBlock Text="Размер и начертание применяются при формировании текста; выбор семейства сохраняется даже при подстановке доступного шрифта." TextWrapping="Wrap" TextTone="Secondary"/>
+          </StackPanel>
+        </Grid>
+        <Grid Surface="Card" Grid.Column="1" Padding="20">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Запрошенный шрифт" FontSize="20" FontWeight="SemiBold"/>
+            <TextBlock x:Name="FontRequested" Text="" TextWrapping="Wrap"/>
+            <Separator/>
+            <TextBlock Text="Фактические шрифты образца" FontWeight="SemiBold"/>
+            <TextBlock x:Name="FontResolved" Text="" TextWrapping="Wrap"/>
+            <TextBlock x:Name="FontBindingValue" Text="" TextWrapping="Wrap" TextTone="Secondary"/>
+          </StackPanel>
+        </Grid>
+      </Grid>
+    </Grid>
+    <Grid Grid.Row="3" Spacing="12">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="FontActivity" Text="Готово" TextWrapping="Wrap"/>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></StackPanel>
+    </Grid>
+  </Grid>
+</Window>

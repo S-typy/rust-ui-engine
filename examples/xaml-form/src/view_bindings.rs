@@ -220,6 +220,13 @@ fn fallback(
                 DateValue::parse_iso(value).map_err(err)?.to_iso().into()
             }
         }
+        BindingProperty::Value if ui.rating_settings(widget).is_some() => {
+            if value == "null" {
+                DataValue::Null
+            } else {
+                DataValue::Number(value.parse().map_err(err)?)
+            }
+        }
         BindingProperty::Value if ui.slider_value(widget).is_some() => {
             DataValue::Number(value.parse().map_err(err)?)
         }

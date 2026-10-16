@@ -23,6 +23,8 @@ pub(crate) struct Form {
     ribbon_workspace: Option<crate::ribbon_workspace_model::State>,
     selection: Option<crate::selection_model::State>,
     search: Option<crate::search_model::State>,
+    rating: Option<crate::rating_model::State>,
+    font: Option<crate::font_model::State>,
     data_form: Option<crate::data_form_model::State>,
     tree: Option<crate::tree_model::State>,
     grid_workspace: Option<crate::grid_workspace_model::State>,
@@ -89,6 +91,8 @@ impl Form {
         crate::ribbon_workspace_model::register(&mut ui);
         crate::selection_model::register(&mut ui);
         crate::search_model::register(&mut ui);
+        crate::rating_model::register(&mut ui);
+        crate::font_model::register(&mut ui);
         crate::data_form_model::register(&mut ui);
         let tree_source = crate::tree_model::register(&mut ui)?;
         let mut pending = vec![&definition.content];
@@ -234,6 +238,8 @@ impl Form {
         let ribbon_workspace = crate::ribbon_workspace_model::State::install(&view);
         let selection = crate::selection_model::State::install(&mut ui, &view)?;
         let search = crate::search_model::State::install(&mut ui, &view)?;
+        let rating = crate::rating_model::State::install(&mut ui, &view)?;
+        let font = crate::font_model::State::install(&mut ui, &mut view)?;
         let data_form = crate::data_form_model::State::install(&mut ui, &mut view)?;
         let tree = crate::tree_model::State::install(&mut ui, &view, tree_source)?;
         let grid_workspace = match grid_sources {
@@ -247,6 +253,8 @@ impl Form {
             ribbon_workspace,
             selection,
             search,
+            rating,
+            font,
             data_form,
             tree,
             grid_workspace,
@@ -371,6 +379,16 @@ impl Form {
                 continue;
             }
             if let Some(state) = &mut self.selection
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.font
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.rating
                 && state.command(&mut self.ui, &invocation.id.0)?
             {
                 continue;
@@ -581,6 +599,12 @@ impl Form {
         if let Some(state) = &mut self.search {
             state.refresh(&mut self.ui)?;
         }
+        if let Some(state) = &mut self.font {
+            state.refresh(&mut self.ui)?;
+        }
+        if let Some(state) = &mut self.rating {
+            state.refresh(&mut self.ui)?;
+        }
         if let Some(state) = &mut self.data_form {
             state.refresh(&mut self.ui, &mut self.view)?;
         }
@@ -716,6 +740,8 @@ impl DesktopApp for Form {
                 || self.ribbon_workspace.is_some()
                 || self.selection.is_some()
                 || self.search.is_some()
+                || self.rating.is_some()
+                || self.font.is_some()
                 || self.data_form.is_some()
                 || self.tree.is_some()
                 || self.grid_workspace.is_some()

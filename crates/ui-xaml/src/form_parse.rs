@@ -6,6 +6,8 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
         "GridControl" => ElementKind::GridControl(GridControlDefinition::default()),
         "TreeView" => ElementKind::TreeView(TreeDefinition::default()),
         "TreeGrid" => ElementKind::TreeGrid(TreeDefinition::default()),
+        "Rating" => ElementKind::Rating(RatingDefinition::default()),
+        "FontPicker" => ElementKind::FontPicker(FontPickerDefinition::default()),
         "DataForm" => ElementKind::DataForm(DataFormDefinition::default()),
         "Border" => ElementKind::Border(BorderDefinition::default()),
         "GroupBox" => ElementKind::GroupBox(GroupBoxDefinition::default()),
@@ -53,6 +55,8 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
     }
     match kind {
         ElementKind::Slider(_) => name == "Value",
+        ElementKind::Rating(_) => matches!(name, "Value" | "IsReadOnly"),
+        ElementKind::FontPicker(_) => matches!(name, "Value" | "IsReadOnly"),
         ElementKind::TreeView(_) | ElementKind::TreeGrid(_) => {
             matches!(name, "SelectedKey" | "IsReadOnly")
         }
@@ -430,6 +434,8 @@ pub(super) fn property(
                 selection_property(document, attr, selection)
             }
         }
+        ElementKind::Rating(rating) => rating::property(document, attr, rating),
+        ElementKind::FontPicker(font) => font_picker::property(document, attr, font),
         ElementKind::TreeView(tree) => tree::property(document, attr, tree, false),
         ElementKind::TreeGrid(tree) => tree::property(document, attr, tree, true),
         ElementKind::GridControl(grid) => {
@@ -1543,6 +1549,12 @@ pub(super) fn validate(
         }
     }
     match kind {
+        ElementKind::Rating(rating) => {
+            validate_rating(rating, common).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::FontPicker(font) => {
+            validate_font_picker(font, common).map_err(|message| at_node(node, message))?
+        }
         ElementKind::DataForm(form) => {
             validate_data_form(form).map_err(|message| at_node(node, message))?;
         }

@@ -128,6 +128,9 @@ impl Scene {
                     let mut item = item.clone();
                     let mut spans = source.text_spans(index).to_vec();
                     for span in &mut spans {
+                        if let Some(font) = &mut span.font {
+                            font.size *= scale;
+                        }
                         if let Some(size) = &mut span.font_size {
                             *size *= scale;
                         }
@@ -177,6 +180,10 @@ mod tests {
             .styled_text(
                 TextRun::new("Hello", bounds, Color::rgb(0, 0, 0), 14.0),
                 vec![crate::TextSpan {
+                    font: Some(crate::FontDescriptor {
+                        size: 16.0,
+                        ..Default::default()
+                    }),
                     range: 0..5,
                     font_size: Some(18.0),
                     weight: Some(700),
@@ -196,6 +203,8 @@ mod tests {
             .unwrap();
         assert!(target.text_spans(0).is_empty());
         assert_eq!(target.text_spans(1)[0].font_size, Some(36.0));
+        assert_eq!(target.text_spans(1)[0].font.as_ref().unwrap().size, 32.0);
+        assert_eq!(source.text_spans(0)[0].font.as_ref().unwrap().size, 16.0);
         assert_eq!(source.text_spans(0)[0].font_size, Some(18.0));
         let saved = target.clone();
         source.texts[0].text = "H".into();

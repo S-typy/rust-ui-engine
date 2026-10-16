@@ -138,6 +138,27 @@ impl Gallery {
                     rust_desktop_ui_platform_winit::accesskit::Orientation::Horizontal,
                 );
             }
+            if let Some(settings) = self.ui.rating_settings(item.id) {
+                node.set_role_description("Оценка");
+                node.set_min_numeric_value(0.0);
+                node.set_max_numeric_value(f64::from(settings.maximum));
+                node.set_numeric_value_step(settings.step);
+                if let Some(value) = settings.value {
+                    node.set_numeric_value(value);
+                }
+                if let Some(rust_desktop_ui_controls::RatingPreview::Value(value)) =
+                    self.ui.rating_preview(item.id)
+                {
+                    append_description(
+                        &mut node,
+                        &format!(
+                            "Предпросмотр: {} из {}. Enter подтверждает, Escape отменяет.",
+                            value.map_or_else(|| "нет оценки".into(), |value| value.to_string()),
+                            settings.maximum
+                        ),
+                    );
+                }
+            }
             if let Some(settings) = self.ui.slider_settings(item.id) {
                 node.set_min_numeric_value(settings.minimum);
                 node.set_max_numeric_value(settings.maximum);
@@ -212,6 +233,8 @@ impl Gallery {
                         node.add_action(Action::Click)
                     }
                     SemanticAction::SetValue => node.add_action(Action::SetValue),
+                    SemanticAction::Increment => node.add_action(Action::Increment),
+                    SemanticAction::Decrement => node.add_action(Action::Decrement),
                     SemanticAction::Expand => node.add_action(Action::Expand),
                     SemanticAction::Collapse => node.add_action(Action::Collapse),
                     SemanticAction::Scroll => {
@@ -404,6 +427,8 @@ impl Gallery {
                     Action::Focus => Some(SemanticAction::Focus),
                     Action::Click => Some(SemanticAction::Activate),
                     Action::SetValue => Some(SemanticAction::SetValue),
+                    Action::Increment => Some(SemanticAction::Increment),
+                    Action::Decrement => Some(SemanticAction::Decrement),
                     Action::Expand => Some(SemanticAction::Expand),
                     Action::Collapse => Some(SemanticAction::Collapse),
                     Action::ScrollDown | Action::ScrollUp => Some(SemanticAction::Scroll),
@@ -430,6 +455,8 @@ impl Gallery {
                     }
                     if action == SemanticAction::SetValue
                         && let Some((minimum, maximum)) = numeric_range(&self.ui, widget)
+                        && !(self.ui.rating_settings(widget).is_some()
+                            && matches!(value.as_deref(), Some("" | "null")))
                         && value
                             .as_deref()
                             .and_then(|value| value.parse::<f64>().ok())
@@ -483,6 +510,10 @@ fn numeric_range(
                 .map(|settings| (settings.minimum, settings.maximum))
         })
         .or_else(|| ui.splitter_settings(widget).map(|_| (0.0, 1.0)))
+        .or_else(|| {
+            ui.rating_settings(widget)
+                .map(|settings| (0.0, f64::from(settings.maximum)))
+        })
 }
 
 fn role(role: ControlRole) -> Role {
@@ -511,6 +542,7 @@ fn role(role: ControlRole) -> Role {
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
         ControlRole::RangeSlider => Role::Group,
+        ControlRole::Rating => Role::Slider,
         ControlRole::ToolBar => Role::Toolbar,
         ControlRole::MenuBar => Role::MenuBar,
         ControlRole::Link => Role::Link,

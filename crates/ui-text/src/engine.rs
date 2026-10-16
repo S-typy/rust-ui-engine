@@ -65,6 +65,7 @@ pub struct GlyphKey {
     x_fraction: u8,
     y_fraction: u8,
     embolden: bool,
+    skew: u32,
 }
 
 /// Straight RGBA pixels: white RGB with alpha for outlines, original color for emoji.
@@ -362,6 +363,7 @@ pub enum TextError {
     UnsupportedFont,
     RasterLimit,
     InvalidBitmap,
+    FontCatalogLimit,
 }
 impl fmt::Display for TextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -373,6 +375,7 @@ impl fmt::Display for TextError {
             Self::NoSystemFont => "system font lookup produced no glyphs for nonempty visible text",
             Self::UnsupportedFont => "a selected system font could not be read by the rasterizer",
             Self::RasterLimit => "glyph raster dimensions or prepared glyph count exceed the supported limit",
+            Self::FontCatalogLimit => "system font catalog exceeds supported bounds",
             Self::InvalidBitmap => "rasterizer produced inconsistent glyph pixels",
         })
     }
@@ -415,6 +418,7 @@ struct SpanKey {
     range: Range<usize>,
     size: Option<u32>,
     weight: Option<u16>,
+    font: Option<(String, u32, u16, u32, u8, u32)>,
 }
 #[derive(Clone)]
 struct CachedGlyph {
@@ -427,7 +431,7 @@ struct CachedGlyph {
 /// Parley shaping and Swash raster caches shared by a window or application.
 /// Layout keys exclude screen position, clip and color, so scrolling reuses shaping.
 pub struct TextEngine {
-    fonts: FontContext,
+    pub(crate) fonts: FontContext,
     layout_context: LayoutContext<u16>,
     scale_context: ScaleContext,
     layouts: HashMap<LayoutKey, Arc<CachedLayout>>,
@@ -539,6 +543,7 @@ impl TextEngine {
                         x_fraction: ((x - x.floor()) * 4.0).floor() as u8,
                         y_fraction: ((y - y.floor()) * 4.0).floor() as u8,
                         embolden: font_run.synthesis().embolden(),
+                        skew: font_run.synthesis().skew().unwrap_or(0.0).to_bits(),
                     };
                     let image = self.raster(&key, font)?;
                     if let Some(image) = image {
@@ -656,6 +661,7 @@ impl TextEngine {
             }
             if spans.iter().any(|span| {
                 span.font_size
+                    .or_else(|| span.font.as_ref().map(|f| f.size))
                     .is_some_and(|size| !(size * scale).is_finite() || size * scale > 1024.0)
             }) {
                 return Err(TextError::InvalidScale);
@@ -677,6 +683,7 @@ impl TextEngine {
                     range: span.range.clone(),
                     size: span.font_size.map(f32::to_bits),
                     weight: span.weight,
+                    font: span.font.as_ref().map(crate::fonts::font_key),
                 })
                 .collect(),
         };
@@ -698,6 +705,30 @@ impl TextEngine {
                 TextWrapMode::NoWrap
             }));
             for (index, span) in spans.iter().enumerate() {
+                if let Some(font) = &span.font {
+                    builder.push(
+                        StyleProperty::FontFamily(
+                            parley::FontFamilyName::Named(std::borrow::Cow::Borrowed(
+                                font.family.trim(),
+                            ))
+                            .into(),
+                        ),
+                        span.range.clone(),
+                    );
+                    builder.push(StyleProperty::FontSize(font.size), span.range.clone());
+                    builder.push(
+                        StyleProperty::FontWeight(FontWeight::new(f32::from(font.weight))),
+                        span.range.clone(),
+                    );
+                    builder.push(
+                        StyleProperty::FontWidth(parley::FontWidth::from_percentage(font.width)),
+                        span.range.clone(),
+                    );
+                    builder.push(
+                        StyleProperty::FontStyle(crate::fonts::slant(font.slant)),
+                        span.range.clone(),
+                    );
+                }
                 if let Some(size) = span.font_size {
                     builder.push(StyleProperty::FontSize(size), span.range.clone());
                 }
@@ -806,6 +837,12 @@ impl TextEngine {
                 f32::from(key.y_fraction) / 4.0,
             ))
             .default_color([255, 255, 255, 255]);
+        if key.skew != 0 {
+            render.transform(Some(swash::zeno::Transform::skew(
+                swash::zeno::Angle::from_degrees(f32::from_bits(key.skew)),
+                swash::zeno::Angle::from_degrees(0.0),
+            )));
+        }
         if key.embolden {
             render.embolden(size * 0.025);
         }

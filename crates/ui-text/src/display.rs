@@ -133,6 +133,7 @@ mod tests {
                 16.0,
             );
             let spans = [TextSpan {
+                font: None,
                 range: 0..text.len(),
                 weight: Some(600),
                 font_size: None,
@@ -168,6 +169,7 @@ mod tests {
             16.0,
         );
         let mut spans = [TextSpan {
+            font: None,
             range: 0..3,
             font_size: Some(24.0),
             weight: Some(700),
@@ -202,12 +204,14 @@ mod tests {
         // The first boundary is inside an Arabic word, at a complete grapheme.
         let spans = [
             TextSpan {
+                font: None,
                 range: 0..4,
                 font_size: None,
                 weight: None,
                 color: Some(Color::rgb(200, 0, 0)),
             },
             TextSpan {
+                font: None,
                 range: 4..text.len(),
                 font_size: None,
                 weight: None,

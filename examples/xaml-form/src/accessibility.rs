@@ -135,6 +135,27 @@ impl Accessibility {
                 node.set_numeric_value_step(settings.step);
                 node.set_orientation(accesskit::Orientation::Horizontal);
             }
+            if let Some(settings) = ui.rating_settings(widget) {
+                node.set_role_description("Оценка");
+                node.set_min_numeric_value(0.0);
+                node.set_max_numeric_value(f64::from(settings.maximum));
+                node.set_numeric_value_step(settings.step);
+                if let Some(value) = settings.value {
+                    node.set_numeric_value(value);
+                }
+                if let Some(rust_desktop_ui_controls::RatingPreview::Value(value)) =
+                    ui.rating_preview(widget)
+                {
+                    append_description(
+                        &mut node,
+                        &format!(
+                            "Предпросмотр: {} из {}. Enter подтверждает, Escape отменяет.",
+                            value.map_or_else(|| "нет оценки".into(), |value| value.to_string()),
+                            settings.maximum
+                        ),
+                    );
+                }
+            }
             if let Some(settings) = ui.slider_settings(widget) {
                 node.set_min_numeric_value(settings.minimum);
                 node.set_max_numeric_value(settings.maximum);
@@ -278,6 +299,8 @@ impl Accessibility {
                         node.add_action(Action::Click)
                     }
                     SemanticAction::SetValue => node.add_action(Action::SetValue),
+                    SemanticAction::Increment => node.add_action(Action::Increment),
+                    SemanticAction::Decrement => node.add_action(Action::Decrement),
                     SemanticAction::Expand => node.add_action(Action::Expand),
                     SemanticAction::Collapse => node.add_action(Action::Collapse),
                     SemanticAction::Scroll => {
@@ -345,6 +368,8 @@ impl Accessibility {
             Action::Focus => SemanticAction::Focus,
             Action::Click => SemanticAction::Activate,
             Action::SetValue => SemanticAction::SetValue,
+            Action::Increment => SemanticAction::Increment,
+            Action::Decrement => SemanticAction::Decrement,
             Action::Expand => SemanticAction::Expand,
             Action::Collapse => SemanticAction::Collapse,
             _ => return Ok(()),
@@ -375,6 +400,7 @@ impl Accessibility {
         }
         if action == SemanticAction::SetValue
             && let Some((minimum, maximum)) = numeric_range(ui, widget)
+            && !(ui.rating_settings(widget).is_some() && matches!(value, Some("" | "null")))
             && value
                 .and_then(|value| value.parse::<f64>().ok())
                 .is_none_or(|value| !value.is_finite() || !(minimum..=maximum).contains(&value))
@@ -408,6 +434,10 @@ fn numeric_range(ui: &Controls, widget: WidgetId) -> Option<(f64, f64)> {
                 .map(|settings| (settings.minimum, settings.maximum))
         })
         .or_else(|| ui.splitter_settings(widget).map(|_| (0.0, 1.0)))
+        .or_else(|| {
+            ui.rating_settings(widget)
+                .map(|settings| (0.0, f64::from(settings.maximum)))
+        })
 }
 
 fn bounds(rect: Rect, scale: f32) -> accesskit::Rect {
@@ -443,6 +473,7 @@ fn role(role: ControlRole) -> Role {
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
         ControlRole::RangeSlider => Role::Group,
+        ControlRole::Rating => Role::Slider,
         ControlRole::ToolBar => Role::Toolbar,
         ControlRole::MenuBar => Role::MenuBar,
         ControlRole::Link => Role::Link,
@@ -986,3 +1017,7 @@ mod status_tests {
             .unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "accessibility_rating.rs"]
+mod rating_tests;

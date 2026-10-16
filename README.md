@@ -65,6 +65,8 @@ cargo run --release --locked -p xaml-form -- --search
 cargo run --release --locked -p xaml-form -- --data-form
 cargo run --release --locked -p xaml-form -- --tree
 cargo run --release --locked -p xaml-form -- --grid-workspace
+cargo run --release --locked -p xaml-form -- --font
+cargo run --release --locked -p xaml-form -- --rating
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
@@ -85,6 +87,11 @@ column customization. See [selection](docs/public/list-box.md),
 bands, card view and related detail rows. Typed editors preserve exact integers
 and decimals; conflicting writes keep the draft for an explicit decision.
 See [grid presentations](docs/public/grid-presentations.md).
+
+`--font` selects an installed family, face and size with a shaped preview and
+explicit missing-font fallback. `--rating` demonstrates fractional scores,
+an empty value, validation and keyboard or pointer input. See
+[font selection](docs/public/font-picker.md) and [rating](docs/public/rating.md).
 
 `--ribbon-workspace` demonstrates retained Ribbon content, Backstage and
 quick-access customization. Its preferences remain in memory until the window

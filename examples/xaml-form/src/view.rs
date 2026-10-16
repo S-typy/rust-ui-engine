@@ -13,10 +13,15 @@ mod bindings;
 mod data_form;
 #[path = "view_extras.rs"]
 mod extras;
+#[path = "view_font.rs"]
+mod font;
 #[path = "view_forms.rs"]
 mod forms;
 #[path = "view_grid.rs"]
 mod grid;
+#[cfg(test)]
+#[path = "rating_adapter_tests.rs"]
+mod rating_tests;
 #[path = "view_status.rs"]
 mod status;
 #[path = "view_templates.rs"]
@@ -258,8 +263,10 @@ impl MountedView {
                 ElementKind::ZoomControl(_) => Length::Px(ui.theme().tokens().control_height - 8.0),
                 ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::Calendar(_) => Length::Px(300.0),
+                ElementKind::Rating(rating) => Length::Px(rating.glyph_size + 8.0),
                 ElementKind::GridControl(_)
                 | ElementKind::DataForm(_)
+                | ElementKind::FontPicker(_)
                 | ElementKind::TreeView(_)
                 | ElementKind::TreeGrid(_) => Length::Auto,
                 ElementKind::TextBox(_)
@@ -339,6 +346,31 @@ impl MountedView {
                 definition,
                 style,
                 common.bindings.contains_key("Height"),
+            )?,
+            ElementKind::Rating(rating) => ui
+                .rating(
+                    parent,
+                    common.name.as_deref().unwrap_or("Rating"),
+                    rust_desktop_ui_controls::RatingSettings {
+                        value: rating
+                            .value
+                            .or_else(|| (!rating.allow_empty).then_some(0.0)),
+                        maximum: rating.maximum,
+                        step: rating.step,
+                        allow_empty: rating.allow_empty,
+                        read_only: rating.is_read_only,
+                        glyph_size: rating.glyph_size,
+                        spacing: rating.spacing,
+                    },
+                    style,
+                )
+                .map_err(err)?,
+            ElementKind::FontPicker(definition) => self.mount_font(
+                ui,
+                parent,
+                definition,
+                style,
+                common.name.as_deref().unwrap_or("Font"),
             )?,
             ElementKind::DataForm(definition) => {
                 self.mount_data_form(ui, parent, definition, style)?
@@ -779,7 +811,8 @@ impl MountedView {
                 ElementKind::GridControl(_) => Role::Grid,
                 ElementKind::TreeGrid(_) => Role::Grid,
                 ElementKind::TreeView(_) => Role::Tree,
-                ElementKind::DataForm(_) => Role::Group,
+                ElementKind::Rating(_) => Role::Rating,
+                ElementKind::DataForm(_) | ElementKind::FontPicker(_) => Role::Group,
                 ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
                 ElementKind::ButtonEdit(_)
                 | ElementKind::NumericEdit(_)
@@ -892,6 +925,10 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             Ok(560.0)
         }
         ElementKind::TreeView(_) => Ok(320.0),
+        ElementKind::Rating(r) => Ok(f32::from(r.maximum) * r.glyph_size
+            + f32::from(r.maximum.saturating_sub(1)) * r.spacing
+            + 64.0),
+        ElementKind::FontPicker(_) => Ok(176.0),
         ElementKind::DockWorkspace(_) => {
             Err("DockWorkspace requires the docking window coordinator".into())
         }
@@ -1280,6 +1317,12 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                 }
             }
             ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
+            ElementKind::Rating(rating) => {
+                rust_desktop_ui_xaml::validate_rating(rating, &element.common)?
+            }
+            ElementKind::FontPicker(font) => {
+                rust_desktop_ui_xaml::validate_font_picker(font, &element.common)?
+            }
             ElementKind::DataForm(form) => {
                 data_form::validate_source(ui, form)?;
                 count += form.fields.len();

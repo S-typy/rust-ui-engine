@@ -12,6 +12,8 @@ fn main() {
         ("RibbonWorkspaceWindow.xaml", "ribbon_workspace_window.rs"),
         ("SelectionWindow.xaml", "selection_window.rs"),
         ("SearchWindow.xaml", "search_window.rs"),
+        ("RatingWindow.xaml", "rating_window.rs"),
+        ("FontWindow.xaml", "font_window.rs"),
         ("DataFormWindow.xaml", "data_form_window.rs"),
         ("TreeWindow.xaml", "tree_window.rs"),
         ("GridWorkspaceWindow.xaml", "grid_workspace_window.rs"),

@@ -4,12 +4,14 @@
 mod arena;
 mod dirty;
 mod drag_drop;
+mod font;
 mod input;
 mod model;
 mod runtime;
 mod scene_image;
 mod scene_stroke;
 mod scene_text;
+pub use font::{FontDescriptor, FontSlant};
 mod scene_view;
 mod shortcuts;
 mod subtree;

@@ -11,6 +11,7 @@ pub struct TextDisplaySettings {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct InlineSpan {
+    pub font: Option<rust_desktop_ui_core::FontDescriptor>,
     pub text: String,
     pub font_size: Option<f32>,
     pub font_weight: Option<u16>,
@@ -27,6 +28,11 @@ pub fn validate_text_inlines(inlines: &[InlineSpan]) -> Result<(), ControlError>
     let mut text = String::new();
     let mut ends = Vec::new();
     for inline in inlines {
+        if inline.font.as_ref().is_some_and(|font| !font.is_valid()) {
+            return Err(ControlError::Invalid(
+                "Invalid inline font descriptor".into(),
+            ));
+        }
         TextStyle {
             font_size: inline.font_size,
             font_weight: inline.font_weight,
@@ -129,6 +135,7 @@ impl Controls {
             text.push_str(&inline.text);
             if start != text.len() {
                 spans.push(TextSpan {
+                    font: inline.font,
                     range: start..text.len(),
                     font_size: inline.font_size,
                     weight: inline.font_weight,

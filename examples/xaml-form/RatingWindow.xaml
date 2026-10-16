@@ -1,0 +1,46 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Оценка — подтверждение и предпросмотр" Width="960" Height="800" Padding="28">
+  <Grid Spacing="18">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="8">
+      <TextBlock Text="Оценка" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Наведение и стрелки показывают предпросмотр. Enter или отпускание кнопки мыши внутри оценки подтверждает выбор. Escape отменяет предпросмотр." TextTone="Secondary"/>
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="18">
+        <GroupBox Header="Оценка качества">
+          <StackPanel Spacing="12">
+            <TextBlock Text="Шаг — половина звезды. Правило формы: оценка не выше 4 из 5."/>
+            <Rating x:Name="QualityScore" AutomationName="Оценка качества" Value="{Binding Score}" IsReadOnly="{Binding Locked}" Maximum="5" Step="0.5" GlyphSize="36" Spacing="6" Width="290"/>
+            <CheckBox x:Name="RatingLocked" Content="Только чтение" IsChecked="{Binding Locked}"/>
+            <TextBlock x:Name="RatingAccepted" Text="Принято: 2,5 из 5" FontWeight="SemiBold"/>
+            <TextBlock x:Name="RatingPreview" Text="Предпросмотр не активен" TextTone="Secondary"/>
+            <TextBlock x:Name="RatingError" Text="Ошибок нет" TextTone="Secondary"/>
+            <WrapPanel Spacing="8">
+              <Button x:Name="RatingSetEmpty" Content="Без оценки" Command="RatingDemoEmpty"/>
+              <Button x:Name="RatingSetZero" Content="Ноль" Command="RatingDemoZero"/>
+              <Button x:Name="RatingSetFraction" Content="2,5" Command="RatingDemoFraction"/>
+              <Button x:Name="RatingTryFive" Content="Проверить 5" Command="RatingDemoReject"/>
+              <Button x:Name="RatingFocus" Content="Клавиатура" Command="RatingDemoFocus"/>
+            </WrapPanel>
+            <TextBlock Text="Delete очищает оценку. Кнопки «Без оценки», «Ноль» и «2,5» обновляют модель; «Проверить 5» проходит проверку пользовательского значения." TextTone="Secondary"/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="Разные принятые значения">
+          <StackPanel Spacing="10">
+            <TextBlock Text="Пустое значение — оценка ещё не дана"/>
+            <Rating x:Name="EmptyRating" AutomationName="Пустая оценка" IsReadOnly="True" Width="240"/>
+            <TextBlock Text="Ноль — явная оценка 0 из 5"/>
+            <Rating x:Name="ZeroRating" AutomationName="Нулевая оценка" Value="0" IsReadOnly="True" Width="240"/>
+            <TextBlock Text="Дробное значение 3,75 сохраняет точность независимо от шага ввода"/>
+            <Rating x:Name="FractionalRating" AutomationName="Дробная оценка" Value="3.75" AllowEmpty="False" IsReadOnly="True" Width="240"/>
+          </StackPanel>
+        </GroupBox>
+      </StackPanel>
+    </ScrollViewer>
+    <DockPanel Grid.Row="2">
+      <WrapPanel DockPanel.Dock="Right" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel>
+      <TextBlock x:Name="RatingActivity" Text="Подтверждений: 0" TextTone="Secondary" VerticalAlignment="Center"/>
+    </DockPanel>
+  </Grid>
+</Window>
