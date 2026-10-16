@@ -101,9 +101,10 @@ IME, screen reader и mixed-DPI для новых редакторов ещё т
 Linux/macOS этим срезом не проверены. Контракты — [формы и привязки](forms.md).
 
 
-Дата состояния: 2026-10-09. Матрица относится к текущему `controls-gallery`.
-Исторические Windows GPU и трёхплатформенные CI проверки M1 сохранены в
-[M1_TEST_REPORT](M1_TEST_REPORT.md); они не подменяют результаты нового gallery.
+Дата состояния: 2026-10-09. Следующая матрица относится к историческому
+alpha-снимку `controls-gallery` на эту дату.
+Исторические Windows GPU и трёхплатформенные CI проверки retained runtime сохранены в
+[отчёте](retained-runtime-test-report.md); они не подменяют результаты этого gallery.
 «Не проверено» означает отсутствие результата, а не известный отказ.
 
 ## Зафиксированное состояние
@@ -131,7 +132,7 @@ Hebrew/CJK/emoji. Это покрытие конкретных системны�
 Vulkan smoke представил три кадра с настоящими text runs и подтвердил native
 resize. Дополнительный native harness прошёл Vulkan/DX12; снимки Light/Dark и
 resize просмотрены. OS text entry и IME этим не проверялись. Подробности и
-воспроизведение — в [alpha test report](M2_M5_TEST_REPORT.md).
+воспроизведение — в [alpha test report](alpha-test-report.md).
 TreeGrid CPU benchmark 1k/100k/1M с фиксированным viewport подтверждает
 ограниченную материализацию; числа и условия приведены в [TreeGrid](treegrid.md).
 

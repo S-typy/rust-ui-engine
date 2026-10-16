@@ -51,9 +51,8 @@ OpenGL, WebGPU, ANGLE, MoltenVK и статическая поставка DXC �
 `wayland-dlopen`. Adwaita client-side decorations не поставляются. На Wayland
 compositor без server-side decorations возможен запуск без рамки и кнопок
 заголовка; собственная реализация декораций остаётся отдельной задачей.
-`tiny-skia`, используемая необязательной Adwaita-рамкой winit, является отдельной
-библиотекой на Rust, а не C++ Skia; выбранная конфигурация не включает ни её, ни
-Adwaita. Описание feature flags:
+Необязательная Adwaita-рамка winit и её зависимость `tiny-skia` отключены
+в выбранной конфигурации. Описание feature flags:
 [winit](https://docs.rs/crate/winit/0.30.13/source/Cargo.toml),
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/features).
 
@@ -177,7 +176,7 @@ AccessKit evidence включает LICENSE.chromium и AUTHORS наряду с 
 Историческая проверка `cargo deny --locked --log-level error check`
 349-package snapshot завершилась 2026-10-09 с exit code 0 после проверки и
 разрешения BSL-1.0. Режим error не выдаёт счётчик duplicate warnings;
-это не утверждение об их отсутствии. Исторический M1 audit 239 пакетов
+это не утверждение об их отсутствии. Исторический аудит 239 пакетов retained runtime
 завершился без ошибок, с 15 duplicate warnings и RustSec revision
 `7eebec69c352c7191b1f13eb95dd510eeca5d1de`; этот результат не переносится на
 новые зависимости автоматически. `cargo-audit` отдельно не запускался.

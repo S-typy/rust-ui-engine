@@ -1,6 +1,6 @@
 # ADR-001: retained tree и независимое ядро
 
-Дата: 2026-10-09. Статус: принято; retained tree и независимый runtime реализованы в M1.
+Дата: 2026-10-09. Статус: принято; retained tree и независимый runtime реализованы.
 
 ## Контекст
 
@@ -9,10 +9,11 @@
 объекта не подходит для идентичности виджета. При виртуализации элементы
 появляются и исчезают независимо от срока жизни данных приложения.
 
-M0 содержал три работающих пакета: `rust-desktop-ui-core`,
+Первый GPU-прототип содержал три работающих пакета: `rust-desktop-ui-core`,
 `rust-desktop-ui-render-wgpu` и пример `gpu-shell`. Сцена прямоугольников проверяет
-границу между моделью и renderer. M1 добавляет дерево/runtime в core и отдельный
-действующий пакет `rust-desktop-ui-layout`; Ribbon и TreeGrid не реализованы.
+границу между моделью и renderer. Это решение добавляет дерево/runtime в core и
+отдельный действующий пакет `rust-desktop-ui-layout`. Ribbon и TreeGrid выходят
+за рамки описанного здесь исходного runtime.
 
 ## Решение
 
@@ -38,7 +39,7 @@ layout, clips и paint-данные отделены от логической �
 В примере состоянием владеет поток event loop. Callback получает снимок события
 и `EventContext`, а не mutable tree. Изменения во время маршрутизации событий
 ставятся в очередь `Mutation` и применяются после завершения маршрута.
-Цикл M1: нормализация события → hit test → capture/target/bubble →
+Цикл runtime: нормализация события → hit test → capture/target/bubble →
 изменение состояния → dirty flags → layout/scene → запрос перерисовки.
 Measure, layout, paint и semantics получают раздельную invalidation.
 
@@ -73,10 +74,11 @@ Unit tests покрывают создание, удаление и переис
 invariants; циклы; порядок маршрутизации; queued mutations; очистку focus/capture
 и dirty flags. Геометрические тесты adapter проверяют Stack/Overlay/Flex,
 constraints, resize и ошибки. Фактическое выполнение проверок фиксируется в
-[отчёте M1](../M1_TEST_REPORT.md), а не предполагается из наличия тестов.
+[отчёте retained runtime](../retained-runtime-test-report.md), а не предполагается
+из наличия тестов.
 
 Текст, IME, готовые controls, платформенная доступность и виртуализированные
-таблицы остаются отдельными этапами. Контракт runtime и ограниченная стратегия
+таблицы имеют отдельные контракты. Контракт runtime и ограниченная стратегия
 пересчёта описаны в [ADR-003](ADR-003-retained-runtime.md) и
 [руководстве API](../retained-ui.md). Граница GPU-сцены сохраняется согласно
 [ADR-002](ADR-002-scene-wgpu.md).

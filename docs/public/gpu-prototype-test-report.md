@@ -1,7 +1,8 @@
-# M0 — отчёт проверок
+# Отчёт проверок GPU-прототипа
 
 Дата: 2026-10-09. Область: три пакета workspace, GPU shell и сцена
-прямоугольников. Этот отчёт не подтверждает готовность UI-компонентов.
+прямоугольников. Результаты и ограничения относятся к этому историческому снимку;
+отчёт не подтверждает готовность текущих UI-компонентов.
 
 ## Исходное состояние и исправления
 
@@ -14,7 +15,7 @@ toolchain и CI. Первый `cargo fmt --all -- --check` обнаружил ф
 Исправлены инициализация API, обработка surface/device lifecycle и ошибок,
 resize/DPI/input. Демонстрация перенесена из core в пример. Версии и features
 закреплены; добавлены проверки, CI и документация. Точный перечень изменений
-описан в [M0_CHANGES.md](M0_CHANGES.md), решения — в
+описан в [изменениях GPU-прототипа](gpu-prototype-changes.md), решения — в
 [ADR-001](adr/ADR-001-retained-tree.md) и [ADR-002](adr/ADR-002-scene-wgpu.md).
 
 ## Локальный стенд
@@ -108,7 +109,8 @@ DPI, IME, accessibility и реальная аппаратная потеря de
 
 ## Технический долг
 
-- Retained tree, layout, focus, события виджетов и invalidation относятся к M1.
+- Retained tree, layout, focus, события виджетов и invalidation запланированы
+  как дальнейшее развитие этого прототипа.
 - Текст, glyph rendering, IME, accessibility, Ribbon и TreeGrid не реализованы.
 - Scene пока не имеет clips/transforms/images; batch ограничен 16 384 rects.
 - Wayland без server-side decorations может показать окно без рамки.

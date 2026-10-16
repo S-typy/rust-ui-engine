@@ -3,9 +3,9 @@
 //! This profile supports a `Window` containing a tree of stack panels, text,
 //! editors, buttons, check boxes, radio buttons, icons, separators and static
 //! dropdown/split menus and a command-oriented Ribbon. Elements use
-//! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. It does not load WPF types,
-//! execute arbitrary markup extensions or resolve external entities. Explicit
-//! property bindings are compiled into renderer-independent definitions.
+//! [`UI_NAMESPACE`]; `x:Name` uses [`XAML_NAMESPACE`]. Element types are limited
+//! to this profile; arbitrary markup extensions and external entities are rejected.
+//! Explicit property bindings are compiled into renderer-independent definitions.
 //! Unknown syntax is an error instead of being silently ignored.
 //!
 //! ```
@@ -58,7 +58,7 @@ pub use ribbon::{
     RibbonItemSize, RibbonMenuEntryDefinition, RibbonTabDefinition, validate_ribbon,
 };
 
-/// Namespace for this library's controls; not the WPF presentation namespace.
+/// Namespace for the controls supported by this compiler.
 pub const UI_NAMESPACE: &str = "urn:rust-ui-engine:ui";
 /// XAML language namespace. Only the `Name` directive is supported.
 pub const XAML_NAMESPACE: &str = "http://schemas.microsoft.com/winfx/2006/xaml";

@@ -1,6 +1,6 @@
 # ADR-003: retained runtime, события и адаптер layout
 
-Дата: 2026-10-09. Статус: принято и реализовано в M1.
+Дата: 2026-10-09. Статус: принято и реализовано.
 
 ## Контекст
 
@@ -51,9 +51,9 @@ Root size определяется viewport. Глубина адаптера о�
 
 Разделяются `MEASURE`, `LAYOUT`, `PAINT` и `SEMANTICS`. Геометрические flags
 распространяются к предкам. Paint/hover/focus/scroll не требуют нового layout.
-В M1 геометрическая invalidation пересчитывает layout tree целиком, paint
-invalidation пересобирает Scene целиком. Idle использует готовую Scene без
-обхода узлов. Delta и cumulative counters позволяют отличать эти случаи.
+Исходная реализация геометрической invalidation пересчитывает layout tree
+целиком, paint invalidation пересобирает Scene целиком. Idle использует готовую
+Scene без обхода узлов. Delta и cumulative counters позволяют отличать эти случаи.
 
 ## Последствия и ограничения
 
@@ -68,8 +68,8 @@ invalidation пересобирает Scene целиком. Idle использ�
 O(N) и не доказывают готовность больших таблиц. Пространственный индекс,
 инкрементальный layout и виртуализация требуют отдельных измерений и решений.
 
-Модель содержит один pointer, один focus и по одному callback на узел. Focus
-scopes, multitouch, произвольные transforms, GPU text, IME и accessibility
+Исходная модель содержит один pointer, один focus и по одному callback на узел.
+Focus scopes, multitouch, произвольные transforms, GPU text, IME и accessibility
 backend отсутствуют. Semantics flags задают границу invalidation, не заменяя
 семантическое дерево платформы. Primitive hover/focus feedback не означает
 реализацию готовых controls.
@@ -97,5 +97,6 @@ paint без layout и нулевую работу в idle. Примеры API �
 в [retained-ui.md](../retained-ui.md).
 
 Компиляция, тесты layout, нативный ввод и GPU runtime имеют отдельные результаты
-в [M1_TEST_REPORT.md](../M1_TEST_REPORT.md). Наличие реализации или тестового сценария
-само по себе не подтверждает прохождение GPU проверки на конкретной платформе.
+в [отчёте retained runtime](../retained-runtime-test-report.md). Наличие реализации
+или тестового сценария само по себе не подтверждает прохождение GPU проверки
+на конкретной платформе.

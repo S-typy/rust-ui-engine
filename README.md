@@ -5,8 +5,8 @@ An experimental native desktop UI framework written in Rust for Windows, Linux
 controls, an adaptive Ribbon, docking panels, and a virtualized TreeGrid. Rendering uses hardware
 GPU backends through `wgpu`; core and control APIs have no GPU or window types.
 
-The current source is a **0.1.0 alpha candidate**. M2–M5 functionality is available
-for integration and joint testing; this does not establish release readiness on
+The current source is a **0.1.0 alpha candidate**, available for integration and
+joint testing; this does not establish release readiness on
 all platforms. Native IME, screen-reader interaction, monitor DPI transitions and
 Linux/macOS GPU execution still need the checks recorded in the
 [runtime matrix](docs/public/runtime-matrix.md). No binary release is announced.
@@ -62,9 +62,9 @@ cargo run --release --locked -p xaml-form -- --groups
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
 the separate example of individual controls and popup menus.
 
-The build validates the markup and generates a Rust window definition. No .NET
-runtime is required. The profile supports observable data bindings and form layouts;
-hot reload and general WPF XAML compatibility remain outside its scope. See the
+The build validates the markup and generates a Rust window definition.
+The profile supports observable data bindings and form layouts;
+hot reload remains outside its scope. See the
 [supported syntax and example](docs/public/xaml.md).
 
 The separate [editors form](examples/xaml-form/EditorsWindow.xaml), opened with
@@ -241,7 +241,7 @@ cargo run --release --locked -p gpu-shell -- --smoke-test
 cargo run --release --locked -p gpu-shell -- --rectangles --smoke-test
 ```
 
-The Windows M1 [retained harness](docs/public/retained-smoke.md) and M0
+The Windows [retained harness](docs/public/retained-smoke.md) and
 [rectangle harness](docs/public/windows-smoke.md) test those earlier scenarios.
 Their historical success does not validate the newer gallery.
 
@@ -253,7 +253,7 @@ Their historical success does not validate the newer gallery.
 - [Native host / DesktopApp](docs/public/platform.md)
 - [Alpha candidate notes](docs/public/alpha-release-notes.md) and [runtime matrix](docs/public/runtime-matrix.md)
 - [Subsystem decision](docs/public/adr/ADR-004-text-controls-platform-treegrid.md), [retained decision](docs/public/adr/ADR-003-retained-runtime.md)
-- [Historical M1 checks](docs/public/M1_TEST_REPORT.md), [M0 checks](docs/public/TEST_REPORT.md), [requirements](docs/public/requirements.md)
+- [Retained runtime checks](docs/public/retained-runtime-test-report.md), [GPU prototype checks](docs/public/gpu-prototype-test-report.md), [requirements](docs/public/requirements.md)
 - [Dependency audit](docs/public/dependencies.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
 
 Automatic intrinsic text measurement, incremental subtree layout and general

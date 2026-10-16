@@ -1,7 +1,8 @@
 # Alpha candidate verification
 
-Date: 2026-10-09. Version: 0.1.0. This report distinguishes executable source
-checks from native acceptance; it does not announce a binary release.
+Date: 2026-10-09. Version: 0.1.0. Results and limitations describe this
+historical alpha snapshot. This report distinguishes executable source checks
+from native acceptance; it does not announce a binary release.
 
 ## Local checks
 

@@ -1,4 +1,4 @@
-//! M1 foundation gallery: retained primitives, not finished controls.
+//! Diagnostic gallery for retained primitives and their runtime lifecycle.
 
 use rust_desktop_ui_core::{
     Axis, Border, Color, Edges, EventPhase, FrameStats, InputEvent, Key, LayoutKind, LayoutStyle,

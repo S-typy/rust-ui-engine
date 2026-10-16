@@ -4,7 +4,7 @@ Runtime реализует дерево узлов, события, focus, point
 и построение примитивной сцены. `NodeProps` описывает узел; поведение Button,
 TextBox и других компонентов находится в [controls](controls.md), а
 [TreeGrid](treegrid.md) строит виртуализированную часть Scene отдельно.
-Исторические проверки M1 сохранены в [отчёте](M1_TEST_REPORT.md); актуальные
+Исторические проверки retained runtime сохранены в [отчёте](retained-runtime-test-report.md); актуальные
 платформенные проверки — в [матрице](runtime-matrix.md).
 Базовое решение — [ADR-003](adr/ADR-003-retained-runtime.md), расширение текста
 и компонентов — [ADR-004](adr/ADR-004-text-controls-platform-treegrid.md).

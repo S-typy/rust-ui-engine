@@ -1,7 +1,9 @@
-# M0: изменения GPU-прототипа
+# Изменения GPU-прототипа
 
-Дата: 2026-10-09. Документ описывает изменения реализации; фактические результаты
-сборки и GPU-запусков фиксируются отдельно в отчёте проверок.
+Дата: 2026-10-09. Документ описывает исторический снимок GPU-прототипа;
+фактические результаты сборки и GPU-запусков сохранены в
+[отчёте проверок](gpu-prototype-test-report.md). Текущая структура библиотеки
+описана в [архитектуре](architecture.md).
 
 ## Сборка и зависимости
 
@@ -12,9 +14,9 @@
 - Отключены стандартные Adwaita decorations. Собственная клиентская рамка
   Wayland остаётся отдельной задачей; в compositor без server-side decorations
   окно может отображаться без рамки.
-- CI собирает workspace на Ubuntu 24.04, Windows Server 2025 и macOS 15.
-  Выполняются fmt, clippy с запретом warnings, unit/doc tests, release build и
-  rustdoc. Cargo использует `--locked`; workflow не открывает GPU-окно.
+- На указанную дату CI собирал workspace на Ubuntu 24.04, Windows Server 2025 и macOS 15.
+  Выполнялись fmt, clippy с запретом warnings, unit/doc tests, release build и
+  rustdoc. Cargo использовал `--locked`; workflow не открывал GPU-окно.
 
 ## Разделение ответственности
 
@@ -24,7 +26,7 @@
 - Сцена передаётся renderer в логических координатах. Прямоугольники по-прежнему
   выводятся через GPU instancing и WGSL.
 - [ADR-001](adr/ADR-001-retained-tree.md) фиксирует generational `WidgetId`,
-  arena и retained runtime как направление M1.
+  arena и retained runtime как направление развития прототипа.
   [ADR-002](adr/ADR-002-scene-wgpu.md) фиксирует действующую границу Scene/backend.
 
 ## GPU и окно
@@ -47,7 +49,7 @@
 Это сцена прямоугольников с демонстрационным выбором и прокруткой. Число 100 000
 обозначает диапазон индексов, а не готовый TreeGrid или измеренную производительность.
 Retained tree, focus, маршрутизация событий, layout adapter, текст, IME,
-accessibility, Ribbon и TreeGrid ещё не реализованы. Vello не подключён.
+accessibility, Ribbon и TreeGrid в этом снимке ещё не реализованы.
 
 Один batch ограничен 16 384 прямоугольниками. Поддержки clips, transforms,
 изображений и glyph atlas пока нет. Unit-тесты и межплатформенная сборка не
