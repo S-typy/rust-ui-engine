@@ -218,7 +218,7 @@ fn selection(s: &crate::SelectionDefinition) -> String {
 
 fn form_kind(kind: &ElementKind) -> String {
     let (name, definition) = match kind {
-        ElementKind::GridControl(grid) => ("GridControl", format!("rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: vec![{}], is_read_only: {}, filter_text: {:?}.into(), selected_value: {} }}", grid.data_source, grid.columns.iter().map(|column| format!("rust_desktop_ui_xaml::GridColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?}, min_width: {:?}, max_width: {:?}, is_pinned: {}, is_read_only: {} }}", column.field, column.header, column.width, column.min_width, column.max_width, column.is_pinned, column.is_read_only)).collect::<Vec<_>>().join(","), grid.is_read_only, grid.filter_text, optional_string(&grid.selected_value))),
+        ElementKind::GridControl(grid) => ("GridControl", crate::grid_extensions::code(grid)),
         ElementKind::DataForm(form) => ("DataForm",format!("rust_desktop_ui_xaml::DataFormDefinition {{ data_source:{:?}.into(),row_key:{},label_width:{:?},row_gap:{:?},is_read_only:{},fields:vec![{}] }}",form.data_source,form.row_key,form.label_width,form.row_gap,form.is_read_only,form.fields.iter().map(|f|format!("rust_desktop_ui_xaml::DataFormFieldDefinition {{ field:{:?}.into(),label:{},visible:{},is_read_only:{},editor:{:?}.into() }}",f.field,optional_string(&f.label),f.visible,f.is_read_only,f.editor)).collect::<Vec<_>>().join(","))),
         ElementKind::TreeView(tree) => ("TreeView",crate::tree::code(tree)),
         ElementKind::TreeGrid(tree) => ("TreeGrid",crate::tree::code(tree)),

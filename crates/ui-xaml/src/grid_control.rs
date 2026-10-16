@@ -23,6 +23,13 @@ pub struct GridControlDefinition {
     pub filter_text: String,
     /// A signed 64-bit row key represented as a decimal string, preserving all bits.
     pub selected_value: Option<String>,
+    pub view: crate::GridViewDefinition,
+    pub group_fields: Vec<String>,
+    pub summaries: Vec<crate::GridSummaryDefinition>,
+    pub bands: Vec<crate::GridBandDefinition>,
+    pub detail: Option<crate::GridDetailDefinition>,
+    pub cell_templates: Vec<crate::GridCellTemplateDefinition>,
+    pub editors: Vec<crate::GridEditorDefinition>,
 }
 
 /// Explicit presentation of one field in the registered source schema.
@@ -52,7 +59,7 @@ impl Default for GridColumnDefinition {
     }
 }
 
-fn valid_name(value: &str) -> bool {
+pub(super) fn valid_name(value: &str) -> bool {
     value.len() <= 128 && binding::valid_identifier(value)
 }
 
@@ -88,11 +95,16 @@ pub fn validate_grid_control(grid: &GridControlDefinition) -> Result<(), String>
     {
         return Err("GridControl SelectedValue must be a signed 64-bit decimal row key".into());
     }
-    if grid.columns.len() > MAX_GRID_COLUMNS {
+    validate_columns(&grid.columns)?;
+    crate::grid_extensions::validate(grid)
+}
+
+pub(super) fn validate_columns(columns: &[GridColumnDefinition]) -> Result<(), String> {
+    if columns.len() > MAX_GRID_COLUMNS {
         return Err("GridControl supports at most 64 columns".into());
     }
     let mut fields = HashSet::new();
-    for column in &grid.columns {
+    for column in columns {
         if column.field.is_empty()
             || column.field.len() > 256
             || column.field.contains('\0')
@@ -149,6 +161,7 @@ pub(crate) fn parse_children(
 ) -> Result<(), Diagnostic> {
     let mut wrapper = false;
     let mut direct = false;
+    let mut properties = HashSet::new();
     for child in node.children() {
         if !child.is_element() {
             require_empty_content(child)?;
@@ -156,6 +169,16 @@ pub(crate) fn parse_children(
         }
         if child.tag_name().namespace() != Some(UI_NAMESPACE) {
             return Err(at_node(child, "unsupported grid child namespace"));
+        }
+        if crate::grid_extensions::is_property(child.tag_name().name()) {
+            if !properties.insert(child.tag_name().name()) {
+                return Err(at_node(
+                    child,
+                    "GridControl metadata property cannot repeat",
+                ));
+            }
+            crate::grid_extensions::parse_property(child, depth + 1, count, grid)?;
+            continue;
         }
         if child.tag_name().name() == "GridControl.Columns" {
             if wrapper || direct {
@@ -194,7 +217,11 @@ pub(crate) fn parse_children(
     Ok(())
 }
 
-fn count_metadata(node: Node<'_, '_>, depth: usize, count: &mut usize) -> Result<(), Diagnostic> {
+pub(super) fn count_metadata(
+    node: Node<'_, '_>,
+    depth: usize,
+    count: &mut usize,
+) -> Result<(), Diagnostic> {
     *count += 1;
     if *count > MAX_ELEMENTS || depth > MAX_ELEMENT_DEPTH {
         return Err(at_node(
@@ -212,7 +239,7 @@ fn check_columns(node: Node<'_, '_>, grid: &GridControlDefinition) -> Result<(),
     Ok(())
 }
 
-fn parse_column(node: Node<'_, '_>) -> Result<GridColumnDefinition, Diagnostic> {
+pub(super) fn parse_column(node: Node<'_, '_>) -> Result<GridColumnDefinition, Diagnostic> {
     if node.tag_name().namespace() != Some(UI_NAMESPACE) || node.tag_name().name() != "GridColumn" {
         return Err(at_node(
             node,

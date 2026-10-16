@@ -50,6 +50,11 @@ pub use temporal::{
     DateTimeEditDefinition, validate_calendar, validate_date_range_edit, validate_date_time_edit,
 };
 mod grid_control;
+mod grid_extensions;
+pub use grid_extensions::{
+    GridBandDefinition, GridCellTemplateDefinition, GridDetailDefinition, GridEditorDefinition,
+    GridSummaryDefinition, GridSummaryFunction, GridViewDefinition,
+};
 mod tree;
 pub use tree::{TreeColumnDefinition, TreeDefinition, validate_tree};
 mod data_form;

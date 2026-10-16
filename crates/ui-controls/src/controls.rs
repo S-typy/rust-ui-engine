@@ -104,7 +104,11 @@ pub use bars::{
 };
 pub use choices::{CheckPresentation, CheckState, RadioChoiceGroup};
 pub use flyout::{Flyout, FlyoutPlacement};
-pub use grid::{DataSourceHandle, GridControlColumn, GridControlSettings};
+pub use grid::{
+    DataSourceHandle, GridBand, GridCellTemplate, GridColumnArrangement, GridControlColumn,
+    GridControlSettings, GridDetailSettings, GridPresentationSettings, GridRowKind, GridSummary,
+    GridViewMode,
+};
 pub use images::{ImageSettings, ImageStretch};
 pub use memo::{MemoEdit, MemoEditSettings};
 pub use repeat::RepeatButtonSettings;

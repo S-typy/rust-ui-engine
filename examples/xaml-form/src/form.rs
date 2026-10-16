@@ -25,6 +25,7 @@ pub(crate) struct Form {
     search: Option<crate::search_model::State>,
     data_form: Option<crate::data_form_model::State>,
     tree: Option<crate::tree_model::State>,
+    grid_workspace: Option<crate::grid_workspace_model::State>,
     pub(crate) ui: Controls,
     pub(crate) view: MountedView,
     pub(crate) accessible: Accessibility,
@@ -90,6 +91,21 @@ impl Form {
         crate::search_model::register(&mut ui);
         crate::data_form_model::register(&mut ui);
         let tree_source = crate::tree_model::register(&mut ui)?;
+        let mut pending = vec![&definition.content];
+        let mut uses_grid_workspace = false;
+        while let Some(element) = pending.pop() {
+            if matches!(&element.kind,rust_desktop_ui_xaml::ElementKind::GridControl(grid) if grid.data_source=="WorkspaceRecords")
+            {
+                uses_grid_workspace = true;
+                break;
+            }
+            pending.extend(element.children());
+        }
+        let grid_sources = if uses_grid_workspace {
+            Some(crate::grid_workspace_model::register(&mut ui)?)
+        } else {
+            None
+        };
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
         for (id, label) in [
@@ -220,6 +236,10 @@ impl Form {
         let search = crate::search_model::State::install(&mut ui, &view)?;
         let data_form = crate::data_form_model::State::install(&mut ui, &mut view)?;
         let tree = crate::tree_model::State::install(&mut ui, &view, tree_source)?;
+        let grid_workspace = match grid_sources {
+            Some(source) => crate::grid_workspace_model::State::install(&mut ui, &view, source)?,
+            None => None,
+        };
         Ok(Self {
             workspace: crate::workspace_model::WorkspaceState::default(),
             batch,
@@ -229,6 +249,7 @@ impl Form {
             search,
             data_form,
             tree,
+            grid_workspace,
             ui,
             view,
             accessible: Accessibility::default(),
@@ -361,6 +382,11 @@ impl Form {
             }
             if let Some(state) = &mut self.data_form
                 && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.grid_workspace
+                && state.command(&mut self.ui, &invocation.id.0)?
             {
                 continue;
             }
@@ -558,6 +584,9 @@ impl Form {
         if let Some(state) = &mut self.data_form {
             state.refresh(&mut self.ui, &mut self.view)?;
         }
+        if let Some(state) = &self.grid_workspace {
+            state.refresh(&mut self.ui)?;
+        }
         if let Some(state) = &mut self.tree {
             state.refresh(&mut self.ui)?;
         }
@@ -689,6 +718,7 @@ impl DesktopApp for Form {
                 || self.search.is_some()
                 || self.data_form.is_some()
                 || self.tree.is_some()
+                || self.grid_workspace.is_some()
                 || self.find_name("WorkspaceTabs").is_some()
                 || self.find_name("DialogEditor").is_some()
             {

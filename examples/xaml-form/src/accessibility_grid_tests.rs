@@ -124,6 +124,25 @@ fn node(tree: &accesskit::TreeUpdate, id: NodeId) -> &Node {
 }
 
 #[test]
+fn editable_display_cells_describe_the_real_editor_and_respect_read_only() {
+    let mut fixture = Fixture::new(2);
+    let tree = fixture.tree();
+    let amount = fixture.id(key(0), Some(1));
+    let locked = fixture.id(key(0), Some(2));
+    assert_eq!(node(&tree, amount).role(), Role::Cell);
+    assert_eq!(node(&tree, amount).value(), Some("0"));
+    assert_eq!(
+        node(&tree, amount).description(),
+        Some("F2 — редактировать значение")
+    );
+    assert_eq!(node(&tree, locked).description(), None);
+    fixture.ui.set_grid_read_only(fixture.grid, true).unwrap();
+    let tree = fixture.tree();
+    assert_eq!(node(&tree, amount).description(), None);
+    assert!(!node(&tree, amount).supports_action(Action::SetValue));
+}
+
+#[test]
 fn set_value_limit_rejection_cancels_session_without_failing_the_host() {
     let mut fixture = Fixture::new(2);
     fixture.tree();
@@ -470,4 +489,165 @@ fn actual_cell_editor_focus_is_not_replaced_by_the_grid_selection() {
         .unwrap();
     let tree = fixture.tree();
     assert_eq!(tree.focus, fixture.accessibility.id(outside).unwrap());
+}
+
+#[test]
+fn grid_group_actions_summary_and_key_collision_never_retarget_stale_virtual_ids() {
+    use rust_desktop_ui_controls::{GridPresentationSettings, GridRowKind, GridSummary};
+    use rust_desktop_ui_data::{Aggregate, AggregateFunction, DataWrite};
+    let mut fixture = Fixture::new(3);
+    fixture
+        .ui
+        .set_grid_selected_key(fixture.grid, Some(key(0)))
+        .unwrap();
+    fixture
+        .ui
+        .set_grid_presentation(
+            fixture.grid,
+            GridPresentationSettings {
+                group_fields: vec!["Name".into()],
+                summaries: vec![GridSummary {
+                    title: "Rows".into(),
+                    aggregate: Aggregate {
+                        function: AggregateFunction::CountRows,
+                        expression: None,
+                    },
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let tree = fixture.tree();
+    let group = fixture
+        .ui
+        .grid_frame(fixture.grid)
+        .unwrap()
+        .semantics
+        .rows
+        .iter()
+        .find(|r| {
+            matches!(
+                fixture.ui.grid_row_kind(fixture.grid, r.key),
+                Some(GridRowKind::Group { .. })
+            )
+        })
+        .unwrap()
+        .key;
+    let group_id = fixture.accessibility.grids.ids[&Key {
+        widget: fixture.grid,
+        part: Part::Row(group),
+    }];
+    assert_eq!(node(&tree, group_id).is_expanded(), Some(true));
+    assert_eq!(node(&tree, group_id).level(), Some(0));
+    assert!(tree.nodes.iter().any(|(_, n)| n.label() == Some("Rows: 3")));
+    fixture.action(group_id, Action::Focus, None);
+    let focused = fixture.tree();
+    assert_eq!(focused.focus, group_id);
+    assert!(node(&focused, group_id).supports_action(Action::Collapse));
+    assert_eq!(node(&focused, group_id).is_expanded(), Some(true));
+    fixture.action(group_id, Action::Collapse, None);
+    let collapsed = fixture.tree();
+    assert_eq!(collapsed.focus, group_id);
+    assert!(node(&collapsed, group_id).supports_action(Action::Expand));
+    assert_eq!(node(&collapsed, group_id).is_expanded(), Some(false));
+    assert_eq!(fixture.ui.grid_selected_key(fixture.grid), Some(key(0)));
+    fixture.action(group_id, Action::Expand, None);
+    fixture.tree();
+    let collision = i64::from_ne_bytes(group.0.to_ne_bytes());
+    fixture
+        .source
+        .borrow_mut()
+        .write_batch(&[DataWrite::Insert(DataRow::new(
+            collision,
+            vec![
+                CellValue::Text("AAA".into()),
+                CellValue::Integer(7),
+                CellValue::Text("Fixed".into()),
+            ],
+        ))])
+        .unwrap();
+    fixture.action(group_id, Action::Focus, None);
+    assert_eq!(fixture.ui.grid_selected_key(fixture.grid), Some(key(0)));
+    let rebuilt = fixture.tree();
+    let record = fixture.accessibility.grids.ids[&Key {
+        widget: fixture.grid,
+        part: Part::Row(group),
+    }];
+    assert_ne!(record, group_id);
+    assert_eq!(node(&rebuilt, record).label(), Some("AAA · 7 · Fixed"));
+}
+
+#[test]
+fn grid_headers_and_cells_follow_pinned_visual_order_and_cards_omit_table_headers() {
+    use rust_desktop_ui_controls::{GridPresentationSettings, GridViewMode};
+    let mut fixture = Fixture::new(3);
+    fixture
+        .ui
+        .pin_grid_column(fixture.grid, "Amount", true)
+        .unwrap();
+    let tree = fixture.tree();
+    let header = fixture.accessibility.grids.ids[&Key {
+        widget: fixture.grid,
+        part: Part::HeaderRow,
+    }];
+    let labels: Vec<_> = node(&tree, header)
+        .children()
+        .iter()
+        .map(|id| node(&tree, *id).label().unwrap())
+        .collect();
+    assert_eq!(labels, ["Amount", "Name", "Locked"]);
+    let row = fixture.id(key(0), None);
+    let cells = node(&tree, row).children();
+    assert_eq!(
+        cells
+            .iter()
+            .map(|id| node(&tree, *id).column_index().unwrap())
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    assert_eq!(node(&tree, row).label(), Some("0 · Row 0 · Fixed"));
+    fixture
+        .ui
+        .set_grid_presentation(
+            fixture.grid,
+            GridPresentationSettings {
+                view: GridViewMode::Cards,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let tree = fixture.tree();
+    assert!(!fixture.accessibility.grids.ids.contains_key(&Key {
+        widget: fixture.grid,
+        part: Part::HeaderRow
+    }));
+    let row = fixture.id(key(0), None);
+    assert_eq!(node(&tree, row).children().len(), 3);
+}
+
+#[test]
+fn grid_virtual_set_value_uses_typed_numeric_recipe_without_float_conversion() {
+    use rust_desktop_ui_controls::DataFormFactories;
+    let mut fixture = Fixture::new(2);
+    fixture
+        .ui
+        .set_grid_editor_factory(
+            fixture.grid,
+            "Amount",
+            "Auto",
+            &DataFormFactories::default(),
+        )
+        .unwrap();
+    fixture.tree();
+    let cell = fixture.id(key(0), Some(1));
+    fixture.action(
+        cell,
+        Action::SetValue,
+        Some(ActionData::Value("9007199254740993".into())),
+    );
+    assert_eq!(
+        fixture.source.borrow().value(key(0), "Amount"),
+        Some(&CellValue::Integer(9_007_199_254_740_993))
+    );
+    assert!(fixture.ui.grid_editor(fixture.grid).is_none());
 }

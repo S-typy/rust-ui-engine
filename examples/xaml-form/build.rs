@@ -14,6 +14,7 @@ fn main() {
         ("SearchWindow.xaml", "search_window.rs"),
         ("DataFormWindow.xaml", "data_form_window.rs"),
         ("TreeWindow.xaml", "tree_window.rs"),
+        ("GridWorkspaceWindow.xaml", "grid_workspace_window.rs"),
         ("VisualsWindow.xaml", "visuals_window.rs"),
         ("BatchWindow.xaml", "batch_window.rs"),
         ("WorkspaceWindow.xaml", "workspace_window.rs"),

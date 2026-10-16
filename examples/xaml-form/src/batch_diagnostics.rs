@@ -81,7 +81,17 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
         let scroll=model.scroll_offset();
         Some(format!("{{\"name\":{},\"keys\":[{keys}],\"logical\":{},\"materialized\":{},\"scroll\":[{},{}],\"rows\":[{rows}],\"hits\":[{hits}],\"columns\":[{columns}]}}",string(name),frame.stats.logical_rows,frame.stats.materialized_rows,scroll.0,scroll.1))
     }).collect::<Vec<_>>().join(",");
+    let grids=view.names.iter().filter_map(|(name,&id)|{
+        let frame=ui.grid_frame(id)?;
+        let rows=frame.semantics.rows.iter().map(|row|{
+            let cells=row.cells.iter().map(|cell|format!("{{\"column\":{},\"text\":{},\"bounds\":{},\"editable\":{}}}",cell.column.0,string(&cell.label),rectangle(cell.bounds),cell.editable)).collect::<Vec<_>>().join(",");
+            format!("{{\"key\":{},\"kind\":{},\"index\":{},\"depth\":{},\"bounds\":{},\"expanded\":{},\"cells\":[{cells}]}}",string(&row.key.0.to_string()),string(&format!("{:?}",ui.grid_row_kind(id,row.key))),row.index,row.depth,rectangle(row.bounds),row.expanded.map_or_else(||"null".into(),|v|v.to_string()))
+        }).collect::<Vec<_>>().join(",");
+        let hits=frame.hits.iter().map(|hit|format!("{{\"kind\":{},\"bounds\":{}}}",string(&format!("{:?}",hit.kind)),rectangle(hit.bounds))).collect::<Vec<_>>().join(",");
+        let editor=ui.grid_editor(id).map_or_else(||"null".into(),|editor|format!("{{\"id\":{},\"bounds\":{},\"text\":{},\"accepted\":{},\"check\":{},\"error\":{}}}",string(&format!("{editor:?}")),ui.runtime.bounds(editor).map_or_else(||"null".into(),rectangle),ui.document(editor).map_or_else(||"null".into(),|d|string(d.text())),ui.accepted_value(editor).map_or_else(||"null".into(),string),string(&format!("{:?}",ui.check_state(editor))),ui.validation_error(editor).map_or_else(||"null".into(),string)));
+        Some(format!("{{\"name\":{},\"key\":{},\"logical\":{},\"materialized\":{},\"mode\":{},\"error\":{},\"editor\":{editor},\"rows\":[{rows}],\"hits\":[{hits}]}}",string(name),ui.grid_selected_key(id).map_or_else(||"null".into(),|key|string(&key.to_string())),frame.stats.logical_rows,frame.stats.materialized_rows,string(&format!("{:?}",ui.grid_presentation(id).map(|p|p.view))),ui.grid_error(id).map_or_else(||"null".into(),string)))
+    }).collect::<Vec<_>>().join(",");
     format!(
-        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}]}}"
+        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}],\"grids\":[{grids}]}}"
     )
 }

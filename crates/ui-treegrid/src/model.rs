@@ -197,6 +197,40 @@ pub struct TreeSelectionSnapshot {
 }
 
 impl TreeGrid {
+    /// Atomically replace expansion for an already loaded bounded hierarchy.
+    /// This is useful when a table projection installs many groups at once:
+    /// there is one sparse-index rebuild, and no lazy requests or provider I/O.
+    pub fn set_known_expanded(
+        &mut self,
+        source: &impl TreeDataSource,
+        rows: &[RowKey],
+    ) -> Result<(), GridError> {
+        if rows.len() > 4096 || !self.pending.is_empty() {
+            return Err(GridError::Capacity);
+        }
+        let expanded: std::collections::HashSet<_> = rows.iter().copied().collect();
+        if expanded.len() != rows.len() {
+            return Err(GridError::InvalidHierarchy("duplicate expansion key"));
+        }
+        for row in rows {
+            if crate::index::location(source, &self.locations, *row).is_none() {
+                return Err(GridError::UnknownRow(*row));
+            }
+            if source.child_count(Some(*row)).is_none() {
+                return Err(GridError::InvalidHierarchy(
+                    "bulk expansion requires loaded children",
+                ));
+            }
+        }
+        let index =
+            crate::index::SparseIndex::rebuild(source, &expanded, &self.loaded, &self.locations)?;
+        let anchor = self.capture_scroll_anchor(source);
+        self.expanded = expanded;
+        self.index = index;
+        self.restore_scroll_anchor(source, anchor)?;
+        Ok(())
+    }
+
     pub fn new(columns: Vec<GridColumn>) -> Result<Self, GridError> {
         Self::with_config(columns, GridConfig::default())
     }
@@ -281,6 +315,10 @@ impl TreeGrid {
     }
     pub fn is_expanded(&self, row: RowKey) -> bool {
         self.expanded.contains(&row)
+    }
+    /// Number of retained expansion identities, including collapsed ancestors' children.
+    pub fn expanded_count(&self) -> usize {
+        self.expanded.len()
     }
     pub fn editor(&self) -> Option<&CellEdit> {
         self.editor.as_ref()

@@ -594,7 +594,7 @@ fn check(value: &CellValue) -> CheckState {
         _ => CheckState::Indeterminate,
     }
 }
-fn checked_format(
+pub(super) fn checked_format(
     recipe: &DataFormEditorFactory,
     field: &FieldSchema,
     value: &CellValue,
@@ -660,7 +660,7 @@ fn format_value(recipe: &DataFormEditorFactory, value: &CellValue) -> Result<Str
         _ => Ok(value.display()),
     }
 }
-fn create_editor(
+pub(super) fn create_editor(
     ui: &mut Controls,
     parent: WidgetId,
     label: &str,
@@ -739,7 +739,7 @@ fn read_value(ui: &Controls, field: &Field) -> Result<CellValue, String> {
     field.schema.validate(&value).map_err(|e| e.to_string())?;
     Ok(value)
 }
-fn parse_value(
+pub(super) fn parse_value(
     recipe: &DataFormEditorFactory,
     field: &FieldSchema,
     text: &str,

@@ -345,3 +345,37 @@ fn malformed_immediate_children_become_retryable_failure_without_pending_worker(
     assert!(model.set_expanded(&mut source, RowKey(1), true).is_err());
     assert!(model.pending_requests().is_empty());
 }
+
+#[test]
+fn bounded_bulk_expansion_rebuilds_once_and_rejects_invalid_candidate_atomically() {
+    let mut source = IndexedTreeSource::new(vec![
+        node(1, None),
+        node(2, Some(1)),
+        node(3, None),
+        node(4, Some(3)),
+    ])
+    .unwrap();
+    let mut model = grid(&mut source);
+    model
+        .set_known_expanded(&source, &[RowKey(1), RowKey(3)])
+        .unwrap();
+    assert_eq!(
+        visible(&model, &source),
+        [RowKey(1), RowKey(2), RowKey(3), RowKey(4)]
+    );
+    let anchor = model.capture_scroll_anchor(&source);
+    for candidate in [
+        vec![RowKey(1), RowKey(1)],
+        vec![RowKey(999)],
+        vec![RowKey(1); 4097],
+    ] {
+        assert!(model.set_known_expanded(&source, &candidate).is_err());
+        assert_eq!(
+            visible(&model, &source),
+            [RowKey(1), RowKey(2), RowKey(3), RowKey(4)]
+        );
+        assert_eq!(model.capture_scroll_anchor(&source), anchor);
+    }
+    model.set_known_expanded(&source, &[]).unwrap();
+    assert_eq!(visible(&model, &source), [RowKey(1), RowKey(3)]);
+}

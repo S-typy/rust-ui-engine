@@ -22,6 +22,7 @@ mod forms_model;
 mod forms_tests;
 #[cfg(test)]
 mod foundation_accessibility_tests;
+mod grid_workspace_model;
 #[cfg(test)]
 mod group_adapter_tests;
 #[cfg(test)]
@@ -93,6 +94,9 @@ mod generated_search {
 mod generated_data_form {
     include!(concat!(env!("OUT_DIR"), "/data_form_window.rs"));
 }
+mod generated_grid_workspace {
+    include!(concat!(env!("OUT_DIR"), "/grid_workspace_window.rs"));
+}
 mod generated_tree {
     include!(concat!(env!("OUT_DIR"), "/tree_window.rs"));
 }
@@ -127,6 +131,7 @@ fn start() -> Result<(), String> {
     let mut search = false;
     let mut data_form = false;
     let mut tree = false;
+    let mut grid_workspace = false;
     let mut visuals = false;
     let mut batch = false;
     let mut workspace = false;
@@ -175,6 +180,7 @@ fn start() -> Result<(), String> {
             "--search" => search = true,
             "--data-form" => data_form = true,
             "--tree" => tree = true,
+            "--grid-workspace" => grid_workspace = true,
             "--docking" => docking = true,
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
@@ -253,6 +259,7 @@ fn start() -> Result<(), String> {
         search,
         data_form,
         tree,
+        grid_workspace,
     ]
     .into_iter()
     .filter(|v| *v)
@@ -272,7 +279,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if data_form {
+    let mut definition = if grid_workspace {
+        generated_grid_workspace::window_definition()
+    } else if data_form {
         generated_data_form::window_definition()
     } else if tree {
         generated_tree::window_definition()
@@ -355,7 +364,13 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if data_form {
+    let app = if grid_workspace {
+        form::Form::new_with_model(
+            definition,
+            diagnostics,
+            Some(grid_workspace_model::model()?),
+        )?
+    } else if data_form {
         let (context, sources) = data_form_model::model()?;
         form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
     } else if tree {

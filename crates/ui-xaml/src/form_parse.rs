@@ -438,6 +438,8 @@ pub(super) fn property(
                 "IsReadOnly" => grid.is_read_only = boolean(document, attr)?,
                 "FilterText" => grid.filter_text = attr.value().into(),
                 "SelectedValue" => grid.selected_value = Some(attr.value().into()),
+                "View" => grid.view = grid_extensions::view(document, attr)?,
+                "GroupFields" => grid.group_fields = grid_extensions::fields(document, attr, 8)?,
                 _ => return Ok(false),
             }
             Ok(true)

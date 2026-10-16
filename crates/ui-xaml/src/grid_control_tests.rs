@@ -1,5 +1,105 @@
 use crate::*;
 
+#[test]
+fn grid_extended_metadata_has_typed_shape_and_codegen() {
+    let markup = "<GridControl DataSource='Orders' View='Cards' GroupFields='Category, State'>
+      <GridColumn FieldName='Name'/><GridColumn FieldName='Amount'/>
+      <GridControl.Summaries><GridSummary Function='CountRows' Title='Rows'/><GridSummary Function='Sum' FieldName='Amount' Title='Total'/></GridControl.Summaries>
+      <GridControl.Bands><GridBand Header='Record' Fields='Name,Amount'/></GridControl.Bands>
+      <GridControl.Detail><GridDetail DataSource='Lines' MasterField='Id' ForeignField='OrderId'><GridColumn FieldName='Description' IsReadOnly='True'/></GridDetail></GridControl.Detail>
+      <GridControl.CellTemplates><GridCellTemplate FieldName='Amount' Prefix='[ ' Suffix=' ]' Icon='Check' Emphasis='True'/></GridControl.CellTemplates>
+      <GridControl.Editors><GridEditor FieldName='Amount' Factory='ExactAmount'/></GridControl.Editors>
+    </GridControl>";
+    let g = grid(markup);
+    assert_eq!(g.view, GridViewDefinition::Cards);
+    assert_eq!(g.group_fields, ["Category", "State"]);
+    assert_eq!(g.summaries[1].function, GridSummaryFunction::Sum);
+    assert_eq!(g.summaries[1].field.as_deref(), Some("Amount"));
+    assert_eq!(g.bands[0].fields, ["Name", "Amount"]);
+    assert_eq!(g.detail.as_ref().unwrap().columns[0].field, "Description");
+    assert_eq!(g.cell_templates[0].icon, Some(IconSymbol::Check));
+    assert!(g.cell_templates[0].emphasis);
+    assert_eq!(g.editors[0].factory, "ExactAmount");
+    let code = compile(&window(markup)).unwrap();
+    for expected in [
+        "GridViewDefinition::Cards",
+        "GridSummaryFunction::Sum",
+        "GridBandDefinition",
+        "GridDetailDefinition",
+        "GridCellTemplateDefinition",
+        "IconSymbol::Check",
+        "ExactAmount",
+    ] {
+        assert!(code.contains(expected), "{expected}");
+    }
+}
+
+#[test]
+fn grid_extended_metadata_rejects_ambiguous_or_executable_profiles() {
+    for body in [
+        "<GridControl.Summaries/><GridControl.Summaries/>",
+        "<GridControl.Summaries><GridSummary Function='CountRows' FieldName='Id'/></GridControl.Summaries>",
+        "<GridControl.Summaries><GridSummary Function='Average'/></GridControl.Summaries>",
+        "<GridControl.Summaries><GridSummary Function='Expression' FieldName='A'/></GridControl.Summaries>",
+        "<GridControl.Bands><GridBand Header='A' Fields='Id'/><GridBand Header='B' Fields='Id'/></GridControl.Bands>",
+        "<GridControl.Bands><GridBand Header='A' Fields='Id,,Name'/></GridControl.Bands>",
+        "<GridControl.Detail/>",
+        "<GridControl.Detail><GridDetail DataSource='file.db' MasterField='Id' ForeignField='Parent'><GridColumn FieldName='Id'/></GridDetail></GridControl.Detail>",
+        "<GridControl.Detail><GridDetail DataSource='Details' MasterField='Id' ForeignField='Parent'><GridControl DataSource='More'/></GridDetail></GridControl.Detail>",
+        "<GridControl.CellTemplates><GridCellTemplate FieldName='Id'><Button Content='Execute'/></GridCellTemplate></GridControl.CellTemplates>",
+        "<GridControl.CellTemplates><GridCellTemplate FieldName='Id'/><GridCellTemplate FieldName='Id'/></GridControl.CellTemplates>",
+        "<GridControl.Editors><GridEditor FieldName='Id' Factory='{Binding Factory}'/></GridControl.Editors>",
+        "<GridControl.Editors><GridEditor FieldName='Id' Factory='System.Editor'/></GridControl.Editors>",
+        "<GridControl.Editors><GridEditor FieldName='Id'/><GridEditor FieldName='Id'/></GridControl.Editors>",
+    ] {
+        assert!(
+            parse(&window(&format!(
+                "<GridControl DataSource='Orders'>{body}</GridControl>"
+            )))
+            .is_err(),
+            "{body}"
+        );
+    }
+    for attribute in [
+        "View='Unknown'",
+        "View='{Binding Mode}'",
+        "GroupFields='A,A'",
+        "GroupFields='A,B,C,D,E,F,G,H,I'",
+    ] {
+        assert!(
+            parse(&window(&format!(
+                "<GridControl DataSource='Orders' {attribute}/>"
+            )))
+            .is_err(),
+            "{attribute}"
+        );
+    }
+}
+
+#[test]
+fn grid_extended_metadata_manual_validation_and_limits_match_xml() {
+    let mut g = grid("<GridControl DataSource='Orders'/>");
+    g.summaries = vec![GridSummaryDefinition::default(); 17];
+    assert!(validate_grid_control(&g).is_err());
+    g.summaries.clear();
+    g.cell_templates = vec![GridCellTemplateDefinition {
+        field: "Id".into(),
+        prefix: "a".repeat(257),
+        ..Default::default()
+    }];
+    assert!(validate_grid_control(&g).is_err());
+    g.cell_templates.clear();
+    g.editors.push(GridEditorDefinition {
+        field: "Id".into(),
+        factory: "Bad.Name".into(),
+    });
+    assert!(validate_grid_control(&g).is_err());
+    let summaries = "<GridSummary/>".repeat(17);
+    assert!(parse(&window(&format!("<GridControl DataSource='Orders'><GridControl.Summaries>{summaries}</GridControl.Summaries></GridControl>"))).is_err());
+    let detail = "<GridControl DataSource='Orders'><GridColumn FieldName='Id'/><GridControl.Detail><GridDetail DataSource='Details' MasterField='Id' ForeignField='Parent'><GridColumn FieldName='Id'/><GridColumn FieldName='Text'/></GridDetail></GridControl.Detail></GridControl>";
+    assert!(parse(&window(detail)).is_err());
+}
+
 fn window(content: &str) -> String {
     format!("<Window xmlns='{UI_NAMESPACE}' xmlns:x='{XAML_NAMESPACE}'>{content}</Window>")
 }

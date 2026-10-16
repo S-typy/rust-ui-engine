@@ -64,6 +64,7 @@ cargo run --release --locked -p xaml-form -- --selection
 cargo run --release --locked -p xaml-form -- --search
 cargo run --release --locked -p xaml-form -- --data-form
 cargo run --release --locked -p xaml-form -- --tree
+cargo run --release --locked -p xaml-form -- --grid-workspace
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
@@ -79,6 +80,11 @@ typed metadata editors, explicit atomic save, NULL and conflict handling.
 column customization. See [selection](docs/public/list-box.md),
 [search](docs/public/search.md), [data forms](docs/public/data-form.md) and
 [tree controls](docs/public/tree-controls.md).
+
+`--grid-workspace` demonstrates a 10,000-record table with groups, summaries,
+bands, card view and related detail rows. Typed editors preserve exact integers
+and decimals; conflicting writes keep the draft for an explicit decision.
+See [grid presentations](docs/public/grid-presentations.md).
 
 `--ribbon-workspace` demonstrates retained Ribbon content, Backstage and
 quick-access customization. Its preferences remain in memory until the window
