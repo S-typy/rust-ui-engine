@@ -38,6 +38,7 @@ struct Workspace {
     panes: BTreeMap<DockPaneId, Form>,
     active: DockPaneId,
     focused: Option<(DockWindowId, DockPaneId)>,
+    auto_hide_return: HashMap<DockWindowId, DockPaneId>,
     theme: Theme,
     alive: bool,
     diagnostics: bool,
@@ -52,6 +53,8 @@ struct Workspace {
 
 impl Workspace {
     fn reconcile_focus(&mut self) -> Result<(), String> {
+        self.auto_hide_return
+            .retain(|window, _| self.layout.revealed_auto_hide(*window).is_some());
         if self.layout.is_closed(&self.active)
             && let Some(pane) = self
                 .layout
@@ -64,17 +67,10 @@ impl Workspace {
         let Some((_, pane)) = self.focused.clone() else {
             return Ok(());
         };
-        let visible = self.layout.window_for(&pane).and_then(|window| {
-            let geometry = self
-                .layout
-                .arrange(window, Rect::new(0.0, 0.0, 1200.0, 800.0))
-                .ok()?;
-            geometry
-                .groups
-                .iter()
-                .any(|group| group.active == pane)
-                .then_some(window)
-        });
+        let visible = self
+            .layout
+            .window_for(&pane)
+            .filter(|_| self.layout.pane_is_visible(&pane));
         if let Some(window) = visible {
             // Moving a still-active pane never destroys or blurs its editor.
             self.focused = Some((window, pane));
@@ -108,6 +104,14 @@ impl Workspace {
         let result = (|| -> Result<(), String> {
             match request {
                 DockRequest::Activate(pane) => {
+                    if self.layout.auto_hide(&pane).is_some()
+                        && self.layout.revealed_auto_hide(window).is_none()
+                    {
+                        self.auto_hide_return.remove(&window);
+                        if self.active != pane && self.layout.pane_is_visible(&self.active) {
+                            self.auto_hide_return.insert(window, self.active.clone());
+                        }
+                    }
                     self.layout.activate(&pane).map_err(err)?;
                     self.active = pane;
                 }
@@ -137,6 +141,29 @@ impl Workspace {
                 }
                 DockRequest::Resize { split, ratio } => {
                     self.layout.resize(split, ratio).map_err(err)?;
+                }
+                DockRequest::SetAutoHide { pane, settings } => {
+                    self.layout.set_auto_hide(&pane, settings).map_err(err)?;
+                    self.auto_hide_return.remove(&window);
+                }
+                DockRequest::DismissAutoHide {
+                    window,
+                    restore_focus,
+                } => {
+                    self.layout.dismiss_auto_hide(window).map_err(err)?;
+                    let previous = self.auto_hide_return.remove(&window);
+                    self.reconcile_focus()?;
+                    if restore_focus
+                        && let Some(pane) = previous
+                        && self.layout.window_for(&pane) == Some(window)
+                        && self.layout.pane_is_visible(&pane)
+                    {
+                        self.focus_pane(window, Some(pane.clone()))?;
+                        self.panes
+                            .get_mut(&pane)
+                            .expect("known pane")
+                            .event(PlatformEvent::Input(InputEvent::WindowFocused(true)))?;
+                    }
                 }
             }
             Ok(())
@@ -187,7 +214,7 @@ impl Workspace {
                         },
                         |group| DockPlacement::Tab {
                             group: group.id,
-                            index: group.panes.len(),
+                            index: *group.insertion_slots.last().expect("end slot"),
                         },
                     );
                     if let Err(error) = self.layout.restore(&pane, placement) {
@@ -327,6 +354,7 @@ impl DockApplication {
                 panes,
                 active,
                 focused: None,
+                auto_hide_return: HashMap::new(),
                 theme,
                 alive: true,
                 diagnostics,
@@ -620,12 +648,7 @@ impl DockWindow {
             .map(|(_, pane)| pane.clone())
     }
     fn pane_bounds(&self, pane: &DockPaneId) -> Option<Rect> {
-        self.geometry
-            .as_ref()?
-            .groups
-            .iter()
-            .find(|group| &group.active == pane)
-            .map(|group| group.content)
+        self.geometry.as_ref()?.pane_content(pane)
     }
 
     fn compose_accessibility(&mut self, scale: f32) -> accesskit::TreeUpdate {
@@ -635,19 +658,22 @@ impl DockWindow {
         let focused = self.focused_pane();
         let mut panes = Vec::new();
         let mut state = self.state.borrow_mut();
-        for group in self.geometry.iter().flat_map(|geometry| &geometry.groups) {
-            let Some(form) = state.panes.get_mut(&group.active) else {
+        for (pane, bounds) in self.geometry.iter().flat_map(DockGeometry::visible_panes) {
+            if !state.layout.pane_is_visible(pane) {
+                continue;
+            }
+            let Some(form) = state.panes.get_mut(pane) else {
                 continue;
             };
             panes.push(crate::docking_accessibility::PaneAccessibility {
-                id: group.active.clone(),
+                id: pane.clone(),
                 root: form.accessible.root_id(),
-                offset: Point::new(group.content.x * scale, group.content.y * scale),
+                offset: Point::new(bounds.x * scale, bounds.y * scale),
                 clip: Rect::new(
-                    group.content.x * scale,
-                    group.content.y * scale,
-                    group.content.width * scale,
-                    group.content.height * scale,
+                    bounds.x * scale,
+                    bounds.y * scale,
+                    bounds.width * scale,
+                    bounds.height * scale,
                 ),
                 tree: form.accessibility(scale),
             });
@@ -752,9 +778,8 @@ impl DesktopApp for DockWindow {
             .map_err(err)?;
         let popup_open = self.ui.popup_open()
             || geometry
-                .groups
-                .iter()
-                .any(|group| state.panes[&group.active].ui.popup_open());
+                .visible_panes()
+                .any(|(pane, _)| state.panes[pane].ui.popup_open());
         if !popup_open && let Some(targets) = self.dock.drop_targets() {
             state.drop_targets.insert(self.id, targets);
         } else {
@@ -774,21 +799,21 @@ impl DesktopApp for DockWindow {
         }
         self.ui.update(viewport).map_err(err)?;
         self.scene = self.ui.base_scene().clone();
-        for group in &geometry.groups {
-            if group.content.width <= 0.0 || group.content.height <= 0.0 {
+        for (pane, bounds) in geometry.visible_panes() {
+            if bounds.width <= 0.0 || bounds.height <= 0.0 {
                 continue;
             }
-            let form = state
-                .panes
-                .get_mut(&group.active)
-                .ok_or("Missing pane document")?;
-            form.update(Size::new(group.content.width, group.content.height), scale)?;
+            if geometry
+                .auto_hide_panel
+                .as_ref()
+                .is_some_and(|panel| &panel.pane == pane)
+            {
+                self.scene.append(self.dock.auto_hide_background_scene());
+            }
+            let form = state.panes.get_mut(pane).ok_or("Missing pane document")?;
+            form.update(Size::new(bounds.width, bounds.height), scale)?;
             self.scene
-                .append_view(
-                    form.scene(),
-                    Point::new(group.content.x, group.content.y),
-                    group.content,
-                )
+                .append_view(form.scene(), Point::new(bounds.x, bounds.y), bounds)
                 .map_err(err)?;
         }
         self.scene.append(self.ui.overlay_scene());
@@ -800,9 +825,18 @@ impl DesktopApp for DockWindow {
                 .panes
                 .iter()
                 .map(|(id, form)| {
+                    let states = form.view.editors.iter().filter_map(|widget| {
+                        let document = form.ui.document(*widget)?;
+                        let name = form.view.names.iter().find(|(_, candidate)| *candidate == widget).map_or("", |(name, _)| name.as_str());
+                        Some(format!("{{\"name\":{},\"id\":{},\"bounds\":{},\"text\":{},\"accepted\":{},\"error\":{},\"focused\":{}}}",
+                            string(name), string(&format!("{widget:?}")),
+                            form.ui.runtime.bounds(*widget).map_or("null".into(), rectangle),
+                            string(document.text()),form.ui.accepted_value(*widget).map_or("null".into(), string),
+                            form.ui.validation_error(*widget).map_or("null".into(), string),form.ui.runtime.focused()==Some(*widget)))
+                    }).collect::<Vec<_>>().join(",");
                     format!(
-                        "{{\"pane\":{},\"ids\":[{}]}}",
-                        string(id.as_str()),
+                        "{{\"pane\":{},\"states\":[{}],\"ids\":[{}]}}",
+                        string(id.as_str()), states,
                         form.view
                             .editors
                             .iter()
@@ -813,14 +847,43 @@ impl DesktopApp for DockWindow {
                 })
                 .collect::<Vec<_>>()
                 .join(",");
+            let auto_hide = geometry
+                .auto_hide_rails
+                .iter()
+                .flat_map(|rail| rail.panes.iter().map(move |pane| (rail, pane)))
+                .map(|(rail, pane)| {
+                    let tab = self
+                        .dock
+                        .tab_widget(pane)
+                        .and_then(|widget| self.ui.runtime.bounds(widget))
+                        .map_or("null".to_owned(), rectangle);
+                    format!(
+                        "{{\"pane\":{},\"edge\":{},\"tab\":{},\"content\":{},\"revealed\":{}}}",
+                        string(pane.as_str()),
+                        string(&format!("{:?}", rail.edge)),
+                        tab,
+                        geometry
+                            .auto_hide_panel
+                            .as_ref()
+                            .filter(|panel| &panel.pane == pane)
+                            .map_or("null".into(), |panel| rectangle(panel.content)),
+                        geometry
+                            .auto_hide_panel
+                            .as_ref()
+                            .is_some_and(|panel| &panel.pane == pane)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
             let diagnostic = format!(
-                "dock-state {{\"window\":{},\"viewport\":[{},{}],\"floating\":{},\"groups\":[{}],\"editors\":[{}]}}",
+                "dock-state {{\"window\":{},\"viewport\":[{},{}],\"floating\":{},\"groups\":[{}],\"editors\":[{}],\"auto_hide\":[{}]}}",
                 self.id.0,
                 viewport.width,
                 viewport.height,
                 state.layout.floating().len(),
                 groups,
-                editors
+                editors,
+                auto_hide
             );
             if diagnostic != self.last_diagnostic {
                 println!("{diagnostic}");
@@ -921,8 +984,8 @@ impl DesktopApp for DockWindow {
         let state = self.state.borrow();
         self.geometry
             .iter()
-            .flat_map(|g| &g.groups)
-            .filter_map(|g| state.panes.get(&g.active).and_then(DesktopApp::wake_after))
+            .flat_map(DockGeometry::visible_panes)
+            .filter_map(|(pane, _)| state.panes.get(pane).and_then(DesktopApp::wake_after))
             .chain(
                 self.ui
                     .next_deadline()

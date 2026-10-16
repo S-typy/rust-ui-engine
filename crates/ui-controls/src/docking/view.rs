@@ -11,6 +11,8 @@ use rust_desktop_ui_core::{
 };
 use rust_desktop_ui_text::TextDocument;
 use std::collections::{HashMap, HashSet};
+mod auto_hide;
+use auto_hide::{AutoHideChrome, RailChrome, nearest_edge};
 
 /// A view request. The application applies it to its shared docking model and
 /// creates or closes native windows only after a successful model mutation.
@@ -20,6 +22,14 @@ pub enum DockRequest {
     Close(DockPaneId),
     Float(DockPaneId),
     RedockWindow(DockWindowId),
+    SetAutoHide {
+        pane: DockPaneId,
+        settings: Option<DockAutoHideSettings>,
+    },
+    DismissAutoHide {
+        window: DockWindowId,
+        restore_focus: bool,
+    },
     Move {
         pane: DockPaneId,
         placement: DockPlacement,
@@ -54,6 +64,7 @@ pub struct DockDropTargets {
     bounds: Rect,
     groups: Vec<DockGroupGeometry>,
     tab_bounds: HashMap<DockPaneId, Rect>,
+    occluded: Option<Rect>,
 }
 
 impl DockDropTargets {
@@ -66,6 +77,12 @@ impl DockDropTargets {
     /// Accepts any pane, including one owned by another native window.
     /// Positions and preview bounds use logical coordinates of this window.
     pub fn target_at(&self, position: Point) -> Option<DockDropPreview> {
+        if self
+            .occluded
+            .is_some_and(|bounds| bounds.contains(position.x, position.y))
+        {
+            return None;
+        }
         drop_target(
             self.window,
             self.bounds,
@@ -82,12 +99,14 @@ struct GroupChrome {
     float: WidgetId,
     redock: WidgetId,
     next: WidgetId,
+    pin: WidgetId,
 }
 
 #[derive(Clone)]
 enum Action {
     Request(DockRequest),
     Next(DockGroupId),
+    NextRail(DockEdge),
 }
 
 enum Gesture {
@@ -131,6 +150,9 @@ pub struct DockView {
     overlay: Scene,
     preview_accent: Color,
     pending_tab_focus: Option<DockPaneId>,
+    rails: HashMap<DockEdge, RailChrome>,
+    auto_hide_chrome: Option<AutoHideChrome>,
+    auto_hide_background: Scene,
 }
 
 impl DockView {
@@ -167,6 +189,9 @@ impl DockView {
             overlay: Scene::default(),
             preview_accent: ui.theme().tokens().focus,
             pending_tab_focus: None,
+            rails: HashMap::new(),
+            auto_hide_chrome: None,
+            auto_hide_background: Scene::default(),
         })
     }
 
@@ -211,20 +236,14 @@ impl DockView {
         let geometry = self.geometry.as_ref()?;
         Some(DockDropTargets {
             window: self.window,
-            bounds: geometry.bounds,
+            bounds: geometry.workspace,
             groups: geometry.groups.clone(),
             tab_bounds: self.tab_bounds.clone(),
+            occluded: geometry.auto_hide_panel.as_ref().map(|panel| panel.bounds),
         })
     }
     pub fn drop_target_at(&self, position: Point) -> Option<DockDropPreview> {
-        let geometry = self.geometry.as_ref()?;
-        drop_target(
-            self.window,
-            geometry.bounds,
-            &geometry.groups,
-            &self.tab_bounds,
-            position,
-        )
+        self.drop_targets()?.target_at(position)
     }
     /// Replace only the painted drop preview, without focus, capture or model
     /// changes. `None` also hides a source window's local preview during a drag.
@@ -310,6 +329,8 @@ impl DockView {
                     "Вернуть окно в рабочую область",
                 )?;
                 let next = icon_button(ui, header, IconSymbol::ChevronDown, "Следующая вкладка")?;
+                let pin =
+                    icon_button(ui, header, IconSymbol::Pin, "Скрывать панель автоматически")?;
                 self.groups.insert(
                     group.id,
                     GroupChrome {
@@ -318,10 +339,12 @@ impl DockView {
                         float,
                         redock,
                         next,
+                        pin,
                     },
                 );
             }
         }
+        self.prepare_auto_hide_rails(ui, &geometry)?;
         // Keep tab IDs alive even while a pane is closed or belongs to another
         // native window. Reparent before removing obsolete group headers.
         for pane in layout.panes() {
@@ -354,14 +377,21 @@ impl DockView {
                 .groups
                 .iter()
                 .find(|group| group.panes.contains(&pane.id));
-            let parent = group.map_or(self.root, |group| self.groups[&group.id].header);
+            let rail = geometry
+                .auto_hide_rails
+                .iter()
+                .find(|rail| rail.panes.contains(&pane.id));
+            let parent = group
+                .map(|group| self.groups[&group.id].header)
+                .or_else(|| rail.map(|rail| self.rails[&rail.edge].root))
+                .unwrap_or(self.root);
             if ui.runtime.tree().parent(widget) != Some(parent) {
                 ui.runtime.apply(Mutation::Reparent {
                     node: widget,
                     parent,
                 })?;
             }
-            if group.is_none() {
+            if group.is_none() && rail.is_none() {
                 set_visible(ui, widget, false)?;
             }
         }
@@ -378,6 +408,7 @@ impl DockView {
         for group in &geometry.groups {
             self.update_group(ui, layout, group, bounds)?;
         }
+        self.update_auto_hide(ui, layout, &geometry)?;
         let live_splits: HashSet<_> = geometry.splitters.iter().map(|split| split.id).collect();
         let removed: Vec<_> = self
             .splitters
@@ -419,6 +450,9 @@ impl DockView {
         }
         let mut scene = Scene::default();
         let chrome = ui.theme().chrome();
+        for rail in &geometry.auto_hide_rails {
+            scene.fill(rail.bounds, chrome.ribbon_surface);
+        }
         for group in &geometry.groups {
             scene.rounded_fill(group.bounds, bounds, 5.0, chrome.card_surface);
             scene.rounded_stroke(group.bounds, bounds, 5.0, 1.0, chrome.surface_border);
@@ -485,7 +519,8 @@ impl DockView {
         let close = pane.closable && w >= 72.0;
         let float = w >= 112.0;
         let redock = self.window != DockWindowId::MAIN && w >= 164.0;
-        let base = usize::from(close) + usize::from(float) + usize::from(redock);
+        let pin = w >= 144.0;
+        let base = usize::from(close) + usize::from(float) + usize::from(redock) + usize::from(pin);
         let desired: Vec<_> = group
             .panes
             .iter()
@@ -514,6 +549,17 @@ impl DockView {
                 Action::Request(DockRequest::RedockWindow(self.window)),
             ),
             (chrome.next, next, Action::Next(group.id)),
+            (
+                chrome.pin,
+                pin,
+                Action::Request(DockRequest::SetAutoHide {
+                    pane: group.active.clone(),
+                    settings: Some(DockAutoHideSettings {
+                        edge: nearest_edge(group.bounds, bounds),
+                        extent: group.bounds.width.clamp(120.0, 4096.0),
+                    }),
+                }),
+            ),
         ];
         let mut right = (w - 3.0).max(0.0);
         for (widget, visible, action) in actions {
@@ -598,6 +644,9 @@ impl DockView {
         event: &InputEvent,
         layout: &DockLayout,
     ) -> Result<(bool, Vec<DockRequest>), ControlError> {
+        if let Some(result) = self.auto_hide_input(ui, event, layout)? {
+            return Ok(result);
+        }
         if matches!(event, InputEvent::WindowFocused(false)) {
             let requests = self.cancel(ui, layout)?;
             return Ok((false, requests));
@@ -625,12 +674,7 @@ impl DockView {
                 button: PointerButton::Primary,
                 modifiers,
             } if *modifiers == Modifiers::default() => {
-                if let Some((pane, widget)) = self
-                    .tab_bounds
-                    .iter()
-                    .find(|(_, bounds)| bounds.contains(position.x, position.y))
-                    .map(|(pane, _)| (pane.clone(), self.tabs[pane]))
-                {
+                if let Some((pane, widget)) = self.drag_handle_at(*position) {
                     if !begin_capture(ui, widget)? {
                         return Ok((true, Vec::new()));
                     }
@@ -643,6 +687,13 @@ impl DockView {
                     return Ok((true, vec![DockRequest::Activate(pane)]));
                 }
                 if let Some(split) = self.geometry.as_ref().and_then(|geometry| {
+                    if geometry
+                        .auto_hide_panel
+                        .as_ref()
+                        .is_some_and(|panel| panel.bounds.contains(position.x, position.y))
+                    {
+                        return None;
+                    }
                     geometry
                         .splitters
                         .iter()
@@ -827,6 +878,7 @@ impl DockView {
                         group.panes[(active + 1) % group.panes.len()].clone(),
                     ))
                 }
+                Action::NextRail(edge) => self.next_rail_request(*edge),
             })
             .collect()
     }
@@ -887,7 +939,7 @@ impl DockView {
         match preview.placement {
             DockPlacement::Tab { group, index } => geometry.groups.iter().any(|candidate| {
                 candidate.id == group
-                    && index <= candidate.panes.len()
+                    && candidate.insertion_slots.contains(&index)
                     && preview.bounds == candidate.bounds
             }),
             DockPlacement::Split { group, edge } => geometry.groups.iter().any(|candidate| {
@@ -897,9 +949,9 @@ impl DockView {
                 window == self.window
                     && preview.bounds
                         == if geometry.groups.is_empty() {
-                            geometry.bounds
+                            geometry.workspace
                         } else {
-                            edge_half(geometry.bounds, edge)
+                            edge_half(geometry.workspace, edge)
                         }
             }
         }
@@ -957,9 +1009,9 @@ fn drop_target(
                 tab_bounds
                     .get(pane)
                     .filter(|rect| position.x < rect.x + rect.width / 2.0)
-                    .map(|_| index)
+                    .map(|_| group.insertion_slots[index])
             })
-            .unwrap_or(group.panes.len());
+            .unwrap_or_else(|| *group.insertion_slots.last().expect("end slot"));
         return Some(DockDropPreview {
             placement: DockPlacement::Tab {
                 group: group.id,
@@ -987,7 +1039,7 @@ fn drop_target(
         Some(DockDropPreview {
             placement: DockPlacement::Tab {
                 group: group.id,
-                index: group.panes.len(),
+                index: *group.insertion_slots.last().expect("end slot"),
             },
             bounds: group.bounds,
         })

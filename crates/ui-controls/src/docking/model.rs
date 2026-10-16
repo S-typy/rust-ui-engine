@@ -6,11 +6,13 @@
 use rust_desktop_ui_core::{Axis, Rect, Size};
 use std::collections::HashSet;
 use std::{error::Error, fmt};
+mod auto_hide;
+pub use auto_hide::*;
 
 pub const MAX_DOCK_PANES: usize = 64;
 pub const MAX_DOCK_FLOATING_WINDOWS: usize = 16;
 pub const MAX_DOCK_DEPTH: usize = 32;
-pub const DOCK_SNAPSHOT_VERSION: u32 = 1;
+pub const DOCK_SNAPSHOT_VERSION: u32 = 2;
 pub const DOCK_TAB_HEIGHT: f32 = 32.0;
 pub const DOCK_SPLITTER_WIDTH: f32 = 6.0;
 
@@ -95,9 +97,11 @@ pub struct DockSnapshot {
     pub root: Option<DockNode>,
     pub floating: Vec<DockFloating>,
     pub closed: Vec<DockPaneId>,
+    /// Auto-hide is presentation metadata; the original tab placement stays intact.
+    pub auto_hide: Vec<DockAutoHide>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DockEdge {
     Left,
     Right,
@@ -158,6 +162,7 @@ pub struct DockLayout {
     next_group: Option<u64>,
     next_split: Option<u64>,
     next_window: Option<u64>,
+    revealed: std::collections::HashMap<DockWindowId, DockPaneId>,
 }
 
 impl DockLayout {
@@ -197,11 +202,16 @@ impl DockLayout {
                 root,
                 floating: Vec::new(),
                 closed,
+                auto_hide: Vec::new(),
             },
         )
     }
 
-    pub fn from_snapshot(panes: Vec<DockPane>, snapshot: DockSnapshot) -> Result<Self, DockError> {
+    pub fn from_snapshot(
+        panes: Vec<DockPane>,
+        mut snapshot: DockSnapshot,
+    ) -> Result<Self, DockError> {
+        migrate_snapshot(&mut snapshot)?;
         validate_catalog(&panes)?;
         let counters = validate_snapshot(&panes, &snapshot)?;
         Ok(Self {
@@ -210,6 +220,7 @@ impl DockLayout {
             next_group: counters.0,
             next_split: counters.1,
             next_window: counters.2,
+            revealed: Default::default(),
         })
     }
 
@@ -278,10 +289,12 @@ impl DockLayout {
         self.snapshot.closed.contains(pane)
     }
 
-    pub fn restore_snapshot(&mut self, snapshot: DockSnapshot) -> Result<bool, DockError> {
+    pub fn restore_snapshot(&mut self, mut snapshot: DockSnapshot) -> Result<bool, DockError> {
+        migrate_snapshot(&mut snapshot)?;
         let counters = validate_snapshot(&self.panes, &snapshot)?;
-        let changed = self.snapshot != snapshot;
+        let changed = self.snapshot != snapshot || !self.revealed.is_empty();
         self.snapshot = snapshot;
+        self.revealed.clear();
         // Do not recycle IDs removed earlier in this live layout's lifetime.
         self.next_group = advance_counter(self.next_group, counters.0);
         self.next_split = advance_counter(self.next_split, counters.1);
@@ -290,6 +303,9 @@ impl DockLayout {
     }
 
     pub fn activate(&mut self, pane: &DockPaneId) -> Result<bool, DockError> {
+        if self.auto_hide(pane).is_some() {
+            return self.reveal_auto_hide(pane);
+        }
         let group = self
             .group_for(pane)
             .ok_or_else(|| invalid("Pane is not open"))?;
@@ -316,6 +332,7 @@ impl DockLayout {
             && group == source_group
         {
             let mut next = self.clone();
+            next.unmark_auto_hide(pane);
             let DockNode::Tabs { panes, active, .. } =
                 next.group_mut(group).expect("validated group")
             else {
@@ -334,13 +351,13 @@ impl DockLayout {
             && group == source_group
             && matches!(self.group(group), Some(DockNode::Tabs { panes, .. }) if panes.len() == 1)
         {
-            return Ok(false);
+            return self.set_auto_hide(pane, None);
         }
         if let DockPlacement::Root { window, .. } = placement
             && self.window_for(pane) == Some(window)
             && matches!(self.root(window), Some(DockNode::Tabs { panes, .. }) if panes.len() == 1)
         {
-            return Ok(false);
+            return self.set_auto_hide(pane, None);
         }
         let mut next = self.clone();
         next.remove_open(pane);
@@ -361,6 +378,7 @@ impl DockLayout {
             && window != DockWindowId::MAIN
             && matches!(self.root(window), Some(DockNode::Tabs { panes, .. }) if panes.len() == 1)
         {
+            self.set_auto_hide(pane, None)?;
             self.update_floating_bounds(window, bounds)?;
             return Ok(window);
         }
@@ -412,6 +430,7 @@ impl DockLayout {
             .ok_or_else(|| invalid("Unknown floating docking window"))?;
         let mut next = self.clone();
         let floating = next.snapshot.floating.remove(index);
+        next.revealed.remove(&window);
         next.snapshot.root = Some(if let Some(old) = next.snapshot.root.take() {
             split_node(
                 DockSplitId(allocate(&mut next.next_split)?),
@@ -495,10 +514,15 @@ impl DockLayout {
             minimum_size: Size::ZERO,
             groups: Vec::new(),
             splitters: Vec::new(),
+            workspace: bounds,
+            auto_hide_rails: Vec::new(),
+            auto_hide_panel: None,
         };
-        if let Some(root) = self.root(window) {
-            result.minimum_size = self.minimum(root);
-            self.arrange_node(root, bounds, &mut result);
+        let workspace = self.arrange_auto_hide(window, bounds, &mut result);
+        result.workspace = workspace;
+        if let Some(root) = self.root(window).and_then(|root| self.visible_root(root)) {
+            result.minimum_size = self.minimum(&root);
+            self.arrange_node(&root, workspace, &mut result);
         }
         Ok(result)
     }
@@ -566,14 +590,16 @@ impl DockLayout {
         Ok(())
     }
 
-    fn commit(&mut self, next: Self) -> Result<bool, DockError> {
+    fn commit(&mut self, mut next: Self) -> Result<bool, DockError> {
         validate_snapshot(&next.panes, &next.snapshot)?;
-        let changed = self.snapshot != next.snapshot;
+        next.prune_revealed();
+        let changed = self.snapshot != next.snapshot || self.revealed != next.revealed;
         *self = next;
         Ok(changed)
     }
 
     fn remove_open(&mut self, pane: &DockPaneId) {
+        self.unmark_auto_hide(pane);
         self.snapshot.root = self
             .snapshot
             .root
@@ -684,9 +710,23 @@ impl DockLayout {
         match node {
             DockNode::Tabs { id, panes, active } => {
                 let header = DOCK_TAB_HEIGHT.min(bounds.height);
+                let full = match self.group(*id) {
+                    Some(DockNode::Tabs { panes, .. }) => panes.as_slice(),
+                    _ => panes.as_slice(),
+                };
+                let insertion_slots = panes
+                    .iter()
+                    .map(|pane| {
+                        full.iter()
+                            .position(|id| id == pane)
+                            .expect("visible pane belongs to model group")
+                    })
+                    .chain(std::iter::once(full.len()))
+                    .collect();
                 output.groups.push(DockGroupGeometry {
                     id: *id,
                     panes: panes.clone(),
+                    insertion_slots,
                     active: active.clone(),
                     bounds,
                     tab_strip: Rect::new(bounds.x, bounds.y, bounds.width, header),
@@ -768,12 +808,20 @@ pub struct DockGeometry {
     pub minimum_size: Size,
     pub groups: Vec<DockGroupGeometry>,
     pub splitters: Vec<DockSplitterGeometry>,
+    /// Pinned pane area after reserving edge rails.
+    pub workspace: Rect,
+    pub auto_hide_rails: Vec<DockAutoHideRailGeometry>,
+    /// Transient overlay; never serialized in DockSnapshot.
+    pub auto_hide_panel: Option<DockAutoHidePanelGeometry>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DockGroupGeometry {
     pub id: DockGroupId,
     pub panes: Vec<DockPaneId>,
+    /// Model insertion indices before each visible tab, followed by the end slot.
+    /// Hidden edge tabs remain in the model and are therefore counted here.
+    pub insertion_slots: Vec<usize>,
     pub active: DockPaneId,
     pub bounds: Rect,
     pub tab_strip: Rect,
@@ -877,7 +925,18 @@ fn validate_snapshot(panes: &[DockPane], snapshot: &DockSnapshot) -> Result<Coun
     if seen.len() != catalog.len() {
         return Err(invalid("Docking snapshot omits registered panes"));
     }
+    validate_auto_hide(snapshot)?;
     Ok((next_after(groups), next_after(splits), next_after(windows)))
+}
+
+fn migrate_snapshot(snapshot: &mut DockSnapshot) -> Result<(), DockError> {
+    if snapshot.version == 1 {
+        if !snapshot.auto_hide.is_empty() {
+            return Err(invalid("Version one cannot contain auto-hide metadata"));
+        }
+        snapshot.version = DOCK_SNAPSHOT_VERSION;
+    }
+    Ok(())
 }
 
 fn next_after(ids: HashSet<u64>) -> Option<u64> {

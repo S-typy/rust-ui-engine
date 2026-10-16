@@ -107,6 +107,12 @@ fn apply(layout: &mut DockLayout, requests: Vec<DockRequest>) {
             DockRequest::Resize { split, ratio } => {
                 layout.resize(split, ratio).unwrap();
             }
+            DockRequest::SetAutoHide { pane, settings } => {
+                layout.set_auto_hide(&pane, settings).unwrap();
+            }
+            DockRequest::DismissAutoHide { window, .. } => {
+                layout.dismiss_auto_hide(window).unwrap();
+            }
         }
     }
 }
@@ -764,4 +770,263 @@ fn empty_main_accepts_a_foreign_pane_anywhere_and_invalid_points_have_no_target(
     view.update(&mut ui, &layout, Rect::new(0.0, 0.0, 0.0, 0.0))
         .unwrap();
     assert_eq!(view.drop_target_at(Point::ZERO), None);
+}
+
+#[test]
+fn auto_hide_rail_retains_tabs_and_pin_restores_original_split() {
+    let (mut ui, mut layout, mut view) = fixture();
+    let id = pane("Properties");
+    let widget = view.tab_widget(&id).unwrap();
+    let original = layout.snapshot().root;
+    layout
+        .set_auto_hide(
+            &id,
+            Some(DockAutoHideSettings {
+                edge: DockEdge::Right,
+                extent: 280.0,
+            }),
+        )
+        .unwrap();
+    refresh(&mut ui, &layout, &mut view);
+    assert_eq!(view.tab_widget(&id), Some(widget));
+    assert_eq!(view.geometry().unwrap().groups.len(), 1);
+    assert!(view.geometry().unwrap().auto_hide_panel.is_none());
+    let point = center(ui.runtime.bounds(widget).unwrap());
+    let (consumed, requests) = view.handle_input(&mut ui, &down(point), &layout).unwrap();
+    assert!(consumed);
+    apply(&mut layout, requests);
+    view.handle_input(&mut ui, &up(point), &layout).unwrap();
+    refresh(&mut ui, &layout, &mut view);
+    let panel = view.geometry().unwrap().auto_hide_panel.as_ref().unwrap();
+    assert_eq!(panel.pane, id);
+    assert_eq!(view.tab_widget(&id), Some(widget));
+    assert!(!view.auto_hide_background_scene().commands().is_empty());
+    let pin = *view
+        .actions
+        .iter()
+        .find(|(_, action)| {
+            matches!(
+                action,
+                Action::Request(DockRequest::SetAutoHide { settings: None, .. })
+            )
+        })
+        .unwrap()
+        .0;
+    let requests = view.process_activated(&[pin], &layout);
+    apply(&mut layout, requests);
+    refresh(&mut ui, &layout, &mut view);
+    assert_eq!(layout.snapshot().root, original);
+    assert_eq!(view.tab_widget(&id), Some(widget));
+    assert!(view.geometry().unwrap().auto_hide_panel.is_none());
+}
+
+#[test]
+fn auto_hide_caption_and_rail_drag_do_not_target_occluded_panes() {
+    let (mut ui, mut layout, mut view) = fixture();
+    let id = pane("Search");
+    layout
+        .set_auto_hide(
+            &id,
+            Some(DockAutoHideSettings {
+                edge: DockEdge::Left,
+                extent: 300.0,
+            }),
+        )
+        .unwrap();
+    layout.reveal_auto_hide(&id).unwrap();
+    refresh(&mut ui, &layout, &mut view);
+    let geometry = view.geometry().unwrap().clone();
+    let panel = geometry.auto_hide_panel.as_ref().unwrap();
+    assert!(view.drop_target_at(center(panel.content)).is_none());
+    assert!(
+        view.drop_targets()
+            .unwrap()
+            .target_at(center(geometry.auto_hide_rails[0].bounds))
+            .is_none()
+    );
+    let caption = view.auto_hide_caption_widget().unwrap();
+    let point = center(ui.runtime.bounds(caption).unwrap());
+    let (consumed, _) = view.handle_input(&mut ui, &down(point), &layout).unwrap();
+    assert!(consumed);
+    assert_eq!(view.tab_drag().unwrap().widget, caption);
+    view.handle_input(
+        &mut ui,
+        &InputEvent::PointerMoved {
+            position: Point::new(point.x + 7.0, point.y),
+        },
+        &layout,
+    )
+    .unwrap();
+    assert!(view.tab_drag().unwrap().dragging);
+    assert_eq!(view.finish_tab_drag(&mut ui).unwrap(), Some(id.clone()));
+    let rail = view.tab_widget(&id).unwrap();
+    let point = center(ui.runtime.bounds(rail).unwrap());
+    view.handle_input(&mut ui, &down(point), &layout).unwrap();
+    assert_eq!(view.tab_drag().unwrap().widget, rail);
+    refresh(&mut ui, &layout, &mut view);
+    assert_eq!(ui.runtime.captured(), Some(rail));
+    assert_eq!(ui.runtime.focused(), Some(rail));
+    assert_eq!(view.tab_widget(&id), Some(rail));
+}
+
+#[test]
+fn auto_hide_escape_cancels_composition_before_dismiss_and_outside_preserves_focus_policy() {
+    let (mut ui, mut layout, mut view) = fixture();
+    let id = pane("Properties");
+    layout
+        .set_auto_hide(&id, Some(DockAutoHideSettings::default()))
+        .unwrap();
+    layout.reveal_auto_hide(&id).unwrap();
+    refresh(&mut ui, &layout, &mut view);
+    let editor = ui
+        .text_box(
+            ui.root(),
+            "Editor",
+            "draft",
+            LayoutStyle {
+                width: Length::Px(150.0),
+                height: Length::Px(32.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    ui.update(Size::new(800.0, 600.0)).unwrap();
+    ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+    ui.ime_preedit("composition", None).unwrap();
+    let (consumed, requests) = view
+        .handle_input(&mut ui, &key(Key::Escape), &layout)
+        .unwrap();
+    assert!(consumed && requests.is_empty());
+    assert!(ui.document(editor).unwrap().composition().is_none());
+    assert_eq!(ui.document(editor).unwrap().text(), "draft");
+    let (_, requests) = view
+        .handle_input(&mut ui, &key(Key::Escape), &layout)
+        .unwrap();
+    assert_eq!(
+        requests,
+        vec![DockRequest::DismissAutoHide {
+            window: DockWindowId::MAIN,
+            restore_focus: true
+        }]
+    );
+    let outside = Point::new(790.0, 580.0);
+    let (_, requests) = view.handle_input(&mut ui, &down(outside), &layout).unwrap();
+    assert!(requests.contains(&DockRequest::DismissAutoHide {
+        window: DockWindowId::MAIN,
+        restore_focus: false
+    }));
+    let (_, requests) = view
+        .handle_input(&mut ui, &InputEvent::WindowFocused(false), &layout)
+        .unwrap();
+    assert!(requests.contains(&DockRequest::DismissAutoHide {
+        window: DockWindowId::MAIN,
+        restore_focus: false
+    }));
+}
+
+#[test]
+fn auto_hide_overflow_keyboard_reveals_last_tab_with_same_identity() {
+    let (mut ui, mut layout, mut view) = fixture();
+    for id in ["Document", "Search", "Properties"] {
+        layout
+            .set_auto_hide(
+                &pane(id),
+                Some(DockAutoHideSettings {
+                    edge: DockEdge::Bottom,
+                    extent: 180.0,
+                }),
+            )
+            .unwrap();
+    }
+    view.update(&mut ui, &layout, Rect::new(0.0, 0.0, 150.0, 260.0))
+        .unwrap();
+    ui.update(Size::new(150.0, 260.0)).unwrap();
+    let first = view.tab_widget(&pane("Document")).unwrap();
+    let last = view.tab_widget(&pane("Properties")).unwrap();
+    ui.runtime.apply(Mutation::Focus(Some(first))).unwrap();
+    let (_, requests) = view.handle_input(&mut ui, &key(Key::End), &layout).unwrap();
+    apply(&mut layout, requests);
+    view.update(&mut ui, &layout, Rect::new(0.0, 0.0, 150.0, 260.0))
+        .unwrap();
+    ui.update(Size::new(150.0, 260.0)).unwrap();
+    assert_eq!(
+        layout.revealed_auto_hide(DockWindowId::MAIN),
+        Some(&pane("Properties"))
+    );
+    assert_eq!(ui.runtime.focused(), Some(last));
+    assert!(view.tab_bounds.contains_key(&pane("Properties")));
+    assert!(!view.tab_bounds.contains_key(&pane("Document")));
+    assert_eq!(view.tab_widget(&pane("Document")), Some(first));
+}
+
+#[test]
+fn drop_insertion_indices_include_auto_hidden_tabs_in_original_model_order() {
+    let (mut ui, mut layout, mut view) = fixture();
+    layout
+        .set_auto_hide(&pane("Document"), Some(DockAutoHideSettings::default()))
+        .unwrap();
+    refresh(&mut ui, &layout, &mut view);
+    let group = view
+        .geometry()
+        .unwrap()
+        .groups
+        .iter()
+        .find(|group| group.id == DockGroupId(1))
+        .unwrap();
+    assert_eq!(group.panes, vec![pane("Search")]);
+    assert_eq!(group.insertion_slots, vec![1, 2]);
+    let tab = view.tab_bounds[&pane("Search")];
+    let target = view
+        .drop_target_at(Point::new(tab.x + 1.0, tab.y + tab.height / 2.0))
+        .unwrap();
+    assert_eq!(
+        target.placement,
+        DockPlacement::Tab {
+            group: DockGroupId(1),
+            index: 1
+        }
+    );
+    layout
+        .move_pane(&pane("Properties"), target.placement)
+        .unwrap();
+    layout.set_auto_hide(&pane("Document"), None).unwrap();
+    let geometry = layout
+        .arrange(DockWindowId::MAIN, Rect::new(0.0, 0.0, 900.0, 600.0))
+        .unwrap();
+    assert_eq!(
+        geometry.groups[0].panes,
+        vec![pane("Document"), pane("Properties"), pane("Search")]
+    );
+}
+
+#[test]
+fn revealed_panel_content_and_header_occlude_pinned_splitter_input() {
+    let (mut ui, mut layout, mut view) = fixture();
+    layout
+        .set_auto_hide(
+            &pane("Search"),
+            Some(DockAutoHideSettings {
+                edge: DockEdge::Left,
+                extent: 650.0,
+            }),
+        )
+        .unwrap();
+    layout.reveal_auto_hide(&pane("Search")).unwrap();
+    refresh(&mut ui, &layout, &mut view);
+    let geometry = view.geometry().unwrap().clone();
+    let panel = geometry.auto_hide_panel.as_ref().unwrap();
+    let split = &geometry.splitters[0];
+    let position = Point::new(
+        split.bounds.x + split.bounds.width / 2.0,
+        panel.content.y + 20.0,
+    );
+    assert!(panel.content.contains(position.x, position.y));
+    assert!(split.bounds.contains(position.x, position.y));
+    let (consumed, requests) = view
+        .handle_input(&mut ui, &down(position), &layout)
+        .unwrap();
+    assert!(!consumed);
+    assert!(requests.is_empty());
+    assert!(!view.is_interacting());
+    assert!(ui.runtime.captured().is_none());
 }

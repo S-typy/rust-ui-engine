@@ -77,6 +77,50 @@ struct SnapshotData {
     root: Option<NodeData>,
     floating: Vec<FloatingData>,
     closed: Vec<String>,
+    #[serde(default, deserialize_with = "read_auto_hide")]
+    auto_hide: Option<Vec<AutoHideData>>,
+}
+
+fn read_auto_hide<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Vec<AutoHideData>>, D::Error> {
+    Vec::deserialize(deserializer).map(Some)
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AutoHideData {
+    pane: String,
+    edge: EdgeData,
+    extent: f32,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum EdgeData {
+    Left,
+    Right,
+    Top,
+    Bottom,
+}
+impl From<DockEdge> for EdgeData {
+    fn from(edge: DockEdge) -> Self {
+        match edge {
+            DockEdge::Left => Self::Left,
+            DockEdge::Right => Self::Right,
+            DockEdge::Top => Self::Top,
+            DockEdge::Bottom => Self::Bottom,
+        }
+    }
+}
+impl From<EdgeData> for DockEdge {
+    fn from(edge: EdgeData) -> Self {
+        match edge {
+            EdgeData::Left => Self::Left,
+            EdgeData::Right => Self::Right,
+            EdgeData::Top => Self::Top,
+            EdgeData::Bottom => Self::Bottom,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -145,6 +189,17 @@ impl SnapshotData {
                 .iter()
                 .map(|id| id.as_str().into())
                 .collect(),
+            auto_hide: Some(
+                snapshot
+                    .auto_hide
+                    .iter()
+                    .map(|item| AutoHideData {
+                        pane: item.pane.as_str().into(),
+                        edge: item.settings.edge.into(),
+                        extent: item.settings.extent,
+                    })
+                    .collect(),
+            ),
         }
     }
 
@@ -152,9 +207,27 @@ impl SnapshotData {
         if self.format != FORMAT {
             return Err(invalid("Unsupported docking JSON format"));
         }
-        if self.version != DOCK_SNAPSHOT_VERSION {
+        if ![1, DOCK_SNAPSHOT_VERSION].contains(&self.version) {
             return Err(invalid("Unsupported docking JSON version"));
         }
+        let auto_hide = match (self.version, self.auto_hide) {
+            (1, None) => Vec::new(),
+            (1, Some(_)) => return Err(invalid("Version one cannot contain auto-hide metadata")),
+            (_, Some(values)) if values.len() <= MAX_DOCK_PANES => values,
+            (_, Some(_)) => return Err(invalid("Too many auto-hide panes")),
+            (_, None) => return Err(invalid("Missing auto_hide in version two")),
+        }
+        .into_iter()
+        .map(|item| {
+            Ok(DockAutoHide {
+                pane: DockPaneId::new(item.pane)?,
+                settings: DockAutoHideSettings {
+                    edge: item.edge.into(),
+                    extent: item.extent,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, DockError>>()?;
         if self.floating.len() > MAX_DOCK_FLOATING_WINDOWS || self.closed.len() > MAX_DOCK_PANES {
             return Err(invalid("Docking JSON exceeds its container limits"));
         }
@@ -185,10 +258,11 @@ impl SnapshotData {
             .map(DockPaneId::new)
             .collect::<Result<_, _>>()?;
         Ok(DockSnapshot {
-            version: self.version,
+            version: DOCK_SNAPSHOT_VERSION,
             root,
             floating,
             closed,
+            auto_hide,
         })
     }
 }

@@ -115,7 +115,14 @@ fn root_null_is_explicit_and_empty_or_all_closed_layouts_round_trip() {
 fn strict_schema_rejects_unknown_missing_duplicate_and_wrongly_typed_fields() {
     let mut layout = sample();
     let original = layout.snapshot_json().unwrap();
-    for field in ["format", "version", "root", "floating", "closed"] {
+    for field in [
+        "format",
+        "version",
+        "root",
+        "floating",
+        "closed",
+        "auto_hide",
+    ] {
         let mut value: Value = serde_json::from_str(&original).unwrap();
         value.as_object_mut().unwrap().remove(field);
         reject_without_mutation(&mut layout, &value.to_string());
@@ -127,7 +134,7 @@ fn strict_schema_rejects_unknown_missing_duplicate_and_wrongly_typed_fields() {
         Box::new(|v| v["floating"][0]["owner"] = json!(0)),
         Box::new(|v| v["floating"][0]["bounds"]["monitor"] = json!(1)),
         Box::new(|v| v["format"] = json!("other.product")),
-        Box::new(|v| v["version"] = json!(2)),
+        Box::new(|v| v["version"] = json!(DOCK_SNAPSHOT_VERSION + 1)),
         Box::new(|v| v["version"] = json!("1")),
         Box::new(|v| v["root"]["kind"] = json!("other")),
         Box::new(|v| v["root"]["axis"] = json!("sideways")),
@@ -259,7 +266,7 @@ fn tree_depth_pane_and_window_boundaries_match_the_model() {
         let names = (0..count).map(|i| format!("P{i}")).collect::<Vec<_>>();
         let refs = names.iter().map(String::as_str).collect::<Vec<_>>();
         let mut layout = DockLayout::new(catalog(&refs), None).unwrap();
-        let value = json!({"format":FORMAT,"version":DOCK_SNAPSHOT_VERSION,"root":chain_value(count),"floating":[],"closed":[]});
+        let value = json!({"format":FORMAT,"version":DOCK_SNAPSHOT_VERSION,"root":chain_value(count),"floating":[],"closed":[],"auto_hide":[]});
         if count == MAX_DOCK_DEPTH {
             assert!(layout.restore_json(&value.to_string()).unwrap());
             assert!(

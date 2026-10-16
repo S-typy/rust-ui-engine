@@ -705,6 +705,15 @@ impl Controls {
         }
         Ok(())
     }
+    pub(crate) fn set_overlay_surface(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        let control = self
+            .controls
+            .get_mut(&id)
+            .ok_or_else(|| ControlError::Invalid("Unknown overlay surface".into()))?;
+        control.popup_surface = true;
+        self.scene_dirty = true;
+        Ok(())
+    }
     pub fn stats(&self) -> FrameStats {
         self.total
     }

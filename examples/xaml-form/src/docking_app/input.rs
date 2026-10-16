@@ -219,6 +219,22 @@ impl DockWindow {
             return Ok(());
         }
 
+        // A pane composition owns the first Escape; the next one dismisses
+        // auto-hide without rolling back the editor's retained draft.
+        if matches!(
+            input,
+            InputEvent::KeyDown {
+                key: Key::Escape,
+                ..
+            }
+        ) && let Some(pane) = self.live_focused_pane()
+            && self.state.borrow().layout.revealed_auto_hide(self.id) == Some(&pane)
+            && self.state.borrow().panes[&pane].ime_composition_active() == Some(true)
+        {
+            self.deliver_pane(&pane, PlatformEvent::ImeCancel, response)?;
+            return Ok(());
+        }
+
         let (consumed, requests) = self
             .dock
             .handle_input(&mut self.ui, &input, &self.state.borrow().layout)
@@ -239,10 +255,12 @@ impl DockWindow {
             return Ok(());
         }
         if let Some(position) = pointer_position(&input) {
-            let pane = self.live_panes().into_iter().find(|pane| {
-                self.pane_bounds(pane)
-                    .is_some_and(|bounds| bounds.contains(position.x, position.y))
-            });
+            let pane = self
+                .geometry
+                .as_ref()
+                .and_then(|geometry| geometry.pane_at(position))
+                .filter(|pane| self.pane_is_live(pane))
+                .cloned();
             self.set_hovered_pane(pane.clone(), response)?;
             if let Some(pane) = pane {
                 if matches!(input, InputEvent::PointerDown { .. }) {
@@ -310,10 +328,7 @@ impl DockWindow {
         let pane = state.focused.as_ref().and_then(|(window, pane)| {
             (*window == self.id
                 && state.layout.window_for(pane) == Some(self.id)
-                && state
-                    .layout
-                    .root(self.id)
-                    .is_some_and(|root| active_in(root, pane)))
+                && state.layout.pane_is_visible(pane))
             .then(|| pane.clone())
         });
         if let Some(pane) = pane
@@ -327,10 +342,7 @@ impl DockWindow {
     fn pane_is_live(&self, pane: &DockPaneId) -> bool {
         let state = self.state.borrow();
         state.layout.window_for(pane) == Some(self.id)
-            && state
-                .layout
-                .root(self.id)
-                .is_some_and(|root| active_in(root, pane))
+            && state.layout.pane_is_visible(pane)
             && self
                 .pane_bounds(pane)
                 .is_some_and(|bounds| bounds.width > 0.0 && bounds.height > 0.0)
@@ -340,9 +352,9 @@ impl DockWindow {
     fn live_panes(&self) -> Vec<DockPaneId> {
         self.geometry
             .iter()
-            .flat_map(|geometry| &geometry.groups)
-            .filter(|group| self.pane_is_live(&group.active))
-            .map(|group| group.active.clone())
+            .flat_map(DockGeometry::visible_panes)
+            .filter(|(pane, _)| self.pane_is_live(pane))
+            .map(|(pane, _)| pane.clone())
             .collect()
     }
 
@@ -372,6 +384,21 @@ impl DockWindow {
     ) -> Result<(), String> {
         if !self.pane_is_live(pane) {
             return Ok(());
+        }
+        if self
+            .state
+            .borrow()
+            .layout
+            .revealed_auto_hide(self.id)
+            .is_some_and(|revealed| revealed != pane)
+        {
+            self.state.borrow_mut().request(
+                self.id,
+                DockRequest::DismissAutoHide {
+                    window: self.id,
+                    restore_focus: false,
+                },
+            )?;
         }
         self.state
             .borrow_mut()
@@ -405,7 +432,22 @@ impl DockWindow {
     fn apply_requests(&mut self, requests: Vec<DockRequest>) -> Result<(), String> {
         let mut state = self.state.borrow_mut();
         for request in requests {
+            let restore = matches!(
+                request,
+                DockRequest::DismissAutoHide {
+                    restore_focus: true,
+                    ..
+                }
+            );
             state.request(self.id, request)?;
+            if restore
+                && state
+                    .focused
+                    .as_ref()
+                    .is_some_and(|(window, _)| *window == self.id)
+            {
+                self.ui.runtime.apply(Mutation::Focus(None)).map_err(err)?;
+            }
         }
         Ok(())
     }
@@ -461,21 +503,6 @@ impl DockWindow {
         }
         Ok(())
     }
-}
-
-fn active_in(root: &DockNode, pane: &DockPaneId) -> bool {
-    let mut pending = vec![root];
-    while let Some(node) = pending.pop() {
-        match node {
-            DockNode::Tabs { active, .. } if active == pane => return true,
-            DockNode::Split { first, second, .. } => {
-                pending.push(first);
-                pending.push(second);
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 fn supports_action(
@@ -1132,5 +1159,157 @@ mod tests {
         ] {
             assert_eq!(translated_input(&input, bounds), input);
         }
+    }
+    #[test]
+    fn auto_hide_retains_editor_and_escape_restores_pre_reveal_focus_after_ime() {
+        let mut window = fixture();
+        let a = pane("A");
+        let b = pane("B");
+        click_editor(&mut window, &a);
+        window
+            .handle_event(PlatformEvent::Text("document draft".into()))
+            .unwrap();
+        let (editor, accepted) = {
+            let mut state = window.state.borrow_mut();
+            let form = state.panes.get_mut(&b).unwrap();
+            let editor = form.editor();
+            let mut settings = form.ui.editor_settings(editor).unwrap().clone();
+            settings.commit_on_focus_lost = false;
+            form.ui.set_editor_settings(editor, settings).unwrap();
+            (editor, form.ui.accepted_value(editor).unwrap().to_owned())
+        };
+        window
+            .state
+            .borrow_mut()
+            .request(
+                DockWindowId::MAIN,
+                DockRequest::SetAutoHide {
+                    pane: b.clone(),
+                    settings: Some(DockAutoHideSettings {
+                        edge: DockEdge::Right,
+                        extent: 320.0,
+                    }),
+                },
+            )
+            .unwrap();
+        window.update(Size::new(900.0, 500.0), 1.0).unwrap();
+        let tab = window.dock.tab_widget(&b).unwrap();
+        let bounds = window.ui.runtime.bounds(tab).unwrap();
+        let point = Point::new(
+            bounds.x + bounds.width / 2.0,
+            bounds.y + bounds.height / 2.0,
+        );
+        pointer(&mut window, point, true);
+        pointer(&mut window, point, false);
+        window.update(Size::new(900.0, 500.0), 1.0).unwrap();
+        click_editor(&mut window, &b);
+        window
+            .handle_event(PlatformEvent::Text("retained draft".into()))
+            .unwrap();
+        window
+            .handle_event(PlatformEvent::ImePreedit("compose".into(), None))
+            .unwrap();
+        let escape = PlatformEvent::Input(InputEvent::KeyDown {
+            key: Key::Escape,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        window.handle_event(escape.clone()).unwrap();
+        assert_eq!(
+            window
+                .state
+                .borrow()
+                .layout
+                .revealed_auto_hide(DockWindowId::MAIN),
+            Some(&b)
+        );
+        assert!(
+            window.state.borrow().panes[&b]
+                .ui
+                .document(editor)
+                .unwrap()
+                .composition()
+                .is_none()
+        );
+        window.handle_event(escape).unwrap();
+        window.update(Size::new(900.0, 500.0), 1.0).unwrap();
+        assert!(
+            window
+                .state
+                .borrow()
+                .layout
+                .revealed_auto_hide(DockWindowId::MAIN)
+                .is_none()
+        );
+        assert_eq!(window.live_focused_pane(), Some(a.clone()));
+        {
+            let state = window.state.borrow();
+            let form = &state.panes[&b];
+            assert_eq!(form.editor(), editor);
+            assert_eq!(form.text(), "retained draft");
+            assert_eq!(form.ui.accepted_value(editor), Some(accepted.as_str()));
+        }
+        window
+            .state
+            .borrow_mut()
+            .request(
+                DockWindowId::MAIN,
+                DockRequest::SetAutoHide {
+                    pane: b.clone(),
+                    settings: None,
+                },
+            )
+            .unwrap();
+        window.update(Size::new(900.0, 500.0), 1.0).unwrap();
+        assert_eq!(window.state.borrow().panes[&b].editor(), editor);
+        assert!(window.pane_bounds(&b).is_some());
+    }
+
+    #[test]
+    fn auto_hide_overlay_routes_clicks_above_pinned_content_and_outside_never_restores_old_focus() {
+        let mut window = fixture();
+        let a = pane("A");
+        let b = pane("B");
+        click_editor(&mut window, &a);
+        window
+            .state
+            .borrow_mut()
+            .request(
+                DockWindowId::MAIN,
+                DockRequest::SetAutoHide {
+                    pane: b.clone(),
+                    settings: Some(DockAutoHideSettings {
+                        edge: DockEdge::Left,
+                        extent: 320.0,
+                    }),
+                },
+            )
+            .unwrap();
+        window
+            .state
+            .borrow_mut()
+            .request(DockWindowId::MAIN, DockRequest::Activate(b.clone()))
+            .unwrap();
+        window.update(Size::new(900.0, 500.0), 1.0).unwrap();
+        click_editor(&mut window, &b);
+        window
+            .handle_event(PlatformEvent::Text("overlay".into()))
+            .unwrap();
+        assert_eq!(window.state.borrow().panes[&a].text(), "");
+        assert_eq!(window.state.borrow().panes[&b].text(), "overlay");
+        let pinned = window.pane_bounds(&a).unwrap();
+        let outside = Point::new(pinned.x + pinned.width - 30.0, pinned.y + 30.0);
+        pointer(&mut window, outside, true);
+        pointer(&mut window, outside, false);
+        assert!(
+            window
+                .state
+                .borrow()
+                .layout
+                .revealed_auto_hide(DockWindowId::MAIN)
+                .is_none()
+        );
+        assert_eq!(window.live_focused_pane(), Some(a));
+        assert!(window.state.borrow().auto_hide_return.is_empty());
     }
 }

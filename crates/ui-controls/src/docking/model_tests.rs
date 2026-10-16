@@ -90,7 +90,7 @@ fn malformed_snapshot_rejection_is_atomic() {
     let before = layout.snapshot();
     let mut invalids = Vec::new();
     let mut unknown_version = before.clone();
-    unknown_version.version = 2;
+    unknown_version.version = DOCK_SNAPSHOT_VERSION + 1;
     invalids.push(unknown_version);
     let mut duplicate = before.clone();
     duplicate.closed.push(id("document"));
