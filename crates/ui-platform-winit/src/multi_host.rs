@@ -508,8 +508,14 @@ impl WindowState {
         app: &mut dyn DesktopApp,
         clipboard: &mut Option<arboard::Clipboard>,
     ) -> Result<bool, String> {
-        let allowed =
-            self.focused && crate::ime::valid_cursor(app.ime_target(), app.ime_cursor()).is_some();
+        let allowed = self.focused
+            && crate::ime::composition_allowed(app.ime_is_password())
+            && crate::ime::valid_cursor(app.ime_target(), app.ime_cursor()).is_some();
+        self.window.set_ime_purpose(if app.ime_is_password() {
+            winit::window::ImePurpose::Password
+        } else {
+            winit::window::ImePurpose::Normal
+        });
         let changed = self.ime.set_target(app.ime_target(), allowed);
         let cancelled = self.ime.cancelled_by_editor(app.ime_composition_active());
         let mut redraw = false;
@@ -533,8 +539,12 @@ impl WindowState {
         clipboard: &mut Option<arboard::Clipboard>,
         event: PlatformEvent,
     ) -> Result<bool, String> {
+        let protected_before = app.ime_is_password();
         let response = app.event(event)?;
         let redraw = self.effects(app, clipboard, response)?;
+        if protected_before != app.ime_is_password() {
+            self.publish_accessibility(app, self.window.scale_factor() as f32)?;
+        }
         if let Some(direction) = app.take_resize_request()
             && let Err(error) = crate::begin_resize(&self.window, direction)
         {
@@ -564,19 +574,7 @@ impl WindowState {
         );
         app.window_chrome_changed(chrome);
         app.update(Size::new(logical.width, logical.height), scale as f32)?;
-        let previous = &mut self.accessible_nodes;
-        let mut error = None;
-        self.adapter
-            .update_if_active(|| match previous.update(app.accessibility(scale as f32)) {
-                Ok(update) => update,
-                Err(message) => {
-                    error = Some(message);
-                    previous.unchanged()
-                }
-            });
-        if let Some(error) = error {
-            return Err(error);
-        }
+        self.publish_accessibility(app, scale as f32)?;
         let redraw = self.sync_ime(app, clipboard)?;
         if let Some(caret) = crate::ime::valid_cursor(app.ime_target(), app.ime_cursor()) {
             self.window.set_ime_cursor_area(
@@ -707,6 +705,24 @@ impl WindowState {
             .wake_after()
             .map(|delay| Instant::now() + delay.max(Duration::from_millis(1)));
         Ok(redraw)
+    }
+
+    fn publish_accessibility(
+        &mut self,
+        app: &mut dyn DesktopApp,
+        scale: f32,
+    ) -> Result<(), String> {
+        let previous = &mut self.accessible_nodes;
+        let mut error = None;
+        self.adapter
+            .update_if_active(|| match previous.update(app.accessibility(scale)) {
+                Ok(update) => update,
+                Err(message) => {
+                    error = Some(message);
+                    previous.unchanged()
+                }
+            });
+        error.map_or(Ok(()), Err)
     }
 
     fn event(

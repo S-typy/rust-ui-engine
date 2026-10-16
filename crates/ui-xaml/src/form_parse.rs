@@ -23,6 +23,13 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
         "ComboBox" => ElementKind::ComboBox(SelectionDefinition::default()),
         "LookupEdit" => ElementKind::LookupEdit(LookupDefinition::default()),
         "ButtonEdit" => ElementKind::ButtonEdit(ButtonEditDefinition::default()),
+        "MemoEdit" => ElementKind::MemoEdit(MemoEditDefinition::default()),
+        "PasswordBox" => ElementKind::PasswordBox(PasswordBoxDefinition::default()),
+        "NumericEdit" => ElementKind::NumericEdit(NumericEditDefinition::default()),
+        "MaskEdit" => ElementKind::MaskEdit(MaskEditDefinition::default()),
+        "DateTimeEdit" => ElementKind::DateTimeEdit(DateTimeEditDefinition::default()),
+        "DateRangeEdit" => ElementKind::DateRangeEdit(DateRangeEditDefinition::default()),
+        "Calendar" => ElementKind::Calendar(CalendarDefinition::default()),
         "SpinBox" => ElementKind::SpinBox(SpinBoxDefinition::default()),
         "DateEdit" => ElementKind::DateEdit(TemporalEditDefinition {
             format: "dd.MM.yyyy".into(),
@@ -54,13 +61,20 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         ElementKind::GroupBox(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::Expander(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::TabbedGroup(_) => name == "SelectedIndex",
-        ElementKind::TextBox(_) | ElementKind::ButtonEdit(_) => {
+        ElementKind::TextBox(_) | ElementKind::ButtonEdit(_) | ElementKind::MemoEdit(_) => {
             matches!(name, "Text" | "IsReadOnly" | "PlaceholderText")
         }
-        ElementKind::SpinBox(_) | ElementKind::DateEdit(_) | ElementKind::TimeEdit(_) => {
+        ElementKind::SpinBox(_)
+        | ElementKind::NumericEdit(_)
+        | ElementKind::MaskEdit(_)
+        | ElementKind::DateTimeEdit(_)
+        | ElementKind::DateRangeEdit(_)
+        | ElementKind::DateEdit(_)
+        | ElementKind::TimeEdit(_) => {
             matches!(name, "Value" | "IsReadOnly" | "PlaceholderText")
         }
         ElementKind::TextBlock(_) => name == "Text",
+        ElementKind::Calendar(_) => matches!(name, "Value" | "IsReadOnly"),
         ElementKind::Button(_) | ElementKind::DropDownButton(_) | ElementKind::SplitButton(_) => {
             name == "Content"
         }
@@ -111,6 +125,7 @@ pub(super) fn common_property(
         "MaxWidth" => common.max_width = Some(metric()?),
         "MaxHeight" => common.max_height = Some(metric()?),
         "HorizontalAlignment" => {
+            common.horizontal_alignment_explicit = true;
             common.horizontal_alignment = match value {
                 "Left" => Alignment::Start,
                 "Center" => Alignment::Center,
@@ -126,6 +141,7 @@ pub(super) fn common_property(
             }
         }
         "VerticalAlignment" => {
+            common.vertical_alignment_explicit = true;
             common.vertical_alignment = match value {
                 "Top" => Alignment::Start,
                 "Center" => Alignment::Center,
@@ -296,6 +312,13 @@ pub(super) fn property(
     attr: Attribute<'_, '_>,
     kind: &mut ElementKind,
 ) -> Result<bool, Diagnostic> {
+    if matches!(
+        kind,
+        ElementKind::DateTimeEdit(_) | ElementKind::DateRangeEdit(_) | ElementKind::Calendar(_)
+    ) {
+        return temporal::property(document, attr, kind);
+    }
+    let time_editor = matches!(kind, ElementKind::TimeEdit(_));
     if let ElementKind::Expander(expander) = kind {
         match attr.name() {
             "ExpandDirection" => {
@@ -330,6 +353,38 @@ pub(super) fn property(
     }
     let metric = || editor_metric(document, attr, MAX_DIMENSION, true);
     match kind {
+        ElementKind::PasswordBox(password) => {
+            match attr.name() {
+                "MaxLength" => {
+                    password.max_length = attr.value().parse().map_err(|_| {
+                        at_attribute(
+                            document,
+                            attr,
+                            "PasswordBox MaxLength must be an integer in [0, 4096]",
+                        )
+                    })?
+                }
+                "IsReadOnly" => password.is_read_only = boolean(document, attr)?,
+                "AllowPaste" => password.allow_paste = boolean(document, attr)?,
+                "AllowReveal" => password.allow_reveal = boolean(document, attr)?,
+                "PlaceholderText" => password.placeholder = attr.value().into(),
+                "RevealDurationMs" => {
+                    password.reveal_duration_ms = attr.value().parse().map_err(|_| {
+                        at_attribute(
+                            document,
+                            attr,
+                            "RevealDurationMs must be an integer in [1, 10000]",
+                        )
+                    })?
+                }
+                "PlaceholderForeground" => {
+                    password.placeholder_foreground = Some(color(document, attr)?)
+                }
+                "SelectionBrush" => password.selection_brush = Some(color(document, attr)?),
+                _ => return button_style_property(document, attr, &mut password.style),
+            }
+            Ok(true)
+        }
         ElementKind::RadioGroup(selection) => {
             if attr.name() == "SelectedKey" {
                 selection.selected_value = Some(attr.value().into());
@@ -473,6 +528,84 @@ pub(super) fn property(
             selection_property(document, attr, &mut lookup.selection)
         }
         ElementKind::ButtonEdit(editor) => editor_property(document, attr, &mut editor.editor),
+        ElementKind::MemoEdit(memo) => {
+            match attr.name() {
+                "PopupWidth" => {
+                    memo.popup_width = editor_metric(document, attr, MAX_DIMENSION, false)?
+                }
+                "PopupHeight" => {
+                    memo.popup_height = editor_metric(document, attr, MAX_DIMENSION, false)?
+                }
+                _ => return editor_property(document, attr, &mut memo.editor),
+            }
+            Ok(true)
+        }
+        ElementKind::MaskEdit(editor) => {
+            match attr.name() {
+                "Mask" => editor.mask = attr.value().into(),
+                "Value" => editor.value = attr.value().into(),
+                "AllowEmpty" => editor.allow_empty = boolean(document, attr)?,
+                "PromptChar" => {
+                    let mut chars = attr.value().chars();
+                    editor.prompt_char = chars
+                        .next()
+                        .filter(|_| chars.next().is_none())
+                        .ok_or_else(|| {
+                            at_attribute(document, attr, "PromptChar must be one character")
+                        })?;
+                }
+                "Culture" => {
+                    editor.culture = match attr.value() {
+                        "ru" | "ru-RU" => NumericCultureDefinition::Russian,
+                        "en" | "en-US" => NumericCultureDefinition::English,
+                        "ar" | "ar-SA" => NumericCultureDefinition::Arabic,
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "Culture must be ru-RU, en-US or ar-SA",
+                            ));
+                        }
+                    }
+                }
+                "Text" => return Ok(false),
+                _ => return editor_property(document, attr, &mut editor.editor),
+            }
+            Ok(true)
+        }
+        ElementKind::NumericEdit(editor) => {
+            match attr.name() {
+                "Value" => editor.value = Some(attr.value().into()),
+                "Minimum" => editor.minimum = attr.value().into(),
+                "Maximum" => editor.maximum = attr.value().into(),
+                "Increment" => editor.increment = attr.value().into(),
+                "Precision" => {
+                    editor.precision = attr.value().parse().map_err(|_| {
+                        at_attribute(document, attr, "Precision must be an integer in [0, 28]")
+                    })?
+                }
+                "AllowEmpty" => editor.allow_empty = boolean(document, attr)?,
+                "UseGrouping" => editor.use_grouping = boolean(document, attr)?,
+                "ShowCalculator" => editor.show_calculator = boolean(document, attr)?,
+                "Culture" => {
+                    editor.culture = match attr.value() {
+                        "ru" | "ru-RU" => NumericCultureDefinition::Russian,
+                        "en" | "en-US" => NumericCultureDefinition::English,
+                        "ar" | "ar-SA" => NumericCultureDefinition::Arabic,
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "Culture must be ru-RU, en-US or ar-SA",
+                            ));
+                        }
+                    }
+                }
+                "Text" => return Ok(false),
+                _ => return editor_property(document, attr, &mut editor.editor),
+            }
+            Ok(true)
+        }
         ElementKind::SpinBox(editor) => {
             match attr.name() {
                 "Value" => editor.value = number(document, attr)?,
@@ -490,6 +623,20 @@ pub(super) fn property(
                 "Minimum" => editor.minimum = Some(attr.value().into()),
                 "Maximum" => editor.maximum = Some(attr.value().into()),
                 "Format" => editor.format = attr.value().into(),
+                "AllowEmpty" => editor.allow_empty = boolean(document, attr)?,
+                "TimeStep" if time_editor => {
+                    editor.time_step = attr.value().parse().map_err(|_| {
+                        at_attribute(document, attr, "TimeStep must be 1..86400 seconds")
+                    })?
+                }
+                "ShowSeconds" if time_editor => {
+                    editor.format = if boolean(document, attr)? {
+                        "HH:mm:ss"
+                    } else {
+                        "HH:mm"
+                    }
+                    .into()
+                }
                 "Text" => return Ok(false),
                 _ => return editor_property(document, attr, &mut editor.editor),
             }
@@ -753,7 +900,14 @@ fn column(node: Node<'_, '_>) -> Result<LookupColumnDefinition, Diagnostic> {
     Ok(result)
 }
 
-fn editor_button(node: Node<'_, '_>) -> Result<EditorButtonDefinition, Diagnostic> {
+fn editor_button(
+    node: Node<'_, '_>,
+    depth: usize,
+    parent: usize,
+    count: &mut usize,
+    names: &mut HashSet<String>,
+    groups: &mut HashSet<RadioGroupKey>,
+) -> Result<EditorButtonDefinition, Diagnostic> {
     require_element(node, "EditorButton")?;
     let mut result = EditorButtonDefinition::default();
     for attr in node.attributes() {
@@ -772,6 +926,26 @@ fn editor_button(node: Node<'_, '_>) -> Result<EditorButtonDefinition, Diagnosti
             }
             "Icon" => result.icon = Some(icon_symbol(node.document(), attr)?),
             "Content" => result.content = attr.value().into(),
+            "Placement" => {
+                result.placement = match attr.value() {
+                    "Leading" => EditorButtonPlacement::Leading,
+                    "Trailing" => EditorButtonPlacement::Trailing,
+                    _ => {
+                        return Err(at_attribute(
+                            node.document(),
+                            attr,
+                            "EditorButton Placement must be Leading or Trailing",
+                        ));
+                    }
+                }
+            }
+            "Width" => result.width = editor_metric(node.document(), attr, 1024.0, false)?,
+            "IsVisible" => result.is_visible = boolean(node.document(), attr)?,
+            "IsEnabled" => result.is_enabled = boolean(node.document(), attr)?,
+            "IsEnabledWhenReadOnly" => {
+                result.is_enabled_when_read_only = boolean(node.document(), attr)?
+            }
+            "IsTabStop" => result.is_tab_stop = boolean(node.document(), attr)?,
             "ToolTip" if attr.value().len() <= MAX_TOOLTIP_BYTES => {
                 result.tool_tip = Some(attr.value().into())
             }
@@ -787,15 +961,43 @@ fn editor_button(node: Node<'_, '_>) -> Result<EditorButtonDefinition, Diagnosti
     if result.command.is_empty() {
         return Err(at_node(node, "EditorButton requires Command"));
     }
-    if result.content.is_empty() && result.tool_tip.as_deref().is_none_or(str::is_empty) {
-        return Err(at_node(
-            node,
-            "EditorButton requires Content or ToolTip for its accessible name",
-        ));
-    }
     for child in node.children() {
-        require_empty_content(child)?;
+        if !child.is_element() {
+            require_empty_content(child)?;
+            continue;
+        }
+        require_element(child, "EditorButton.ContentTemplate")?;
+        if result.content_template.is_some() || child.attributes().len() != 0 {
+            return Err(at_node(
+                child,
+                "Invalid or duplicate EditorButton.ContentTemplate",
+            ));
+        }
+        for visual in child.children() {
+            if !visual.is_element() {
+                require_empty_content(visual)?;
+                continue;
+            }
+            if result.content_template.is_some() {
+                return Err(at_node(
+                    visual,
+                    "EditorButton.ContentTemplate requires one visual root",
+                ));
+            }
+            let mut definition = parse_element(visual, depth + 2, parent, count, names, groups)?;
+            if visual.attribute("VerticalAlignment").is_none() {
+                definition.common.vertical_alignment = Alignment::Center;
+            }
+            result.content_template = Some(Box::new(definition));
+        }
+        if result.content_template.is_none() {
+            return Err(at_node(
+                child,
+                "EditorButton.ContentTemplate requires one visual root",
+            ));
+        }
     }
+    validate_editor_button(&result).map_err(|message| at_node(node, message))?;
     Ok(result)
 }
 
@@ -896,9 +1098,9 @@ pub(super) fn parse_children(
                     (ElementKind::Grid(grid), "Grid.ColumnDefinitions") => {
                         grid.columns.push(track(entry, false)?)
                     }
-                    (ElementKind::ButtonEdit(editor), "ButtonEdit.Buttons") => {
-                        editor.buttons.push(editor_button(entry)?)
-                    }
+                    (ElementKind::ButtonEdit(editor), "ButtonEdit.Buttons") => editor.buttons.push(
+                        editor_button(entry, depth + 1, parent, count, names, groups)?,
+                    ),
                     (ElementKind::LookupEdit(lookup), "LookupEdit.Columns") => {
                         lookup.columns.push(column(entry)?)
                     }
@@ -1217,6 +1419,21 @@ pub(super) fn validate(
             }
             validate_initial_text(node, &editor.editor)?;
         }
+        ElementKind::MemoEdit(memo) => {
+            validate_memo_edit(memo).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::PasswordBox(password) => {
+            validate_password_box(password).map_err(|message| at_node(node, message))?;
+            validate_password_bindings(common).map_err(|message| at_node(node, message))?;
+        }
+        ElementKind::NumericEdit(numeric) => {
+            validate_numeric_edit(numeric, common.bindings.contains_key("Value"))
+                .map_err(|message| at_node(node, message))?;
+        }
+        ElementKind::MaskEdit(mask) => {
+            validate_mask_edit(mask, common.bindings.contains_key("Value"))
+                .map_err(|message| at_node(node, message))?;
+        }
         ElementKind::SpinBox(editor) => {
             if editor.minimum > editor.maximum
                 || editor.increment <= 0.0
@@ -1231,6 +1448,25 @@ pub(super) fn validate(
         }
         ElementKind::DateEdit(editor) | ElementKind::TimeEdit(editor) => {
             let date = matches!(kind, ElementKind::DateEdit(_));
+            if !editor.allow_empty
+                && editor.value.is_none()
+                && !common.bindings.contains_key("Value")
+            {
+                return Err(at_node(
+                    node,
+                    "A temporal editor requires Value when AllowEmpty=False",
+                ));
+            }
+            if !date && !(1..=86400).contains(&editor.time_step) {
+                return Err(at_node(node, "TimeStep must be 1..86400 seconds"));
+            }
+            if !date
+                && let (Some(format), Some(show)) =
+                    (node.attribute("Format"), node.attribute_node("ShowSeconds"))
+                && (format == "HH:mm:ss") != boolean(node.document(), show)?
+            {
+                return Err(at_node(node, "TimeEdit Format conflicts with ShowSeconds"));
+            }
             let valid_formats: &[&str] = if date {
                 &["yyyy-MM-dd", "dd.MM.yyyy"]
             } else {
@@ -1245,15 +1481,6 @@ pub(super) fn validate(
             let minimum = minimum.map_err(|m| at_node(node, m))?;
             let value = value.map_err(|m| at_node(node, m))?;
             let maximum = maximum.map_err(|m| at_node(node, m))?;
-            if !date
-                && editor.format == "HH:mm"
-                && [minimum, value, maximum]
-                    .into_iter()
-                    .flatten()
-                    .any(|seconds| !seconds.is_multiple_of(60))
-            {
-                return Err(at_node(node, "nonzero seconds require Format=HH:mm:ss"));
-            }
             if minimum.zip(maximum).is_some_and(|(a, b)| a > b)
                 || value.zip(minimum).is_some_and(|(v, m)| v < m)
                 || value.zip(maximum).is_some_and(|(v, m)| v > m)
@@ -1263,6 +1490,17 @@ pub(super) fn validate(
                     "date/time value lies outside Minimum/Maximum",
                 ));
             }
+        }
+        ElementKind::DateTimeEdit(definition) => {
+            validate_date_time_edit(definition, common.bindings.contains_key("Value"))
+                .map_err(|message| at_node(node, message))?
+        }
+        ElementKind::DateRangeEdit(definition) => {
+            validate_date_range_edit(definition, common.bindings.contains_key("Value"))
+                .map_err(|message| at_node(node, message))?
+        }
+        ElementKind::Calendar(definition) => {
+            validate_calendar(definition).map_err(|message| at_node(node, message))?
         }
         _ => {}
     }

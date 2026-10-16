@@ -94,6 +94,7 @@ impl Controls {
         }
         let enabled = self.is_enabled(id);
         let selected = control.checked;
+        let calendar_cell = self.is_calendar_cell(id);
         let hovered = self.runtime.hovered() == Some(id) && enabled;
         let owner = self.rich.actions.get(&id).and_then(|a| match a {
             selection::RichAction::Select { owner, .. } => Some(*owner),
@@ -129,7 +130,7 @@ impl Controls {
                 },
             );
         }
-        if selected {
+        if selected && !calendar_cell {
             let height = 16.0_f32.min(bounds.height);
             let width = 3.0_f32.min(bounds.width);
             self.scene.rounded_fill(
@@ -153,12 +154,18 @@ impl Controls {
         }
         if !control.label.is_empty() {
             let text_bounds = Rect::new(
-                bounds.x + 10.0_f32.min(bounds.width),
+                bounds.x
+                    + if calendar_cell {
+                        4.0_f32.min(bounds.width)
+                    } else {
+                        10.0_f32.min(bounds.width)
+                    },
                 bounds.y,
-                (bounds.width - 18.0).max(0.0),
+                (bounds.width - if calendar_cell { 8.0 } else { 18.0 }).max(0.0),
                 bounds.height,
             );
             let mut run = TextRun {
+                sensitive: false,
                 bounds: text_bounds,
                 clip: text_bounds
                     .intersection(clip)
@@ -171,7 +178,11 @@ impl Controls {
                     chrome.disabled_text
                 },
                 weight: 400,
-                align: TextAlign::Start,
+                align: if calendar_cell {
+                    TextAlign::Center
+                } else {
+                    TextAlign::Start
+                },
                 wrap: false,
             };
             let height = self

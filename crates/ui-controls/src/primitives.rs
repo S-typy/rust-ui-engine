@@ -20,6 +20,8 @@ pub enum IconSymbol {
     Sun,
     Moon,
     Lock,
+    Eye,
+    Backspace,
 }
 
 /// Standalone icon colors. Unspecified values follow the current theme.
@@ -261,6 +263,39 @@ impl IconSymbol {
                     ]
                 }
             }
+            Self::Backspace => {
+                const {
+                    &[
+                        segment(1.0, 8.0, 5.0, 3.0),
+                        segment(5.0, 3.0, 14.0, 3.0),
+                        segment(14.0, 3.0, 14.0, 13.0),
+                        segment(14.0, 13.0, 5.0, 13.0),
+                        segment(5.0, 13.0, 1.0, 8.0),
+                        segment(7.0, 6.0, 11.0, 10.0),
+                        segment(11.0, 6.0, 7.0, 10.0),
+                    ]
+                }
+            }
+            Self::Eye => {
+                const {
+                    &[
+                        segment(1.0, 8.0, 4.0, 4.5),
+                        segment(4.0, 4.5, 8.0, 3.0),
+                        segment(8.0, 3.0, 12.0, 4.5),
+                        segment(12.0, 4.5, 15.0, 8.0),
+                        segment(15.0, 8.0, 12.0, 11.5),
+                        segment(12.0, 11.5, 8.0, 13.0),
+                        segment(8.0, 13.0, 4.0, 11.5),
+                        segment(4.0, 11.5, 1.0, 8.0),
+                        segment(6.0, 7.0, 8.0, 5.5),
+                        segment(8.0, 5.5, 10.0, 7.0),
+                        segment(10.0, 7.0, 10.0, 9.0),
+                        segment(10.0, 9.0, 8.0, 10.5),
+                        segment(8.0, 10.5, 6.0, 9.0),
+                        segment(6.0, 9.0, 6.0, 7.0),
+                    ]
+                }
+            }
             Self::Lock => {
                 const {
                     &[
@@ -368,7 +403,9 @@ pub(crate) fn paint_icon_themed(
         | IconSymbol::Remove
         | IconSymbol::ChevronDown
         | IconSymbol::ChevronRight
-        | IconSymbol::Lock => (foreground, geometry.len(), foreground),
+        | IconSymbol::Lock
+        | IconSymbol::Eye
+        | IconSymbol::Backspace => (foreground, geometry.len(), foreground),
     };
     let scale = size / 16.0;
     let origin = Point::new(

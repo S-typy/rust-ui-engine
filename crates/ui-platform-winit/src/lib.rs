@@ -147,6 +147,12 @@ pub trait DesktopApp {
     fn ime_target(&self) -> Option<rust_desktop_ui_core::WidgetId> {
         None
     }
+    /// Marks protected input. Windows disables native composition for this
+    /// target; other platforms receive the Password input-purpose hint.
+    /// It does not replace masking, clipboard or accessibility protection.
+    fn ime_is_password(&self) -> bool {
+        false
+    }
     /// Report the editor's composition state so programmatic changes and
     /// same-field pointer placement can cancel the OS composition as well.
     fn ime_composition_active(&self) -> Option<bool> {

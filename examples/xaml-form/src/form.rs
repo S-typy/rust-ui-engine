@@ -19,6 +19,7 @@ use std::{
 pub(crate) struct Form {
     pub(crate) workspace: crate::workspace_model::WorkspaceState,
     batch: Option<crate::batch_model::BatchState>,
+    data_editors: Option<crate::data_editors_model::State>,
     pub(crate) ui: Controls,
     pub(crate) view: MountedView,
     pub(crate) accessible: Accessibility,
@@ -78,6 +79,7 @@ impl Form {
         }
         // Application-owned registration; the generic mount never invents handlers.
         crate::workspace_model::register(&mut ui);
+        crate::data_editors_model::register(&mut ui);
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
         for (id, label) in [
@@ -202,9 +204,11 @@ impl Form {
         ui.drain_text_changes();
         ui.drain_edit_events();
         let batch = crate::batch_model::install(&mut ui, &view)?;
+        let data_editors = crate::data_editors_model::install(&mut ui, &view)?;
         Ok(Self {
             workspace: crate::workspace_model::WorkspaceState::default(),
             batch,
+            data_editors,
             ui,
             view,
             accessible: Accessibility::default(),
@@ -319,6 +323,11 @@ impl Form {
         for invocation in self.ui.drain_command_invocations() {
             if self.diagnostics {
                 println!("command={}", invocation.id.0);
+            }
+            if let Some(state) = &mut self.data_editors
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
             }
             if crate::workspace_model::command(self, &invocation.id.0)? {
                 continue;
@@ -492,6 +501,9 @@ impl Form {
             }
         }
         self.view.sync_bindings(&mut self.ui);
+        if let Some(state) = &mut self.data_editors {
+            state.refresh(&mut self.ui)?;
+        }
         self.ui.drain_activated();
         let focus = self.ui.runtime.focused();
         if focus != self.last_focus {
@@ -614,6 +626,7 @@ impl DesktopApp for Form {
                 self.last_popup_diagnostic = snapshot;
             }
             if self.batch.is_some()
+                || self.data_editors.is_some()
                 || self.find_name("WorkspaceTabs").is_some()
                 || self.find_name("DialogEditor").is_some()
             {
@@ -679,7 +692,12 @@ impl DesktopApp for Form {
             )
         {
             println!(
-                "edit-input={event:?} focused={}",
+                "edit-input={} focused={}",
+                if self.ui.password_input_focused() {
+                    "[PROTECTED]".to_owned()
+                } else {
+                    format!("{event:?}")
+                },
                 self.message().is_some() && self.ui.runtime.focused() == self.message()
             );
         }
@@ -725,7 +743,7 @@ impl DesktopApp for Form {
                     self.ui.text_input(&text).map_err(err)?;
                 }
             }
-            PlatformEvent::Paste(text) => self.ui.text_input(&text).map_err(err)?,
+            PlatformEvent::Paste(text) => self.ui.paste_input(&text).map_err(err)?,
             PlatformEvent::ImePreedit(text, cursor) => {
                 self.ui.ime_preedit(&text, cursor).map_err(err)?
             }
@@ -770,16 +788,25 @@ impl DesktopApp for Form {
     fn ime_cursor(&self) -> Option<Rect> {
         self.ime_target().and_then(|_| self.ui.caret_bounds())
     }
+    fn ime_is_password(&self) -> bool {
+        self.ui.password_input_focused()
+    }
     fn ime_target(&self) -> Option<WidgetId> {
-        self.ui
-            .runtime
-            .focused()
-            .filter(|id| self.ui.is_text_editable(*id))
+        self.ui.runtime.focused().filter(|id| {
+            self.ui.is_text_editable(*id)
+                || (self.ui.is_enabled(*id)
+                    && self
+                        .ui
+                        .password_settings(*id)
+                        .is_some_and(|settings| !settings.is_read_only))
+        })
     }
     fn ime_composition_active(&self) -> Option<bool> {
-        self.ime_target()
-            .and_then(|id| self.ui.document(id))
-            .map(|doc| doc.composition().is_some())
+        self.ime_target().and_then(|id| {
+            self.ui
+                .password_composition_active(id)
+                .or_else(|| self.ui.document(id).map(|doc| doc.composition().is_some()))
+        })
     }
     fn wake_after(&self) -> Option<Duration> {
         self.ui

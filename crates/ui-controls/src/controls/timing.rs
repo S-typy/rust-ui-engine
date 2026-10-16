@@ -4,10 +4,9 @@ use std::time::{Duration, Instant};
 
 impl Controls {
     pub(super) fn sync_caret_clock(&mut self) {
-        let owner = self
-            .runtime
-            .focused()
-            .filter(|id| self.window_focused && self.document(*id).is_some());
+        let owner = self.runtime.focused().filter(|id| {
+            self.window_focused && (self.document(*id).is_some() || self.is_password_box(*id))
+        });
         if self.caret_clock.map(|(id, _)| id) != owner {
             self.caret_clock = owner.map(|id| (id, Instant::now() + Duration::from_millis(500)));
         }
@@ -21,6 +20,7 @@ impl Controls {
             self.repeat_deadline(),
             self.progress_deadline(),
             self.expander_deadline(),
+            self.password_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -41,6 +41,7 @@ impl Controls {
         changed |= self.repeat_tick(now)?;
         changed |= self.progress_tick(now);
         changed |= self.expander_tick(now)?;
+        changed |= self.password_tick(now)?;
         Ok(changed)
     }
 }

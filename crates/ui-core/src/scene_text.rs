@@ -55,7 +55,7 @@ pub enum TextAlign {
 
 /// Text constrained by a logical layout box and an explicit ancestor clip.
 /// Font lookup and shaping belong to the text engine, not the scene model.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct TextRun {
     pub bounds: Rect,
     pub clip: Rect,
@@ -65,6 +65,33 @@ pub struct TextRun {
     pub weight: u16,
     pub align: TextAlign,
     pub wrap: bool,
+    /// The text is intentionally visible, but must be redacted in diagnostics
+    /// and excluded from persistent shaping caches. Renderers still need the
+    /// plaintext for the lifetime of this frame; this is not memory encryption.
+    pub sensitive: bool,
+}
+
+impl std::fmt::Debug for TextRun {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TextRun")
+            .field("bounds", &self.bounds)
+            .field("clip", &self.clip)
+            .field(
+                "text",
+                &if self.sensitive {
+                    "[REDACTED]"
+                } else {
+                    &self.text
+                },
+            )
+            .field("font_size", &self.font_size)
+            .field("color", &self.color)
+            .field("weight", &self.weight)
+            .field("align", &self.align)
+            .field("wrap", &self.wrap)
+            .field("sensitive", &self.sensitive)
+            .finish()
+    }
 }
 
 impl TextRun {
@@ -78,6 +105,7 @@ impl TextRun {
             weight: 400,
             align: TextAlign::Start,
             wrap: false,
+            sensitive: false,
         }
     }
 
@@ -102,4 +130,26 @@ pub enum DrawCommand {
     RoundedRectangle(usize),
     StrokePath(usize),
     Text(usize),
+}
+
+#[cfg(test)]
+mod privacy_tests {
+    use super::*;
+
+    #[test]
+    fn sensitive_text_is_redacted_after_scene_composition() {
+        let bounds = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let mut run = TextRun::new("private-value", bounds, Color::rgb(0, 0, 0), 14.0);
+        run.sensitive = true;
+        let mut source = crate::Scene::default();
+        source.text(run);
+        let mut scene = crate::Scene::default();
+        scene
+            .append_view(&source, crate::Point::ZERO, bounds)
+            .unwrap();
+        assert!(scene.texts[0].sensitive);
+        assert_eq!(scene.texts[0].text, "private-value");
+        assert!(!format!("{scene:?}").contains("private-value"));
+        assert!(format!("{scene:?}").contains("[REDACTED]"));
+    }
 }

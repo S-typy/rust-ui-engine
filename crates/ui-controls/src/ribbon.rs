@@ -17,6 +17,14 @@ use menu::{group_entries, item_entries};
 mod header;
 use header::HeaderMeasurements;
 pub use header::{RibbonHeader, RibbonHeaderRegions};
+#[path = "ribbon_customization.rs"]
+mod customization;
+pub use customization::{MAX_QUICK_ACCESS_COMMANDS, RibbonSettings};
+#[path = "ribbon_customization_view.rs"]
+mod customization_view;
+#[path = "ribbon_merge.rs"]
+mod merge;
+use customization_view::QuickAccessEditor;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RibbonItemKind {
@@ -140,6 +148,7 @@ enum Action {
     Tab(String),
     Dropdown,
     Minimize,
+    CustomizeQuickAccess,
     Command(CommandId),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -331,6 +340,11 @@ struct RibbonMeasurements {
 /// Retained Ribbon composition; application logic stays in the command registry.
 pub struct Ribbon {
     model: RibbonModel,
+    default_quick_access: Vec<CommandId>,
+    base_tabs: Vec<RibbonTab>,
+    merge_sources: Vec<(String, Vec<RibbonTab>)>,
+    quick_access_catalog: Option<Vec<CommandId>>,
+    quick_access_editor: Option<QuickAccessEditor>,
     active: String,
     context: Option<String>,
     parent: Option<WidgetId>,
@@ -454,6 +468,9 @@ impl Ribbon {
             .find(|tab| tab.context.is_none())
             .map_or_else(String::new, |tab| tab.id.clone());
         Ok(Self {
+            default_quick_access: model.quick_access.clone(),
+            base_tabs: model.tabs.clone(),
+            merge_sources: Vec::new(),
             model,
             active,
             context: None,
@@ -483,6 +500,8 @@ impl Ribbon {
             header: None,
             header_row: None,
             header_qat: None,
+            quick_access_catalog: None,
+            quick_access_editor: None,
         })
     }
     pub fn model(&self) -> &RibbonModel {
@@ -810,12 +829,18 @@ impl Ribbon {
             .or(popup_anchor)
             .and_then(|id| self.actions.get(&id))
             .cloned()
-            .or_else(|| popup_anchor.and_then(|id| self.actions.get(&id)).cloned());
-        let restore_ribbon_focus =
-            popup_anchor.is_some() || focused.is_some_and(|id| self.owns_node(ui, id));
+            .or_else(|| popup_anchor.and_then(|id| self.actions.get(&id)).cloned())
+            .or_else(|| {
+                self.quick_access_customization_is_open(ui)
+                    .then_some(Action::CustomizeQuickAccess)
+            });
+        let restore_ribbon_focus = popup_anchor.is_some()
+            || focused.is_some_and(|id| self.owns_node(ui, id))
+            || self.quick_access_customization_is_open(ui);
         if popup_anchor.is_some() {
             ui.close_popup()?;
         }
+        self.discard_quick_access_editor(ui)?;
         if let Some(container) = self.container {
             let children = ui
                 .runtime
@@ -876,7 +901,12 @@ impl Ribbon {
         }
         let visible: Vec<_> = self.visible_tabs().into_iter().cloned().collect();
         let minimize_width = 32.0_f32.min(available);
-        let tabs_available = (available - minimize_width - 8.0).max(0.0);
+        let customize_width = if self.quick_access_catalog.is_some() {
+            32.0_f32.min((available - minimize_width).max(0.0))
+        } else {
+            0.0
+        };
+        let tabs_available = (available - minimize_width - customize_width - 8.0).max(0.0);
         let tab_gaps = visible.len().saturating_sub(1) as f32;
         let tab_gap = if tab_gaps > 0.0 {
             4.0_f32.min(tabs_available / tab_gaps)
@@ -935,6 +965,7 @@ impl Ribbon {
         } else {
             "Minimize ribbon"
         };
+        self.mount_quick_access_customizer(ui, tab_row, customize_width, metrics.tab)?;
         let minimize = ui.button(
             tab_row,
             minimize_label,
@@ -1082,6 +1113,10 @@ impl Ribbon {
                         }
                         (Some(Action::Tab(tab)), Some(Action::Tab(candidate))) => tab == candidate,
                         (Some(Action::Minimize), Some(Action::Minimize)) => true,
+                        (
+                            Some(Action::CustomizeQuickAccess),
+                            Some(Action::CustomizeQuickAccess),
+                        ) => true,
                         _ => false,
                     }
             })
@@ -1365,6 +1400,9 @@ impl Ribbon {
         let mut unhandled = Vec::new();
         let menu_was_owned = self.owned_menu_open;
         for id in ui.drain_activated() {
+            if self.process_quick_access_editor(ui, id)? {
+                continue;
+            }
             match self.actions.get(&id).cloned() {
                 Some(Action::Tab(tab)) => {
                     self.active = tab;
@@ -1379,7 +1417,7 @@ impl Ribbon {
                     self.set_minimized(minimized);
                     self.finish_key_tips(ui, false);
                 }
-                Some(Action::Dropdown) => {}
+                Some(Action::Dropdown | Action::CustomizeQuickAccess) => {}
                 Some(Action::Command(_)) => {
                     if self.body_owns(ui, id) {
                         self.close_transient(ui, true);
@@ -1407,6 +1445,9 @@ impl Ribbon {
         event: &InputEvent,
     ) -> Result<bool, ControlError> {
         self.remember_external_focus(ui);
+        if self.quick_access_customization_is_open(ui) {
+            return Ok(false);
+        }
         self.owned_menu_open |= ui.popup_anchor().is_some_and(|id| self.body_owns(ui, id));
         if let InputEvent::PointerDown { position, .. } = event {
             let inside = ui

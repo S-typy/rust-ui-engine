@@ -23,6 +23,10 @@ const MAX_TEXT_BYTES: usize = 1024 * 1024;
 const MAX_LAYOUT_TEXT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_LAYOUT_CLUSTERS: usize = 262_144;
 const MAX_PREPARED_GLYPHS: usize = 65_536;
+// The shaping backend stores per-cluster counts in bytes. Bound the complete
+// input grapheme before any backend code runs, including normalization/fallback.
+const MAX_GRAPHEME_SCALARS: usize = 32;
+const MAX_GRAPHEME_BYTES: usize = 128;
 
 /// Prepared outputs hold bitmap Arcs independently of the engine cache.
 #[derive(Default)]
@@ -118,7 +122,7 @@ pub struct TextLineMetrics {
     pub descent: f32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct PreparedText {
     pub glyphs: Vec<RasterGlyph>,
     /// Intrinsic layout dimensions in physical pixels.
@@ -137,6 +141,21 @@ pub struct PreparedText {
     graphemes: Arc<[usize]>,
     origin: Point,
     scale: f32,
+}
+
+// Shaping internals can include protected text. Diagnostics expose metrics,
+// never the input string, clusters or reconstructable glyph arrays.
+impl fmt::Debug for PreparedText {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PreparedText")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("missing_glyphs", &self.missing_glyphs)
+            .field("shaped_glyphs", &self.shaped_glyphs)
+            .field("rasterized_glyphs", &self.rasterized_glyphs)
+            .field("color_glyphs", &self.color_glyphs)
+            .finish_non_exhaustive()
+    }
 }
 
 impl PreparedText {
@@ -338,6 +357,7 @@ pub enum TextError {
     InvalidRun,
     InvalidScale,
     TextTooLong,
+    GraphemeTooLong,
     NoSystemFont,
     UnsupportedFont,
     RasterLimit,
@@ -349,6 +369,7 @@ impl fmt::Display for TextError {
             Self::InvalidRun => "invalid text bounds, clip, size, weight or color",
             Self::InvalidScale => "text scale must be positive and finite; physical font size must not exceed 1024 pixels",
             Self::TextTooLong => "text run exceeds the one MiB preparation limit",
+            Self::GraphemeTooLong => "text grapheme exceeds 32 Unicode scalars or 128 UTF-8 bytes",
             Self::NoSystemFont => "system font lookup produced no glyphs for nonempty visible text",
             Self::UnsupportedFont => "a selected system font could not be read by the rasterizer",
             Self::RasterLimit => "glyph raster dimensions or prepared glyph count exceed the supported limit",
@@ -467,148 +488,12 @@ impl TextEngine {
         spans: &[TextSpan],
         scale: f32,
     ) -> Result<PreparedText, TextError> {
-        if !run.is_valid() {
-            return Err(TextError::InvalidRun);
-        }
-        if !scale.is_finite()
-            || scale <= 0.0
-            || !((run.font_size * scale).is_finite())
-            || run.font_size * scale > 1024.0
-        {
-            return Err(TextError::InvalidScale);
-        }
-        if run.text.len() > MAX_TEXT_BYTES {
-            return Err(TextError::TextTooLong);
-        }
-        if !valid_text_spans(&run.text, spans) {
-            return Err(TextError::InvalidRun);
-        }
-        if !spans.is_empty() {
-            let boundaries: HashSet<_> = run
-                .text
-                .grapheme_indices(true)
-                .map(|(index, _)| index)
-                .chain(std::iter::once(run.text.len()))
-                .collect();
-            if spans.iter().any(|span| {
-                !boundaries.contains(&span.range.start) || !boundaries.contains(&span.range.end)
-            }) {
-                return Err(TextError::InvalidRun);
-            }
-            if spans.iter().any(|span| {
-                span.font_size
-                    .is_some_and(|size| !(size * scale).is_finite() || size * scale > 1024.0)
-            }) {
-                return Err(TextError::InvalidScale);
-            }
-        }
+        let layout = self.shape_run(run, spans, scale)?;
         let bounds = scaled_rect(run.bounds, scale).ok_or(TextError::InvalidScale)?;
         let clip = scaled_rect(run.clip, scale).ok_or(TextError::InvalidScale)?;
         let clip = bounds
             .intersection(clip)
             .unwrap_or(Rect::new(bounds.x, bounds.y, 0.0, 0.0));
-        let key = LayoutKey {
-            text: Arc::from(run.text.as_str()),
-            size: run.font_size.to_bits(),
-            scale: scale.to_bits(),
-            width: bounds.width.to_bits(),
-            weight: run.weight,
-            align: run.align,
-            wrap: run.wrap,
-            spans: spans
-                .iter()
-                .map(|span| SpanKey {
-                    range: span.range.clone(),
-                    size: span.font_size.map(f32::to_bits),
-                    weight: span.weight,
-                })
-                .collect(),
-        };
-        let layout = if let Some(layout) = self.layouts.get(&key) {
-            self.stats.layout_hits += 1;
-            Arc::clone(layout)
-        } else {
-            let mut builder =
-                self.layout_context
-                    .ranged_builder(&mut self.fonts, &run.text, scale, true);
-            builder.push_default(StyleProperty::FontSize(run.font_size));
-            builder.push_default(StyleProperty::Brush(0));
-            builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(
-                run.weight,
-            ))));
-            builder.push_default(StyleProperty::TextWrapMode(if run.wrap {
-                TextWrapMode::Wrap
-            } else {
-                TextWrapMode::NoWrap
-            }));
-            for (index, span) in spans.iter().enumerate() {
-                if let Some(size) = span.font_size {
-                    builder.push(StyleProperty::FontSize(size), span.range.clone());
-                }
-                if let Some(weight) = span.weight {
-                    builder.push(
-                        StyleProperty::FontWeight(FontWeight::new(f32::from(weight))),
-                        span.range.clone(),
-                    );
-                }
-                builder.push(StyleProperty::Brush((index + 1) as u16), span.range.clone());
-            }
-            let mut layout: Layout<u16> = builder.build(&run.text);
-            layout.break_all_lines(Some(bounds.width));
-            layout.align(
-                match run.align {
-                    TextAlign::Start => Alignment::Start,
-                    TextAlign::Center => Alignment::Center,
-                    TextAlign::End => Alignment::End,
-                },
-                AlignmentOptions::default(),
-            );
-            if !layout.width().is_finite() || !layout.height().is_finite() {
-                return Err(TextError::InvalidRun);
-            }
-            let mut shaped_glyphs = 0;
-            let mut clusters = 0;
-            for line in layout.lines() {
-                for run in line.runs() {
-                    clusters += run.len();
-                    for cluster in run.clusters() {
-                        shaped_glyphs += cluster.glyphs().count();
-                        if shaped_glyphs > MAX_PREPARED_GLYPHS || clusters > MAX_LAYOUT_CLUSTERS {
-                            return Err(TextError::RasterLimit);
-                        }
-                    }
-                }
-            }
-            let layout = Arc::new(CachedLayout {
-                layout: Arc::new(layout),
-                graphemes: run
-                    .text
-                    .grapheme_indices(true)
-                    .map(|(i, _)| i)
-                    .chain(std::iter::once(run.text.len()))
-                    .collect(),
-                clusters,
-            });
-            while self.layouts.len() >= MAX_LAYOUTS
-                || self.stats.cached_layout_text_bytes + key.text.len() > MAX_LAYOUT_TEXT_BYTES
-                || self.stats.cached_layout_clusters + clusters > MAX_LAYOUT_CLUSTERS
-            {
-                let Some(old) = self.layout_order.pop_front() else {
-                    break;
-                };
-                if let Some(removed) = self.layouts.remove(&old) {
-                    self.stats.cached_layout_text_bytes -= old.text.len();
-                    self.stats.cached_layout_clusters -= removed.clusters;
-                }
-            }
-            self.layout_order.push_back(key.clone());
-            self.layouts.insert(key.clone(), Arc::clone(&layout));
-            self.stats.layouts += 1;
-            self.stats.cached_layouts = self.layouts.len();
-            self.stats.cached_layout_text_bytes += key.text.len();
-            self.stats.cached_layout_clusters += clusters;
-            layout
-        };
         let graphemes = Arc::clone(&layout.graphemes);
         let layout = Arc::clone(&layout.layout);
         let mut glyphs = Vec::new();
@@ -715,11 +600,174 @@ impl TextEngine {
             rasterized_glyphs,
             color_glyphs,
             layout,
-            text: key.text,
+            text: Arc::from(run.text.as_str()),
             graphemes,
             origin: Point::new(bounds.x, bounds.y),
             scale,
         })
+    }
+
+    /// Validate shaping and layout budgets without allocating glyph bitmaps.
+    /// Successful ordinary runs reuse this cached layout when prepared later.
+    /// Sensitive runs retain no layout-cache entry.
+    pub fn validate_run(&mut self, run: &TextRun, scale: f32) -> Result<(), TextError> {
+        self.shape_run(run, &[], scale).map(|_| ())
+    }
+
+    fn shape_run(
+        &mut self,
+        run: &TextRun,
+        spans: &[TextSpan],
+        scale: f32,
+    ) -> Result<Arc<CachedLayout>, TextError> {
+        if !run.is_valid() {
+            return Err(TextError::InvalidRun);
+        }
+        if !scale.is_finite()
+            || scale <= 0.0
+            || !((run.font_size * scale).is_finite())
+            || run.font_size * scale > 1024.0
+        {
+            return Err(TextError::InvalidScale);
+        }
+        if run.text.len() > MAX_TEXT_BYTES {
+            return Err(TextError::TextTooLong);
+        }
+        if run.text.graphemes(true).any(|grapheme| {
+            grapheme.len() > MAX_GRAPHEME_BYTES
+                || grapheme.chars().take(MAX_GRAPHEME_SCALARS + 1).count() > MAX_GRAPHEME_SCALARS
+        }) {
+            return Err(TextError::GraphemeTooLong);
+        }
+        if !valid_text_spans(&run.text, spans) {
+            return Err(TextError::InvalidRun);
+        }
+        if !spans.is_empty() {
+            let boundaries: HashSet<_> = run
+                .text
+                .grapheme_indices(true)
+                .map(|(index, _)| index)
+                .chain(std::iter::once(run.text.len()))
+                .collect();
+            if spans.iter().any(|span| {
+                !boundaries.contains(&span.range.start) || !boundaries.contains(&span.range.end)
+            }) {
+                return Err(TextError::InvalidRun);
+            }
+            if spans.iter().any(|span| {
+                span.font_size
+                    .is_some_and(|size| !(size * scale).is_finite() || size * scale > 1024.0)
+            }) {
+                return Err(TextError::InvalidScale);
+            }
+        }
+        let bounds = scaled_rect(run.bounds, scale).ok_or(TextError::InvalidScale)?;
+        scaled_rect(run.clip, scale).ok_or(TextError::InvalidScale)?;
+        let key = LayoutKey {
+            text: Arc::from(run.text.as_str()),
+            size: run.font_size.to_bits(),
+            scale: scale.to_bits(),
+            width: bounds.width.to_bits(),
+            weight: run.weight,
+            align: run.align,
+            wrap: run.wrap,
+            spans: spans
+                .iter()
+                .map(|span| SpanKey {
+                    range: span.range.clone(),
+                    size: span.font_size.map(f32::to_bits),
+                    weight: span.weight,
+                })
+                .collect(),
+        };
+        let layout = if let Some(layout) = self.layouts.get(&key).filter(|_| !run.sensitive) {
+            self.stats.layout_hits += 1;
+            Arc::clone(layout)
+        } else {
+            let mut builder =
+                self.layout_context
+                    .ranged_builder(&mut self.fonts, &run.text, scale, true);
+            builder.push_default(StyleProperty::FontSize(run.font_size));
+            builder.push_default(StyleProperty::Brush(0));
+            builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(
+                run.weight,
+            ))));
+            builder.push_default(StyleProperty::TextWrapMode(if run.wrap {
+                TextWrapMode::Wrap
+            } else {
+                TextWrapMode::NoWrap
+            }));
+            for (index, span) in spans.iter().enumerate() {
+                if let Some(size) = span.font_size {
+                    builder.push(StyleProperty::FontSize(size), span.range.clone());
+                }
+                if let Some(weight) = span.weight {
+                    builder.push(
+                        StyleProperty::FontWeight(FontWeight::new(f32::from(weight))),
+                        span.range.clone(),
+                    );
+                }
+                builder.push(StyleProperty::Brush((index + 1) as u16), span.range.clone());
+            }
+            let mut layout: Layout<u16> = builder.build(&run.text);
+            layout.break_all_lines(Some(bounds.width));
+            layout.align(
+                match run.align {
+                    TextAlign::Start => Alignment::Start,
+                    TextAlign::Center => Alignment::Center,
+                    TextAlign::End => Alignment::End,
+                },
+                AlignmentOptions::default(),
+            );
+            if !layout.width().is_finite() || !layout.height().is_finite() {
+                return Err(TextError::InvalidRun);
+            }
+            let mut shaped_glyphs = 0;
+            let mut clusters = 0;
+            for line in layout.lines() {
+                for run in line.runs() {
+                    clusters += run.len();
+                    for cluster in run.clusters() {
+                        shaped_glyphs += cluster.glyphs().count();
+                        if shaped_glyphs > MAX_PREPARED_GLYPHS || clusters > MAX_LAYOUT_CLUSTERS {
+                            return Err(TextError::RasterLimit);
+                        }
+                    }
+                }
+            }
+            let layout = Arc::new(CachedLayout {
+                layout: Arc::new(layout),
+                graphemes: run
+                    .text
+                    .grapheme_indices(true)
+                    .map(|(i, _)| i)
+                    .chain(std::iter::once(run.text.len()))
+                    .collect(),
+                clusters,
+            });
+            if !run.sensitive {
+                while self.layouts.len() >= MAX_LAYOUTS
+                    || self.stats.cached_layout_text_bytes + key.text.len() > MAX_LAYOUT_TEXT_BYTES
+                    || self.stats.cached_layout_clusters + clusters > MAX_LAYOUT_CLUSTERS
+                {
+                    let Some(old) = self.layout_order.pop_front() else {
+                        break;
+                    };
+                    if let Some(removed) = self.layouts.remove(&old) {
+                        self.stats.cached_layout_text_bytes -= old.text.len();
+                        self.stats.cached_layout_clusters -= removed.clusters;
+                    }
+                }
+                self.layout_order.push_back(key.clone());
+                self.layouts.insert(key.clone(), Arc::clone(&layout));
+                self.stats.cached_layouts = self.layouts.len();
+                self.stats.cached_layout_text_bytes += key.text.len();
+                self.stats.cached_layout_clusters += clusters;
+            }
+            self.stats.layouts += 1;
+            layout
+        };
+        Ok(layout)
     }
 
     fn raster(
@@ -863,6 +911,33 @@ fn scaled_rect(rect: Rect, scale: f32) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appending_multiline_text_preserves_existing_fallback_glyph_positions() {
+        let mut engine = TextEngine::new();
+        let text = "Первая строка заметки\nВторая строка: 👩‍💻 и e\u{301}";
+        let mut before = TextRun::new(
+            text,
+            Rect::new(10.0, 10.0, 1104.0, 200.0),
+            Color::rgb(0, 0, 0),
+            14.0,
+        );
+        before.wrap = false;
+        let mut after = before.clone();
+        after.text.push_str(" native\nsecond line");
+        for scale in [1.0, 1.5, 2.0] {
+            let first = engine.prepare(&before, scale).unwrap();
+            let second = engine.prepare(&after, scale).unwrap();
+            assert!(second.glyphs.len() > first.glyphs.len());
+            for (index, (first, second)) in first.glyphs.iter().zip(&second.glyphs).enumerate() {
+                assert_eq!(first.key, second.key, "glyph {index}, scale {scale}");
+                assert_eq!(
+                    first.position, second.position,
+                    "glyph {index}, scale {scale}"
+                );
+            }
+        }
+    }
     fn run(text: &str) -> TextRun {
         TextRun::new(
             text,
@@ -870,6 +945,31 @@ mod tests {
             Color::rgb(10, 20, 30),
             20.0,
         )
+    }
+
+    #[test]
+    fn sensitive_runs_never_enter_layout_cache_or_prepared_diagnostics() {
+        let mut engine = TextEngine::new();
+        engine.prepare(&run("ordinary"), 1.0).unwrap();
+        let before = engine.stats();
+        let mut secret = run("private-value");
+        secret.sensitive = true;
+        for _ in 0..2 {
+            let prepared = engine.prepare(&secret, 1.0).unwrap();
+            assert!(!format!("{prepared:?}").contains("private-value"));
+        }
+        assert_eq!(engine.stats().cached_layouts, before.cached_layouts);
+        assert_eq!(
+            engine.stats().cached_layout_text_bytes,
+            before.cached_layout_text_bytes
+        );
+        assert_eq!(engine.stats().layout_hits, before.layout_hits);
+        assert!(
+            engine
+                .layouts
+                .keys()
+                .all(|key| &*key.text != "private-value")
+        );
     }
 
     #[test]
@@ -886,6 +986,55 @@ mod tests {
             budget.include(3, usize::MAX),
             Err(TextError::RasterLimit)
         ));
+    }
+
+    #[test]
+    fn oversized_graphemes_fail_before_shaping_or_caching() {
+        let mut engine = TextEngine::new();
+        for text in [
+            format!("A{}", "\u{301}".repeat(4500)),
+            format!("\u{1f469}{}", "\u{200d}\u{1f4bb}".repeat(40)),
+            format!("a{}", "\u{301}".repeat(MAX_GRAPHEME_SCALARS)),
+        ] {
+            let text = run(&text);
+            assert_eq!(
+                engine.validate_run(&text, 1.0),
+                Err(TextError::GraphemeTooLong)
+            );
+            assert!(matches!(
+                engine.prepare(&text, 1.0),
+                Err(TextError::GraphemeTooLong)
+            ));
+            assert_eq!(engine.stats().cached_layouts, 0);
+        }
+        let supported = run(&format!("A{}", "\u{301}".repeat(MAX_GRAPHEME_SCALARS - 1)));
+        engine.validate_run(&supported, 1.0).unwrap();
+    }
+
+    #[test]
+    fn shape_validation_reuses_layout_without_raster_and_rejects_oversized_text() {
+        let mut engine = TextEngine::new();
+        let text = run("Draft 👩‍💻 e\u{301}");
+        engine.validate_run(&text, 1.0).unwrap();
+        let before = engine.stats();
+        assert_eq!(before.cached_glyphs, 0);
+        assert_eq!(before.cached_layouts, 1);
+        let prepared = engine.prepare(&text, 1.0).unwrap();
+        assert!(!prepared.glyphs.is_empty());
+        assert_eq!(engine.stats().layouts, before.layouts);
+        assert_eq!(engine.stats().layout_hits, before.layout_hits + 1);
+        let oversized = run(&"a".repeat(MAX_PREPARED_GLYPHS + 1));
+        assert!(matches!(
+            engine.validate_run(&oversized, 1.0),
+            Err(TextError::RasterLimit)
+        ));
+        assert_eq!(engine.stats().cached_layouts, before.cached_layouts);
+        let mut sensitive = text;
+        sensitive.sensitive = true;
+        let before = engine.stats();
+        engine.validate_run(&sensitive, 1.0).unwrap();
+        assert_eq!(engine.stats().cached_layouts, before.cached_layouts);
+        assert_eq!(engine.stats().layout_hits, before.layout_hits);
     }
 
     #[test]

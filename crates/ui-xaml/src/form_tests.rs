@@ -167,7 +167,7 @@ fn lookup_columns_and_dynamic_member_paths_compile() {
 
 #[test]
 fn embedded_buttons_require_registered_command_names_and_accessible_labels() {
-    let parsed = parse_content("<ButtonEdit Text='{Binding Path}' IsReadOnly='True'><ButtonEdit.Buttons><EditorButton Command='Browse' Icon='Add' ToolTip='Browse'/><EditorButton Command='Clear' Content='Clear'/></ButtonEdit.Buttons></ButtonEdit>").unwrap();
+    let parsed = parse_content("<ButtonEdit Text='{Binding Path}' IsReadOnly='True'><ButtonEdit.Buttons><EditorButton Command='Browse' Icon='Add' Content='Browse' ToolTip='Browse'/><EditorButton Command='Clear' Content='Clear'/></ButtonEdit.Buttons></ButtonEdit>").unwrap();
     let ElementKind::ButtonEdit(editor) = parsed.content.kind else {
         panic!()
     };
@@ -208,6 +208,7 @@ fn spinbox_finite_ranges_and_positive_increment_are_checked_before_mount() {
 #[test]
 fn temporal_editors_validate_calendar_dates_seconds_and_nullable_initial_values() {
     assert!(parse_content("<DateEdit/>").is_ok());
+    assert!(parse_content("<TimeEdit Value='12:30:01' Minimum='12:00:01' TimeStep='1'/>").is_ok());
     assert!(parse_content("<DateEdit Value='2024-02-29' Minimum='1900-01-01' Maximum='2100-12-31' Format='yyyy-MM-dd'/>").is_ok());
     assert!(
         parse_content(
@@ -226,8 +227,8 @@ fn temporal_editors_validate_calendar_dates_seconds_and_nullable_initial_values(
         "<TimeEdit Value='24:00'/>",
         "<TimeEdit Value='12:60'/>",
         "<TimeEdit Value='12:30:60'/>",
-        "<TimeEdit Value='12:30:01'/>",
-        "<TimeEdit Minimum='12:30:01'/>",
+        "<TimeEdit TimeStep='0'/>",
+        "<TimeEdit TimeStep='86401'/>",
         "<TimeEdit Value='09:30' Minimum='10:00'/>",
         "<TimeEdit Format='hh:mm tt'/>",
     ] {

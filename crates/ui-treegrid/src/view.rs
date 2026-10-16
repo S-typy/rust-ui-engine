@@ -482,6 +482,7 @@ fn text(
 ) {
     if bounds.width > 0.0 && bounds.height > 0.0 {
         scene.text(TextRun {
+            sensitive: false,
             bounds,
             clip,
             text: value,

@@ -561,6 +561,7 @@ impl Controls {
             return Ok(true);
         };
         let mut run = TextRun {
+            sensitive: false,
             bounds: text_bounds,
             clip: text_clip,
             text: self.controls[&id].display_label(&self.commands).to_owned(),

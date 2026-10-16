@@ -321,6 +321,12 @@ impl Controls {
             return Ok(());
         }
         let target = self.flyouts.entries.get(&self.flyouts.open[index]).cloned();
+        let closing = self.flyouts.open[index..].to_vec();
+        for id in closing {
+            self.temporal_will_close(id)?;
+            self.memo_will_close(id)?;
+            self.numeric_will_close(id);
+        }
         // Menus nested in this retained surface cannot outlive its visibility.
         if self.popup_anchor().is_some_and(|anchor| {
             self.flyouts.open[index..]

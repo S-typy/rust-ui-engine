@@ -659,11 +659,15 @@ fn time_parser_nullable_seconds_precision_and_steps_are_validated() {
         )
         .unwrap();
     assert_eq!(ui.time_value(c.container), Some(None));
-    assert!(matches!(
+    assert_eq!(
         ui.set_time_value(c.container, Some(TimeValue::new(9, 30, 1).unwrap()))
             .unwrap(),
-        CommitOutcome::Invalid(_)
-    ));
+        CommitOutcome::Committed
+    );
+    assert_eq!(
+        ui.time_value(c.container),
+        Some(Some(TimeValue::new(9, 30, 1).unwrap()))
+    );
     ui.set_time_value(c.container, Some(TimeValue::new(23, 59, 0).unwrap()))
         .unwrap();
     frame(&mut ui);
@@ -680,7 +684,7 @@ fn time_parser_nullable_seconds_precision_and_steps_are_validated() {
     );
 }
 #[test]
-fn time_settings_reject_hidden_seconds_and_preserve_dirty_draft() {
+fn time_settings_accept_hidden_seconds_and_preserve_dirty_draft() {
     let mut ui = Controls::new(Theme::FluentLight).unwrap();
     let c = ui
         .time_edit(
@@ -699,7 +703,7 @@ fn time_settings_reject_hidden_seconds_and_preserve_dirty_draft() {
                 ..Default::default()
             }
         )
-        .is_err()
+        .is_ok()
     );
     ui.set_text(c.editor, "invalid").unwrap();
     ui.set_time_settings(

@@ -1294,6 +1294,7 @@ impl Controls {
                 );
                 scene.fill(band, chrome.card_surface);
                 scene.text(TextRun {
+                    sensitive: false,
                     bounds: Rect::new(
                         band.x + 8.0,
                         band.y + 3.0,

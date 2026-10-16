@@ -847,6 +847,7 @@ impl Controls {
         editor_fill(&mut self.scene, inner, clip, 4.0, accent);
         if geometry.caption.width > 0.0 {
             let mut run = TextRun {
+                sensitive: false,
                 bounds: geometry.caption,
                 clip: geometry
                     .caption

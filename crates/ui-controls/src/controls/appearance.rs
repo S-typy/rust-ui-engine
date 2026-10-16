@@ -163,6 +163,7 @@ impl Controls {
             .engine
             .prepare(
                 &TextRun {
+                    sensitive: false,
                     bounds: Rect::new(0.0, 0.0, width, 0.0),
                     clip: Rect::new(0.0, 0.0, 0.0, 0.0),
                     text: text.to_owned(),

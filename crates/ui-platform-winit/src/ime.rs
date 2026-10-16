@@ -1,5 +1,11 @@
 use rust_desktop_ui_core::{Rect, WidgetId};
 
+/// Windows password fields disable native composition: its input-purpose hint
+/// is unsupported, and an input scope alone does not protect text services.
+pub(crate) fn composition_allowed(is_password: bool) -> bool {
+    !cfg!(target_os = "windows") || !is_password
+}
+
 /// Never pass malformed geometry or an unidentified editor into the OS IME.
 pub(crate) fn valid_cursor(target: Option<WidgetId>, cursor: Option<Rect>) -> Option<Rect> {
     target?;
@@ -67,6 +73,19 @@ impl ImeSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protected_windows_target_rejects_delayed_composition() {
+        assert!(composition_allowed(false));
+        assert_eq!(composition_allowed(true), !cfg!(target_os = "windows"));
+        let id = rust_desktop_ui_core::UiTree::new().root();
+        let mut session = ImeSession::default();
+        session.set_target(Some(id), true);
+        session.enabled();
+        session.set_target(Some(id), false);
+        session.enabled();
+        assert!(!session.preedit(true));
+        assert!(!session.commit());
+    }
     #[test]
     fn unidentified_editor_and_invalid_caret_never_enable_native_composition() {
         let id = rust_desktop_ui_core::UiTree::new().root();

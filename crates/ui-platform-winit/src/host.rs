@@ -158,11 +158,20 @@ impl<A: DesktopApp> Host<A> {
     }
 
     fn dispatch(&mut self, event_loop: &ActiveEventLoop, event: PlatformEvent) {
+        let protected_before = self.app.ime_is_password();
         match self.app.event(event) {
             Ok(response) => self.effects(event_loop, response),
             Err(error) => self.fail(event_loop, error),
         }
         self.sync_ime(event_loop);
+        // Publish protected focus before the next queued key, not at the next
+        // GPU frame. Screen-reader keyboard echo must see the password role.
+        if protected_before != self.app.ime_is_password()
+            && let Some(window) = &self.window
+            && let Err(error) = self.publish_accessibility(window.scale_factor() as f32)
+        {
+            self.fail(event_loop, error);
+        }
         if let Some(direction) = self.app.take_resize_request()
             && let Some(window) = &self.window
             && let Err(error) = crate::begin_resize(window, direction)
@@ -172,7 +181,15 @@ impl<A: DesktopApp> Host<A> {
     }
 
     fn sync_ime(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.set_ime_purpose(if self.app.ime_is_password() {
+                winit::window::ImePurpose::Password
+            } else {
+                winit::window::ImePurpose::Normal
+            });
+        }
         let allowed = self.focused
+            && crate::ime::composition_allowed(self.app.ime_is_password())
             && crate::ime::valid_cursor(self.app.ime_target(), self.app.ime_cursor()).is_some();
         let changed = self.ime.set_target(self.app.ime_target(), allowed);
         let cancelled = self

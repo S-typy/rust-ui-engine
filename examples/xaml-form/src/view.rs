@@ -252,8 +252,15 @@ impl MountedView {
                 | ElementKind::RadioGroup(_) => Length::Auto,
                 ElementKind::ZoomControl(_) => Length::Px(ui.theme().tokens().control_height - 8.0),
                 ElementKind::ListBox(_) => Length::Px(160.0),
+                ElementKind::Calendar(_) => Length::Px(300.0),
                 ElementKind::GridControl(_) => Length::Auto,
                 ElementKind::TextBox(_)
+                | ElementKind::MemoEdit(_)
+                | ElementKind::PasswordBox(_)
+                | ElementKind::NumericEdit(_)
+                | ElementKind::MaskEdit(_)
+                | ElementKind::DateTimeEdit(_)
+                | ElementKind::DateRangeEdit(_)
                 | ElementKind::ComboBox(_)
                 | ElementKind::LookupEdit(_)
                 | ElementKind::ButtonEdit(_)
@@ -332,6 +339,13 @@ impl MountedView {
                 self.mount_status_element(ui, parent, element, style, available_width, &context)?
             }
             ElementKind::ListBox(_)
+            | ElementKind::MemoEdit(_)
+            | ElementKind::PasswordBox(_)
+            | ElementKind::NumericEdit(_)
+            | ElementKind::MaskEdit(_)
+            | ElementKind::DateTimeEdit(_)
+            | ElementKind::DateRangeEdit(_)
+            | ElementKind::Calendar(_)
             | ElementKind::ComboBox(_)
             | ElementKind::LookupEdit(_)
             | ElementKind::ButtonEdit(_)
@@ -702,6 +716,10 @@ impl MountedView {
                 ElementKind::GridControl(_) => Role::Grid,
                 ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
                 ElementKind::ButtonEdit(_)
+                | ElementKind::NumericEdit(_)
+                | ElementKind::DateTimeEdit(_)
+                | ElementKind::DateRangeEdit(_)
+                | ElementKind::Calendar(_)
                 | ElementKind::SpinBox(_)
                 | ElementKind::DateEdit(_)
                 | ElementKind::TimeEdit(_) => Role::Group,
@@ -713,7 +731,9 @@ impl MountedView {
                 ElementKind::ZoomControl(_) => Role::Slider,
                 ElementKind::DockWorkspace(_) => Role::Panel,
                 ElementKind::Ribbon(_) => Role::Group,
-                ElementKind::TextBox(_) => Role::TextBox,
+                ElementKind::TextBox(_) | ElementKind::MaskEdit(_) => Role::TextBox,
+                ElementKind::MemoEdit(_) => Role::Button,
+                ElementKind::PasswordBox(_) => Role::PasswordBox,
                 ElementKind::TextBlock(_) => Role::Label,
                 ElementKind::Button(_) => {
                     if common.is_link {
@@ -823,6 +843,12 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             )? + arrow)
         }
         ElementKind::TextBox(_)
+        | ElementKind::MemoEdit(_)
+        | ElementKind::PasswordBox(_)
+        | ElementKind::NumericEdit(_)
+        | ElementKind::MaskEdit(_)
+        | ElementKind::DateTimeEdit(_)
+        | ElementKind::DateRangeEdit(_)
         | ElementKind::ListBox(_)
         | ElementKind::ComboBox(_)
         | ElementKind::LookupEdit(_)
@@ -830,6 +856,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         | ElementKind::SpinBox(_)
         | ElementKind::DateEdit(_)
         | ElementKind::TimeEdit(_) => Ok(240.0),
+        ElementKind::Calendar(_) => Ok(320.0),
         ElementKind::GroupBox(group) => group_desired_width(
             ui,
             &forms::group_settings(group),
@@ -1125,6 +1152,58 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
         rust_desktop_ui_xaml::validate_additional_element(&element.kind)?;
         extras::validate_extra(ui, element)?;
         match &element.kind {
+            ElementKind::MemoEdit(definition) => {
+                rust_desktop_ui_xaml::validate_memo_edit(definition)?
+            }
+            ElementKind::PasswordBox(definition) => {
+                rust_desktop_ui_xaml::validate_password_box(definition)?;
+                rust_desktop_ui_xaml::validate_password_bindings(&element.common)?;
+            }
+            ElementKind::MaskEdit(definition) => {
+                rust_desktop_ui_xaml::validate_mask_edit(
+                    definition,
+                    element.common.bindings.contains_key("Value"),
+                )?;
+                let settings = forms::mask_settings(definition)?;
+                if !element.common.bindings.contains_key("Value") {
+                    settings.validate_storage(&definition.value).map_err(err)?;
+                }
+            }
+            ElementKind::NumericEdit(definition) => rust_desktop_ui_xaml::validate_numeric_edit(
+                definition,
+                element.common.bindings.contains_key("Value"),
+            )?,
+            ElementKind::DateTimeEdit(definition) => rust_desktop_ui_xaml::validate_date_time_edit(
+                definition,
+                element.common.bindings.contains_key("Value"),
+            )?,
+            ElementKind::DateRangeEdit(definition) => {
+                rust_desktop_ui_xaml::validate_date_range_edit(
+                    definition,
+                    element.common.bindings.contains_key("Value"),
+                )?
+            }
+            ElementKind::Calendar(definition) => {
+                rust_desktop_ui_xaml::validate_calendar(definition)?
+            }
+            ElementKind::ButtonEdit(definition) => {
+                if definition.buttons.len() > 8 {
+                    return Err("ButtonEdit supports at most 8 embedded buttons".into());
+                }
+                for button in &definition.buttons {
+                    rust_desktop_ui_xaml::validate_editor_button(button)?;
+                    if ui
+                        .commands()
+                        .label(&button.command.as_str().into())
+                        .is_none()
+                    {
+                        return Err(format!(
+                            "Unknown editor button command '{}'",
+                            button.command
+                        ));
+                    }
+                }
+            }
             ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
             ElementKind::GridControl(grid) => {
                 rust_desktop_ui_xaml::validate_grid_control_bindings(&element.common)?;
@@ -1490,6 +1569,7 @@ fn button_icon(
 
 pub(crate) fn icon_symbol(symbol: rust_desktop_ui_xaml::IconSymbol) -> IconSymbol {
     match symbol {
+        rust_desktop_ui_xaml::IconSymbol::Eye => IconSymbol::Eye,
         rust_desktop_ui_xaml::IconSymbol::Check => IconSymbol::Check,
         rust_desktop_ui_xaml::IconSymbol::Close => IconSymbol::Close,
         rust_desktop_ui_xaml::IconSymbol::Add => IconSymbol::Add,

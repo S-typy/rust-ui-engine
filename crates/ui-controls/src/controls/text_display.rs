@@ -197,6 +197,7 @@ impl Controls {
         enabled: bool,
     ) -> TextRun {
         TextRun {
+            sensitive: false,
             text,
             bounds,
             clip,

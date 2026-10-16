@@ -851,6 +851,13 @@ impl Controls {
         }
     }
     pub fn expand_popup(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        if let Some(owner) = self.temporal_popup_owner(id) {
+            return if self.temporal_popup_is_open(owner) {
+                Ok(())
+            } else {
+                self.open_temporal_popup(owner)
+            };
+        }
         if let Some(expanded) = self.flyout_expanded(id) {
             let target = self
                 .controls
@@ -887,6 +894,13 @@ impl Controls {
         Ok(())
     }
     pub fn collapse_popup(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        if let Some(owner) = self.temporal_popup_owner(id) {
+            return if self.temporal_popup_is_open(owner) {
+                self.close_temporal_popup(owner)
+            } else {
+                Ok(())
+            };
+        }
         if let Some(expanded) = self.flyout_expanded(id) {
             let target = self
                 .controls

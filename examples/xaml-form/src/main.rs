@@ -8,6 +8,7 @@ mod batch_model;
 mod binding_adapter_tests;
 #[cfg(test)]
 mod data_adapter_tests;
+mod data_editors_model;
 mod data_model;
 #[cfg(test)]
 mod density_adapter_tests;
@@ -72,6 +73,9 @@ mod generated_status {
 mod generated_data {
     include!(concat!(env!("OUT_DIR"), "/data_window.rs"));
 }
+mod generated_data_editors {
+    include!(concat!(env!("OUT_DIR"), "/data_editors_window.rs"));
+}
 mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
 }
@@ -97,6 +101,7 @@ fn start() -> Result<(), String> {
     let mut groups = false;
     let mut status = false;
     let mut data = false;
+    let mut data_editors = false;
     let mut visuals = false;
     let mut batch = false;
     let mut workspace = false;
@@ -139,6 +144,7 @@ fn start() -> Result<(), String> {
             "--groups" => groups = true,
             "--status" => status = true,
             "--data" => data = true,
+            "--data-editors" => data_editors = true,
             "--docking" => docking = true,
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
@@ -155,7 +161,7 @@ fn start() -> Result<(), String> {
             "--no-activate" => activate = false,
             "--help" | "-h" => {
                 println!(
-                    "--workspace opens WorkspaceWindow.xaml: retained tabs, dialogs, customizable status, reusable styles/templates and typed queries."
+                    "--data-editors opens DataEditorsWindow.xaml: transactional data, MemoEdit, editor buttons and PasswordBox.\n--workspace opens WorkspaceWindow.xaml: retained tabs, dialogs, customizable status, reusable styles/templates and typed queries."
                 );
                 println!(
                     "--dialog-directory PATH selects the initial directory for workspace file dialogs; no files are opened or written."
@@ -196,7 +202,16 @@ fn start() -> Result<(), String> {
         }
     }
     if [
-        controls, docking, editors, groups, status, data, visuals, batch, workspace,
+        controls,
+        docking,
+        editors,
+        groups,
+        status,
+        data,
+        visuals,
+        batch,
+        workspace,
+        data_editors,
     ]
     .into_iter()
     .filter(|v| *v)
@@ -216,7 +231,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if workspace {
+    let mut definition = if data_editors {
+        generated_data_editors::window_definition()
+    } else if workspace {
         generated_workspace::window_definition()
     } else if batch {
         generated_batch::window_definition()
@@ -287,7 +304,10 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if batch {
+    let app = if data_editors {
+        let (context, sources) = data_editors_model::model()?;
+        form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
+    } else if batch {
         form::Form::new_with_model(definition, diagnostics, Some(batch_model::model()?))?
     } else if data {
         let (context, sources) = data_model::model()?;

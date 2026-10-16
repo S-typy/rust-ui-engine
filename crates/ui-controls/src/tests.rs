@@ -428,6 +428,7 @@ fn custom_scene_and_text_are_ordered_below_popup_backgrounds() {
     frame(&mut ui);
     let mut scene = Scene::default();
     scene.text(TextRun {
+        sensitive: false,
         bounds: Rect::new(20.0, 70.0, 250.0, 40.0),
         clip: Rect::new(0.0, 0.0, 600.0, 480.0),
         text: "CUSTOM".into(),

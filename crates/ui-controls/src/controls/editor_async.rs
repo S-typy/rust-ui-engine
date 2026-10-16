@@ -249,6 +249,9 @@ impl Controls {
         Ok(Some(CommitOutcome::Pending))
     }
     pub fn poll_editor_validation(&mut self) -> Result<usize, ControlError> {
+        self.cancel_unavailable_memo_validation();
+        self.cancel_unavailable_numeric_validation();
+        self.cancel_unavailable_temporal_validation();
         let stale: Vec<_> = self
             .async_editors
             .entries

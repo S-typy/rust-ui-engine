@@ -6,8 +6,481 @@ use rust_desktop_ui_xaml::{ControlTemplateDefinition, ElementDefinition, Element
 use std::{cell::RefCell, rc::Rc};
 
 const SIZE: Size = Size::new(640.0, 480.0);
+
+#[test]
+fn mask_xaml_binds_raw_storage_without_literals_and_rejects_invalid_mount_atomically() {
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([("Reference", "AB123".into())])).unwrap(),
+    ));
+    let mut form = Form::new_with_model(parse(r#"<MaskEdit x:Name="Reference" Mask="LL-0009" Value="{Binding Reference}" AllowEmpty="False" PromptChar="_"/>"#), false, Some(context.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let editor = form.find_name("Reference").unwrap();
+    assert_eq!(form.ui.document(editor).unwrap().text(), "AB-123_");
+    assert_eq!(form.ui.masked_value(editor).as_deref(), Some("AB123"));
+    form.ui.set_masked_value(editor, "ЖЯ4567").unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Reference").unwrap(),
+        &DataValue::from("ЖЯ4567")
+    );
+    assert_eq!(form.ui.document(editor).unwrap().text(), "ЖЯ-4567");
+    context
+        .borrow_mut()
+        .set("Reference", "12345".into())
+        .unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(form.ui.document(editor).unwrap().text(), "ЖЯ-4567");
+    let invalid = parse(r#"<StackPanel><TextBlock Text="Must not mount"/><MaskEdit Mask="00" Value="AB"/></StackPanel>"#).content;
+    let before = form.ui.runtime.tree().live_ids();
+    let parent = form.ui.root();
+    assert!(MountedView::mount(&mut form.ui, parent, &invalid).is_err());
+    assert_eq!(form.ui.runtime.tree().live_ids(), before);
+    assert_eq!(form.ui.masked_value(editor).as_deref(), Some("ЖЯ4567"));
+}
+
+#[test]
+fn numeric_xaml_binding_and_calculator_keep_exact_decimal_storage() {
+    use rust_desktop_ui_controls::{CalculatorKey as K, NumericOperation};
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([(
+            "Amount",
+            "9007199254740993.25".into(),
+        )]))
+        .unwrap(),
+    ));
+    let mut form=Form::new_with_model(parse(r#"<NumericEdit x:Name="Exact" Value="{Binding Amount}" Minimum="0" Maximum="99999999999999999" Increment="0.01" Culture="en-US" Precision="2"/>"#),false,Some(context.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let owner = form.find_name("Exact").unwrap();
+    let editor = form.ui.composite_editor(owner).unwrap();
+    assert_eq!(
+        form.ui.document(editor).unwrap().text(),
+        "9007199254740993.25"
+    );
+    form.ui.set_text(editor, "9007199254740993.26").unwrap();
+    form.ui.commit_edit(editor).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Amount").unwrap(),
+        &DataValue::from("9007199254740993.26")
+    );
+    context.borrow_mut().set("Amount", DataValue::Null).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(form.ui.numeric_value(owner), Some(None));
+    context.borrow_mut().set("Amount", "0.1".into()).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(form.ui.document(editor).unwrap().text(), "0.10");
+    context
+        .borrow_mut()
+        .set("Amount", DataValue::Number(1.0))
+        .unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(form.ui.document(editor).unwrap().text(), "0.10");
+    context.borrow_mut().set("Amount", "0.1".into()).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    form.ui.set_text(editor, "1.25").unwrap();
+    form.ui.open_numeric_calculator(owner).unwrap();
+    form.ui.press_numeric_calculator(owner, K::Clear).unwrap();
+    form.ui
+        .press_numeric_calculator(owner, K::Digit(9))
+        .unwrap();
+    form.ui.cancel_numeric_calculator(owner).unwrap();
+    assert_eq!(form.ui.document(editor).unwrap().text(), "1.25");
+    assert_eq!(form.ui.accepted_value(editor), Some("0.10"));
+    form.ui.open_numeric_calculator(owner).unwrap();
+    for key in [
+        K::Clear,
+        K::Digit(0),
+        K::DecimalSeparator,
+        K::Digit(1),
+        K::Operation(NumericOperation::Add),
+        K::Digit(0),
+        K::DecimalSeparator,
+        K::Digit(2),
+    ] {
+        form.ui.press_numeric_calculator(owner, key).unwrap();
+    }
+    form.ui.apply_numeric_calculator(owner).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        form.ui.numeric_value(owner).unwrap().unwrap().to_string(),
+        "0.3"
+    );
+    assert_eq!(
+        context.borrow().get("Amount").unwrap(),
+        &DataValue::from("0.3")
+    );
+    assert_eq!(form.ui.document(editor).unwrap().text(), "0.30");
+    assert!(!form.ui.numeric_calculator_is_open(owner));
+}
+
+#[test]
+fn typed_editor_fallbacks_use_storage_types_and_mask_fallback_remains_raw() {
+    let definition = parse(
+        r#"<StackPanel>
+        <NumericEdit x:Name="Amount" Value="{Binding MissingAmount, Mode=OneWay, FallbackValue='0.1'}"/>
+        <NumericEdit x:Name="Empty" Value="{Binding MissingEmpty, Mode=OneWay, FallbackValue='Null'}"/>
+        <DateTimeEdit x:Name="Meeting" Value="{Binding MissingMeeting, Mode=OneWay, FallbackValue='2024-02-29T12:30:59'}"/>
+        <DateRangeEdit x:Name="Range" Value="{Binding MissingRange, Mode=OneWay, FallbackValue='2024-02-29/2024-03-02'}"/>
+        <Calendar x:Name="Calendar" SelectionMode="Range" Value="{Binding MissingCalendar, Mode=OneWay, FallbackValue='2024-02-29/2024-03-02'}"/>
+        <MaskEdit x:Name="Code" Mask="LL-000" Value="{Binding MissingCode, Mode=OneWay, FallbackValue='AB123'}"/>
+    </StackPanel>"#,
+    );
+    let mut form = Form::new(definition, false).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(
+        form.ui
+            .numeric_value(form.find_name("Amount").unwrap())
+            .unwrap()
+            .unwrap()
+            .to_string(),
+        "0.1"
+    );
+    assert_eq!(
+        form.ui.numeric_value(form.find_name("Empty").unwrap()),
+        Some(None)
+    );
+    assert_eq!(
+        form.ui
+            .date_time_value(form.find_name("Meeting").unwrap())
+            .unwrap()
+            .unwrap()
+            .to_iso(),
+        "2024-02-29T12:30:59"
+    );
+    assert_eq!(
+        form.ui
+            .date_range_value(form.find_name("Range").unwrap())
+            .unwrap()
+            .unwrap()
+            .to_iso(),
+        "2024-02-29/2024-03-02"
+    );
+    assert!(matches!(
+        form.ui
+            .calendar_selection(form.find_name("Calendar").unwrap()),
+        Some(rust_desktop_ui_controls::CalendarSelection::Range(Some(_)))
+    ));
+    assert_eq!(
+        form.ui
+            .masked_value(form.find_name("Code").unwrap())
+            .as_deref(),
+        Some("AB123")
+    );
+}
+
+#[test]
+fn password_xaml_mounts_empty_and_ordinary_model_or_diagnostics_cannot_read_secret() {
+    let mut form = Form::new(parse(r#"<PasswordBox x:Name="Protected" AutomationName="Account password" AllowReveal="False" MaxLength="64"/>"#), false).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let owner = form.find_name("Protected").unwrap();
+    assert!(form.ui.password_value(owner).unwrap().is_empty());
+    assert!(!form.view.editors.contains(&owner));
+    assert_eq!(form.view.roles[&owner], Role::PasswordBox);
+    form.ui
+        .set_password_value(owner, "PRIVATE_PASSWORD_938")
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert!(form.ui.document(owner).is_none());
+    assert!(form.ui.accepted_value(owner).is_none());
+    let semantics = form.ui.semantics();
+    let node = semantics.iter().find(|node| node.id == owner).unwrap();
+    assert_eq!(node.role, Role::PasswordBox);
+    assert_eq!(node.label, "Account password");
+    assert!(node.value.is_none());
+    assert!(!format!("{semantics:?}").contains("PRIVATE_PASSWORD_938"));
+    assert!(!format!("{:?}", form.ui.password_value(owner)).contains("PRIVATE_PASSWORD_938"));
+    assert!(form.ui.drain_text_changes().is_empty());
+    assert!(form.ui.drain_edit_events().is_empty());
+    let mut invalid = parse("<PasswordBox/>");
+    invalid.content.common.bindings = parse("<TextBox Text='{Binding Secret}'/>")
+        .content
+        .common
+        .bindings;
+    let before = form.ui.runtime.tree().live_ids();
+    let root = form.ui.root();
+    assert!(MountedView::mount(&mut form.ui, root, &invalid.content).is_err());
+    assert_eq!(form.ui.runtime.tree().live_ids(), before);
+}
+
+#[test]
+fn embedded_editor_templates_keep_session_scopes_and_bindings_after_replacement() {
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([
+            ("Reference", "accepted".into()),
+            ("Caption", "Decoration".into()),
+        ]))
+        .unwrap(),
+    ));
+    let definition = parse(
+        r#"<Window.Resources><DataTemplate x:Key="ButtonFace"><StackPanel Orientation="Horizontal"><TextBlock x:Name="PrivateCaption" Text="{Binding Caption}"/></StackPanel></DataTemplate></Window.Resources><ButtonEdit x:Name="Reference" Text="{Binding Reference}"><ButtonEdit.Buttons><EditorButton Content="Choose document" Command="ChooseReference" Placement="Leading" Width="120" IsEnabledWhenReadOnly="True" ContentTemplate="{StaticResource ButtonFace}"/><EditorButton Content="Second action" Command="ChooseReference" ContentTemplate="{StaticResource ButtonFace}"/></ButtonEdit.Buttons></ButtonEdit>"#,
+    );
+    let mut form = Form::new_with_model(definition, false, Some(context.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let owner = form.find_name("Reference").unwrap();
+    let parts = form.ui.editor_control_parts(owner).unwrap().clone();
+    let button = parts.buttons[0];
+    assert_eq!(
+        form.ui.runtime.tree().children(owner).unwrap(),
+        &[button, parts.editor, parts.buttons[1]]
+    );
+    assert_eq!(form.ui.document(parts.editor).unwrap().text(), "accepted");
+    assert!(form.find_name("PrivateCaption").is_none());
+    form.ui
+        .runtime
+        .apply(Mutation::Focus(Some(parts.editor)))
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    form.ui.set_text(parts.editor, "draft").unwrap();
+    let replacement = parse(r#"<StackPanel Orientation="Horizontal"><Icon Symbol="Check" Width="16" Height="16"/><TextBlock Text="{Binding Caption}"/></StackPanel>"#).content;
+    for _ in 0..2 {
+        let old = form.ui.button_content(button).unwrap();
+        form.view
+            .replace_editor_button_template(&mut form.ui, button, &replacement)
+            .unwrap();
+        form.update(SIZE, 1.0).unwrap();
+        assert_eq!(form.ui.runtime.focused(), Some(parts.editor));
+        assert_eq!(form.ui.document(parts.editor).unwrap().text(), "draft");
+        assert_eq!(form.ui.accepted_value(parts.editor), Some("accepted"));
+        assert!(!form.ui.runtime.tree().contains(old));
+        let content = form.ui.button_content(button).unwrap();
+        let bounds = form.ui.runtime.bounds(content).unwrap();
+        let button_bounds = form.ui.runtime.bounds(button).unwrap();
+        assert!(
+            ((bounds.y + bounds.height * 0.5) - (button_bounds.y + button_bounds.height * 0.5))
+                .abs()
+                < 0.5
+        );
+    }
+    context
+        .borrow_mut()
+        .set("Caption", "Updated decoration".into())
+        .unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert!(
+        form.ui
+            .semantics()
+            .iter()
+            .any(|node| node.label == "Updated decoration")
+    );
+    let previous = form.ui.button_content(button);
+    let invalid = parse(r#"<TextBlock Text="{Binding Path=Text, ElementName=Missing}"/>"#).content;
+    assert!(
+        form.view
+            .replace_editor_button_template(&mut form.ui, button, &invalid)
+            .is_err()
+    );
+    assert_eq!(form.ui.button_content(button), previous);
+    assert_eq!(form.ui.document(parts.editor).unwrap().text(), "draft");
+    form.ui.commit_edit(parts.editor).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Reference").unwrap(),
+        &DataValue::from("draft")
+    );
+    assert_eq!(
+        form.ui
+            .semantics()
+            .into_iter()
+            .find(|node| node.id == button)
+            .unwrap()
+            .label,
+        "Choose document"
+    );
+}
+
+#[test]
+fn embedded_editor_icon_defaults_center_on_both_axes_and_explicit_alignment_survives() {
+    let definition = parse(
+        r#"<Window.Resources><DataTemplate x:Key="Face"><Icon Symbol="Check" Width="20" Height="20"/></DataTemplate></Window.Resources><ButtonEdit x:Name="Reference" Text="accepted" Height="48"><ButtonEdit.Buttons><EditorButton Content="Choose document" Command="ChooseReference" Placement="Leading" Width="60" ContentTemplate="{StaticResource Face}"/></ButtonEdit.Buttons></ButtonEdit>"#,
+    );
+    let mut form = Form::new(definition, false).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let parts = form
+        .ui
+        .editor_control_parts(form.find_name("Reference").unwrap())
+        .unwrap()
+        .clone();
+    let button = parts.buttons[0];
+    form.ui
+        .runtime
+        .apply(Mutation::Focus(Some(parts.editor)))
+        .unwrap();
+    form.ui.set_text(parts.editor, "draft").unwrap();
+    let assert_center = |form: &Form| {
+        let content = form
+            .ui
+            .runtime
+            .bounds(form.ui.button_content(button).unwrap())
+            .unwrap();
+        let owner = form.ui.runtime.bounds(button).unwrap();
+        assert!(
+            (content.x + content.width * 0.5 - owner.x - owner.width * 0.5).abs() < 0.5,
+            "horizontal {content:?} in {owner:?}"
+        );
+        assert!(
+            (content.y + content.height * 0.5 - owner.y - owner.height * 0.5).abs() < 0.5,
+            "vertical {content:?} in {owner:?}"
+        );
+        assert_eq!(form.ui.runtime.focused(), Some(parts.editor));
+        assert_eq!(form.ui.document(parts.editor).unwrap().text(), "draft");
+        assert_eq!(form.ui.accepted_value(parts.editor), Some("accepted"));
+    };
+    assert_center(&form);
+    for xml in [
+        r#"<Icon Symbol="Check" Width="20" Height="20"/>"#,
+        r#"<TextBlock Text="ID"/>"#,
+        r#"<Icon Symbol="Check" Width="20" Height="20"/>"#,
+    ] {
+        form.view
+            .replace_editor_button_template(&mut form.ui, button, &parse(xml).content)
+            .unwrap();
+        form.update(SIZE, 1.0).unwrap();
+        assert_center(&form);
+    }
+    let aligned = parse(r#"<Icon Symbol="Check" Width="20" Height="20" HorizontalAlignment="Right" VerticalAlignment="Bottom"/>"#).content;
+    form.view
+        .replace_editor_button_template(&mut form.ui, button, &aligned)
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let content = form
+        .ui
+        .runtime
+        .bounds(form.ui.button_content(button).unwrap())
+        .unwrap();
+    let owner = form.ui.runtime.bounds(button).unwrap();
+    assert!((content.x + content.width - owner.x - owner.width).abs() < 0.5);
+    assert!((content.y + content.height - owner.y - owner.height).abs() < 0.5);
+}
+
+#[test]
+fn memo_xaml_multiline_binding_uses_the_retained_editor_and_validation_baseline() {
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([("Notes", "First\nSecond".into())])).unwrap(),
+    ));
+    let mut form = Form::new_with_model(parse(r#"<MemoEdit x:Name="Notes" Text="{Binding Notes}" IsRequired="True" MaxLength="100" PopupWidth="440" PopupHeight="240"/>"#), false, Some(context.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let owner = form.find_name("Notes").unwrap();
+    let memo = form.ui.memo_parts(owner).unwrap();
+    let editor = memo.editor;
+    assert_eq!(form.ui.composite_editor(owner), Some(editor));
+    assert_eq!(form.ui.document(editor).unwrap().text(), "First\nSecond");
+    form.ui.open_memo(memo).unwrap();
+    form.ui.set_text(editor, "Updated\nMemo").unwrap();
+    form.ui.commit_memo(memo).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Notes").unwrap(),
+        &DataValue::from("Updated\nMemo")
+    );
+    form.ui.open_memo(memo).unwrap();
+    form.ui.set_text(editor, "").unwrap();
+    form.ui.commit_memo(memo).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert!(form.ui.memo_is_open(memo));
+    assert_eq!(
+        context.borrow().get("Notes").unwrap(),
+        &DataValue::from("Updated\nMemo")
+    );
+    form.ui.cancel_memo(memo).unwrap();
+    assert_eq!(form.ui.memo_editor(owner), Some(editor));
+    assert_eq!(form.ui.document(editor).unwrap().text(), "Updated\nMemo");
+    form.ui.set_composite_read_only(owner, true).unwrap();
+    assert_eq!(form.ui.composite_read_only(owner), Some(true));
+    form.ui.open_memo(memo).unwrap();
+    assert!(form.ui.memo_is_open(memo));
+}
 fn parse(body: &str) -> rust_desktop_ui_xaml::WindowDefinition {
     rust_desktop_ui_xaml::parse(&format!(r#"<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Padding="0">{body}</Window>"#)).unwrap()
+}
+
+#[test]
+fn civil_date_time_range_and_calendar_bindings_keep_typed_storage_and_seconds() {
+    use rust_desktop_ui_controls::{CalendarSelection, DateRangeValue, DateValue};
+    let initial_range =
+        DataValue::object([("start", "2024-02-29".into()), ("end", "2024-03-02".into())]);
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([
+            ("Meeting", "2024-02-29T23:59:58".into()),
+            ("Clock", "12:30:59".into()),
+            ("Range", initial_range.clone()),
+            ("CalendarRange", initial_range),
+        ]))
+        .unwrap(),
+    ));
+    let definition = parse(
+        r#"<StackPanel><DateTimeEdit x:Name="Meeting" Value="{Binding Meeting}" ShowSeconds="True" TimeStep="1" Minimum="2024-01-01T00:00:00" Maximum="2024-12-31T23:59:59"/><TimeEdit x:Name="Clock" Value="{Binding Clock}" ShowSeconds="False" TimeStep="1"/><DateRangeEdit x:Name="Range" Value="{Binding Range}" Minimum="2024-01-01" Maximum="2024-12-31"/><Calendar x:Name="Calendar" Value="{Binding CalendarRange}" SelectionMode="Range" DisplayDate="2024-02-01" Minimum="2024-01-01" Maximum="2024-12-31"/></StackPanel>"#,
+    );
+    let mut form = Form::new_with_model(definition, false, Some(context.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let meeting = form.find_name("Meeting").unwrap();
+    let editor = form.ui.composite_editor(meeting).unwrap();
+    assert_eq!(
+        form.ui.document(editor).unwrap().text(),
+        "29.02.2024 23:59:58"
+    );
+    form.ui.set_text(editor, "01.03.2024 00:00:01").unwrap();
+    form.ui.commit_edit(editor).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Meeting").unwrap(),
+        &DataValue::from("2024-03-01T00:00:01")
+    );
+    let clock = form.find_name("Clock").unwrap();
+    let clock_editor = form.ui.composite_editor(clock).unwrap();
+    assert_eq!(form.ui.document(clock_editor).unwrap().text(), "12:30");
+    form.ui.commit_edit(clock_editor).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Clock").unwrap(),
+        &DataValue::from("12:30:59")
+    );
+    assert_eq!(form.ui.time_value(clock).unwrap().unwrap().second, 59);
+    let range = form.find_name("Range").unwrap();
+    let range_editor = form.ui.composite_editor(range).unwrap();
+    form.ui
+        .set_text(range_editor, "03.03.2024 – 01.03.2024")
+        .unwrap();
+    assert!(matches!(
+        form.ui.commit_edit(range_editor).unwrap(),
+        rust_desktop_ui_controls::CommitOutcome::Invalid(_)
+    ));
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Range").unwrap(),
+        &DataValue::object([("start", "2024-02-29".into()), ("end", "2024-03-02".into())])
+    );
+    form.ui
+        .set_text(range_editor, "01.03.2024 – 03.03.2024")
+        .unwrap();
+    form.ui.commit_edit(range_editor).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Range").unwrap(),
+        &DataValue::object([("start", "2024-03-01".into()), ("end", "2024-03-03".into())])
+    );
+    let calendar = form.find_name("Calendar").unwrap();
+    let value = DateRangeValue::new(
+        DateValue::new(2024, 3, 5).unwrap(),
+        DateValue::new(2024, 3, 8).unwrap(),
+    )
+    .unwrap();
+    form.ui
+        .set_calendar_selection(calendar, CalendarSelection::Range(Some(value)))
+        .unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("CalendarRange").unwrap(),
+        &DataValue::object([("start", "2024-03-05".into()), ("end", "2024-03-08".into())])
+    );
+    context
+        .borrow_mut()
+        .set("CalendarRange", DataValue::Null)
+        .unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        form.ui.calendar_selection(calendar),
+        Some(CalendarSelection::Range(None))
+    );
 }
 fn template(text: &str) -> ControlTemplateDefinition {
     let window = parse(&format!(

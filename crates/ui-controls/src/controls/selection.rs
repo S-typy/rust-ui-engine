@@ -111,8 +111,11 @@ pub(super) enum CompositeKind {
         lookup: bool,
     },
     Spin(SpinBoxSettings),
+    Numeric(NumericEditSettings),
     Date(DateEditSettings),
     Time(TimeEditSettings),
+    DateTime(DateTimeEditSettings),
+    DateRange(DateRangeEditSettings),
 }
 #[derive(Clone)]
 pub(super) struct Composite {
@@ -154,6 +157,8 @@ pub(super) struct RichPopup {
 }
 #[derive(Default)]
 pub(super) struct RichControls {
+    pub button_settings: HashMap<WidgetId, EditorButtonSettings>,
+    pub automatic_heights: HashMap<WidgetId, f32>,
     pub lists: HashMap<WidgetId, SelectionState>,
     pub composites: HashMap<WidgetId, Composite>,
     pub actions: HashMap<WidgetId, RichAction>,
@@ -598,7 +603,11 @@ impl Controls {
         Ok(())
     }
     pub fn composite_editor(&self, id: WidgetId) -> Option<WidgetId> {
-        self.rich.composites.get(&id).map(|c| c.parts.editor)
+        self.rich
+            .composites
+            .get(&id)
+            .map(|c| c.parts.editor)
+            .or_else(|| self.memo_editor(id))
     }
     pub fn editor_control_parts(&self, id: WidgetId) -> Option<&EditorControl> {
         self.rich.composites.get(&id).map(|c| &c.parts)
@@ -608,6 +617,9 @@ impl Controls {
         id: WidgetId,
         value: bool,
     ) -> Result<(), ControlError> {
+        if let Some(editor) = self.memo_editor(id) {
+            return self.set_read_only(editor, value);
+        }
         let c = self
             .rich
             .composites
@@ -848,10 +860,17 @@ impl Controls {
     ) -> Result<EditorControl, ControlError> {
         style.kind = LayoutKind::Flex(Axis::Horizontal);
         style.gap = 0.0;
-        if style.height == Length::Auto {
+        let automatic = style.height == Length::Auto;
+        if automatic {
             style.height = Length::Px(self.theme.tokens().control_height);
         }
         let container = self.transparent_panel(parent, style)?;
+        self.edit_props(container, |props| props.clip = true)?;
+        if automatic {
+            self.rich
+                .automatic_heights
+                .insert(container, self.theme.tokens().control_height);
+        }
         self.set_automation_name(container, &label)?;
         let editor = self.edit_box(
             container,
@@ -888,7 +907,9 @@ impl Controls {
             },
         )?;
         self.set_automation_name(id, label)?;
-        self.edit_props(id, |p| p.tab_stop = false)?;
+        self.rich
+            .button_settings
+            .insert(id, EditorButtonSettings::default());
         self.set_button_icon(id, icon.map(ButtonIcon::new))?;
         self.set_button_chrome(id, ButtonChrome::Flat)?;
         Ok(id)
@@ -906,6 +927,12 @@ impl Controls {
         Ok(())
     }
     pub(super) fn retain_rich_controls(&mut self) {
+        self.rich
+            .button_settings
+            .retain(|id, _| self.controls.contains_key(id));
+        self.rich
+            .automatic_heights
+            .retain(|id, _| self.controls.contains_key(id));
         self.rich.lists.retain(|id, list| {
             self.controls.contains_key(id) && self.controls.contains_key(&list.parts.content)
         });
@@ -969,11 +996,15 @@ impl Controls {
         None
     }
     pub(super) fn rich_read_only(&self, id: WidgetId) -> bool {
+        if self.calendar_read_only(id) {
+            return true;
+        }
         if let Some(list) = self.rich.lists.get(&id) {
             return list.settings.read_only;
         }
         if let Some(owner) = self.rich_owner(id) {
-            return self.rich.composites[&owner].read_only;
+            return self.rich.composites[&owner].read_only
+                && !self.editor_button_allows_read_only(id);
         }
         if let Some(RichAction::Select { owner, .. }) = self.rich.actions.get(&id) {
             return self
@@ -1022,7 +1053,7 @@ impl Controls {
                 }
             }
             RichAction::Button { owner, action } => {
-                if self.rich_editable(owner) {
+                if !self.rich_read_only(id) && !self.editor_button_blocked(id) {
                     match action {
                         EditorButtonAction::Command(command) => {
                             if self.commands.activate(&command) {
@@ -1249,11 +1280,18 @@ impl Controls {
                         self.open_editor_popup(owner)?;
                         return Ok(true);
                     }
-                    CompositeKind::Date(_) if modifiers.alt => {
+                    CompositeKind::Date(_)
+                    | CompositeKind::DateTime(_)
+                    | CompositeKind::DateRange(_)
+                        if modifiers.alt =>
+                    {
                         self.open_editor_popup(owner)?;
                         return Ok(true);
                     }
-                    CompositeKind::Spin(_) | CompositeKind::Time(_) => {
+                    CompositeKind::Spin(_)
+                    | CompositeKind::Numeric(_)
+                    | CompositeKind::Time(_)
+                    | CompositeKind::DateTime(_) => {
                         self.step_value(owner, if *key == Key::ArrowUp { 1 } else { -1 })?;
                         return Ok(true);
                     }
@@ -1376,6 +1414,9 @@ impl Controls {
         Ok(true)
     }
     pub fn open_editor_popup(&mut self, owner: WidgetId) -> Result<(), ControlError> {
+        if self.date_time_settings(owner).is_some() || self.date_range_settings(owner).is_some() {
+            return self.open_temporal_popup(owner);
+        }
         let composite = self
             .rich
             .composites
@@ -1552,6 +1593,9 @@ impl Controls {
     }
     pub(super) fn rich_popup_expanded(&self, id: WidgetId) -> Option<bool> {
         let owner = self.rich_owner(id)?;
+        if self.date_time_settings(owner).is_some() || self.date_range_settings(owner).is_some() {
+            return Some(self.temporal_popup_is_open(owner));
+        }
         matches!(
             self.rich.composites[&owner].kind,
             CompositeKind::Combo { .. } | CompositeKind::Date(_)
@@ -1559,6 +1603,7 @@ impl Controls {
         .then(|| self.rich.popup.as_ref().is_some_and(|p| p.owner == owner))
     }
     pub(super) fn sync_rich_layout(&mut self) -> Result<FrameStats, ControlError> {
+        self.sync_editor_buttons()?;
         let mut delta = FrameStats::default();
         let rebuild: Vec<_> = self
             .rich

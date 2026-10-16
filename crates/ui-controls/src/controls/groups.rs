@@ -1030,6 +1030,7 @@ impl Controls {
         );
         let tokens = self.theme.tokens();
         let mut run = TextRun {
+            sensitive: false,
             bounds: text_bounds,
             clip: text_bounds
                 .intersection(clip)

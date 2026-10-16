@@ -164,11 +164,59 @@ fn fallback(
                 DateValue::parse_iso(value).map_err(err)?.to_iso().into()
             }
         }
+        BindingProperty::Value if ui.numeric_settings(widget).is_some() => {
+            if value.is_empty() || value == "Null" || value == "{x:Null}" {
+                DataValue::Null
+            } else {
+                let parsed = ui
+                    .numeric_settings(widget)
+                    .unwrap()
+                    .parse_storage(Some(value))
+                    .map_err(err)?;
+                parsed.map_or(DataValue::Null, |value| {
+                    DataValue::String(value.to_string())
+                })
+            }
+        }
         BindingProperty::Value if ui.time_settings(widget).is_some() => {
             if value.is_empty() || value == "Null" {
                 DataValue::Null
             } else {
                 TimeValue::parse(value).map_err(err)?.to_iso().into()
+            }
+        }
+        BindingProperty::Value if ui.date_time_settings(widget).is_some() => {
+            if value.is_empty() || value == "Null" || value == "{x:Null}" {
+                DataValue::Null
+            } else {
+                DateTimeValue::parse_iso(value)
+                    .map_err(err)?
+                    .to_iso()
+                    .into()
+            }
+        }
+        BindingProperty::Value
+            if ui.date_range_settings(widget).is_some()
+                || matches!(
+                    ui.calendar_selection(widget),
+                    Some(CalendarSelection::Range(_))
+                ) =>
+        {
+            if value.is_empty() || value == "Null" || value == "{x:Null}" {
+                DataValue::Null
+            } else {
+                let value = DateRangeValue::parse_iso(value).map_err(err)?;
+                DataValue::object([
+                    ("start", value.start.to_iso().into()),
+                    ("end", value.end.to_iso().into()),
+                ])
+            }
+        }
+        BindingProperty::Value if ui.calendar_selection(widget).is_some() => {
+            if value.is_empty() || value == "Null" || value == "{x:Null}" {
+                DataValue::Null
+            } else {
+                DateValue::parse_iso(value).map_err(err)?.to_iso().into()
             }
         }
         BindingProperty::Value if ui.slider_value(widget).is_some() => {

@@ -1,0 +1,182 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Данные и редакторы" Width="1220" Height="860" Padding="24">
+  <Window.Resources>
+    <DataTemplate x:Key="ReferenceMark"><StackPanel Orientation="Horizontal" Spacing="4"><Icon Symbol="FolderOpen" Width="16" Height="16"/><TextBlock Text="ID" FontSize="12"/></StackPanel></DataTemplate>
+  </Window.Resources>
+  <Grid Spacing="16">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="10">
+      <TextBlock Text="Данные и редакторы" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Транзакции, независимые представления и поля ввода" TextTone="Secondary"/>
+      <WrapPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="Светлая" Command="Light" Icon="Sun" Width="120"/>
+        <Button Content="Тёмная" Command="Dark" Icon="Moon" Width="120"/>
+        <Button Content="Крупно" Command="Touch" Width="120"/>
+      </WrapPanel>
+    </StackPanel>
+    <TabbedGroup x:Name="DataEditorsTabs" Grid.Row="1" Padding="18" AutomationName="Разделы данных и редакторов">
+      <GroupTab Header="Источники данных" HeaderIcon="FolderOpen">
+        <Grid Spacing="12">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <WrapPanel Orientation="Horizontal" Spacing="8">
+            <Button x:Name="ApplyMemoryBatch" Content="Пакет в коллекцию" Command="DataEditorsMemoryBatch" Width="190"/>
+            <Button x:Name="ApplySqliteBatch" Content="Пакет в SQLite" Command="DataEditorsSqliteBatch" Width="175"/>
+            <Button x:Name="ConflictBatch" Content="Проверить конфликт" Command="DataEditorsConflict" Width="210"/>
+            <Button x:Name="RollbackBatch" Content="Проверить откат" Command="DataEditorsRollback" Width="190"/>
+          </WrapPanel>
+          <Grid Grid.Row="1" Spacing="16">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <GroupBox Header="Коллекция Rust" Padding="0">
+              <GridControl x:Name="TransactionMemoryGrid" DataSource="TransactionMemory" AutomationName="Транзакции коллекции">
+                <GridColumn FieldName="Name" Header="Наименование" Width="230"/>
+                <GridColumn FieldName="Quantity" Header="Количество" Width="130"/>
+              </GridControl>
+            </GroupBox>
+            <GroupBox Grid.Column="1" Header="SQLite" Padding="0">
+              <GridControl x:Name="TransactionSqliteGrid" DataSource="TransactionSqlite" AutomationName="Транзакции SQLite">
+                <GridColumn FieldName="Name" Header="Наименование" Width="230"/>
+                <GridColumn FieldName="Quantity" Header="Количество" Width="130"/>
+              </GridControl>
+            </GroupBox>
+          </Grid>
+          <TextBlock x:Name="IndependentViews" Grid.Row="2" Text="Независимые представления" TextTone="Secondary"/>
+          <StackPanel Grid.Row="3" Spacing="8">
+            <Button x:Name="LoadNextPage" Content="Следующая страница SQLite" Command="DataEditorsPage" Width="280"/>
+            <TextBlock x:Name="PageSummary" Text="Страницы по 10 строк из отдельной таблицы из 500 строк"/>
+          </StackPanel>
+        </Grid>
+      </GroupTab>
+      <GroupTab Header="Текст и кнопки" HeaderIcon="Edit">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="16">
+            <GroupBox Header="Многострочная заметка">
+              <StackPanel Spacing="8">
+                <MemoEdit x:Name="NotesMemo" Text="{Binding Notes}" PopupWidth="650" PopupHeight="420" MaxLength="20000" AutomationName="Заметка"/>
+                <TextBlock Text="Enter — новая строка · Ctrl+Enter — применить · Escape — отменить" TextTone="Secondary"/>
+                <TextBlock x:Name="AcceptedNotes" Text="{Binding Notes}" TextTrimming="CharacterEllipsis"/>
+              </StackPanel>
+            </GroupBox>
+            <GroupBox Header="Кнопки внутри редактора">
+              <StackPanel Spacing="12">
+                <ButtonEdit x:Name="DecoratedReference" Text="{Binding Reference}" AutomationName="Номер документа">
+                  <ButtonEdit.Buttons>
+                    <EditorButton Content="Выбрать номер" Command="DataEditorsReference" Placement="Leading" Width="60" IsEnabledWhenReadOnly="True" ContentTemplate="{StaticResource ReferenceMark}"/>
+                    <EditorButton Content="Очистить номер" Command="DataEditorsClearReference" Icon="Close" Width="36"/>
+                  </ButtonEdit.Buttons>
+                </ButtonEdit>
+                <ButtonEdit x:Name="ReadOnlyReference" Text="Только чтение" IsReadOnly="True" AutomationName="Справочный номер">
+                  <ButtonEdit.Buttons>
+                    <EditorButton Content="Открыть справку" Command="DataEditorsHelp" Placement="Leading" Width="36" Icon="FolderOpen" IsEnabledWhenReadOnly="True"/>
+                    <EditorButton Content="Недоступная кнопка" Command="DataEditorsClearReference" Width="36" Icon="Close"/>
+                  </ButtonEdit.Buttons>
+                </ButtonEdit>
+                <TextBlock Text="Кнопки доступны по Tab. Действие справки разрешено и в режиме только чтения." TextTone="Secondary"/>
+                <Button x:Name="SwapEditorButton" Content="Сменить содержимое кнопки" Command="DataEditorsButtonFace" Width="280"/>
+              </StackPanel>
+            </GroupBox>
+          </StackPanel>
+        </ScrollViewer>
+      </GroupTab>
+      <GroupTab Header="Числа" HeaderIcon="Add">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="16">
+            <GroupBox Header="Сумма и вычисления">
+              <StackPanel Spacing="10">
+                <NumericEdit x:Name="AmountEditor" AutomationName="Сумма документа"
+                             Value="{Binding Amount}" Minimum="0" Maximum="1000000"
+                             Increment="0.01" Precision="2" UseGrouping="True" Width="440" HorizontalAlignment="Left"/>
+                <TextBlock Text="Стрелки меняют сумму на копейку. Калькулятор применяет результат по Enter; Escape отменяет вычисление." TextTone="Secondary"/>
+                <TextBlock x:Name="AcceptedAmount" Text="{Binding Amount}"/>
+              </StackPanel>
+            </GroupBox>
+            <GroupBox Header="Пустое значение и точность">
+              <StackPanel Spacing="10">
+                <TextBlock Text="Необязательное количество"/>
+                <NumericEdit x:Name="OptionalAmountEditor" AutomationName="Необязательное количество"
+                             Value="{Binding OptionalAmount}" Minimum="-10" Maximum="10"
+                             Increment="1" Precision="0" AllowEmpty="True" ShowCalculator="False" Width="440" HorizontalAlignment="Left"/>
+                <TextBlock x:Name="AcceptedOptionalAmount" Text="{Binding OptionalAmount}"/>
+                <TextBlock Text="Большое число с точностью до сотых"/>
+                <NumericEdit x:Name="PreciseAmountEditor" AutomationName="Точное большое число"
+                             Value="{Binding PreciseAmount}" Minimum="0" Maximum="999999999999999999999999999999"
+                             Increment="0.01" Precision="2" UseGrouping="True" Width="650" HorizontalAlignment="Left"/>
+                <TextBlock x:Name="AcceptedPreciseAmount" Text="{Binding PreciseAmount}"/>
+              </StackPanel>
+            </GroupBox>
+          </StackPanel>
+        </ScrollViewer>
+      </GroupTab>
+      <GroupTab Header="Дата и время" HeaderIcon="Edit">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <Grid Spacing="18">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="380"/></Grid.ColumnDefinitions>
+            <StackPanel Spacing="16">
+              <GroupBox Header="Дата и время документа">
+                <StackPanel Spacing="10">
+                  <DateTimeEdit x:Name="DocumentDateTime" AutomationName="Дата и время документа"
+                                Value="{Binding DocumentDateTime}" Minimum="2020-01-01T00:00:00" Maximum="2030-12-31T23:59:59"
+                                ShowSeconds="False" TimeStep="60"/>
+                  <TextBlock Text="Отображение ДД.ММ.ГГГГ ЧЧ:ММ. Секунды сохраняются в значении." TextTone="Secondary"/>
+                  <TextBlock x:Name="AcceptedDateTime" Text="{Binding DocumentDateTime}"/>
+                </StackPanel>
+              </GroupBox>
+              <GroupBox Header="Период">
+                <StackPanel Spacing="10">
+                  <DateRangeEdit x:Name="DocumentPeriod" AutomationName="Период документа"
+                                 Value="{Binding Period}" Minimum="2020-01-01" Maximum="2030-12-31"/>
+                  <TextBlock x:Name="PeriodStart" Text="{Binding Period.start}"/>
+                  <TextBlock x:Name="PeriodEnd" Text="{Binding Period.end}"/>
+                  <TextBlock Text="Выберите начало и конец периода, затем примените. Escape отменяет выбор." TextTone="Secondary"/>
+                </StackPanel>
+              </GroupBox>
+            </StackPanel>
+            <GroupBox Grid.Column="1" Header="Календарь периода" VerticalAlignment="Top">
+              <Calendar x:Name="PeriodCalendar" AutomationName="Календарь периода" SelectionMode="Range"
+                        Value="{Binding Period}" DisplayDate="2026-10-16" Height="350"
+                        Minimum="2020-01-01" Maximum="2030-12-31"/>
+            </GroupBox>
+          </Grid>
+        </ScrollViewer>
+      </GroupTab>
+      <GroupTab Header="Маски" HeaderIcon="Edit">
+        <StackPanel Spacing="16">
+          <GroupBox Header="Телефон">
+            <StackPanel Spacing="10">
+              <MaskEdit x:Name="PhoneMask" AutomationName="Номер телефона" Mask="+7 (000) 000-00-00"
+                        Value="{Binding Phone}" AllowEmpty="False" Width="440" HorizontalAlignment="Left"/>
+              <TextBlock Text="В модели хранятся только десять цифр. Разделители добавляет поле." TextTone="Secondary"/>
+              <TextBlock x:Name="AcceptedPhone" Text="{Binding Phone}"/>
+            </StackPanel>
+          </GroupBox>
+          <GroupBox Header="Буквы и цифры">
+            <StackPanel Spacing="10">
+              <MaskEdit x:Name="DocumentCodeMask" AutomationName="Код документа" Mask="LL-0000"
+                        Value="{Binding MaskedCode}" Width="440" HorizontalAlignment="Left"/>
+              <TextBlock Text="Две буквы Unicode и четыре цифры. Неполное значение остаётся черновиком." TextTone="Secondary"/>
+              <TextBlock x:Name="AcceptedMaskedCode" Text="{Binding MaskedCode}"/>
+            </StackPanel>
+          </GroupBox>
+          <GroupBox Header="Локализованные разделители">
+            <StackPanel Spacing="10">
+              <MaskEdit x:Name="LocalizedMask" AutomationName="Форматированный код" Mask="000.00"
+                        Value="12345" Culture="ru-RU" Width="440" HorizontalAlignment="Left"/>
+              <TextBlock Text="Маска задаёт форму текста; бизнес-проверка значения подключается отдельно." TextTone="Secondary"/>
+            </StackPanel>
+          </GroupBox>
+        </StackPanel>
+      </GroupTab>
+      <GroupTab Header="Защищённый ввод" HeaderIcon="Lock">
+        <StackPanel Spacing="14">
+          <TextBlock Text="Пароль" FontWeight="SemiBold"/>
+          <PasswordBox x:Name="AccountPassword" AutomationName="Пароль учётной записи" PlaceholderText="Введите пароль" MaxLength="128" Width="420" HorizontalAlignment="Left"/>
+          <TextBlock Text="Показ ограничен тремя секундами. Уход фокуса сразу скрывает значение." TextTone="Secondary"/>
+          <Button x:Name="SubmitPassword" Content="Передать значение" Command="DataEditorsSubmitPassword" Width="210"/>
+          <TextBlock Text="Поле без вставки и показа" FontWeight="SemiBold" Margin="0,12,0,0"/>
+          <PasswordBox x:Name="RestrictedPassword" AutomationName="Пароль без вставки" AllowPaste="False" AllowReveal="False" Width="420" HorizontalAlignment="Left"/>
+          <TextBlock x:Name="PasswordSummary" Text="Значение ещё не передавалось"/>
+        </StackPanel>
+      </GroupTab>
+    </TabbedGroup>
+    <TextBlock x:Name="DataEditorsStatus" Grid.Row="2" Text="Готово" TextTone="Secondary"/>
+  </Grid>
+</Window>

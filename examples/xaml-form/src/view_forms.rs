@@ -4,6 +4,19 @@ use rust_desktop_ui_controls::*;
 use rust_desktop_ui_core::{Align, GridPlacement, GridTrack, Mutation, Scene, Size};
 use rust_desktop_ui_xaml as x;
 
+pub(super) fn mask_settings(definition: &x::MaskEditDefinition) -> Result<MaskSettings, String> {
+    let mut settings = MaskSettings::new(&definition.mask).map_err(err)?;
+    settings.culture = match definition.culture {
+        x::NumericCultureDefinition::Russian => UiCulture::Russian,
+        x::NumericCultureDefinition::English => UiCulture::English,
+        x::NumericCultureDefinition::Arabic => UiCulture::Arabic,
+    };
+    settings.placeholder = definition.prompt_char;
+    settings.allow_empty = definition.allow_empty;
+    settings.validate().map_err(err)?;
+    Ok(settings)
+}
+
 pub(super) struct BorderSurface {
     id: WidgetId,
     background: Option<Color>,
@@ -153,8 +166,10 @@ fn configure_editor(
         },
     )
     .map_err(err)?;
-    ui.set_composite_read_only(parts.container, field.is_read_only)
-        .map_err(err)?;
+    if parts.container != parts.editor {
+        ui.set_composite_read_only(parts.container, field.is_read_only)
+            .map_err(err)?;
+    }
     ui.set_edit_box_style(
         parts.editor,
         EditBoxStyle {
@@ -193,6 +208,12 @@ impl MountedView {
             | ElementKind::ComboBox(_)
             | ElementKind::LookupEdit(_)
             | ElementKind::ButtonEdit(_)
+            | ElementKind::MemoEdit(_)
+            | ElementKind::PasswordBox(_)
+            | ElementKind::NumericEdit(_)
+            | ElementKind::MaskEdit(_)
+            | ElementKind::DateTimeEdit(_)
+            | ElementKind::DateRangeEdit(_)
             | ElementKind::SpinBox(_)
             | ElementKind::DateEdit(_)
             | ElementKind::TimeEdit(_)
@@ -493,11 +514,150 @@ impl MountedView {
                     .button_edit(parent, label, &definition.editor.text, buttons, style)
                     .map_err(err)?;
                 for (button, definition) in parts.buttons.iter().zip(&definition.buttons) {
+                    ui.set_editor_button_settings(
+                        *button,
+                        EditorButtonSettings {
+                            placement: match definition.placement {
+                                x::EditorButtonPlacement::Leading => EditorButtonPlacement::Leading,
+                                x::EditorButtonPlacement::Trailing => {
+                                    EditorButtonPlacement::Trailing
+                                }
+                            },
+                            width: definition.width,
+                            visible: definition.is_visible,
+                            enabled: definition.is_enabled,
+                            enabled_when_read_only: definition.is_enabled_when_read_only,
+                            tab_stop: definition.is_tab_stop,
+                        },
+                    )
+                    .map_err(err)?;
                     self.commands.push(definition.command.clone());
                     if let Some(tip) = &definition.tool_tip {
                         ui.set_tooltip(*button, tip).map_err(err)?;
                     }
+                    if let Some(template) = &definition.content_template {
+                        self.mount_editor_button_presentation(
+                            ui,
+                            *button,
+                            template,
+                            definition.width,
+                            context,
+                        )?;
+                    }
                 }
+                configure_editor(ui, &parts, &definition.editor)?;
+                parts
+            }
+            ElementKind::MemoEdit(definition) => {
+                let memo = ui
+                    .memo_edit(
+                        parent,
+                        label,
+                        &definition.editor.text,
+                        MemoEditSettings {
+                            popup_size: Size::new(definition.popup_width, definition.popup_height),
+                        },
+                        style,
+                    )
+                    .map_err(err)?;
+                let parts = EditorControl {
+                    container: memo.container,
+                    editor: memo.editor,
+                    buttons: Vec::new(),
+                };
+                configure_editor(ui, &parts, &definition.editor)?;
+                parts
+            }
+            ElementKind::PasswordBox(definition) => {
+                let id = ui
+                    .password_box(
+                        parent,
+                        label,
+                        PasswordBoxSettings {
+                            max_length: definition.max_length,
+                            is_read_only: definition.is_read_only,
+                            allow_paste: definition.allow_paste,
+                            allow_reveal: definition.allow_reveal,
+                            placeholder: definition.placeholder.clone(),
+                            reveal_duration: std::time::Duration::from_millis(
+                                definition.reveal_duration_ms.into(),
+                            ),
+                        },
+                        style,
+                    )
+                    .map_err(err)?;
+                let appearance = &definition.style;
+                ui.set_password_style(
+                    id,
+                    EditBoxStyle {
+                        font_size: appearance.font_size,
+                        padding: appearance.padding.map(edges),
+                        corner_radius: appearance.corner_radius,
+                        border_width: appearance.border_thickness,
+                        normal: EditBoxAppearance {
+                            background: appearance.background.map(color),
+                            foreground: appearance.foreground.map(color),
+                            border: appearance.border_brush.map(color),
+                            accent: appearance.focus_brush.map(color),
+                            placeholder: definition.placeholder_foreground.map(color),
+                            selection: definition.selection_brush.map(color),
+                        },
+                        ..Default::default()
+                    },
+                )
+                .map_err(err)?;
+                // Protected input never enters ordinary editor enumeration,
+                // validation sessions, diagnostics or value bindings.
+                return Ok(id);
+            }
+            ElementKind::MaskEdit(definition) => {
+                let settings = mask_settings(definition)?;
+                let storage =
+                    if element.common.bindings.contains_key("Value") && !definition.allow_empty {
+                        settings.sample_value().map_err(err)?
+                    } else {
+                        definition.value.clone()
+                    };
+                let id = ui
+                    .masked_edit(parent, label, &storage, settings, style)
+                    .map_err(err)?;
+                let parts = EditorControl {
+                    container: id,
+                    editor: id,
+                    buttons: Vec::new(),
+                };
+                configure_editor(ui, &parts, &definition.editor)?;
+                parts
+            }
+            ElementKind::NumericEdit(definition) => {
+                let parse = |value: &str| {
+                    value
+                        .parse::<rust_desktop_ui_data::DecimalValue>()
+                        .map_err(err)
+                };
+                let settings = NumericEditSettings {
+                    minimum: parse(&definition.minimum)?,
+                    maximum: parse(&definition.maximum)?,
+                    step: parse(&definition.increment)?,
+                    precision: definition.precision,
+                    allow_empty: definition.allow_empty,
+                    culture: match definition.culture {
+                        x::NumericCultureDefinition::Russian => UiCulture::Russian,
+                        x::NumericCultureDefinition::English => UiCulture::English,
+                        x::NumericCultureDefinition::Arabic => UiCulture::Arabic,
+                    },
+                    grouping: definition.use_grouping,
+                    calculator: definition.show_calculator,
+                };
+                let value =
+                    if element.common.bindings.contains_key("Value") && !definition.allow_empty {
+                        Some(settings.minimum)
+                    } else {
+                        definition.value.as_deref().map(parse).transpose()?
+                    };
+                let parts = ui
+                    .numeric_edit(parent, label, value, settings, style)
+                    .map_err(err)?;
                 configure_editor(ui, &parts, &definition.editor)?;
                 parts
             }
@@ -524,6 +684,166 @@ impl MountedView {
                 configure_editor(ui, &parts, &definition.editor)?;
                 parts
             }
+            ElementKind::DateTimeEdit(definition) => {
+                let minimum = definition
+                    .minimum
+                    .as_deref()
+                    .map(DateTimeValue::parse_iso)
+                    .transpose()
+                    .map_err(err)?;
+                let maximum = definition
+                    .maximum
+                    .as_deref()
+                    .map(DateTimeValue::parse_iso)
+                    .transpose()
+                    .map_err(err)?;
+                let value =
+                    if element.common.bindings.contains_key("Value") && !definition.allow_empty {
+                        Some(minimum.unwrap_or(
+                            DateTimeValue::parse_iso("0001-01-01T00:00:00").map_err(err)?,
+                        ))
+                    } else {
+                        definition
+                            .value
+                            .as_deref()
+                            .map(DateTimeValue::parse_iso)
+                            .transpose()
+                            .map_err(err)?
+                    };
+                let parts = ui
+                    .date_time_edit(
+                        parent,
+                        label,
+                        value,
+                        DateTimeEditSettings {
+                            minimum,
+                            maximum,
+                            allow_empty: definition.allow_empty,
+                            date_format: if definition.date_format == "yyyy-MM-dd" {
+                                DateFormat::Iso
+                            } else {
+                                DateFormat::Russian
+                            },
+                            show_seconds: definition.show_seconds,
+                            step_seconds: definition.time_step,
+                        },
+                        style,
+                    )
+                    .map_err(err)?;
+                configure_editor(ui, &parts, &definition.editor)?;
+                parts
+            }
+            ElementKind::DateRangeEdit(definition) => {
+                let minimum = definition
+                    .minimum
+                    .as_deref()
+                    .map(DateValue::parse_iso)
+                    .transpose()
+                    .map_err(err)?;
+                let maximum = definition
+                    .maximum
+                    .as_deref()
+                    .map(DateValue::parse_iso)
+                    .transpose()
+                    .map_err(err)?;
+                let value =
+                    if element.common.bindings.contains_key("Value") && !definition.allow_empty {
+                        let start = minimum.unwrap_or(DateValue::new(1, 1, 1).map_err(err)?);
+                        Some(DateRangeValue::new(start, start).map_err(err)?)
+                    } else {
+                        definition
+                            .value
+                            .as_deref()
+                            .map(DateRangeValue::parse_iso)
+                            .transpose()
+                            .map_err(err)?
+                    };
+                let parts = ui
+                    .date_range_edit(
+                        parent,
+                        label,
+                        value,
+                        DateRangeEditSettings {
+                            minimum,
+                            maximum,
+                            allow_empty: definition.allow_empty,
+                            format: if definition.format == "yyyy-MM-dd" {
+                                DateFormat::Iso
+                            } else {
+                                DateFormat::Russian
+                            },
+                        },
+                        style,
+                    )
+                    .map_err(err)?;
+                configure_editor(ui, &parts, &definition.editor)?;
+                parts
+            }
+            ElementKind::Calendar(definition) => {
+                let selection = match definition.selection_mode {
+                    x::CalendarSelectionMode::Single => CalendarSelection::Single(
+                        definition
+                            .value
+                            .as_deref()
+                            .map(DateValue::parse_iso)
+                            .transpose()
+                            .map_err(err)?,
+                    ),
+                    x::CalendarSelectionMode::Range => CalendarSelection::Range(
+                        definition
+                            .value
+                            .as_deref()
+                            .map(DateRangeValue::parse_iso)
+                            .transpose()
+                            .map_err(err)?,
+                    ),
+                };
+                let calendar = ui
+                    .calendar(
+                        parent,
+                        label,
+                        selection,
+                        CalendarSettings {
+                            minimum: definition
+                                .minimum
+                                .as_deref()
+                                .map(DateValue::parse_iso)
+                                .transpose()
+                                .map_err(err)?,
+                            maximum: definition
+                                .maximum
+                                .as_deref()
+                                .map(DateValue::parse_iso)
+                                .transpose()
+                                .map_err(err)?,
+                            format: if definition.format == "yyyy-MM-dd" {
+                                DateFormat::Iso
+                            } else {
+                                DateFormat::Russian
+                            },
+                            is_read_only: definition.is_read_only,
+                        },
+                        style,
+                    )
+                    .map_err(err)?;
+                if let Some(display) = &definition.display_date {
+                    ui.set_calendar_display_date(
+                        calendar.container,
+                        DateValue::parse_iso(display).map_err(err)?,
+                    )
+                    .map_err(err)?;
+                }
+                ui.set_calendar_view(
+                    calendar.container,
+                    match definition.view {
+                        x::CalendarViewDefinition::Days => CalendarView::Days,
+                        x::CalendarViewDefinition::Months => CalendarView::Months,
+                        x::CalendarViewDefinition::Years => CalendarView::Years,
+                    },
+                )
+                .map_err(err)?;
+                return Ok(calendar.container);
+            }
             ElementKind::DateEdit(definition) => {
                 let parse = |v: &Option<String>| {
                     v.as_deref()
@@ -531,15 +851,24 @@ impl MountedView {
                         .transpose()
                         .map_err(err)
                 };
+                let value =
+                    if element.common.bindings.contains_key("Value") && !definition.allow_empty {
+                        Some(
+                            parse(&definition.minimum)?
+                                .unwrap_or(DateValue::new(1, 1, 1).map_err(err)?),
+                        )
+                    } else {
+                        parse(&definition.value)?
+                    };
                 let parts = ui
                     .date_edit(
                         parent,
                         label,
-                        parse(&definition.value)?,
+                        value,
                         DateEditSettings {
                             minimum: parse(&definition.minimum)?,
                             maximum: parse(&definition.maximum)?,
-                            allow_empty: true,
+                            allow_empty: definition.allow_empty,
                             format: if definition.format == "yyyy-MM-dd" {
                                 DateFormat::Iso
                             } else {
@@ -556,17 +885,26 @@ impl MountedView {
                 let parse = |v: &Option<String>| {
                     v.as_deref().map(TimeValue::parse).transpose().map_err(err)
                 };
+                let value =
+                    if element.common.bindings.contains_key("Value") && !definition.allow_empty {
+                        Some(
+                            parse(&definition.minimum)?
+                                .unwrap_or(TimeValue::new(0, 0, 0).map_err(err)?),
+                        )
+                    } else {
+                        parse(&definition.value)?
+                    };
                 let parts = ui
                     .time_edit(
                         parent,
                         label,
-                        parse(&definition.value)?,
+                        value,
                         TimeEditSettings {
                             minimum: parse(&definition.minimum)?,
                             maximum: parse(&definition.maximum)?,
-                            allow_empty: true,
+                            allow_empty: definition.allow_empty,
                             show_seconds: definition.format == "HH:mm:ss",
-                            ..Default::default()
+                            step_seconds: definition.time_step,
                         },
                         style,
                     )

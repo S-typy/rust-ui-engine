@@ -38,6 +38,13 @@ pub use extensions::{ComponentMarkup, ComponentRegistry};
 mod codegen;
 mod form_parse;
 mod forms;
+mod masked;
+pub use masked::{MaskEditDefinition, validate_mask_edit};
+mod temporal;
+pub use temporal::{
+    CalendarDefinition, CalendarSelectionMode, CalendarViewDefinition, DateRangeEditDefinition,
+    DateTimeEditDefinition, validate_calendar, validate_date_range_edit, validate_date_time_edit,
+};
 mod grid_control;
 mod panels;
 mod status_bar;
@@ -326,6 +333,9 @@ pub struct CommonProperties {
     pub max_height: Option<f32>,
     pub horizontal_alignment: Alignment,
     pub vertical_alignment: Alignment,
+    /// Distinguishes an explicit Stretch from a presentation's default alignment.
+    pub horizontal_alignment_explicit: bool,
+    pub vertical_alignment_explicit: bool,
     /// Zero-based Grid cell, with positive spans.
     pub grid_row: u16,
     pub grid_column: u16,
@@ -359,6 +369,8 @@ impl Default for CommonProperties {
             max_height: None,
             horizontal_alignment: Alignment::Stretch,
             vertical_alignment: Alignment::Stretch,
+            horizontal_alignment_explicit: false,
+            vertical_alignment_explicit: false,
             grid_row: 0,
             grid_column: 0,
             grid_row_span: 1,
@@ -399,6 +411,11 @@ impl ElementDefinition {
             ElementKind::DockPanel(p) => p.children.iter().collect(),
             ElementKind::StatusBar(p) | ElementKind::RibbonStatusBar(p) => p.items.iter().collect(),
             ElementKind::StatusBarItem(p) => p.child.as_deref().into_iter().collect(),
+            ElementKind::ButtonEdit(p) => p
+                .buttons
+                .iter()
+                .filter_map(|button| button.content_template.as_deref())
+                .collect(),
             ElementKind::Border(p) => vec![&p.child],
             ElementKind::GroupBox(p) => p
                 .header_content
@@ -471,6 +488,11 @@ impl ElementDefinition {
                 p.items.iter_mut().collect()
             }
             ElementKind::StatusBarItem(p) => p.child.as_deref_mut().into_iter().collect(),
+            ElementKind::ButtonEdit(p) => p
+                .buttons
+                .iter_mut()
+                .filter_map(|button| button.content_template.as_deref_mut())
+                .collect(),
             ElementKind::Border(p) => vec![&mut p.child],
             ElementKind::GroupBox(p) => p
                 .header_content
@@ -534,6 +556,13 @@ pub enum ElementKind {
     ComboBox(SelectionDefinition),
     LookupEdit(LookupDefinition),
     ButtonEdit(ButtonEditDefinition),
+    MemoEdit(MemoEditDefinition),
+    PasswordBox(PasswordBoxDefinition),
+    NumericEdit(NumericEditDefinition),
+    MaskEdit(MaskEditDefinition),
+    DateTimeEdit(DateTimeEditDefinition),
+    DateRangeEdit(DateRangeEditDefinition),
+    Calendar(CalendarDefinition),
     SpinBox(SpinBoxDefinition),
     DateEdit(TemporalEditDefinition),
     TimeEdit(TemporalEditDefinition),
@@ -763,6 +792,7 @@ impl Default for ToggleButtonDefinition {
 /// Built-in vector symbols; these do not refer to fonts, files or resources.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum IconSymbol {
+    Eye,
     #[default]
     Check,
     Close,
@@ -1168,20 +1198,21 @@ fn parse_element_properties(
                     | ElementKind::ProgressBar(_)
                     | ElementKind::BusyIndicator(_)
             );
-            let immediate =
-                matches!(
-                    property,
-                    "SelectedValue"
-                        | "SelectedKey"
-                        | "LowerValue"
-                        | "UpperValue"
-                        | "SelectedValues"
-                        | "IsChecked"
-                        | "IsExpanded"
-                        | "SelectedIndex"
-                        | "FilterText"
-                ) || matches!(kind, ElementKind::ZoomControl(_) | ElementKind::Slider(_))
-                    && property == "Value";
+            let immediate = matches!(
+                property,
+                "SelectedValue"
+                    | "SelectedKey"
+                    | "LowerValue"
+                    | "UpperValue"
+                    | "SelectedValues"
+                    | "IsChecked"
+                    | "IsExpanded"
+                    | "SelectedIndex"
+                    | "FilterText"
+            ) || matches!(
+                kind,
+                ElementKind::ZoomControl(_) | ElementKind::Slider(_) | ElementKind::Calendar(_)
+            ) && property == "Value";
             let trigger = if editable && !immediate {
                 UpdateSourceTrigger::LostFocus
             } else {
@@ -1700,6 +1731,13 @@ fn parse_element(
             | ElementKind::ComboBox(_)
             | ElementKind::LookupEdit(_)
             | ElementKind::ButtonEdit(_)
+            | ElementKind::MemoEdit(_)
+            | ElementKind::PasswordBox(_)
+            | ElementKind::NumericEdit(_)
+            | ElementKind::MaskEdit(_)
+            | ElementKind::DateTimeEdit(_)
+            | ElementKind::DateRangeEdit(_)
+            | ElementKind::Calendar(_)
             | ElementKind::SpinBox(_)
             | ElementKind::DateEdit(_)
             | ElementKind::TimeEdit(_)
@@ -2172,6 +2210,7 @@ fn icon_symbol(
         "Sun" => Ok(IconSymbol::Sun),
         "Moon" => Ok(IconSymbol::Moon),
         "Lock" => Ok(IconSymbol::Lock),
+        "Eye" => Ok(IconSymbol::Eye),
         _ => Err(at_attribute(
             document,
             attribute,
@@ -2584,6 +2623,8 @@ mod tests;
 #[cfg(test)]
 mod visual_tests;
 
+#[cfg(test)]
+mod editor_extension_tests;
 #[cfg(test)]
 mod extras_tests;
 #[cfg(test)]

@@ -33,6 +33,32 @@ mod splitter;
 pub use sliders::{RangeSliderSettings, SliderSettings, ThumbCrossing};
 mod custom_measure;
 mod editor_async;
+mod editor_navigation;
+mod editor_text;
+mod password;
+#[cfg(test)]
+mod password_tests;
+pub use password::{
+    MAX_PASSWORD_BYTES, MAX_PASSWORD_GRAPHEMES, PasswordBoxSettings, PasswordEvent,
+    PasswordEventKind, PasswordRef, PasswordValue,
+};
+mod masks;
+mod masks_model;
+mod numeric;
+mod numeric_model;
+pub use masks_model::{
+    MAX_MASK_PATTERN_BYTES, MAX_MASK_SLOTS, MAX_MASK_VALUE_BYTES, MaskClass, MaskParse,
+    MaskPattern, MaskSegment, MaskSeparator, MaskSettings,
+};
+#[cfg(test)]
+mod masks_tests;
+pub use numeric_model::{
+    CalculatorKey, DecimalValue, NumericCalculator, NumericEditSettings, NumericOperation,
+    NumericRounding, calculate_decimal,
+};
+mod memo;
+#[cfg(test)]
+mod numeric_tests;
 pub use bars::{
     BarItemSnapshot, BarManager, BarPlacement, BarSnapshot, BarSnapshotEntry, MenuBar, MenuBarItem,
     ToolBar, ToolBarItem, ToolBarItemKind,
@@ -41,6 +67,7 @@ pub use choices::{CheckPresentation, CheckState, RadioChoiceGroup};
 pub use flyout::{Flyout, FlyoutPlacement};
 pub use grid::{DataSourceHandle, GridControlColumn, GridControlSettings};
 pub use images::{ImageSettings, ImageStretch};
+pub use memo::{MemoEdit, MemoEditSettings};
 pub use repeat::RepeatButtonSettings;
 pub use rust_desktop_ui_images::{
     ImageAsset, ImageCacheStats, ImageError, ImageFormat, ImageSource,
@@ -75,6 +102,9 @@ pub use groups::{
 use tabbed_groups::Tabs;
 pub use tabbed_groups::{GroupTab, TabbedGroup};
 #[cfg(test)]
+mod editor_button_tests;
+mod editor_buttons;
+#[cfg(test)]
 mod pointer_cancel_tests;
 mod popup;
 mod scroll;
@@ -82,12 +112,25 @@ mod selection;
 #[cfg(test)]
 mod selection_tests;
 pub use scroll::{ScrollBarVisibility, ScrollSettings};
+mod date_time;
+mod date_time_parser;
+#[cfg(test)]
+mod date_time_tests;
 mod rich_presentation;
 #[cfg(test)]
 mod scene_layer_tests;
 mod tooltip;
 mod value_editors;
+pub(crate) use date_time_parser::TemporalValueParser;
+mod calendar;
+mod calendar_model;
+mod calendar_view;
+mod date_time_popup;
 pub use appearance::{SurfaceKind, TextStyle, TextTone};
+pub use calendar_model::{CalendarSelection, CalendarSettings, CalendarView};
+pub use calendar_view::{Calendar, CalendarValidator};
+pub use date_time::*;
+pub use editor_buttons::*;
 pub use popup::{MAX_MENU_DEPTH, MAX_MENU_ITEMS, MenuEntry, SplitButton};
 pub use selection::*;
 pub use value_editors::*;
@@ -133,6 +176,7 @@ pub enum Role {
     Image,
     Separator,
     TextBox,
+    PasswordBox,
     ScrollView,
     TabList,
     Tab,
@@ -260,6 +304,7 @@ enum Kind {
         auto_height: bool,
     },
     TextBox(TextDocument),
+    Password(Box<password::PasswordState>),
     Scroll {
         content: WidgetId,
         extent: Size,
@@ -300,6 +345,7 @@ impl Kind {
             Self::Icon { .. } => Role::Image,
             Self::Separator { .. } => Role::Separator,
             Self::TextBox(_) => Role::TextBox,
+            Self::Password(_) => Role::PasswordBox,
             Self::Scroll { .. } => Role::ScrollView,
             Self::Tab { .. } => Role::Tab,
             Self::MenuItem => Role::MenuItem,
@@ -342,6 +388,8 @@ struct Control {
     single_line: bool,
     text_scroll_x: f32,
     text_scroll: f32,
+    caret_goal_x: Option<f32>,
+    caret_reveal: bool,
     default_height: bool,
     transparent_panel: bool,
     caret: TextCaret,
@@ -384,6 +432,7 @@ impl Control {
 /// For registered controls, enabled state belongs to `set_enabled` and the command
 /// registry; runtime node properties are refreshed from those sources on update.
 pub struct Controls {
+    temporal_parsers: HashMap<WidgetId, TemporalValueParser>,
     caret_clock: Option<(WidgetId, std::time::Instant)>,
     text_displays: text_display::TextDisplays,
     sliders: sliders::Sliders,
@@ -392,6 +441,11 @@ pub struct Controls {
     async_editors: editor_async::AsyncEditorStore,
     choices: choices::ChoiceControls,
     flyouts: flyout::FlyoutState,
+    memos: memo::MemoState,
+    numeric: numeric::NumericState,
+    masks: masks::MasksState,
+    calendars: calendar_view::CalendarState,
+    temporal_popups: date_time_popup::TemporalPopupState,
     bars: bars::BarsState,
     repeats: repeat::RepeatState,
     splitters: HashMap<WidgetId, splitter::SplitterState>,
@@ -420,6 +474,7 @@ pub struct Controls {
     clipboard: Vec<ClipboardRequest>,
     activated: Vec<WidgetId>,
     text_changes: Vec<TextChanged>,
+    password_events: Vec<PasswordEvent>,
     edit_events: Vec<EditEvent>,
     observed_editor_focus: Option<WidgetId>,
     viewport: Size,
@@ -433,6 +488,7 @@ pub struct Controls {
     custom_scenes: HashMap<WidgetId, Scene>,
     rich: selection::RichControls,
     scroll_drag: Option<scroll::ScrollDrag>,
+    editor_scroll_drag: Option<editor_navigation::EditorScrollDrag>,
     groups: HashMap<WidgetId, groups::GroupState>,
     status: status::StatusControls,
 }
@@ -468,6 +524,7 @@ impl Controls {
             },
         )?;
         Ok(Self {
+            temporal_parsers: HashMap::new(),
             choices: Default::default(),
             async_editors: Default::default(),
             progress_animation: Default::default(),
@@ -476,6 +533,11 @@ impl Controls {
             text_displays: Default::default(),
             caret_clock: None,
             flyouts: Default::default(),
+            memos: Default::default(),
+            numeric: Default::default(),
+            masks: Default::default(),
+            calendars: Default::default(),
+            temporal_popups: Default::default(),
             bars: Default::default(),
             repeats: Default::default(),
             splitters: HashMap::new(),
@@ -504,6 +566,7 @@ impl Controls {
             clipboard: Vec::new(),
             activated: Vec::new(),
             text_changes: Vec::new(),
+            password_events: Vec::new(),
             edit_events: Vec::new(),
             observed_editor_focus: None,
             viewport: Size::ZERO,
@@ -517,6 +580,7 @@ impl Controls {
             custom_scenes: HashMap::new(),
             rich: Default::default(),
             scroll_drag: None,
+            editor_scroll_drag: None,
             groups: HashMap::new(),
             status: Default::default(),
         })
@@ -584,8 +648,7 @@ impl Controls {
         if self
             .runtime
             .focused()
-            .and_then(|id| self.document(id))
-            .is_none()
+            .is_none_or(|id| self.document(id).is_none() && !self.is_password_box(id))
         {
             return false;
         }
@@ -613,7 +676,10 @@ impl Controls {
                 id,
                 text: document.text().to_owned(),
             });
-            self.controls.get_mut(&id).unwrap().validation_error = None;
+            let control = self.controls.get_mut(&id).unwrap();
+            control.validation_error = None;
+            control.caret_goal_x = None;
+            control.caret_reveal = true;
             self.invalidate_async_editor(id);
         }
     }
@@ -691,6 +757,7 @@ impl Controls {
         Ok(())
     }
     fn validate_editor_value(&self, id: WidgetId, value: &str) -> Result<(), String> {
+        self.validate_mask_value(id, value)?;
         self.validate_rich_value(id, value)?;
         let control = &self.controls[&id];
         control.validation.check(value)?;
@@ -781,6 +848,7 @@ impl Controls {
         editor_limits(control.editor.max_length)
             .validate(&value)
             .map_err(edit_error)?;
+        self.preflight_editor_text(id, &value)?;
         if let Err(message) = self.validate_editor_value(id, &value) {
             return Ok(CommitOutcome::Invalid(message));
         }
@@ -873,6 +941,7 @@ impl Controls {
         id: WidgetId,
         settings: EditorSettings,
     ) -> Result<(), ControlError> {
+        self.preflight_editor_text(id, &settings.placeholder)?;
         let Some(Control {
             kind: Kind::TextBox(document),
             editor,
@@ -915,6 +984,14 @@ impl Controls {
         id: WidgetId,
         style: EditBoxStyle,
     ) -> Result<(), ControlError> {
+        style.validate()?;
+        let control = self.editor_control(id)?;
+        let draft = self.document(id).unwrap().display_text();
+        let accepted = control.accepted_value.clone();
+        let placeholder = control.editor.placeholder.clone();
+        for text in [&draft, &accepted, &placeholder] {
+            self.preflight_editor_style_text(id, text, style)?;
+        }
         let control = self
             .controls
             .get_mut(&id)
@@ -1140,7 +1217,7 @@ impl Controls {
         command: Option<CommandId>,
         mut style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
-        let interactive = kind.clickable() || matches!(kind, Kind::TextBox(_));
+        let interactive = kind.clickable() || matches!(kind, Kind::TextBox(_) | Kind::Password(_));
         let default_height = style.height == Length::Auto
             && !matches!(
                 kind,
@@ -1159,7 +1236,7 @@ impl Controls {
                     kind,
                     Kind::Label | Kind::Icon { .. } | Kind::Separator { .. }
                 ),
-                clip: matches!(kind, Kind::Panel | Kind::TextBox(_)),
+                clip: matches!(kind, Kind::Panel | Kind::TextBox(_) | Kind::Password(_)),
                 ..Default::default()
             },
         )?;
@@ -1205,6 +1282,8 @@ impl Controls {
                 single_line: false,
                 text_scroll_x: 0.0,
                 text_scroll: 0.0,
+                caret_goal_x: None,
+                caret_reveal: true,
                 default_height,
                 transparent_panel: false,
                 caret: TextCaret::default(),
@@ -1484,6 +1563,7 @@ impl Controls {
             .engine
             .prepare(
                 &TextRun {
+                    sensitive: false,
                     bounds: Rect::new(0.0, 0.0, width, 0.0),
                     clip: Rect::new(0.0, 0.0, 0.0, 0.0),
                     text: text.to_owned(),
@@ -1584,6 +1664,7 @@ impl Controls {
     ) -> Result<WidgetId, ControlError> {
         let value = value.into();
         TextLimits::default().validate(&value).map_err(edit_error)?;
+        self.preflight_new_editor_text(&value, &style, false)?;
         self.add(
             parent,
             Kind::TextBox(TextDocument::new(value)),
@@ -1604,6 +1685,7 @@ impl Controls {
     ) -> Result<WidgetId, ControlError> {
         let value = value.into();
         let value = normalize_editor_text(&value, true).map_err(edit_error)?;
+        self.preflight_new_editor_text(&value, &style, true)?;
         let id = self.text_box(parent, label, value.as_ref(), style)?;
         if let Some(control) = self.controls.get_mut(&id) {
             control.single_line = true;
@@ -1674,6 +1756,10 @@ impl Controls {
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.preflight_bar_removal(id)?;
         self.preflight_flyout_removal(id)?;
+        self.preflight_memo_removal(id)?;
+        self.preflight_numeric_removal(id)?;
+        self.preflight_calendar_removal(id)?;
+        self.preflight_temporal_removal(id)?;
         self.preflight_slider_removal(id)?;
         self.preflight_splitter_removal(id)?;
         self.preflight_grid_removal(id)?;
@@ -1696,8 +1782,17 @@ impl Controls {
         {
             return Ok(());
         }
+        if self.controls.iter().any(|(id, control)| {
+            matches!(control.kind, Kind::Password(_)) && !self.runtime.tree().contains(*id)
+        }) {
+            self.scene.clear();
+            self.base_scene.clear();
+            self.overlay_scene.clear();
+        }
         self.controls
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
+        self.password_events
+            .retain(|event| self.runtime.tree().contains(event.id));
         self.tabs
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.retain_rich_controls();
@@ -1714,6 +1809,10 @@ impl Controls {
         self.layout.retain_measures(self.runtime.tree());
         self.retain_splitters()?;
         self.prune_flyouts()?;
+        self.prune_memos();
+        self.prune_masks();
+        self.prune_calendars();
+        self.prune_temporal_popups();
         self.prune_bars();
         self.prune_repeat();
         self.prune_rich_tooltips();
@@ -1781,6 +1880,9 @@ impl Controls {
         self.controls.contains_key(&id) && self.effective_enabled(id)
     }
     fn activation_available(&self, id: WidgetId) -> bool {
+        if self.editor_button_blocked(id) {
+            return false;
+        }
         if self.expander_transition_blocks(id) || self.bar_owner_blocks(id) {
             return false;
         }
@@ -1809,6 +1911,9 @@ impl Controls {
                 .is_none_or(|parent| self.effective_enabled(parent))
     }
     fn effective_enabled(&self, mut id: WidgetId) -> bool {
+        if self.editor_button_blocked(id) {
+            return false;
+        }
         if self.expander_transition_blocks(id) || self.bar_owner_blocks(id) {
             return false;
         }
@@ -1827,6 +1932,7 @@ impl Controls {
                 .get(&id)
                 .map_or(node.props.enabled, |control| {
                     control.enabled
+                        && !self.editor_button_blocked(id)
                         && control
                             .metadata_command()
                             .is_none_or(|command| self.commands.enabled(command))
@@ -1953,6 +2059,7 @@ impl Controls {
                 (
                     id,
                     control.enabled
+                        && !self.editor_button_blocked(id)
                         && control
                             .metadata_command()
                             .is_none_or(|command| self.commands.enabled(command)),
@@ -2051,7 +2158,16 @@ impl Controls {
         self.refresh_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
+        self.sync_passwords()?;
         self.poll_editor_validation()?;
+        self.sync_memos()?;
+        self.sync_numeric()?;
+        self.sync_temporal_popups()?;
+        if viewport != self.viewport {
+            for control in self.controls.values_mut() {
+                control.caret_reveal = true;
+            }
+        }
         self.sync_button_contents()?;
         self.sync_expander_motion()?;
         if self.commands.poll_async() > 0 {
@@ -2134,6 +2250,7 @@ impl Controls {
     /// levels, editor drafts, accepted values and IME composition remain intact.
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
+        self.cancel_editor_scroll()?;
         self.cancel_slider_interaction()?;
         self.cancel_tab_drag()?;
         self.cancel_splitter_interaction()?;
@@ -2210,7 +2327,13 @@ impl Controls {
             self.scene_dirty = true;
             return Ok(());
         }
-        if self.flyout_before_input(&event)?
+        if self.temporal_before_input(&event)?
+            || self.calendar_before_input(&event)?
+            || self.numeric_before_input(&event)?
+            || self.password_before_input(&event)?
+            || self.memo_before_input(&event)?
+            || self.editor_scroll_before_input(&event)?
+            || self.flyout_before_input(&event)?
             || self.bars_before_input(&event)?
             || self.tab_before_input(&event)?
         {
@@ -2450,13 +2573,25 @@ impl Controls {
         if !self.activation_available(id) || !self.controls[&id].kind.clickable() {
             return Ok(());
         }
+        if self.activate_password(id)? {
+            return Ok(());
+        }
         if self.activate_status_grip(id)? {
             return Ok(());
         }
         if self.activate_group_header(id)? {
             return Ok(());
         }
+        if self.activate_calendar(id)? || self.activate_temporal_popup(id)? {
+            return Ok(());
+        }
         if self.activate_rich_control(id)? {
+            return Ok(());
+        }
+        if self.activate_numeric(id)? {
+            return Ok(());
+        }
+        if self.activate_memo(id)? {
             return Ok(());
         }
         if self.activate_flyout(id)? {
@@ -2552,217 +2687,6 @@ impl Controls {
         let content = *content;
         self.edit_props(content, |props| props.style.height = Length::Px(extent))
     }
-    fn place_caret(
-        &mut self,
-        id: WidgetId,
-        point: Point,
-        extend: bool,
-    ) -> Result<(), ControlError> {
-        if self
-            .document(id)
-            .is_some_and(|document| document.composition().is_some())
-        {
-            self.cancel_preedit();
-            self.rebuild_scene()?;
-        }
-        let Some(layout) = self.text_layouts.get(&id) else {
-            return Ok(());
-        };
-        let next_caret = layout.hit_test_caret(point);
-        let index = next_caret.index;
-        if let Some(Control {
-            kind: Kind::TextBox(document),
-            caret,
-            ..
-        }) = self.controls.get_mut(&id)
-        {
-            let anchor = if extend {
-                document.selection().anchor
-            } else {
-                index
-            };
-            document
-                .set_selection(anchor, index)
-                .map_err(|e| ControlError::Text(e.to_string()))?;
-            *caret = next_caret;
-            document.cancel_preedit();
-            self.scene_dirty = true;
-        }
-        Ok(())
-    }
-    fn edit_key(
-        &mut self,
-        id: WidgetId,
-        key: &Key,
-        modifiers: rust_desktop_ui_core::Modifiers,
-        repeat: bool,
-    ) -> Result<(), ControlError> {
-        let shortcut = (modifiers.control && !modifiers.alt) || modifiers.super_key;
-        let confirm_key = *key == Key::Enter
-            && !repeat
-            && !modifiers.shift
-            && !modifiers.alt
-            && self.controls.get(&id).is_some_and(|control| {
-                if control.single_line {
-                    !modifiers.control && !modifiers.super_key
-                } else {
-                    shortcut
-                }
-            });
-        if confirm_key && self.is_text_editable(id) {
-            self.commit_edit(id)?;
-            return Ok(());
-        }
-        let Some(Control {
-            kind: Kind::TextBox(document),
-            caret,
-            single_line,
-            editor:
-                EditorSettings {
-                    is_read_only: read_only,
-                    max_length,
-                    ..
-                },
-            ..
-        }) = self.controls.get_mut(&id)
-        else {
-            return Ok(());
-        };
-        if document.composition().is_some() {
-            return Ok(());
-        }
-        // Ctrl+Alt is commonly AltGr, whose printable text arrives separately.
-        if matches!(
-            key,
-            Key::ArrowUp | Key::ArrowDown | Key::PageUp | Key::PageDown
-        ) && let Some(layout) = self.text_layouts.get(&id)
-        {
-            if caret.index != document.selection().focus {
-                *caret = TextCaret {
-                    index: document.selection().focus,
-                    ..Default::default()
-                };
-            }
-            let geometry = layout.caret_geometry(*caret);
-            let direction = if matches!(key, Key::ArrowUp | Key::PageUp) {
-                -1.0
-            } else {
-                1.0
-            };
-            let distance = if matches!(key, Key::PageUp | Key::PageDown) {
-                self.runtime
-                    .bounds(id)
-                    .map_or(geometry.height, |r| r.height)
-            } else {
-                geometry.height
-            };
-            *caret = layout.hit_test_caret(Point::new(
-                geometry.x,
-                geometry.y + geometry.height * 0.5 + direction * distance,
-            ));
-            let anchor = if modifiers.shift {
-                document.selection().anchor
-            } else {
-                caret.index
-            };
-            document
-                .set_selection(anchor, caret.index)
-                .map_err(|e| ControlError::Text(e.to_string()))?;
-            self.scene_dirty = true;
-            return Ok(());
-        }
-        if matches!(key, Key::ArrowLeft | Key::ArrowRight)
-            && !shortcut
-            && (modifiers.shift || document.selection().anchor == document.selection().focus)
-            && let Some(layout) = self.text_layouts.get(&id)
-        {
-            if caret.index != document.selection().focus {
-                *caret = TextCaret {
-                    index: document.selection().focus,
-                    ..Default::default()
-                };
-            }
-            *caret = layout.move_caret_visual(*caret, *key == Key::ArrowRight);
-            let anchor = if modifiers.shift {
-                document.selection().anchor
-            } else {
-                caret.index
-            };
-            document
-                .set_selection(anchor, caret.index)
-                .map_err(|e| ControlError::Text(e.to_string()))?;
-            self.scene_dirty = true;
-            return Ok(());
-        }
-        let before = document.text().to_owned();
-        let selection_before = document.selection();
-        let limits = editor_limits(*max_length);
-        match key {
-            Key::ArrowLeft if shortcut => document.move_word_left(modifiers.shift),
-            Key::ArrowRight if shortcut => document.move_word_right(modifiers.shift),
-            Key::ArrowLeft => document.move_left(modifiers.shift),
-            Key::ArrowRight => document.move_right(modifiers.shift),
-            Key::Home if shortcut => document.move_document_start(modifiers.shift),
-            Key::End if shortcut => document.move_document_end(modifiers.shift),
-            Key::Home => document.move_home(modifiers.shift),
-            Key::End => document.move_end(modifiers.shift),
-            Key::Backspace if !*read_only => {
-                document.backspace();
-            }
-            Key::Delete if !*read_only => {
-                document.delete_forward();
-            }
-            Key::Enter
-                if !*single_line
-                    && !*read_only
-                    && !modifiers.control
-                    && !modifiers.super_key
-                    && !modifiers.alt =>
-            {
-                if let Err(error) = document.try_insert("\n", limits) {
-                    return user_edit(Err(error));
-                }
-            }
-            Key::Character(value) if shortcut => match value.to_lowercase().as_str() {
-                "a" => document.select_all(),
-                "c" if !repeat => self
-                    .clipboard
-                    .push(ClipboardRequest::Copy(document.selected_text().to_owned())),
-                "x" if !repeat && !*read_only => {
-                    self.clipboard
-                        .push(ClipboardRequest::Copy(document.selected_text().to_owned()));
-                    document.insert("");
-                }
-                "v" if !repeat && !*read_only => self.clipboard.push(ClipboardRequest::Paste),
-                "z" if !repeat && modifiers.shift && !*read_only => {
-                    if let Err(error) = document.try_redo(limits) {
-                        return user_edit(Err(error));
-                    }
-                }
-                "z" if !repeat && !*read_only => {
-                    if let Err(error) = document.try_undo(limits) {
-                        return user_edit(Err(error));
-                    }
-                }
-                "y" if !repeat && !*read_only => {
-                    if let Err(error) = document.try_redo(limits) {
-                        return user_edit(Err(error));
-                    }
-                }
-                _ => {}
-            },
-            _ => {}
-        }
-        if document.selection() != selection_before || document.text() != before {
-            *caret = TextCaret {
-                index: document.selection().focus,
-                ..Default::default()
-            };
-        }
-        self.scene_dirty = true;
-        self.record_text_change(id, &before);
-        Ok(())
-    }
     /// Insert user text or paste. Over-limit input is rejected as a whole.
     pub fn text_input(&mut self, text: &str) -> Result<(), ControlError> {
         if self.runtime.drag_session().is_some() {
@@ -2775,6 +2699,22 @@ impl Controls {
         self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
+        if self.password_text_input(text, false)? {
+            return Ok(());
+        }
+        if self.mask_text_input(text, false)? {
+            return Ok(());
+        }
+        if let Some(id) = self
+            .runtime
+            .focused()
+            .filter(|&id| self.is_text_editable(id))
+            && self
+                .preflight_editor_insert(id, text, false, false)
+                .is_err()
+        {
+            return Ok(());
+        }
         if let Some(id) = self
             .runtime
             .focused()
@@ -2820,6 +2760,17 @@ impl Controls {
         self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
+        if self.password_preedit(text, cursor)? {
+            return Ok(());
+        }
+        if let Some(id) = self
+            .runtime
+            .focused()
+            .filter(|&id| self.is_text_editable(id))
+            && self.preflight_editor_insert(id, text, true, true).is_err()
+        {
+            return Ok(());
+        }
         if let Some(id) = self
             .runtime
             .focused()
@@ -2835,6 +2786,8 @@ impl Controls {
                 kind: Kind::TextBox(document),
                 single_line,
                 editor: EditorSettings { max_length, .. },
+                caret_reveal,
+                caret_goal_x,
                 ..
             }) = self.controls.get_mut(&id)
         {
@@ -2845,6 +2798,8 @@ impl Controls {
                 return Ok(());
             }
             user_edit(document.try_set_preedit(text, cursor, editor_limits(*max_length)))?;
+            *caret_reveal = true;
+            *caret_goal_x = None;
             self.scene_dirty = true;
         }
         Ok(())
@@ -2857,6 +2812,21 @@ impl Controls {
         self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
+        if self.password_text_input(text, true)? {
+            return Ok(());
+        }
+        if self.mask_text_input(text, true)? {
+            return Ok(());
+        }
+        if let Some(id) = self
+            .runtime
+            .focused()
+            .filter(|&id| self.is_text_editable(id))
+            && self.preflight_editor_insert(id, text, true, false).is_err()
+        {
+            self.cancel_preedit();
+            return Ok(());
+        }
         if let Some(id) = self
             .runtime
             .focused()
@@ -2893,8 +2863,13 @@ impl Controls {
         Ok(())
     }
     pub fn cancel_preedit(&mut self) {
+        self.password_cancel_preedit();
         for control in self.controls.values_mut() {
             if let Kind::TextBox(document) = &mut control.kind {
+                if document.composition().is_some() {
+                    control.caret_reveal = true;
+                    control.caret_goal_x = None;
+                }
                 document.cancel_preedit();
             }
         }
@@ -2903,12 +2878,22 @@ impl Controls {
     // Also observes public runtime focus mutations at the next Controls boundary.
     // A disappearing, hidden or disabled editor is never implicitly accepted.
     fn synchronize_editor_focus(&mut self) -> Result<(), ControlError> {
+        self.sync_passwords()?;
         let current = self.runtime.focused().and_then(|id| {
-            self.rich_focus_editor(id)
+            self.temporal_focus_editor(id)
+                .or_else(|| self.numeric_focus_editor(id))
+                .or_else(|| self.memo_focus_editor(id))
+                .or_else(|| self.rich_focus_editor(id))
                 .or_else(|| self.document(id).map(|_| id))
         });
         let previous = self.observed_editor_focus;
         self.observed_editor_focus = current;
+        if current != previous
+            && let Some(control) = current.and_then(|id| self.controls.get_mut(&id))
+        {
+            control.caret_reveal = true;
+            control.caret_goal_x = None;
+        }
         if current != previous
             && let Some(id) = previous
         {
@@ -2957,6 +2942,9 @@ impl Controls {
         if !self.is_enabled(id) {
             return None;
         }
+        if self.is_password_box(id) {
+            return self.password_caret_bounds(id);
+        }
         let document = self.document(id)?;
         let mut caret = self.controls.get(&id)?.caret;
         if caret.index != document.display_selection().focus {
@@ -2973,6 +2961,14 @@ impl Controls {
     /// editors. Does not accept the business value; use `set_editor_value` to load
     /// a value or `commit_edit` to confirm. Input limit failures are atomic.
     pub fn set_text(&mut self, id: WidgetId, text: &str) -> Result<(), ControlError> {
+        let masked = self.mask_draft(id, text)?;
+        let text = masked.as_deref().unwrap_or(text);
+        let control = self.editor_control(id)?;
+        let normalized = normalize_editor_text(text, control.single_line).map_err(edit_error)?;
+        editor_limits(control.editor.max_length)
+            .validate(&normalized)
+            .map_err(edit_error)?;
+        self.preflight_editor_text(id, &normalized)?;
         let Some(Control {
             kind: Kind::TextBox(document),
             single_line,
@@ -3053,6 +3049,9 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            if self.paint_password(id, bounds, clip)? {
+                continue;
+            }
             if self.paint_image(id, bounds, clip) {
                 continue;
             }
@@ -3220,7 +3219,8 @@ impl Controls {
                 if embedded {
                     style.border_width = 0.0;
                     style.corner_radius = 2.0;
-                    style.focus_visible = false;
+                    // The shared editor chrome identifies the session; the
+                    // focused button still needs its own keyboard focus cue.
                     if !state.hovered && !state.pressed && !state.checked {
                         style.background.a = 0.0;
                     }
@@ -3274,7 +3274,9 @@ impl Controls {
                         },
                     );
                 }
-                let has_popup = self.popup_expanded(id).is_some();
+                // Composite editors own a dedicated disclosure button. Their
+                // shared expand semantics must not add arrows to every child.
+                let has_popup = self.rich_owner(id).is_none() && self.popup_expanded(id).is_some();
                 let text_bounds = popup::paint_indicator(
                     &mut self.scene,
                     control,
@@ -3339,6 +3341,7 @@ impl Controls {
                     && text_bounds.height > 0.0
                 {
                     let mut run = TextRun {
+                        sensitive: false,
                         bounds: text_bounds,
                         clip: text_bounds
                             .intersection(clip)
@@ -3496,7 +3499,7 @@ impl Controls {
                 append_clipped(&mut self.scene, custom, clip);
             }
             let enabled = self.effective_enabled(id);
-            let has_popup = self.popup_expanded(id).is_some();
+            let has_popup = self.rich_owner(id).is_none() && self.popup_expanded(id).is_some();
             let has_content = self.button_content(id).is_some();
             let Some(control) = self.controls.get_mut(&id) else {
                 continue;
@@ -3580,6 +3583,7 @@ impl Controls {
                 text_bounds.width = (text_bounds.width - 24.0).max(0.0);
             }
             let mut run = TextRun {
+                sensitive: false,
                 bounds: text_bounds,
                 clip: text_bounds
                     .intersection(clip)
@@ -3625,6 +3629,20 @@ impl Controls {
                     .engine
                     .prepare(&run, 1.0)
                     .map_err(|e| ControlError::Text(e.to_string()))?;
+                if !control.single_line {
+                    let offset = control
+                        .text_scroll
+                        .clamp(0.0, (layout.height - text_bounds.height).max(0.0));
+                    if offset != control.text_scroll {
+                        control.text_scroll = offset;
+                        run.bounds.y = text_bounds.y - offset;
+                        run.bounds.height = text_bounds.height + offset;
+                        layout = self
+                            .engine
+                            .prepare(&run, 1.0)
+                            .map_err(|e| ControlError::Text(e.to_string()))?;
+                    }
+                }
                 if control.single_line {
                     // Center against actual document metrics, never placeholder glyphs.
                     let padding = ((text_bounds.height - layout.height.ceil()) * 0.5).max(0.0);
@@ -3647,7 +3665,10 @@ impl Controls {
                         ..control.caret
                     };
                     let caret = layout.caret_geometry(active);
-                    if self.runtime.focused() == Some(id) {
+                    control.text_scroll_x = control
+                        .text_scroll_x
+                        .clamp(0.0, (layout.width - text_bounds.width).max(0.0));
+                    if self.runtime.focused() == Some(id) && control.caret_reveal {
                         control.text_scroll_x =
                             horizontal_caret_scroll(control.text_scroll_x, caret, text_bounds);
                     } else if run.text.is_empty() {
@@ -3670,6 +3691,7 @@ impl Controls {
                     }
                     let caret = layout.caret_geometry(control.caret);
                     if focused
+                        && control.caret_reveal
                         && !control.single_line
                         && (caret.y < text_bounds.y
                             || caret.y + caret.height > text_bounds.y + text_bounds.height)
@@ -3687,6 +3709,7 @@ impl Controls {
                             .prepare(&run, 1.0)
                             .map_err(|e| ControlError::Text(e.to_string()))?;
                     }
+                    control.caret_reveal = false;
                     if focused {
                         for selection_rect in layout.selection_rects(
                             selection.anchor.min(selection.focus)
@@ -3739,6 +3762,7 @@ impl Controls {
                     }
                 }
                 self.text_layouts.insert(id, layout);
+                self.paint_editor_scroll_bar(id);
             } else if !run.text.is_empty() {
                 if control.kind.clickable() {
                     // System-font ascent/descent can exceed a font-size multiplier.
@@ -3903,7 +3927,14 @@ impl Controls {
                     checked_mixed: self.check_state(id) == Some(CheckState::Indeterminate),
                     selected,
                     disabled: !enabled,
-                    read_only: control.editor.is_read_only
+                    read_only: self
+                        .password_settings(id)
+                        .is_some_and(|settings| settings.is_read_only)
+                        || self
+                            .memo_editor(id)
+                            .and_then(|editor| self.is_read_only(editor))
+                            .unwrap_or(false)
+                        || control.editor.is_read_only
                         || self.rich_read_only(id)
                         || self
                             .grid_settings(id)
@@ -3912,6 +3943,11 @@ impl Controls {
                     validation_error: control
                         .validation_error
                         .clone()
+                        .or_else(|| {
+                            self.memo_editor(id)
+                                .and_then(|editor| self.validation_error(editor))
+                                .map(str::to_owned)
+                        })
                         .or_else(|| self.grid_error(id).map(str::to_owned)),
                     has_popup: self.popup_expanded(id).is_some(),
                     expanded: self
@@ -4027,7 +4063,9 @@ impl Controls {
                 } else if self.is_text_editable(id) {
                     // Accessibility is a user route: rejecting input must not close the host.
                     match self.set_text(id, value.unwrap_or_default()) {
-                        Ok(()) | Err(ControlError::Edit(EditError::LimitExceeded { .. })) => {}
+                        Ok(())
+                        | Err(ControlError::Edit(EditError::LimitExceeded { .. }))
+                        | Err(ControlError::Text(_)) => {}
                         Err(error) => return Err(error),
                     }
                 }
@@ -4167,6 +4205,7 @@ fn paint_button_icon_content(
         return Ok(());
     };
     let mut run = TextRun {
+        sensitive: false,
         bounds: content,
         clip,
         text: label.to_owned(),

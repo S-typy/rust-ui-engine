@@ -1,8 +1,10 @@
 //! Property bindings between application data and retained controls.
 
+use crate::controls::TemporalValueParser;
 use crate::{
     BindingContext, BindingConverterRegistry, BindingError, BindingExpression, BindingPath,
-    BindingPathSegment, CommitOutcome, Controls, DataValue, DateFormat, DateValue, EditorValidator,
+    BindingPathSegment, CalendarSelection, CalendarValidator, CommitOutcome, Controls, DataValue,
+    DateFormat, DateRangeValue, DateValue, EditorValidator, EditorValue, NumericEditSettings,
     SelectionItem, SelectionValidator, TimeValue,
 };
 use rust_desktop_ui_core::{Length, Mutation, WidgetId};
@@ -1075,102 +1077,137 @@ impl ControlBindings {
                 })
             }
             BindingSource::Element(endpoint) => {
-                let Some(editor) = value_editor(ui, *endpoint) else {
-                    return Ok(());
-                };
-                let application = ui.editor_validator(editor).cloned();
-                let validation = ui.editor_validation(editor).cloned().unwrap_or_default();
-                let settings = ui.editor_settings(editor).cloned().unwrap_or_default();
-                let parser = editor_parser(ui, *endpoint);
-                let spin = ui.spin_settings(endpoint.widget).cloned();
-                let date = ui.date_settings(endpoint.widget).cloned();
-                let time = ui.time_settings(endpoint.widget).cloned();
-                Box::new(move |value| {
-                    let text = match parser {
-                        EditorParser::Text => string(&value)
-                            .map_err(|error| error.to_string())?
-                            .to_owned(),
-                        EditorParser::Number => {
-                            let value = number(&value).map_err(|error| error.to_string())?;
-                            if let Some(settings) = &spin
-                                && !(settings.minimum..=settings.maximum).contains(&value)
-                            {
-                                return Err("Number outside source editor bounds".into());
-                            }
-                            value.to_string()
-                        }
-                        EditorParser::Date(format) => {
-                            let value = match value {
-                                DataValue::Null => None,
-                                _ => Some(
-                                    DateValue::parse_iso(
-                                        string(&value).map_err(|error| error.to_string())?,
-                                    )
-                                    .map_err(|error| error.to_string())?,
-                                ),
-                            };
-                            if let Some(settings) = &date {
-                                if let Some(value) = value {
-                                    if settings.minimum.is_some_and(|min| value < min)
-                                        || settings.maximum.is_some_and(|max| value > max)
-                                    {
-                                        return Err("Date outside source editor bounds".into());
-                                    }
-                                } else if !settings.allow_empty {
-                                    return Err("Source date cannot be empty".into());
-                                }
-                            }
-                            value.map_or(String::new(), |value| value.to_display(format))
-                        }
-                        EditorParser::Time => {
-                            let value = match value {
-                                DataValue::Null => None,
-                                _ => Some(
-                                    TimeValue::parse(
-                                        string(&value).map_err(|error| error.to_string())?,
-                                    )
-                                    .map_err(|error| error.to_string())?,
-                                ),
-                            };
-                            if let Some(settings) = &time {
-                                if let Some(value) = value {
-                                    if settings.minimum.is_some_and(|min| value < min)
-                                        || settings.maximum.is_some_and(|max| value > max)
-                                        || (!settings.show_seconds && value.second != 0)
-                                    {
-                                        return Err(
-                                            "Time outside source editor bounds or precision".into(),
-                                        );
-                                    }
-                                } else if !settings.allow_empty {
-                                    return Err("Source time cannot be empty".into());
-                                }
-                            }
-                            value.map_or(String::new(), |value| {
-                                value.to_display(
-                                    time.as_ref().is_some_and(|settings| settings.show_seconds),
-                                )
-                            })
-                        }
+                if endpoint.property == BindingProperty::Value
+                    && let Some(mode) = ui.calendar_selection(endpoint.widget)
+                {
+                    let validator = ui.calendar_source_validator(endpoint.widget).unwrap();
+                    Box::new(move |value| {
+                        validator
+                            .check(parse_calendar_data(mode, &value).map_err(|e| e.to_string())?)
+                    })
+                } else {
+                    let Some(editor) = value_editor(ui, *endpoint) else {
+                        return Ok(());
                     };
-                    rust_desktop_ui_text::TextLimits::default()
-                        .validate(&text)
-                        .map_err(|error| error.to_string())?;
-                    if let Some(maximum) = settings.max_length
-                        && rust_desktop_ui_text::TextDocument::new(&text)
-                            .grapheme_boundaries()
-                            .len()
-                            .saturating_sub(1)
-                            > maximum
-                    {
-                        return Err("Text exceeds source editor MaxLength".into());
-                    }
-                    validation.check(&text)?;
-                    if let Some(validator) = &application {
-                        validator.check(&text)?;
-                    }
-                    Ok(())
-                })
+                    let application = ui.editor_validator(editor).cloned();
+                    let validation = ui.editor_validation(editor).cloned().unwrap_or_default();
+                    let settings = ui.editor_settings(editor).cloned().unwrap_or_default();
+                    let parser = editor_parser(ui, *endpoint);
+                    let spin = ui.spin_settings(endpoint.widget).cloned();
+                    let date = ui.date_settings(endpoint.widget).cloned();
+                    let time = ui.time_settings(endpoint.widget).cloned();
+                    Box::new(move |value| {
+                        let _assignment = match &parser {
+                            EditorParser::Temporal(parser) => Some(parser.assign_storage(&value)?),
+                            _ => None,
+                        };
+                        let text = match &parser {
+                            EditorParser::Mask(settings) => {
+                                let raw = string(&value).map_err(|e| e.to_string())?;
+                                match &*settings.borrow() {
+                                    Some(settings) => {
+                                        settings.format(raw).map_err(|e| e.to_string())?
+                                    }
+                                    None => raw.to_owned(),
+                                }
+                            }
+                            EditorParser::Temporal(parser) => {
+                                parser.format_value(&parser.parse_storage(&value)?)?
+                            }
+                            EditorParser::Decimal(settings) => {
+                                let settings = settings.borrow();
+                                let decimal = settings.parse_storage(match &value {
+                                    DataValue::Null => None,
+                                    _ => Some(string(&value).map_err(|e| e.to_string())?),
+                                })?;
+                                settings.format(decimal).map_err(|e| e.to_string())?
+                            }
+                            EditorParser::Text => string(&value)
+                                .map_err(|error| error.to_string())?
+                                .to_owned(),
+                            EditorParser::Number => {
+                                let value = number(&value).map_err(|error| error.to_string())?;
+                                if let Some(settings) = &spin
+                                    && !(settings.minimum..=settings.maximum).contains(&value)
+                                {
+                                    return Err("Number outside source editor bounds".into());
+                                }
+                                value.to_string()
+                            }
+                            EditorParser::Date(format) => {
+                                let value = match value {
+                                    DataValue::Null => None,
+                                    _ => Some(
+                                        DateValue::parse_iso(
+                                            string(&value).map_err(|error| error.to_string())?,
+                                        )
+                                        .map_err(|error| error.to_string())?,
+                                    ),
+                                };
+                                if let Some(settings) = &date {
+                                    if let Some(value) = value {
+                                        if settings.minimum.is_some_and(|min| value < min)
+                                            || settings.maximum.is_some_and(|max| value > max)
+                                        {
+                                            return Err("Date outside source editor bounds".into());
+                                        }
+                                    } else if !settings.allow_empty {
+                                        return Err("Source date cannot be empty".into());
+                                    }
+                                }
+                                value.map_or(String::new(), |value| value.to_display(*format))
+                            }
+                            EditorParser::Time => {
+                                let value = match value {
+                                    DataValue::Null => None,
+                                    _ => Some(
+                                        TimeValue::parse(
+                                            string(&value).map_err(|error| error.to_string())?,
+                                        )
+                                        .map_err(|error| error.to_string())?,
+                                    ),
+                                };
+                                if let Some(settings) = &time {
+                                    if let Some(value) = value {
+                                        if settings.minimum.is_some_and(|min| value < min)
+                                            || settings.maximum.is_some_and(|max| value > max)
+                                            || (!settings.show_seconds && value.second != 0)
+                                        {
+                                            return Err(
+                                                "Time outside source editor bounds or precision"
+                                                    .into(),
+                                            );
+                                        }
+                                    } else if !settings.allow_empty {
+                                        return Err("Source time cannot be empty".into());
+                                    }
+                                }
+                                value.map_or(String::new(), |value| {
+                                    value.to_display(
+                                        time.as_ref().is_some_and(|settings| settings.show_seconds),
+                                    )
+                                })
+                            }
+                        };
+                        rust_desktop_ui_text::TextLimits::default()
+                            .validate(&text)
+                            .map_err(|error| error.to_string())?;
+                        if let Some(maximum) = settings.max_length
+                            && rust_desktop_ui_text::TextDocument::new(&text)
+                                .grapheme_boundaries()
+                                .len()
+                                .saturating_sub(1)
+                                > maximum
+                        {
+                            return Err("Text exceeds source editor MaxLength".into());
+                        }
+                        validation.check(&text)?;
+                        if let Some(validator) = &application {
+                            validator.check(&text)?;
+                        }
+                        Ok(())
+                    })
+                }
             }
             BindingSource::Multi(_) | BindingSource::Expression { .. } => return Ok(()),
         };
@@ -1229,6 +1266,14 @@ impl ControlBindings {
                 }),
             )
             .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Value
+            && ui.calendar_selection(binding.target.widget).is_some()
+        {
+            ui.chain_calendar_validator(
+                binding.target.widget,
+                CalendarValidator::new(move |value| validate(calendar_data(value))),
+            )
+            .map_err(control_error)?;
         } else if let Some(editor) = value_editor(ui, binding.target) {
             let parser = editor_parser(ui, binding.target);
             ui.chain_editor_validator(
@@ -1243,8 +1288,11 @@ impl ControlBindings {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum EditorParser {
+    Mask(Rc<RefCell<Option<crate::MaskSettings>>>),
+    Temporal(TemporalValueParser),
+    Decimal(Rc<RefCell<NumericEditSettings>>),
     Text,
     Number,
     Date(DateFormat),
@@ -1252,8 +1300,27 @@ enum EditorParser {
 }
 
 impl EditorParser {
-    fn parse(self, text: &str) -> Result<DataValue, BindingError> {
+    fn parse(&self, text: &str) -> Result<DataValue, BindingError> {
         match self {
+            Self::Mask(settings) => match &*settings.borrow() {
+                Some(settings) => {
+                    let value = settings.parse_display(text).map_err(|e| invalid(&e))?;
+                    if !value.complete {
+                        return Err(invalid("Complete all required mask slots"));
+                    }
+                    Ok(DataValue::String(value.storage))
+                }
+                None => Ok(text.into()),
+            },
+            Self::Temporal(parser) => parser
+                .parse(text)
+                .map(temporal_data)
+                .map_err(|e| invalid(&e)),
+            Self::Decimal(settings) => settings
+                .borrow()
+                .parse(text)
+                .map(|v| v.map_or(DataValue::Null, |v| DataValue::String(v.to_string())))
+                .map_err(|e| invalid(&e)),
             Self::Text => Ok(text.into()),
             Self::Number => {
                 let value = text
@@ -1269,7 +1336,7 @@ impl EditorParser {
                 if text.trim().is_empty() {
                     Ok(DataValue::Null)
                 } else {
-                    DateValue::parse_display(text, format)
+                    DateValue::parse_display(text, *format)
                         .map(|value| value.to_iso().into())
                         .map_err(control_error)
                 }
@@ -1287,11 +1354,75 @@ impl EditorParser {
     }
 }
 
+fn calendar_data(selection: CalendarSelection) -> DataValue {
+    temporal_data(match selection {
+        CalendarSelection::Single(value) => EditorValue::Date(value),
+        CalendarSelection::Range(value) => EditorValue::DateRange(value),
+    })
+}
+fn parse_calendar_data(
+    mode: CalendarSelection,
+    value: &DataValue,
+) -> Result<CalendarSelection, BindingError> {
+    Ok(match mode {
+        CalendarSelection::Single(_) => CalendarSelection::Single(if *value == DataValue::Null {
+            None
+        } else {
+            Some(DateValue::parse_iso(string(value)?).map_err(control_error)?)
+        }),
+        CalendarSelection::Range(_) => CalendarSelection::Range(if *value == DataValue::Null {
+            None
+        } else {
+            let DataValue::Object(fields) = value else {
+                return Err(invalid(
+                    "Calendar range requires object {start,end} or null",
+                ));
+            };
+            if fields.len() != 2 {
+                return Err(invalid("Calendar range requires exactly start and end"));
+            }
+            let field = |name| {
+                fields
+                    .get(name)
+                    .ok_or_else(|| invalid("Range endpoint missing"))
+                    .and_then(string)
+                    .and_then(|s| DateValue::parse_iso(s).map_err(control_error))
+            };
+            Some(DateRangeValue::new(field("start")?, field("end")?).map_err(control_error)?)
+        }),
+    })
+}
+fn temporal_data(value: EditorValue) -> DataValue {
+    match value {
+        EditorValue::Date(value) => value.map_or(DataValue::Null, |v| v.to_iso().into()),
+        EditorValue::Time(value) => value.map_or(DataValue::Null, |v| v.to_iso().into()),
+        EditorValue::DateTime(value) => value.map_or(DataValue::Null, |v| v.to_iso().into()),
+        EditorValue::DateRange(value) => value.map_or(DataValue::Null, |v| {
+            DataValue::Object(
+                [
+                    ("start".into(), DataValue::String(v.start.to_iso())),
+                    ("end".into(), DataValue::String(v.end.to_iso())),
+                ]
+                .into_iter()
+                .collect(),
+            )
+        }),
+        EditorValue::Number(value) => DataValue::Number(value),
+        EditorValue::Decimal(value) => value.map_or(DataValue::Null, |v| v.to_string().into()),
+    }
+}
+
 fn editor_parser(ui: &Controls, endpoint: BindingEndpoint) -> EditorParser {
     if endpoint.property != BindingProperty::Value {
         return EditorParser::Text;
     }
-    if ui.spin_settings(endpoint.widget).is_some() {
+    if let Some(settings) = ui.mask_binding_settings(endpoint.widget) {
+        EditorParser::Mask(settings)
+    } else if let Some(settings) = ui.numeric_binding_settings(endpoint.widget) {
+        EditorParser::Decimal(settings)
+    } else if let Some(parser) = ui.temporal_value_parser(endpoint.widget) {
+        EditorParser::Temporal(parser)
+    } else if ui.spin_settings(endpoint.widget).is_some() {
         EditorParser::Number
     } else if let Some(settings) = ui.date_settings(endpoint.widget) {
         EditorParser::Date(settings.format)
@@ -1380,6 +1511,9 @@ fn read_property(
                 Err(invalid("SelectedKey requires RadioGroup"))
             }
         }
+        BindingProperty::Value if ui.calendar_selection(id).is_some() => {
+            Ok(calendar_data(ui.calendar_selection(id).unwrap()))
+        }
         BindingProperty::Value => ui
             .slider_value(id)
             .or_else(|| ui.progress_value(id))
@@ -1455,6 +1589,7 @@ fn read_property(
             .or_else(|| ui.is_read_only(id))
             .or_else(|| ui.selection_settings(id).map(|s| s.read_only))
             .or_else(|| ui.grid_settings(id).map(|s| s.is_read_only))
+            .or_else(|| ui.calendar_settings(id).map(|s| s.is_read_only))
             .map(DataValue::Bool)
             .ok_or_else(|| invalid("IsReadOnly requires an editor or list")),
         BindingProperty::PlaceholderText => {
@@ -1488,6 +1623,32 @@ fn write_property(
     value.validate()?;
     if let Some(editor) = value_editor(ui, endpoint) {
         let outcome = match editor_parser(ui, endpoint) {
+            EditorParser::Mask(settings) => {
+                let display = match &*settings.borrow() {
+                    Some(settings) => settings.format(string(value)?).map_err(control_error)?,
+                    None => string(value)?.to_owned(),
+                };
+                ui.set_editor_value(editor, &display)
+            }
+            EditorParser::Temporal(parser) => {
+                match parser.parse_storage(value).map_err(|e| invalid(&e))? {
+                    EditorValue::Date(value) => ui.set_date_value(id, value),
+                    EditorValue::Time(value) => ui.set_time_value(id, value),
+                    EditorValue::DateTime(value) => ui.set_date_time_value(id, value),
+                    EditorValue::DateRange(value) => ui.set_date_range_value(id, value),
+                    _ => return Err(invalid("Expected a temporal value")),
+                }
+            }
+            EditorParser::Decimal(settings) => ui.set_numeric_value(
+                id,
+                settings
+                    .borrow()
+                    .parse_storage(match value {
+                        DataValue::Null => None,
+                        _ => Some(string(value)?),
+                    })
+                    .map_err(|e| invalid(&e))?,
+            ),
             EditorParser::Text => ui.set_editor_value(editor, string(value)?),
             EditorParser::Number => ui.set_spin_value(id, number(value)?),
             EditorParser::Date(_) => ui.set_date_value(
@@ -1560,7 +1721,10 @@ fn write_property(
             )
             .map_err(control_error),
         BindingProperty::Value => {
-            if ui.slider_value(id).is_some() {
+            if let Some(selection) = ui.calendar_selection(id) {
+                ui.set_calendar_selection(id, parse_calendar_data(selection, value)?)
+                    .map_err(control_error)
+            } else if ui.slider_value(id).is_some() {
                 ui.set_slider_value(id, number(value)?)
                     .map_err(control_error)
             } else if ui.progress_settings(id).is_some() {
@@ -1662,7 +1826,12 @@ fn write_property(
         BindingProperty::IsEnabled => ui.set_enabled(id, boolean(value)?).map_err(control_error),
         BindingProperty::IsReadOnly => {
             let value = boolean(value)?;
-            if ui.grid_settings(id).is_some() {
+            if let Some(settings) = ui.calendar_settings(id) {
+                let mut settings = settings.clone();
+                settings.is_read_only = value;
+                ui.set_calendar_settings(id, settings)
+                    .map_err(control_error)
+            } else if ui.grid_settings(id).is_some() {
                 ui.set_grid_read_only(id, value).map_err(control_error)
             } else if ui.composite_editor(id).is_some() {
                 ui.set_composite_read_only(id, value).map_err(control_error)

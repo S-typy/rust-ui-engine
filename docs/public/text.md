@@ -84,6 +84,10 @@ foreground. This is display text, not an editable rich document.
 
 ## Editing and IME composition
 
+The window-facing single-line, multiline and popup editing APIs are described in
+[plain text editors](text-editing.md), including visual navigation, scrolling and
+draft acceptance.
+
 ```rust
 use rust_desktop_ui_text::TextDocument;
 
@@ -182,7 +186,8 @@ COLR outline and bitmap paths are used; unsupported font/color formats can still
 produce no bitmap. Spaces and other nonpainting glyphs also produce no bitmap.
 
 Runs are limited to 1 MiB of UTF-8, 65,536 prepared glyphs and a physical font size
-of 1,024 pixels. Invalid or non-finite inputs return `TextError`. The engine uses
+of 1,024 pixels. Each extended grapheme is limited to 32 Unicode scalars and
+128 UTF-8 bytes before shaping or font fallback. Invalid or non-finite inputs return `TextError`. The engine uses
 system sans-serif selection with weight, size, alignment and wrapping; a public
 font-family/custom-font API, password masking and vertical writing
 are not provided. `TextDocument` is a plain UTF-8 string editor, not a large-file

@@ -12,6 +12,7 @@ pub(super) type PresentationContext = (
 #[derive(Clone, Copy)]
 enum Owner {
     Button,
+    EditorButton,
     Group,
     Tab,
 }
@@ -22,6 +23,23 @@ pub(super) struct Presentation {
     view: Box<MountedView>,
 }
 impl MountedView {
+    pub(super) fn mount_editor_button_presentation(
+        &mut self,
+        ui: &mut Controls,
+        owner: WidgetId,
+        definition: &ElementDefinition,
+        width: f32,
+        inherited_context: &str,
+    ) -> Result<(), String> {
+        self.mount_presentation(
+            ui,
+            (owner, owner, Owner::EditorButton),
+            definition,
+            width,
+            inherited_context,
+        )
+    }
+
     fn mount_presentation(
         &mut self,
         ui: &mut Controls,
@@ -31,7 +49,7 @@ impl MountedView {
         inherited_context: &str,
     ) -> Result<(), String> {
         let (owner, header, kind) = placement;
-        let definition = self.isolate_presentation(definition);
+        let definition = self.isolate_presentation(definition, kind);
         let mut view = Box::new(MountedView::default());
         let root = view.mount_element(
             ui,
@@ -165,6 +183,19 @@ impl MountedView {
         self.replace_presentation(ui, owner, owner, &template.visual, Owner::Button)
     }
     /// The group's content subtree and disclosure owner are never remounted.
+    pub(crate) fn replace_editor_button_template(
+        &mut self,
+        ui: &mut Controls,
+        button: WidgetId,
+        definition: &ElementDefinition,
+    ) -> Result<(), String> {
+        if ui.editor_button_settings(button).is_none() {
+            return Err("Unknown embedded editor button".into());
+        }
+        self.replace_presentation(ui, button, button, definition, Owner::EditorButton)
+    }
+
+    /// The group's content subtree and disclosure owner are never remounted.
     pub(crate) fn replace_group_header_template(
         &mut self,
         ui: &mut Controls,
@@ -206,7 +237,7 @@ impl MountedView {
             .to_owned();
         let width = ui.runtime.bounds(header).map_or(0.0, |bounds| bounds.width);
         let before: HashSet<_> = ui.runtime.tree().live_ids().into_iter().collect();
-        let definition = self.isolate_presentation(definition);
+        let definition = self.isolate_presentation(definition, kind);
         let candidate = (|| {
             let mut view = Box::new(MountedView::default());
             let root =
@@ -256,10 +287,28 @@ impl MountedView {
         self.presentations.insert(owner, candidate);
         Ok(())
     }
-    fn isolate_presentation(&mut self, definition: &ElementDefinition) -> ElementDefinition {
+    fn isolate_presentation(
+        &mut self,
+        definition: &ElementDefinition,
+        kind: Owner,
+    ) -> ElementDefinition {
         self.presentation_revision = self.presentation_revision.wrapping_add(1);
         let prefix = format!("__live_template_{}_", self.presentation_revision);
         let mut definition = definition.clone();
+        // Runtime replacements need the same defaults as compiled templates.
+        // Explicit Stretch/Start/End remain meaningful even for fixed-size roots.
+        let common = &mut definition.common;
+        if !common.vertical_alignment_explicit
+            && common.vertical_alignment == rust_desktop_ui_xaml::Alignment::Stretch
+        {
+            common.vertical_alignment = rust_desktop_ui_xaml::Alignment::Center;
+        }
+        if matches!(kind, Owner::EditorButton)
+            && !common.horizontal_alignment_explicit
+            && common.horizontal_alignment == rust_desktop_ui_xaml::Alignment::Stretch
+        {
+            common.horizontal_alignment = rust_desktop_ui_xaml::Alignment::Center;
+        }
         let mut names = HashMap::new();
         let mut pending = vec![&mut definition];
         while let Some(element) = pending.pop() {
@@ -294,6 +343,7 @@ impl MountedView {
 fn attach(ui: &mut Controls, owner: WidgetId, root: WidgetId, kind: Owner) -> Result<(), String> {
     match kind {
         Owner::Button => ui.set_button_content(owner, Some(root)),
+        Owner::EditorButton => ui.set_editor_button_content(owner, Some(root)),
         Owner::Group => ui.set_group_header_content(owner, Some(root)),
         Owner::Tab => ui.set_tab_header_content(owner, Some(root)),
     }

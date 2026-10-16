@@ -11,18 +11,26 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
     let values = names.into_iter().map(|(name, &id)| {
         let bounds = ui.runtime.bounds(id).map_or_else(|| "null".into(), rectangle);
         let clip = ui.runtime.clip(id).map_or_else(|| "null".into(), rectangle);
-        let text = ui.document(id).map(|doc| doc.text()).or_else(|| ui.label_text(id));
+        let editor = ui.composite_editor(id).unwrap_or(id);
+        let text = ui.document(editor).map(|doc| doc.text()).or_else(|| ui.label_text(id));
+        let calendar = ui.temporal_calendar(id).map_or(id, |calendar| calendar.container);
+        let calendar_bounds = ui.calendar_selection(calendar).and_then(|_| ui.runtime.bounds(calendar)).map_or_else(|| "null".into(), rectangle);
         let range = ui.range_slider_values(id).map_or_else(|| "null".into(), |(low, high)| format!("[{low},{high}]"));
-        format!("{{\"name\":{},\"id\":{},\"bounds\":{},\"clip\":{},\"text\":{},\"accepted\":{},\"error\":{},\"pending\":{},\"check\":{},\"selected\":{},\"value\":{},\"range\":{},\"ratio\":{},\"focused\":{},\"flyout\":{}}}",
+        format!("{{\"name\":{},\"id\":{},\"bounds\":{},\"clip\":{},\"text\":{},\"accepted\":{},\"error\":{},\"pending\":{},\"check\":{},\"selected\":{},\"value\":{},\"range\":{},\"ratio\":{},\"focused\":{},\"flyout\":{},\"numeric_open\":{},\"temporal_open\":{},\"calendar_bounds\":{},\"calendar_view\":{},\"protected\":{},\"password_empty\":{},\"password_revealed\":{}}}",
             string(name), string(&format!("{id:?}")), bounds, clip,
-            text.map_or_else(|| "null".into(), string), ui.accepted_value(id).map_or_else(|| "null".into(), string),
-            ui.validation_error(id).map_or_else(|| "null".into(), string), string(&format!("{:?}", ui.editor_validation_status(id))),
+            text.map_or_else(|| "null".into(), string), ui.accepted_value(editor).map_or_else(|| "null".into(), string),
+            ui.validation_error(editor).map_or_else(|| "null".into(), string), string(&format!("{:?}", ui.editor_validation_status(editor))),
             ui.check_state(id).map_or_else(|| "null".into(), |state| string(&format!("{state:?}"))),
             ui.radio_selected_key(id).map_or_else(|| "null".into(), string),
             ui.slider_value(id).map_or_else(|| "null".into(), |value| value.to_string()), range,
             ui.split_ratio(id).map_or_else(|| "null".into(), |value| value.to_string()),
-            ui.runtime.focused() == Some(id),
-            ui.button_flyout(id).is_some_and(|flyout| ui.flyout_is_open(flyout)))
+            ui.runtime.focused() == Some(editor),
+            ui.button_flyout(id).is_some_and(|flyout| ui.flyout_is_open(flyout)),
+            ui.numeric_calculator_is_open(id), ui.temporal_popup_is_open(id), calendar_bounds,
+            ui.calendar_view(calendar).map_or_else(|| "null".into(), |value| string(&format!("{value:?}"))),
+            ui.is_password_box(id),
+            ui.password_value(id).map_or_else(|| "null".into(), |value| value.is_empty().to_string()),
+            ui.password_is_revealed(id).map_or_else(|| "null".into(), |value| value.to_string()))
     }).collect::<Vec<_>>().join(",");
     let nodes = ui
         .semantics()

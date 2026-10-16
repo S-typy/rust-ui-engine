@@ -8,5 +8,6 @@ repository.workspace = true
 description = "Strict build-time XAML profile for Rust desktop forms"
 
 [dependencies]
+rust-desktop-ui-data = { path = "../ui-data" }
 roxmltree = "=0.21.1"
 unicode-segmentation.workspace = true

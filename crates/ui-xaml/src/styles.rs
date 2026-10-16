@@ -799,6 +799,7 @@ impl Compiler<'_> {
         for (property, expected) in [
             ("Template", "ControlTemplate"),
             ("HeaderTemplate", "HeaderTemplate"),
+            ("ContentTemplate", "DataTemplate"),
         ] {
             if let Some(attr) = node.attrs.remove(property) {
                 let (declaring, template) = self.resource(
@@ -822,6 +823,12 @@ impl Compiler<'_> {
                     return Err(self.error(
                         attr.offset,
                         "HeaderTemplate requires GroupBox, Expander or GroupTab",
+                    ));
+                }
+                if property == "ContentTemplate" && node.name != "EditorButton" {
+                    return Err(self.error(
+                        attr.offset,
+                        "ContentTemplate requires ContentPresenter or EditorButton",
                     ));
                 }
                 if chain.contains(&template.offset) || chain.len() >= 32 {
@@ -856,10 +863,25 @@ impl Compiler<'_> {
             // The generated template is already recursively expanded in its
             // declaration scope, not the consumer's potentially shadowing scope.
             if child.name == format!("{}.Template", node.name)
-                || (child.name == format!("{}.HeaderTemplate", node.name)
+                || ((child.name == format!("{}.HeaderTemplate", node.name)
+                    || child.name == format!("{}.ContentTemplate", node.name))
                     && child.offset == node.offset)
             {
                 children.push(child);
+            } else if node.name == "EditorButton" && child.name == "EditorButton.ContentTemplate" {
+                // Inline button visuals share the resource template's private
+                // namescope policy while using their enclosing lexical scope.
+                let mut template = child.clone();
+                template.name = "DataTemplate".into();
+                self.check_template(&template)?;
+                let (visual, _) = self.instantiate(&template, &node)?;
+                let mut visual = self.expand(visual, Some(scope.clone()), chain, depth + 1)?;
+                if !visual.attrs.contains_key("VerticalAlignment") {
+                    visual.set("VerticalAlignment", "Center");
+                }
+                let mut wrapper = child;
+                wrapper.children = vec![visual];
+                children.push(wrapper);
             } else {
                 children.push(self.expand(child, Some(scope.clone()), chain, depth + 1)?);
             }
@@ -1119,6 +1141,7 @@ pub(crate) fn lower(source: &str) -> Result<Option<Lowered>, Diagnostic> {
     let needed = document.descendants().filter(Node::is_element).any(|node| {
         node.tag_name().name().ends_with(".Resources")
             || node.tag_name().name() == "ContentPresenter"
+            || node.tag_name().name() == "EditorButton.ContentTemplate"
             || node.attributes().any(|a| {
                 matches!(
                     a.name(),

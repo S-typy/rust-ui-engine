@@ -365,6 +365,7 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Image => Role::Image,
         ControlRole::Separator => Role::Splitter,
         ControlRole::TextBox => Role::TextInput,
+        ControlRole::PasswordBox => Role::PasswordInput,
         ControlRole::ListBox => Role::ListBox,
         ControlRole::ListItem => Role::ListBoxOption,
         ControlRole::ComboBox => Role::ComboBox,

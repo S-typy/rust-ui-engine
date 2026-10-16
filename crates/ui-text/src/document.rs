@@ -137,6 +137,7 @@ struct State {
 #[derive(Clone, Debug)]
 pub struct TextDocument {
     state: State,
+    graphemes: Vec<usize>,
     composition: Option<Composition>,
     undo: VecDeque<State>,
     redo: Vec<State>,
@@ -152,6 +153,7 @@ impl TextDocument {
     pub fn new(text: impl Into<String>) -> Self {
         let text = text.into();
         let end = text.len();
+        let graphemes = boundaries(&text);
         Self {
             state: State {
                 text,
@@ -160,6 +162,7 @@ impl TextDocument {
                     focus: end,
                 },
             },
+            graphemes,
             composition: None,
             undo: VecDeque::new(),
             redo: Vec::new(),
@@ -184,12 +187,24 @@ impl TextDocument {
         &self.text()[self.selection().range()]
     }
     pub fn grapheme_boundaries(&self) -> Vec<usize> {
-        boundaries(self.text())
+        self.graphemes.clone()
+    }
+
+    /// Number of extended graphemes, using the index retained by the document.
+    pub fn grapheme_count(&self) -> usize {
+        self.graphemes.len() - 1
+    }
+
+    /// UTF-8 offset of a grapheme edge. Index zero is the start and
+    /// `grapheme_count()` is the end; larger indices return `None`.
+    pub fn grapheme_boundary(&self, index: usize) -> Option<usize> {
+        self.graphemes.get(index).copied()
     }
 
     pub fn set_selection(&mut self, anchor: usize, focus: usize) -> Result<(), EditError> {
-        let boundaries = self.grapheme_boundaries();
-        if boundaries.binary_search(&anchor).is_err() || boundaries.binary_search(&focus).is_err() {
+        if self.graphemes.binary_search(&anchor).is_err()
+            || self.graphemes.binary_search(&focus).is_err()
+        {
             return Err(EditError::InvalidSelection);
         }
         self.cancel_preedit();
@@ -256,12 +271,10 @@ impl TextDocument {
             return;
         }
         let focus = self.selection().focus;
-        let previous = self
-            .grapheme_boundaries()
-            .into_iter()
-            .rev()
-            .find(|&i| i < focus)
-            .unwrap_or(0);
+        let previous = self.graphemes[self
+            .graphemes
+            .partition_point(|&i| i < focus)
+            .saturating_sub(1)];
         self.replace(previous..focus, "");
     }
 
@@ -273,22 +286,46 @@ impl TextDocument {
         }
         let focus = self.selection().focus;
         let next = self
-            .grapheme_boundaries()
-            .into_iter()
-            .find(|&i| i > focus)
+            .graphemes
+            .get(self.graphemes.partition_point(|&i| i <= focus))
+            .copied()
             .unwrap_or(self.text().len());
         self.replace(focus..next, "");
+    }
+
+    /// Delete to the previous Unicode word boundary, or delete the selection.
+    /// The replacement is one undo step and never splits an extended grapheme.
+    pub fn delete_word_backward(&mut self) {
+        if !self.selection().is_empty() {
+            self.delete_selection();
+            return;
+        }
+        self.cancel_preedit();
+        let focus = self.selection().focus;
+        let start = self.word_left_boundary();
+        self.replace(start..focus, "");
+    }
+
+    /// Delete to the next Unicode word boundary, or delete the selection.
+    pub fn delete_word_forward(&mut self) {
+        if !self.selection().is_empty() {
+            self.delete_selection();
+            return;
+        }
+        self.cancel_preedit();
+        let focus = self.selection().focus;
+        let end = self.word_right_boundary();
+        self.replace(focus..end, "");
     }
 
     pub fn move_left(&mut self, extend: bool) {
         let target = if !extend && !self.selection().is_empty() {
             self.selection().range().start
         } else {
-            self.grapheme_boundaries()
-                .into_iter()
-                .rev()
-                .find(|&i| i < self.selection().focus)
-                .unwrap_or(0)
+            self.graphemes[self
+                .graphemes
+                .partition_point(|&i| i < self.selection().focus)
+                .saturating_sub(1)]
         };
         self.move_to(target, extend);
     }
@@ -297,15 +334,22 @@ impl TextDocument {
         let target = if !extend && !self.selection().is_empty() {
             self.selection().range().end
         } else {
-            self.grapheme_boundaries()
-                .into_iter()
-                .find(|&i| i > self.selection().focus)
+            self.graphemes
+                .get(
+                    self.graphemes
+                        .partition_point(|&i| i <= self.selection().focus),
+                )
+                .copied()
                 .unwrap_or(self.text().len())
         };
         self.move_to(target, extend);
     }
 
     pub fn move_word_left(&mut self, extend: bool) {
+        self.move_to(self.word_left_boundary(), extend);
+    }
+
+    fn word_left_boundary(&self) -> usize {
         let target = self
             .text()
             .unicode_word_indices()
@@ -313,17 +357,21 @@ impl TextDocument {
             .take_while(|&i| i < self.selection().focus)
             .last()
             .unwrap_or(0);
-        self.move_to(target, extend);
+        self.snap_boundary(target)
     }
 
     pub fn move_word_right(&mut self, extend: bool) {
+        self.move_to(self.word_right_boundary(), extend);
+    }
+
+    fn word_right_boundary(&self) -> usize {
         let target = self
             .text()
             .unicode_word_indices()
             .map(|(i, word)| i + word.len())
             .find(|&i| i > self.selection().focus)
             .unwrap_or(self.text().len());
-        self.move_to(target, extend);
+        self.snap_boundary(target)
     }
 
     /// Move to the beginning of the current hard line, not a visual soft wrap.
@@ -439,10 +487,27 @@ impl TextDocument {
         }
     }
 
+    /// Discard undo and redo snapshots without changing text, selection or IME.
+    pub fn clear_history(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
+
+    /// Text restored by the next undo, without changing document or history.
+    pub fn undo_text(&self) -> Option<&str> {
+        self.undo.back().map(|state| state.text.as_str())
+    }
+
+    /// Text restored by the next redo, without changing document or history.
+    pub fn redo_text(&self) -> Option<&str> {
+        self.redo.last().map(|state| state.text.as_str())
+    }
+
     pub fn undo(&mut self) -> bool {
         self.cancel_preedit();
         if let Some(previous) = self.undo.pop_back() {
             self.redo.push(std::mem::replace(&mut self.state, previous));
+            self.graphemes = boundaries(self.text());
             true
         } else {
             false
@@ -462,6 +527,7 @@ impl TextDocument {
         self.cancel_preedit();
         if let Some(next) = self.redo.pop() {
             let previous = std::mem::replace(&mut self.state, next);
+            self.graphemes = boundaries(self.text());
             self.push_undo(previous);
             true
         } else {
@@ -522,13 +588,11 @@ impl TextDocument {
         }
         let previous = self.state.clone();
         self.state.text.replace_range(range.clone(), text);
+        self.graphemes = boundaries(self.text());
         // Insertion/deletion can merge surrounding graphemes (combining marks,
         // regional indicators and ZWJ). Keep the resulting caret on a boundary.
         let intended = range.start + text.len();
-        let caret = boundaries(self.text())
-            .into_iter()
-            .find(|&i| i >= intended)
-            .unwrap_or(self.text().len());
+        let caret = self.graphemes[self.graphemes.partition_point(|&i| i < intended)];
         self.state.selection = Selection {
             anchor: caret,
             focus: caret,
@@ -548,15 +612,18 @@ impl TextDocument {
 
     fn move_to(&mut self, index: usize, extend: bool) {
         self.cancel_preedit();
-        let index = boundaries(self.text())
-            .into_iter()
-            .take_while(|&i| i <= index)
-            .last()
-            .unwrap_or(0);
+        let index = self.snap_boundary(index);
         if !extend {
             self.state.selection.anchor = index;
         }
         self.state.selection.focus = index;
+    }
+
+    fn snap_boundary(&self, index: usize) -> usize {
+        self.graphemes[self
+            .graphemes
+            .partition_point(|&i| i <= index)
+            .saturating_sub(1)]
     }
 }
 
@@ -582,6 +649,63 @@ fn line_break(c: char) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn word_deletion_keeps_clusters_selection_and_undo_replacement_atomic() {
+        let original = "Привет e\u{301} 👩‍💻 мир";
+        let mut document = TextDocument::new(original);
+        document.delete_word_backward();
+        assert_eq!(document.text(), "Привет e\u{301} 👩‍💻 ");
+        assert!(document.undo());
+        assert_eq!(document.text(), original);
+        document.move_document_start(false);
+        document.delete_word_forward();
+        assert_eq!(document.text(), " e\u{301} 👩‍💻 мир");
+        assert!(document.undo());
+        let start = "Привет ".len();
+        let end = "Привет e\u{301} 👩‍💻".len();
+        document.set_selection(start, end).unwrap();
+        document.delete_word_backward();
+        assert_eq!(document.text(), "Привет  мир");
+        assert!(document.undo());
+        assert_eq!(
+            document.selection(),
+            Selection {
+                anchor: start,
+                focus: end
+            }
+        );
+        assert_eq!(document.text(), original);
+    }
+
+    #[test]
+    fn retained_grapheme_index_tracks_merge_composition_history_and_rejected_input() {
+        let mut document = TextDocument::new("e");
+        document.insert("\u{301}");
+        assert_eq!(document.grapheme_count(), 1);
+        assert_eq!(document.grapheme_boundary(1), Some(3));
+        assert_eq!(document.grapheme_boundary(2), None);
+        document.set_preedit("👩‍💻", None).unwrap();
+        assert_eq!(document.grapheme_count(), 1);
+        let before = document.grapheme_boundaries();
+        assert!(document.try_insert("x", grapheme_limits(1)).is_err());
+        assert_eq!(document.grapheme_boundaries(), before);
+        document.commit("🇷🇺\r\nक्ष");
+        assert_eq!(document.grapheme_count(), 4);
+        for edge in document.grapheme_boundaries() {
+            document.set_selection(edge, edge).unwrap();
+        }
+        assert!(document.undo());
+        assert_eq!(document.grapheme_count(), 1);
+        assert_eq!(document.grapheme_boundary(1), Some(3));
+        assert!(document.redo());
+        assert_eq!(document.grapheme_count(), 4);
+        document.move_document_start(false);
+        for _ in 0..4 {
+            document.move_right(false);
+        }
+        assert_eq!(document.selection().focus, document.text().len());
+    }
 
     #[test]
     fn grapheme_navigation_and_deletion_keep_emoji_accents_and_crlf_whole() {
@@ -908,5 +1032,24 @@ mod tests {
         assert!(doc.undo());
         assert_eq!(doc.text(), "unrestricted");
         assert!(!doc.try_undo(TextLimits::default()).unwrap());
+    }
+    #[test]
+    fn clear_history_preserves_draft_selection_and_composition() {
+        let mut document = TextDocument::new("начало");
+        document.insert("1");
+        document.insert("2");
+        assert!(document.undo());
+        document.set_selection(0, "начало".len()).unwrap();
+        document.set_preedit("候補", Some((0, 6))).unwrap();
+        let text = document.text().to_owned();
+        let selection = document.selection();
+        let composition = document.composition().cloned();
+        document.clear_history();
+        assert_eq!(document.text(), text);
+        assert_eq!(document.selection(), selection);
+        assert_eq!(document.composition(), composition.as_ref());
+        document.cancel_preedit();
+        assert!(!document.undo());
+        assert!(!document.redo());
     }
 }

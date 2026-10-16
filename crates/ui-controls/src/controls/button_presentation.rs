@@ -450,6 +450,7 @@ impl Controls {
                 (bounds.height - 4.0).max(0.0),
             );
             self.scene.text(TextRun {
+                sensitive: false,
                 bounds: content,
                 clip: content
                     .intersection(viewport)
@@ -488,6 +489,7 @@ fn shape(
     engine
         .prepare(
             &TextRun {
+                sensitive: false,
                 bounds: Rect::new(0.0, 0.0, width, 0.0),
                 clip: Rect::new(0.0, 0.0, 0.0, 0.0),
                 text: text.to_owned(),
@@ -700,6 +702,7 @@ pub(super) fn paint_content(
             )
         };
         scene.text(TextRun {
+            sensitive: false,
             bounds,
             clip: bounds
                 .intersection(clip)
@@ -742,6 +745,7 @@ pub(super) fn paint_group_caption(
             size.height.min(bounds.height),
         );
         scene.text(TextRun {
+            sensitive: false,
             bounds: text_bounds,
             clip: text_bounds
                 .intersection(clip)

@@ -380,6 +380,7 @@ impl Controls {
             if !tip.header.is_empty() {
                 let inset = if tip.icon.is_some() { 24.0 } else { 0.0 };
                 self.scene.text(TextRun {
+                    sensitive: false,
                     bounds: Rect::new(
                         content.x + inset,
                         content.y,
@@ -411,6 +412,7 @@ impl Controls {
             }
         }
         self.scene.text(TextRun {
+            sensitive: false,
             bounds: content,
             clip: content,
             text,
