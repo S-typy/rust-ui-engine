@@ -243,6 +243,7 @@ impl Default for TabbedGroupDefinition {
 /// Static page metadata; the optional child owns ordinary element properties.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupTabDefinition {
+    pub header_content: Option<Box<ElementDefinition>>,
     pub header: String,
     pub header_icon: Option<IconSymbol>,
     pub is_enabled: bool,
@@ -252,6 +253,7 @@ pub struct GroupTabDefinition {
 impl Default for GroupTabDefinition {
     fn default() -> Self {
         Self {
+            header_content: None,
             header: String::new(),
             header_icon: None,
             is_enabled: true,
@@ -274,6 +276,9 @@ pub fn validate_tabbed_group(group: &TabbedGroupDefinition) -> Result<(), String
         return Err("TabbedGroup SelectedIndex must reference an enabled page".into());
     }
     for tab in &group.tabs {
+        if let Some(header) = &tab.header_content {
+            validate_header_content(header)?;
+        }
         if tab.header.trim().is_empty() || tab.header.len() > 4096 {
             return Err("GroupTab Header must be nonempty and at most 4096 UTF-8 bytes".into());
         }
@@ -338,6 +343,14 @@ pub fn validate_header_content(element: &ElementDefinition) -> Result<(), String
             return Err(
                 "HeaderTemplate accepts only noninteractive text, images and layout".into(),
             );
+        }
+        if element.common.bindings.values().any(|binding| {
+            !matches!(
+                binding.mode,
+                crate::BindingMode::OneWay | crate::BindingMode::OneTime
+            )
+        }) {
+            return Err("Decorative templates support OneWay or OneTime bindings only".into());
         }
         pending.extend(
             element

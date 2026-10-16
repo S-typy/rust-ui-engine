@@ -4,6 +4,8 @@ use crate::{BindingMode, ElementDefinition, ElementKind, MAX_ELEMENT_DEPTH, MAX_
 /// A status surface containing explicit left- or right-aligned sections.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StatusBarDefinition {
+    pub is_customizable: bool,
+    pub show_resize_grip: bool,
     pub items: Vec<ElementDefinition>,
 }
 
@@ -16,10 +18,26 @@ pub enum StatusBarPlacement {
 }
 
 /// One section of a StatusBar or RibbonStatusBar, with optional content.
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct StatusBarItemDefinition {
+    /// Stable customization identity; the host derives one when omitted.
+    pub key: Option<String>,
+    pub label: Option<String>,
+    pub can_hide: bool,
     pub placement: StatusBarPlacement,
     pub child: Option<Box<ElementDefinition>>,
+}
+
+impl Default for StatusBarItemDefinition {
+    fn default() -> Self {
+        Self {
+            key: None,
+            label: None,
+            can_hide: true,
+            placement: StatusBarPlacement::Left,
+            child: None,
+        }
+    }
 }
 
 /// A determinate, non-editable progress indicator.
@@ -130,6 +148,37 @@ pub fn validate_status_bars(root: &ElementDefinition) -> Result<(), String> {
             return Err("status bars cannot be nested inside another status bar".into());
         }
         match &element.kind {
+            ElementKind::StatusBar(bar) | ElementKind::RibbonStatusBar(bar) => {
+                let mut keys = std::collections::HashSet::new();
+                for element in &bar.items {
+                    if let ElementKind::StatusBarItem(item) = &element.kind {
+                        if !item.can_hide && element.common.visibility != crate::Visibility::Visible
+                        {
+                            return Err(
+                                "StatusBarItem CanHide=False requires Visibility=Visible".into()
+                            );
+                        }
+                        if let Some(key) = &item.key
+                            && (key.is_empty()
+                                || key.len() > 128
+                                || !crate::binding::valid_identifier(key)
+                                || !keys.insert(key))
+                        {
+                            return Err("StatusBarItem Key must be a unique identifier of at most 128 bytes within its bar".into());
+                        }
+                        if item
+                            .label
+                            .as_ref()
+                            .is_some_and(|label| label.trim().is_empty() || label.len() > 4096)
+                        {
+                            return Err(
+                                "StatusBarItem Label must be nonempty and at most 4096 bytes"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            }
             ElementKind::ProgressBar(progress) | ElementKind::BusyIndicator(progress) => {
                 validate_progress_bar(progress)?;
                 if element.common.bindings.get("Value").is_some_and(|binding| {

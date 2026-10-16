@@ -61,7 +61,10 @@ mod status;
 #[cfg(test)]
 mod status_tests;
 mod timing;
-pub use status::{ProgressBarSettings, StatusBar, ZoomControlSettings};
+pub use status::{
+    ProgressBarSettings, StatusBar, StatusBarItemSettings, StatusBarOptions, StatusItemWidth,
+    StatusPlacement, WindowResizeDirection, ZoomControlSettings,
+};
 #[cfg(test)]
 mod tabbed_group_tests;
 mod tabbed_groups;
@@ -69,6 +72,7 @@ pub use groups::{
     ExpandDirection, Expander, ExpanderAnimation, GroupAppearance, GroupBox, GroupHeaderStyle,
     GroupSettings,
 };
+use tabbed_groups::Tabs;
 pub use tabbed_groups::{GroupTab, TabbedGroup};
 #[cfg(test)]
 mod pointer_cancel_tests;
@@ -375,15 +379,6 @@ impl Control {
             None
         }
     }
-}
-struct Tabs {
-    header: WidgetId,
-    content: WidgetId,
-    icons: Vec<Option<IconSymbol>>,
-    tabs: Vec<WidgetId>,
-    pages: Vec<WidgetId>,
-    selected: usize,
-    legacy_layout: bool,
 }
 /// Owns control state while exposing the independent retained runtime for composition.
 /// For registered controls, enabled state belongs to `set_enabled` and the command
@@ -2096,6 +2091,8 @@ impl Controls {
             self.sync_text_heights()?;
             self.sync_splitters()?;
             self.sync_bars()?;
+            self.sync_tab_headers()?;
+            self.sync_status_bars()?;
             self.sync_sliders()?;
             self.sync_grids()?;
             let scrolls: Vec<_> = self
@@ -2138,6 +2135,7 @@ impl Controls {
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
         self.cancel_slider_interaction()?;
+        self.cancel_tab_drag()?;
         self.cancel_splitter_interaction()?;
         self.cancel_grid_pointers();
         self.cancel_zoom_gesture()?;
@@ -2212,7 +2210,10 @@ impl Controls {
             self.scene_dirty = true;
             return Ok(());
         }
-        if self.flyout_before_input(&event)? || self.bars_before_input(&event)? {
+        if self.flyout_before_input(&event)?
+            || self.bars_before_input(&event)?
+            || self.tab_before_input(&event)?
+        {
             return Ok(());
         }
         self.repeat_before_input(&event);
@@ -2447,6 +2448,9 @@ impl Controls {
     pub fn activate(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.sync_popup_availability()?;
         if !self.activation_available(id) || !self.controls[&id].kind.clickable() {
+            return Ok(());
+        }
+        if self.activate_status_grip(id)? {
             return Ok(());
         }
         if self.activate_group_header(id)? {

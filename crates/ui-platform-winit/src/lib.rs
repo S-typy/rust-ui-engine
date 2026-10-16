@@ -4,9 +4,11 @@
 mod accessibility;
 mod chrome;
 mod desktop;
+mod dialogs;
 mod host;
 mod ime;
 mod input;
+mod modality;
 mod multi;
 mod multi_host;
 mod wake;
@@ -15,6 +17,7 @@ pub use accessibility::AccessibilitySnapshot;
 pub use accesskit;
 pub use chrome::{TitleBar, WindowChrome};
 pub use desktop::{DesktopPointer, WindowGeometry};
+pub use dialogs::*;
 pub use host::run;
 pub use multi::{DesktopApplication, WindowKey, WindowSpec, run_multi};
 use rust_desktop_ui_core::{InputEvent, Rect, Scene, Size};
@@ -59,6 +62,19 @@ impl EventResponse {
 /// Implement this trait to run a retained scene in a native GPU window.
 /// `accessibility` supplies a complete connected tree; the host sends only changed nodes.
 pub trait DesktopApp {
+    /// Return at most one queued owned native dialog. The host processes it
+    /// outside painting; completion is delivered once on this same UI thread.
+    fn take_dialog_request(&mut self) -> Option<DialogRequest> {
+        None
+    }
+    fn dialog_completed(&mut self, completion: DialogCompletion) -> Result<EventResponse, String> {
+        let _ = completion;
+        Ok(EventResponse::default())
+    }
+    /// Request a native sizing loop from a pointer-down on an application grip.
+    fn take_resize_request(&mut self) -> Option<WindowResizeDirection> {
+        None
+    }
     /// Install the native window's notification handle. Keep collection
     /// subscriptions alive for this view and call `wake` after publishing data.
     /// None disconnects a closing/suspended window. Timers remain independent.
@@ -152,6 +168,23 @@ pub trait DesktopApp {
             focus: accesskit::NodeId(1),
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowResizeDirection {
+    BottomLeft,
+    BottomRight,
+}
+pub(crate) fn begin_resize(
+    window: &winit::window::Window,
+    direction: WindowResizeDirection,
+) -> Result<(), String> {
+    window
+        .drag_resize_window(match direction {
+            WindowResizeDirection::BottomLeft => winit::window::ResizeDirection::SouthWest,
+            WindowResizeDirection::BottomRight => winit::window::ResizeDirection::SouthEast,
+        })
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Clone, Debug)]

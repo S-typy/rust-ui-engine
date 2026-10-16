@@ -58,12 +58,21 @@ cargo run --release --locked -p xaml-form -- --controls
 cargo run --release --locked -p xaml-form -- --editors
 cargo run --release --locked -p xaml-form -- --groups
 cargo run --release --locked -p xaml-form -- --batch
+cargo run --release --locked -p xaml-form -- --workspace
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
 
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
 the separate example of individual controls and popup menus.
+
+`--workspace` opens [WorkspaceWindow.xaml](examples/xaml-form/WorkspaceWindow.xaml)
+with retained, reorderable tabs, modal forms, Windows file dialogs, customizable
+status sections, reusable styles/templates and grouped queries. File selection
+returns paths without reading or writing files; `--dialog-directory PATH` sets
+the initial directory. See [dialogs](docs/public/dialogs.md),
+[styles and templates](docs/public/styles-and-templates.md), and
+[query evaluation](docs/public/query.md).
 
 `--batch` opens [BatchWindow.xaml](examples/xaml-form/BatchWindow.xaml): resizable
 panes, menus and toolbars, retained popup editors, switches, nullable checks,

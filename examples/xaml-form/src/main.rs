@@ -30,18 +30,28 @@ mod ribbon_tests;
 #[cfg(test)]
 mod status_adapter_tests;
 #[cfg(test)]
+mod template_adapter_tests;
+#[cfg(test)]
 mod tests;
 mod view;
 mod view_ribbon;
 mod visual_model;
 #[cfg(test)]
 mod visual_tests;
+mod workspace_app;
+mod workspace_model;
 
 mod generated_visuals {
     include!(concat!(env!("OUT_DIR"), "/visuals_window.rs"));
 }
 mod generated_batch {
     include!(concat!(env!("OUT_DIR"), "/batch_window.rs"));
+}
+mod generated_workspace {
+    include!(concat!(env!("OUT_DIR"), "/workspace_window.rs"));
+}
+mod generated_dialog {
+    include!(concat!(env!("OUT_DIR"), "/dialog_window.rs"));
 }
 
 mod generated {
@@ -89,6 +99,8 @@ fn start() -> Result<(), String> {
     let mut data = false;
     let mut visuals = false;
     let mut batch = false;
+    let mut workspace = false;
+    let mut dialog_directory = None;
     let mut density = None;
     let mut recovery = false;
     let mut docking = false;
@@ -110,6 +122,14 @@ fn start() -> Result<(), String> {
             "--touch" => density = Some(rust_desktop_ui_xaml::ThemeDensity::Touch),
             "--visuals" => visuals = true,
             "--batch" => batch = true,
+            "--workspace" => workspace = true,
+            "--dialog-directory" => {
+                dialog_directory = Some(std::path::PathBuf::from(
+                    arguments
+                        .next()
+                        .ok_or("--dialog-directory requires a path")?,
+                ))
+            }
             "--recovery-smoke" => {
                 recovery = true;
                 smoke_test = true;
@@ -134,6 +154,12 @@ fn start() -> Result<(), String> {
             "--native-title-bar" => native_title_bar = true,
             "--no-activate" => activate = false,
             "--help" | "-h" => {
+                println!(
+                    "--workspace opens WorkspaceWindow.xaml: retained tabs, dialogs, customizable status, reusable styles/templates and typed queries."
+                );
+                println!(
+                    "--dialog-directory PATH selects the initial directory for workspace file dialogs; no files are opened or written."
+                );
                 println!(
                     "--batch opens BatchWindow.xaml: panels, popup content, toolbars, choices, sliders, localization and asynchronous validation."
                 );
@@ -170,7 +196,7 @@ fn start() -> Result<(), String> {
         }
     }
     if [
-        controls, docking, editors, groups, status, data, visuals, batch,
+        controls, docking, editors, groups, status, data, visuals, batch, workspace,
     ]
     .into_iter()
     .filter(|v| *v)
@@ -184,10 +210,15 @@ fn start() -> Result<(), String> {
     if float_pane.is_some() && !docking {
         return Err("--float-pane requires --docking".into());
     }
+    if dialog_directory.is_some() && !workspace {
+        return Err("--dialog-directory requires --workspace".into());
+    }
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if batch {
+    let mut definition = if workspace {
+        generated_workspace::window_definition()
+    } else if batch {
         generated_batch::window_definition()
     } else if visuals {
         generated_visuals::window_definition()
@@ -249,6 +280,12 @@ fn start() -> Result<(), String> {
             .unwrap_or_else(docking_app::storage::default_path)?;
         app.set_layout_file(path);
         return rust_desktop_ui_platform_winit::run_multi(app);
+    }
+    if workspace {
+        let mut application =
+            workspace_app::WorkspaceApplication::new(definition, options, diagnostics)?;
+        application.set_dialog_directory(dialog_directory);
+        return rust_desktop_ui_platform_winit::run_multi(application);
     }
     let app = if batch {
         form::Form::new_with_model(definition, diagnostics, Some(batch_model::model()?))?

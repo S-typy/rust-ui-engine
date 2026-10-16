@@ -319,7 +319,16 @@ fn narrow_tab_icons_are_clipped_to_their_own_header_in_both_themes() {
         frame(&mut ui);
         let bounds = ui.runtime.bounds(tabs.headers[0]).unwrap();
         assert!(!ui.scene().stroke_paths.is_empty());
+        let overflow = ui
+            .runtime
+            .bounds(ui.tab_overflow_button(tabs.container).unwrap())
+            .unwrap();
         for path in &ui.scene().stroke_paths {
+            let bounds = if path.clip.x >= overflow.x {
+                overflow
+            } else {
+                bounds
+            };
             assert!(path.clip.x >= bounds.x);
             assert!(path.clip.x + path.clip.width <= bounds.x + bounds.width);
             assert!(path.clip.y >= bounds.y);

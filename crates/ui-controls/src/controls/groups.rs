@@ -283,6 +283,15 @@ impl Controls {
         Some(&self.groups[&owner].settings)
     }
 
+    /// Stable retained header, independent of the current expand direction.
+    pub fn group_header_id(&self, id: WidgetId) -> Option<WidgetId> {
+        let owner = self.group_owner(id)?;
+        self.runtime.tree().node(owner)?;
+        let header = self.groups[&owner].parts.header;
+        self.runtime.tree().node(header)?;
+        Some(header)
+    }
+
     pub fn group_header(&self, id: WidgetId) -> Option<&str> {
         Some(&self.group_settings(id)?.header)
     }

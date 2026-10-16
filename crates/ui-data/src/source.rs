@@ -2,7 +2,8 @@ use std::{cmp::Ordering, collections::HashMap, rc::Rc};
 
 use crate::{
     CellValue, CollectionHandle, CollectionSubscription, DataChange, DataChangeSet, DataError,
-    DataRow, DataTable, MAX_CHANGE_RECORDS, ObservableCollection,
+    DataRow, DataTable, MAX_CHANGE_RECORDS, ObservableCollection, QueryCapabilities, QueryEngine,
+    QueryRequest, QueryResult, TableSchema,
     observable::{ChangeJournal, NotificationHub},
 };
 
@@ -42,6 +43,25 @@ pub trait DataAdapter {
     /// Non-consuming bounded metadata for independent readers, without I/O.
     fn notification_changes_since(&self, _cursor: u64) -> Option<DataChangeSet> {
         None
+    }
+    /// Opt-in promise of complete, versioned typed-query semantics. Existing
+    /// adapters use the same local engine; SQL capability is never inferred.
+    fn query_capabilities(&self) -> QueryCapabilities {
+        QueryCapabilities::local_only()
+    }
+    /// Schema metadata for a pushdown provider, without loading a row snapshot.
+    /// None selects local fallback. A pushed execution must detect a concurrent
+    /// schema change and fail rather than execute against incompatible types.
+    fn query_schema(&mut self) -> Result<Option<TableSchema>, DataError> {
+        Ok(None)
+    }
+    /// Execute the entire query against one consistent snapshot. Implementors
+    /// must preserve QueryEngine semantics, limits and errors; no partial result
+    /// may be returned. Only called after capability/schema validation.
+    fn query_pushdown(&mut self, _query: &QueryRequest) -> Result<QueryResult, DataError> {
+        Err(DataError::Adapter(
+            "query pushdown is not implemented".into(),
+        ))
     }
 }
 
@@ -165,6 +185,14 @@ impl DataSource {
     }
     pub fn query(&self) -> &DataQuery {
         &self.query
+    }
+    /// Evaluate a typed request over the accepted full snapshot without I/O.
+    /// The legacy visible DataQuery and revision are not changed by this read.
+    pub fn evaluate_query(&self, query: &QueryRequest) -> Result<QueryResult, DataError> {
+        QueryEngine::execute(&self.table, query)
+    }
+    pub fn query_capabilities(&self) -> QueryCapabilities {
+        self.adapter.query_capabilities()
     }
     pub fn revision(&self) -> u64 {
         self.revision
@@ -522,20 +550,5 @@ fn query_index(table: &DataTable, query: &DataQuery) -> Result<QueryIndex, DataE
 }
 
 fn compare(left: &CellValue, right: &CellValue) -> Ordering {
-    match (left, right) {
-        (CellValue::Null, CellValue::Null) => Ordering::Equal,
-        (CellValue::Null, _) => Ordering::Less,
-        (_, CellValue::Null) => Ordering::Greater,
-        (CellValue::Bool(left), CellValue::Bool(right)) => left.cmp(right),
-        (CellValue::Integer(left), CellValue::Integer(right)) => left.cmp(right),
-        (CellValue::Real(left), CellValue::Real(right)) => {
-            left.partial_cmp(right).unwrap_or(Ordering::Equal)
-        }
-        (CellValue::Text(left), CellValue::Text(right)) => left.cmp(right),
-        (CellValue::Decimal(left), CellValue::Decimal(right)) => left.cmp(right),
-        (CellValue::Date(left), CellValue::Date(right)) => left.cmp(right),
-        (CellValue::Time(left), CellValue::Time(right)) => left.cmp(right),
-        (CellValue::Binary(left), CellValue::Binary(right)) => left.cmp(right),
-        _ => Ordering::Equal, // Validated columns have exactly one non-null type.
-    }
+    crate::query::compare_values(left, right)
 }

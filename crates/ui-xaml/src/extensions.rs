@@ -204,7 +204,7 @@ impl ComponentRegistry {
         Ok(crate::codegen::window(&self.parse(source)?))
     }
 }
-fn remap_bindings(
+pub(crate) fn remap_bindings(
     element: &mut crate::ElementDefinition,
     source: &str,
     expanded: &str,
@@ -228,7 +228,7 @@ fn remap_bindings(
         remap_bindings(child, source, expanded, origins);
     }
 }
-fn at_original(source: &str, offset: usize, message: String) -> Diagnostic {
+pub(crate) fn at_original(source: &str, offset: usize, message: String) -> Diagnostic {
     let before = &source[..source.floor_char_boundary(offset.min(source.len()))];
     let line = before.bytes().filter(|b| *b == b'\n').count() + 1;
     let column = before.rsplit('\n').next().unwrap_or("").chars().count() + 1;
@@ -238,7 +238,12 @@ fn at_original(source: &str, offset: usize, message: String) -> Diagnostic {
         message,
     }
 }
-fn remap(source: &str, expanded: &str, origins: &[usize], diagnostic: Diagnostic) -> Diagnostic {
+pub(crate) fn remap(
+    source: &str,
+    expanded: &str,
+    origins: &[usize],
+    diagnostic: Diagnostic,
+) -> Diagnostic {
     let mut line = 1;
     let mut column = 1;
     let mut offset = expanded.len();

@@ -35,8 +35,11 @@ alignment on physical axes. Grid supports both axes independently; Stack/Flex/Wr
 apply the property corresponding to their cross axis. A child cannot align within
 unused main-axis space that its container has not allocated to it.
 Overlay's automatic dimensions fill the padded area after subtracting
-margins, subject to constraints; fixed children use horizontal `justify` and
-vertical `align`. Overlay `offset` shifts the resulting child box without affecting
+margins, subject to constraints. An explicit child `vertical_alignment` of Start,
+Center or End preserves its measured Auto height and positions it accordingly;
+Stretch or an omitted alignment keeps the fill behavior. Fixed children use
+horizontal `justify` and vertical `align`, with explicit child vertical alignment
+taking precedence. Overlay `offset` shifts the resulting child box without affecting
 siblings. An Overlay needs an explicit or parent-assigned size because its
 children do not contribute intrinsic panel size.
 

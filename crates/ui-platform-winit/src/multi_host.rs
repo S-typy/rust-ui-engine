@@ -65,6 +65,7 @@ struct WindowState {
     cursor: (f64, f64),
     ime: crate::ime::ImeSession,
     focused: bool,
+    modal_blocked: bool,
     occluded: bool,
     wake_at: Option<Instant>,
     retry_at: Option<Instant>,
@@ -81,6 +82,9 @@ struct WindowState {
 impl Drop for WindowState {
     fn drop(&mut self) {
         self.app_waker.deactivate();
+        if self.modal_blocked {
+            crate::modality::set_enabled(&self.window, true);
+        }
     }
 }
 
@@ -94,6 +98,16 @@ fn retire_view(app: &mut dyn DesktopApp, focused: bool) -> Result<Vec<EventRespo
     responses.push(app.event(PlatformEvent::ImeCancel)?);
     responses.push(app.event(PlatformEvent::Input(InputEvent::PointerLeft))?);
     Ok(responses)
+}
+
+fn suspend_view(
+    app: &mut dyn DesktopApp,
+    focused: &mut bool,
+    modifiers: &mut Modifiers,
+    ime: &mut crate::ime::ImeSession,
+) -> Result<Vec<EventResponse>, String> {
+    let was_focused = crate::modality::suspend_input(focused, modifiers, ime);
+    retire_view(app, was_focused)
 }
 
 fn with_view_by_key<T>(
@@ -163,15 +177,18 @@ impl<A: DesktopApplication> MultiHost<A> {
         }
         let specs = self.app.windows()?;
         validate_specs(&specs)?;
+        let blocked = crate::multi::modal_blocked(&specs);
         // Validate the complete requested transition before creating or retiring anything.
         for spec in &specs {
             if self.app.window(spec.key).is_none() {
                 return Err(format!("Missing view for native window {:?}", spec.key));
             }
             if let Some(state) = self.windows.get(&spec.key)
-                && state.spec.owner != spec.owner
+                && (state.spec.owner != spec.owner || state.spec.modal != spec.modal)
             {
-                return Err("Changing a live native window owner requires a new WindowKey".into());
+                return Err(
+                    "Changing a live native window owner/modality requires a new WindowKey".into(),
+                );
             }
             if let Some(state) = self.windows.get(&spec.key)
                 && state.spec.options.min_size != spec.options.min_size
@@ -204,6 +221,20 @@ impl<A: DesktopApplication> MultiHost<A> {
             }
             std::cmp::Reverse(depth)
         });
+        let restore_focus = if retiring.is_empty() {
+            None
+        } else {
+            let previous: Vec<_> = self
+                .windows
+                .values()
+                .map(|state| state.spec.clone())
+                .collect();
+            let focused = self
+                .windows
+                .iter()
+                .find_map(|(key, state)| state.window.has_focus().then_some(*key));
+            crate::multi::modal_restore_target(&previous, &wanted, focused)
+        };
         for key in retiring {
             let mut state = self.windows.remove(&key).expect("retiring window exists");
             let app = self
@@ -309,6 +340,7 @@ impl<A: DesktopApplication> MultiHost<A> {
                 cursor: (0.0, 0.0),
                 ime: crate::ime::ImeSession::default(),
                 focused: false,
+                modal_blocked: false,
                 occluded: false,
                 wake_at: None,
                 retry_at: None,
@@ -336,6 +368,26 @@ impl<A: DesktopApplication> MultiHost<A> {
             state.geometry_changed(app);
             self.native_keys.insert(state.window.id(), state.spec.key);
             self.windows.insert(state.spec.key, state);
+        }
+        for (key, state) in &mut self.windows {
+            let value = blocked.contains(key);
+            if value != state.modal_blocked {
+                state.modal_blocked = value;
+                if value {
+                    let app = self
+                        .app
+                        .window_mut(*key)
+                        .ok_or("Modal owner view is absent")?;
+                    state.suspend_for_modal(app, &mut self.clipboard)?;
+                }
+                crate::modality::set_enabled(&state.window, !value);
+            }
+        }
+        if let Some(owner) = restore_focus
+            && let Some(state) = self.windows.get(&owner)
+            && !state.modal_blocked
+        {
+            state.window.focus_window();
         }
         if changed {
             self.redraw_all();
@@ -368,6 +420,19 @@ fn owned_attributes(
 }
 
 impl WindowState {
+    fn suspend_for_modal(
+        &mut self,
+        app: &mut dyn DesktopApp,
+        clipboard: &mut Option<arboard::Clipboard>,
+    ) -> Result<bool, String> {
+        let mut redraw = false;
+        for response in suspend_view(app, &mut self.focused, &mut self.modifiers, &mut self.ime)? {
+            redraw |= self.effects(app, clipboard, response)?;
+        }
+        self.window.set_ime_allowed(false);
+        Ok(redraw)
+    }
+
     fn initialize_renderer(&mut self) -> Result<(), String> {
         let renderer = pollster::block_on(GpuRenderer::new(self.window.clone()))
             .map_err(|error| error.to_string())?;
@@ -470,6 +535,11 @@ impl WindowState {
     ) -> Result<bool, String> {
         let response = app.event(event)?;
         let redraw = self.effects(app, clipboard, response)?;
+        if let Some(direction) = app.take_resize_request()
+            && let Err(error) = crate::begin_resize(&self.window, direction)
+        {
+            eprintln!("Native resize unavailable: {error}");
+        }
         Ok(self.sync_ime(app, clipboard)? || redraw)
     }
 
@@ -884,7 +954,7 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
                     Ok(false)
                 }
                 AccessibilityWindowEvent::ActionRequested(request)
-                    if state.accessible_nodes.permits(&request) =>
+                    if !state.modal_blocked && state.accessible_nodes.permits(&request) =>
                 {
                     state.dispatch(app, clipboard, PlatformEvent::Accessibility(request))
                 }
@@ -918,6 +988,9 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
             return;
         };
         let source = &self.windows[&key];
+        if source.modal_blocked && crate::modality::is_user_input(&event) {
+            return;
+        }
         let pointer_position = match &event {
             WindowEvent::CursorMoved { position, .. } => Some((position.x, position.y)),
             WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => Some(
@@ -974,6 +1047,32 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
                     return Err(format!("Native smoke timed out for {:?}", key));
                 }
                 let mut redraw = false;
+                if !state.modal_blocked
+                    && let Some(request) = app.take_dialog_request()
+                {
+                    let request = crate::dialogs::validate_request(request);
+                    let opened = request.is_ok();
+                    let completion = match request {
+                        Err(completion) => completion,
+                        Ok(request) => {
+                            redraw |= state.suspend_for_modal(app, clipboard)?;
+                            crate::dialogs::show(&state.window, request)
+                        }
+                    };
+                    let response = app.dialog_completed(completion)?;
+                    redraw |= state.effects(app, clipboard, response)?;
+                    if opened {
+                        state.focused = state.window.has_focus();
+                        if state.focused {
+                            redraw |= state.dispatch(
+                                app,
+                                clipboard,
+                                PlatformEvent::Input(InputEvent::WindowFocused(true)),
+                            )?;
+                        }
+                    }
+                    state.window.request_redraw();
+                }
                 if state.wake_at.is_some_and(|at| at <= now) {
                     state.wake_at = None;
                     redraw = state.dispatch(app, clipboard, PlatformEvent::Tick)?;
@@ -1080,6 +1179,34 @@ mod tests {
         assert_eq!(first.events, ["cancel", "leave"]);
         assert!(second.events.is_empty());
         assert!(second.composing);
+    }
+
+    #[test]
+    fn modal_suspension_clears_host_input_without_hiding_composition_from_application_blur() {
+        let mut view = ViewProbe {
+            composing: true,
+            ..ViewProbe::default()
+        };
+        let target = rust_desktop_ui_core::UiTree::new().root();
+        let mut ime = crate::ime::ImeSession::default();
+        ime.set_target(Some(target), true);
+        ime.enabled();
+        assert!(ime.preedit(true));
+        let mut focused = true;
+        let mut modifiers = Modifiers {
+            control: true,
+            ..Modifiers::default()
+        };
+        suspend_view(&mut view, &mut focused, &mut modifiers, &mut ime).unwrap();
+        assert!(view.observed);
+        assert_eq!(view.events, ["blur", "cancel", "leave"]);
+        assert!(!view.composing && !focused && !ime.allowed && !ime.composing);
+        assert_eq!(modifiers, Modifiers::default());
+        ime.enabled();
+        assert!(!ime.commit());
+        view.events.clear();
+        suspend_view(&mut view, &mut focused, &mut modifiers, &mut ime).unwrap();
+        assert_eq!(view.events, ["cancel", "leave"]);
     }
 
     struct ApplicationProbe {

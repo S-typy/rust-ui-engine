@@ -278,16 +278,14 @@ impl MountedView {
                 .map_err(err)?;
                 group_content_layout(ui, parts.content)?;
                 if let Some(header) = &group.header_content {
-                    let child = self.mount_element(
+                    self.mount_header_presentation(
                         ui,
+                        parts.container,
                         parts.header,
                         header,
-                        Axis::Horizontal,
                         (width - 62.0).max(0.0),
                         context,
                     )?;
-                    ui.set_group_header_content(parts.container, Some(child))
-                        .map_err(err)?;
                 }
                 if let Some(child) = &group.child {
                     self.mount_element(
@@ -322,16 +320,14 @@ impl MountedView {
                 }
                 group_content_layout(ui, parts.content)?;
                 if let Some(header) = &group.header_content {
-                    let child = self.mount_element(
+                    self.mount_header_presentation(
                         ui,
+                        parts.container,
                         parts.header,
                         header,
-                        Axis::Horizontal,
                         (width - 62.0).max(0.0),
                         context,
                     )?;
-                    ui.set_group_header_content(parts.container, Some(child))
-                        .map_err(err)?;
                 }
                 if let Some(child) = &group.child {
                     self.mount_element(
@@ -366,7 +362,19 @@ impl MountedView {
                         style,
                     )
                     .map_err(err)?;
-                for (tab, content) in group.tabs.iter().zip(parts.contents) {
+                for ((tab, content), header) in
+                    group.tabs.iter().zip(parts.contents).zip(parts.headers)
+                {
+                    if let Some(template) = &tab.header_content {
+                        self.mount_tab_header_presentation(
+                            ui,
+                            header,
+                            header,
+                            template,
+                            (width - 40.0).max(0.0),
+                            context,
+                        )?;
+                    }
                     group_content_layout(ui, content)?;
                     let mut content_style =
                         ui.runtime.tree().node(content).unwrap().props.style.clone();
@@ -947,6 +955,7 @@ impl MountedView {
         if self.open_initial_popups(ui)? {
             ui.update(viewport).map_err(err)?;
         }
+        self.update_template_layout(ui, viewport)?;
         Ok(())
     }
 }

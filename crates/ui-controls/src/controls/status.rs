@@ -11,6 +11,63 @@ pub struct StatusBar {
     pub right: WidgetId,
 }
 
+/// Side occupied by a registered retained status section.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum StatusPlacement {
+    #[default]
+    Left,
+    Right,
+}
+
+/// A fixed section never shrinks; stretch sections share remaining room after
+/// every visible section's minimum has been reserved. Sections that do not fit
+/// move to the retained overflow surface.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StatusItemWidth {
+    Fixed(f32),
+    Stretch { minimum: f32 },
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StatusBarItemSettings {
+    pub key: String,
+    pub label: String,
+    pub placement: StatusPlacement,
+    pub width: StatusItemWidth,
+    pub visible: bool,
+    pub can_hide: bool,
+}
+impl StatusBarItemSettings {
+    pub fn new(key: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            key: key.into(),
+            label: label.into(),
+            placement: StatusPlacement::Left,
+            width: StatusItemWidth::Stretch { minimum: 80.0 },
+            visible: true,
+            can_hide: true,
+        }
+    }
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StatusBarOptions {
+    pub customizable: bool,
+    pub resize_grip: bool,
+}
+
+/// An explicit request for the native host. Controls never resizes an OS window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowResizeDirection {
+    BottomRight,
+}
+
+#[derive(Clone)]
+struct StatusItem {
+    host: WidgetId,
+    settings: StatusBarItemSettings,
+    checkbox: WidgetId,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProgressBarSettings {
     pub minimum: f64,
@@ -83,9 +140,20 @@ fn validate_range(minimum: f64, maximum: f64, value: f64) -> Result<(), ControlE
     Ok(())
 }
 
+#[derive(Clone)]
 struct StatusState {
     parts: StatusBar,
     ribbon: bool,
+    automatic_height: Option<f32>,
+    options: StatusBarOptions,
+    items: Vec<StatusItem>,
+    overflow: WidgetId,
+    overflow_flyout: Flyout,
+    overflow_viewer: ScrollViewer,
+    customize: WidgetId,
+    customize_flyout: Flyout,
+    customize_viewer: ScrollViewer,
+    grip: WidgetId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,6 +175,7 @@ pub(super) struct StatusControls {
     progress: HashMap<WidgetId, ProgressBarSettings>,
     zoom: HashMap<WidgetId, ZoomControlSettings>,
     gesture: Option<ZoomGesture>,
+    resize_request: Option<WindowResizeDirection>,
 }
 
 #[derive(Clone, Copy)]
@@ -184,8 +253,10 @@ impl Controls {
         ribbon: bool,
     ) -> Result<StatusBar, ControlError> {
         style.kind = LayoutKind::Flex(Axis::Horizontal);
-        if style.height == Length::Auto {
-            style.height = Length::Px(if ribbon { 36.0 } else { 32.0 });
+        let automatic_height = (style.height == Length::Auto)
+            .then(|| self.theme.tokens().control_height - if ribbon { 0.0 } else { 4.0 });
+        if let Some(height) = automatic_height {
+            style.height = Length::Px(height);
         }
         style.flex_shrink = 0.0;
         style.gap = 0.0;
@@ -224,9 +295,47 @@ impl Controls {
             left,
             right,
         };
-        self.status
-            .bars
-            .insert(container, StatusState { parts, ribbon });
+        let (overflow, overflow_flyout, overflow_viewer) =
+            self.status_disclosure(container, "More status sections", IconSymbol::ChevronDown)?;
+        let (customize, customize_flyout, customize_viewer) = self.status_disclosure(
+            container,
+            "Customize status sections",
+            IconSymbol::ChevronDown,
+        )?;
+        let grip = self.button(
+            container,
+            "Resize window",
+            None,
+            LayoutStyle {
+                width: Length::Px(20.0),
+                height: Length::Percent(1.0),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        )?;
+        self.set_button_chrome(grip, ButtonChrome::Flat)?;
+        self.set_button_content_layout(grip, ButtonContentLayout::IconOnly)?;
+        self.edit_props(grip, |p| {
+            p.visible = false;
+            p.collapsed = true;
+        })?;
+        self.status.bars.insert(
+            container,
+            StatusState {
+                parts,
+                ribbon,
+                automatic_height,
+                options: StatusBarOptions::default(),
+                items: Vec::new(),
+                overflow,
+                overflow_flyout,
+                overflow_viewer,
+                customize,
+                customize_flyout,
+                customize_viewer,
+                grip,
+            },
+        );
         self.scene_dirty = true;
         Ok(parts)
     }
@@ -329,12 +438,13 @@ impl Controls {
     }
 
     pub(super) fn preflight_status_removal(&self, id: WidgetId) -> Result<(), ControlError> {
-        if self
-            .status
-            .bars
-            .values()
-            .any(|bar| bar.parts.left == id || bar.parts.right == id)
-        {
+        if self.status.bars.values().any(|bar| {
+            bar.parts.left == id
+                || bar.parts.right == id
+                || bar.overflow == id
+                || bar.customize == id
+                || bar.grip == id
+        }) {
             return Err(ControlError::Invalid(
                 "Required status bar regions cannot be removed alone".into(),
             ));
@@ -408,6 +518,24 @@ impl Controls {
 
     pub(super) fn status_before_input(&mut self, event: &InputEvent) -> Result<bool, ControlError> {
         self.sync_zoom_gesture()?;
+        if let InputEvent::PointerDown {
+            position,
+            button: PointerButton::Primary,
+            ..
+        } = event
+            && let Some(grip) = self.runtime.hit_test(*position).filter(|id| {
+                self.status
+                    .bars
+                    .values()
+                    .any(|bar| bar.grip == *id && bar.options.resize_grip)
+                    && self.is_enabled(*id)
+            })
+        {
+            if self.route_zoom_event(event)? && self.is_enabled(grip) {
+                self.status.resize_request = Some(WindowResizeDirection::BottomRight);
+            }
+            return Ok(true);
+        }
         if !self.window_focused {
             return Ok(false);
         }
@@ -544,6 +672,40 @@ impl Controls {
         clip: Rect,
     ) -> Result<bool, ControlError> {
         if self.paint_busy_progress(id, bounds, clip) {
+            return Ok(true);
+        }
+        if self.status.bars.values().any(|bar| bar.grip == id) {
+            let chrome = self.theme.chrome();
+            let color = if self.is_enabled(id) {
+                chrome.control_bottom_border
+            } else {
+                chrome.disabled_text
+            };
+            for row in 0..3 {
+                for col in 0..=row {
+                    fill_clipped(
+                        &mut self.scene,
+                        Rect::new(
+                            bounds.x + bounds.width - 5.0 - col as f32 * 4.0,
+                            bounds.y + bounds.height - 5.0 - (2 - row) as f32 * 4.0,
+                            2.0,
+                            2.0,
+                        ),
+                        clip,
+                        color,
+                    );
+                }
+            }
+            if self.runtime.focused() == Some(id) {
+                shape_border(
+                    &mut self.scene,
+                    bounds,
+                    clip,
+                    3.0,
+                    1.0,
+                    self.theme.tokens().focus,
+                );
+            }
             return Ok(true);
         }
         let is_status = self.status.bars.contains_key(&id)
@@ -708,5 +870,798 @@ impl Controls {
             shape_border(&mut self.scene, bounds, clip, 4.0, 1.0, tokens.focus);
         }
         Ok(true)
+    }
+}
+
+impl Controls {
+    fn status_disclosure(
+        &mut self,
+        parent: WidgetId,
+        label: &str,
+        icon: IconSymbol,
+    ) -> Result<(WidgetId, Flyout, ScrollViewer), ControlError> {
+        let button = self.button(
+            parent,
+            label,
+            None,
+            LayoutStyle {
+                width: Length::Px(28.0),
+                height: Length::Percent(1.0),
+                flex_shrink: 0.0,
+                ..Default::default()
+            },
+        )?;
+        self.set_button_icon(button, Some(ButtonIcon::new(icon)))?;
+        self.set_button_content_layout(button, ButtonContentLayout::IconOnly)?;
+        self.set_button_chrome(button, ButtonChrome::Flat)?;
+        self.edit_props(button, |p| {
+            p.visible = false;
+            p.collapsed = true;
+        })?;
+        let flyout = self.flyout(button, Size::new(300.0, 240.0))?;
+        self.set_button_flyout(button, flyout)?;
+        let viewer = self.scroll_view(
+            flyout.content,
+            LayoutStyle {
+                width: Length::Percent(1.0),
+                height: Length::Percent(1.0),
+                ..Default::default()
+            },
+            240.0,
+        )?;
+        Ok((button, flyout, viewer))
+    }
+
+    /// Opt-in settings for a retained status bar. A resize grip emits an explicit
+    /// native resize request; the application host is responsible for handling it.
+    pub fn configure_status_bar(
+        &mut self,
+        bar: StatusBar,
+        options: StatusBarOptions,
+    ) -> Result<(), ControlError> {
+        let state = self
+            .status
+            .bars
+            .get_mut(&bar.container)
+            .filter(|s| s.parts == bar)
+            .ok_or_else(|| ControlError::Invalid("Unknown status bar".into()))?;
+        state.options = options;
+        self.scene_dirty = true;
+        Ok(())
+    }
+
+    /// Creates a retained content host registered for overflow and customization.
+    pub fn status_bar_item(
+        &mut self,
+        bar: StatusBar,
+        settings: StatusBarItemSettings,
+    ) -> Result<WidgetId, ControlError> {
+        self.validate_status_item(bar, &settings, None)?;
+        let parent = if settings.placement == StatusPlacement::Left {
+            bar.left
+        } else {
+            bar.right
+        };
+        let host = self.transparent_panel(
+            parent,
+            LayoutStyle {
+                height: Length::Percent(1.0),
+                ..Default::default()
+            },
+        )?;
+        self.register_status_bar_item(bar, host, settings)?;
+        Ok(host)
+    }
+
+    fn validate_status_item(
+        &self,
+        bar: StatusBar,
+        settings: &StatusBarItemSettings,
+        host: Option<WidgetId>,
+    ) -> Result<(), ControlError> {
+        let state = self
+            .status
+            .bars
+            .get(&bar.container)
+            .filter(|s| s.parts == bar)
+            .ok_or_else(|| ControlError::Invalid("Unknown status bar".into()))?;
+        let width = match settings.width {
+            StatusItemWidth::Fixed(width) | StatusItemWidth::Stretch { minimum: width } => width,
+        };
+        if settings.key.trim().is_empty()
+            || settings.key.len() > 256
+            || settings.label.trim().is_empty()
+            || settings.label.len() > 4096
+            || !width.is_finite()
+            || !(1.0..=16_384.0).contains(&width)
+            || (!settings.can_hide && !settings.visible)
+            || state.items.len() >= 256
+            || state
+                .items
+                .iter()
+                .any(|item| item.settings.key == settings.key || Some(item.host) == host)
+        {
+            return Err(ControlError::Invalid("Status sections require unique keys, labels, finite widths, and at most 256 entries; required sections remain visible".into()));
+        }
+        Ok(())
+    }
+
+    /// Registers an existing direct left/right host without recreating content.
+    /// A stable key identifies the section in visibility customization.
+    pub fn register_status_bar_item(
+        &mut self,
+        bar: StatusBar,
+        host: WidgetId,
+        settings: StatusBarItemSettings,
+    ) -> Result<(), ControlError> {
+        self.validate_status_item(bar, &settings, Some(host))?;
+        if !self.controls.contains_key(&host)
+            || !matches!(self.runtime.tree().parent(host),Some(parent) if parent==bar.left || parent==bar.right)
+            || self
+                .status
+                .bars
+                .values()
+                .any(|state| state.items.iter().any(|item| item.host == host))
+        {
+            return Err(ControlError::Invalid(
+                "Status section must be an unregistered direct child of a status host".into(),
+            ));
+        }
+        let parent = self.status.bars[&bar.container].customize_viewer.content;
+        let checkbox = self.checkbox(
+            parent,
+            settings.label.clone(),
+            settings.visible,
+            LayoutStyle {
+                width: Length::Percent(1.0),
+                height: Length::Px(self.theme.tokens().control_height),
+                ..Default::default()
+            },
+        )?;
+        self.set_enabled(checkbox, settings.can_hide)?;
+        self.status
+            .bars
+            .get_mut(&bar.container)
+            .unwrap()
+            .items
+            .push(StatusItem {
+                host,
+                settings,
+                checkbox,
+            });
+        self.scene_dirty = true;
+        Ok(())
+    }
+
+    pub fn status_item_visible(&self, bar: StatusBar, key: &str) -> Option<bool> {
+        self.status
+            .bars
+            .get(&bar.container)
+            .filter(|s| s.parts == bar)?
+            .items
+            .iter()
+            .find(|i| i.settings.key == key)
+            .map(|i| i.settings.visible)
+    }
+
+    /// Visibility changes preserve the content and its bindings. A hidden editor
+    /// loses focus/preedit, without silently committing its current draft.
+    pub fn set_status_item_visible(
+        &mut self,
+        bar: StatusBar,
+        key: &str,
+        visible: bool,
+    ) -> Result<(), ControlError> {
+        let state = self
+            .status
+            .bars
+            .get_mut(&bar.container)
+            .filter(|s| s.parts == bar)
+            .ok_or_else(|| ControlError::Invalid("Unknown status bar".into()))?;
+        let item = state
+            .items
+            .iter_mut()
+            .find(|i| i.settings.key == key)
+            .ok_or_else(|| ControlError::Invalid("Unknown status section key".into()))?;
+        if !visible && !item.settings.can_hide {
+            return Err(ControlError::Invalid(
+                "Required status section cannot be hidden".into(),
+            ));
+        }
+        item.settings.visible = visible;
+        let (host, checkbox) = (item.host, item.checkbox);
+        self.set_checked(checkbox, visible)?;
+        self.edit_props(host, |p| {
+            p.visible = visible;
+            p.collapsed = !visible;
+        })?;
+        self.sync_popup_availability()?;
+        self.synchronize_editor_focus()?;
+        self.cancel_inactive_preedit();
+        self.scene_dirty = true;
+        Ok(())
+    }
+
+    pub fn status_bar_overflow_button(&self, bar: StatusBar) -> Option<WidgetId> {
+        Some(
+            self.status
+                .bars
+                .get(&bar.container)
+                .filter(|s| s.parts == bar)?
+                .overflow,
+        )
+    }
+    pub fn status_bar_customize_button(&self, bar: StatusBar) -> Option<WidgetId> {
+        Some(
+            self.status
+                .bars
+                .get(&bar.container)
+                .filter(|s| s.parts == bar)?
+                .customize,
+        )
+    }
+    pub fn status_bar_resize_grip(&self, bar: StatusBar) -> Option<WidgetId> {
+        Some(
+            self.status
+                .bars
+                .get(&bar.container)
+                .filter(|s| s.parts == bar)?
+                .grip,
+        )
+    }
+
+    /// Consumes one coalesced request generated by the grip's pointer/activation.
+    /// A native host should start its OS resize operation once and clear it.
+    pub fn take_window_resize_request(&mut self) -> Option<WindowResizeDirection> {
+        self.status.resize_request.take()
+    }
+    pub(super) fn activate_status_grip(&mut self, id: WidgetId) -> Result<bool, ControlError> {
+        if self
+            .status
+            .bars
+            .values()
+            .any(|bar| bar.grip == id && bar.options.resize_grip)
+        {
+            self.status.resize_request = Some(WindowResizeDirection::BottomRight);
+            self.activated.push(id);
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
+    pub(super) fn sync_status_bars(&mut self) -> Result<(), ControlError> {
+        let owners: Vec<_> = self.status.bars.keys().copied().collect();
+        for owner in owners {
+            let removed: Vec<_> = self.status.bars[&owner]
+                .items
+                .iter()
+                .filter(|item| !self.runtime.tree().contains(item.host))
+                .map(|item| item.checkbox)
+                .collect();
+            self.status
+                .bars
+                .get_mut(&owner)
+                .unwrap()
+                .items
+                .retain(|item| self.runtime.tree().contains(item.host));
+            for checkbox in removed {
+                if self.runtime.tree().contains(checkbox) {
+                    self.remove(checkbox)?;
+                }
+            }
+            let changes: Vec<_> = self.status.bars[&owner]
+                .items
+                .iter()
+                .filter_map(|item| {
+                    self.checked(item.checkbox)
+                        .filter(|checked| *checked != item.settings.visible)
+                        .map(|checked| (item.settings.key.clone(), checked))
+                })
+                .collect();
+            let bar = self.status.bars[&owner].parts;
+            for (key, visible) in changes {
+                self.set_status_item_visible(bar, &key, visible)?;
+            }
+            let state = self.status.bars[&owner].clone();
+            if let Some(last) = state.automatic_height {
+                let current = self.runtime.tree().node(owner).unwrap().props.style.height;
+                if current == Length::Px(last) || current == Length::Auto {
+                    let height = if state.items.is_empty() {
+                        self.theme.tokens().control_height - if state.ribbon { 0.0 } else { 4.0 }
+                    } else {
+                        // Registered hosts accept ordinary controls with their
+                        // complete border and focus geometry.
+                        self.theme.tokens().control_height + 2.0
+                    };
+                    self.edit_props(owner, |p| p.style.height = Length::Px(height))?;
+                    self.status.bars.get_mut(&owner).unwrap().automatic_height = Some(height);
+                } else {
+                    self.status.bars.get_mut(&owner).unwrap().automatic_height = None;
+                }
+            }
+            let Some(bounds) = self.runtime.bounds(owner) else {
+                continue;
+            };
+            self.edit_props(state.customize, |p| {
+                p.visible = state.options.customizable;
+                p.collapsed = !state.options.customizable;
+            })?;
+            self.edit_props(state.grip, |p| {
+                p.visible = state.options.resize_grip;
+                p.collapsed = !state.options.resize_grip;
+            })?;
+            if !state.options.customizable && self.flyout_is_open(state.customize_flyout) {
+                self.close_flyout(state.customize_flyout)?;
+            }
+            if state.items.is_empty() {
+                continue;
+            }
+            let height = self.theme.tokens().control_height;
+            let widths: Vec<_> = state
+                .items
+                .iter()
+                .map(|item| match item.settings.width {
+                    StatusItemWidth::Fixed(w) | StatusItemWidth::Stretch { minimum: w } => w,
+                })
+                .collect();
+            let total: f32 = state
+                .items
+                .iter()
+                .zip(&widths)
+                .filter(|(item, _)| item.settings.visible)
+                .map(|(_, w)| *w + 4.0)
+                .sum();
+            let available = (bounds.width
+                - 16.0
+                - if state.options.customizable {
+                    28.0
+                } else {
+                    0.0
+                }
+                - if state.options.resize_grip { 20.0 } else { 0.0 })
+            .max(0.0);
+            let overflowed = total > available;
+            let available = (available - if overflowed { 28.0 } else { 0.0 }).max(0.0);
+            let mut fit = vec![false; state.items.len()];
+            let mut used = 0.0;
+            // Right-side sections retain priority when space is scarce.
+            for placement in [StatusPlacement::Right, StatusPlacement::Left] {
+                for (index, item) in state.items.iter().enumerate() {
+                    if item.settings.visible
+                        && item.settings.placement == placement
+                        && used + widths[index] + 4.0 <= available
+                    {
+                        fit[index] = true;
+                        used += widths[index] + 4.0;
+                    }
+                }
+            }
+            let stretches = state
+                .items
+                .iter()
+                .enumerate()
+                .filter(|(index, item)| {
+                    fit[*index] && matches!(item.settings.width, StatusItemWidth::Stretch { .. })
+                })
+                .count();
+            let share = if stretches > 0 {
+                (available - used) / stretches as f32
+            } else {
+                0.0
+            };
+            let rearrange = state.items.iter().enumerate().any(|(index, item)| {
+                let target = if item.settings.visible && !fit[index] {
+                    state.overflow_viewer.content
+                } else if item.settings.placement == StatusPlacement::Left {
+                    bar.left
+                } else {
+                    bar.right
+                };
+                self.runtime.tree().parent(item.host) != Some(target)
+            });
+            let mut overflow_count = 0;
+            let mut mutations = Vec::new();
+            for (index, item) in state.items.iter().enumerate() {
+                let in_overflow = item.settings.visible && !fit[index];
+                if in_overflow {
+                    overflow_count += 1;
+                }
+                let target = if in_overflow {
+                    state.overflow_viewer.content
+                } else if item.settings.placement == StatusPlacement::Left {
+                    bar.left
+                } else {
+                    bar.right
+                };
+                if rearrange {
+                    mutations.push(Mutation::Reparent {
+                        node: item.host,
+                        parent: target,
+                    });
+                }
+                let mut props = self.runtime.tree().node(item.host).unwrap().props.clone();
+                props.visible = item.settings.visible;
+                props.collapsed = !item.settings.visible;
+                props.style.width = if in_overflow {
+                    Length::Percent(1.0)
+                } else {
+                    Length::Px(
+                        widths[index]
+                            + if matches!(item.settings.width, StatusItemWidth::Stretch { .. }) {
+                                share
+                            } else {
+                                0.0
+                            },
+                    )
+                };
+                props.style.height = Length::Px(if in_overflow {
+                    height
+                } else {
+                    (bounds.height - 1.0).max(0.0)
+                });
+                props.style.flex_grow = 0.0;
+                props.style.flex_shrink = 0.0;
+                mutations.push(Mutation::SetProps {
+                    node: item.host,
+                    props,
+                });
+                let mut check = self
+                    .runtime
+                    .tree()
+                    .node(item.checkbox)
+                    .unwrap()
+                    .props
+                    .clone();
+                check.style.height = Length::Px(height);
+                mutations.push(Mutation::SetProps {
+                    node: item.checkbox,
+                    props: check,
+                });
+            }
+            self.runtime.apply(Mutation::Batch(mutations))?;
+            self.edit_props(state.overflow, |p| {
+                p.visible = overflow_count > 0;
+                p.collapsed = overflow_count == 0;
+            })?;
+            self.set_scroll_extent(
+                state.overflow_viewer.viewport,
+                (overflow_count as f32 * (height + 6.0) + 12.0).max(1.0),
+            )?;
+            self.set_flyout_placement(
+                state.overflow_flyout,
+                Size::new(
+                    (widths.iter().copied().fold(260.0, f32::max) + 28.0).min(16_384.0),
+                    (overflow_count as f32 * (height + 6.0) + 28.0).max(48.0),
+                ),
+                FlyoutPlacement::Below,
+            )?;
+            self.set_scroll_extent(
+                state.customize_viewer.viewport,
+                state.items.len() as f32 * (height + 6.0) + 12.0,
+            )?;
+            self.set_flyout_placement(
+                state.customize_flyout,
+                Size::new(
+                    320.0,
+                    (state.items.len() as f32 * (height + 6.0) + 28.0).max(48.0),
+                ),
+                FlyoutPlacement::Below,
+            )?;
+            if overflow_count == 0 && self.flyout_is_open(state.overflow_flyout) {
+                self.close_flyout(state.overflow_flyout)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+    use rust_desktop_ui_core::Modifiers;
+    fn frame(ui: &mut Controls, width: f32) {
+        ui.update(Size::new(width, 300.0)).unwrap();
+    }
+    fn item(
+        key: &str,
+        width: StatusItemWidth,
+        placement: StatusPlacement,
+    ) -> StatusBarItemSettings {
+        StatusBarItemSettings {
+            width,
+            placement,
+            ..StatusBarItemSettings::new(key, key)
+        }
+    }
+    #[test]
+    fn overflow_retains_editor_and_live_values_then_restores_hosts_on_resize() {
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let bar = ui.status_bar(ui.root(), LayoutStyle::default()).unwrap();
+        let left = ui
+            .status_bar_item(
+                bar,
+                item(
+                    "Message",
+                    StatusItemWidth::Stretch { minimum: 140.0 },
+                    StatusPlacement::Left,
+                ),
+            )
+            .unwrap();
+        let right = ui
+            .status_bar_item(
+                bar,
+                item(
+                    "Zoom",
+                    StatusItemWidth::Fixed(180.0),
+                    StatusPlacement::Right,
+                ),
+            )
+            .unwrap();
+        let editor = ui
+            .edit_box(
+                left,
+                "Message",
+                "kept",
+                LayoutStyle {
+                    height: Length::Percent(1.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let zoom = ui
+            .zoom_control(
+                right,
+                ZoomControlSettings::default(),
+                LayoutStyle {
+                    height: Length::Percent(1.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        frame(&mut ui, 700.0);
+        assert_eq!(ui.runtime.tree().parent(left), Some(bar.left));
+        ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+        ui.text_input(" draft").unwrap();
+        let draft = ui.document(editor).unwrap().text().to_owned();
+        frame(&mut ui, 260.0);
+        assert_ne!(ui.runtime.tree().parent(left), Some(bar.left));
+        assert_eq!(ui.runtime.tree().parent(right), Some(bar.right));
+        ui.set_zoom_value(zoom, 175.0).unwrap();
+        let overflow = ui.status_bar_overflow_button(bar).unwrap();
+        ui.activate(overflow).unwrap();
+        frame(&mut ui, 260.0);
+        assert!(ui.is_enabled(editor));
+        assert_eq!(ui.document(editor).unwrap().text(), draft);
+        frame(&mut ui, 700.0);
+        assert_eq!(ui.runtime.tree().parent(left), Some(bar.left));
+        assert_eq!(ui.zoom_value(zoom), Some(175.0));
+        assert_eq!(ui.document(editor).unwrap().text(), draft);
+        assert!(!ui.flyout_is_open(ui.status.bars[&bar.container].overflow_flyout));
+    }
+    #[test]
+    fn customization_is_keyboard_accessible_hides_without_destroying_and_rejects_required() {
+        let mut ui = Controls::new(Theme::FluentDark).unwrap();
+        let bar = ui.status_bar(ui.root(), LayoutStyle::default()).unwrap();
+        ui.configure_status_bar(
+            bar,
+            StatusBarOptions {
+                customizable: true,
+                resize_grip: false,
+            },
+        )
+        .unwrap();
+        let host = ui
+            .status_bar_item(
+                bar,
+                item(
+                    "Message",
+                    StatusItemWidth::Fixed(160.0),
+                    StatusPlacement::Left,
+                ),
+            )
+            .unwrap();
+        let child = ui.label(host, "Live text", LayoutStyle::default()).unwrap();
+        let required = StatusBarItemSettings {
+            can_hide: false,
+            ..item(
+                "Required",
+                StatusItemWidth::Fixed(100.0),
+                StatusPlacement::Right,
+            )
+        };
+        ui.status_bar_item(bar, required).unwrap();
+        frame(&mut ui, 600.0);
+        ui.activate(ui.status_bar_customize_button(bar).unwrap())
+            .unwrap();
+        frame(&mut ui, 600.0);
+        let checkbox = ui.status.bars[&bar.container].items[0].checkbox;
+        assert!(
+            ui.semantics()
+                .iter()
+                .any(|n| n.id == checkbox && n.role == Role::CheckBox)
+        );
+        ui.runtime.apply(Mutation::Focus(Some(checkbox))).unwrap();
+        ui.dispatch(InputEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+        .unwrap();
+        frame(&mut ui, 600.0);
+        assert_eq!(ui.status_item_visible(bar, "Message"), Some(false));
+        assert!(ui.runtime.bounds(child).is_none());
+        assert!(ui.runtime.tree().contains(child));
+        ui.set_label(child, "Updated while hidden").unwrap();
+        ui.set_status_item_visible(bar, "Message", true).unwrap();
+        frame(&mut ui, 600.0);
+        assert!(ui.runtime.bounds(child).is_some());
+        assert!(ui.set_status_item_visible(bar, "Required", false).is_err());
+        assert_eq!(ui.status_item_visible(bar, "Required"), Some(true));
+    }
+    #[test]
+    fn grip_emits_one_native_request_from_pointer_and_accessible_activation() {
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let bar = ui
+            .ribbon_status_bar(ui.root(), LayoutStyle::default())
+            .unwrap();
+        ui.configure_status_bar(
+            bar,
+            StatusBarOptions {
+                customizable: false,
+                resize_grip: true,
+            },
+        )
+        .unwrap();
+        frame(&mut ui, 640.0);
+        let grip = ui.status_bar_resize_grip(bar).unwrap();
+        let r = ui.runtime.bounds(grip).unwrap();
+        assert!(ui.semantics().iter().any(|node| node.id == grip
+            && node.role == Role::Button
+            && node.label == "Resize window"));
+        ui.dispatch(InputEvent::PointerDown {
+            position: Point::new(r.x + r.width / 2.0, r.y + r.height / 2.0),
+            button: PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            ui.take_window_resize_request(),
+            Some(WindowResizeDirection::BottomRight)
+        );
+        assert_eq!(ui.take_window_resize_request(), None);
+        ui.perform_action(grip, SemanticAction::Activate, None)
+            .unwrap();
+        assert_eq!(
+            ui.take_window_resize_request(),
+            Some(WindowResizeDirection::BottomRight)
+        );
+        ui.configure_status_bar(bar, StatusBarOptions::default())
+            .unwrap();
+        frame(&mut ui, 640.0);
+        ui.activate(grip).unwrap();
+        assert_eq!(ui.take_window_resize_request(), None);
+    }
+    #[test]
+    fn status_registration_validation_is_atomic_and_explicit_height_survives_density() {
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let bar = ui
+            .status_bar(
+                ui.root(),
+                LayoutStyle {
+                    height: Length::Px(52.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        ui.status_bar_item(
+            bar,
+            item("One", StatusItemWidth::Fixed(90.0), StatusPlacement::Left),
+        )
+        .unwrap();
+        let ids = ui.runtime.tree().preorder();
+        assert!(
+            ui.status_bar_item(
+                bar,
+                item("One", StatusItemWidth::Fixed(90.0), StatusPlacement::Left)
+            )
+            .is_err()
+        );
+        assert!(
+            ui.status_bar_item(
+                bar,
+                item(
+                    "Bad",
+                    StatusItemWidth::Fixed(f32::NAN),
+                    StatusPlacement::Left
+                )
+            )
+            .is_err()
+        );
+        assert_eq!(ui.runtime.tree().preorder(), ids);
+        ui.set_theme(Theme::FluentDark).unwrap();
+        frame(&mut ui, 640.0);
+        assert_eq!(ui.runtime.bounds(bar.container).unwrap().height, 52.0);
+    }
+}
+#[cfg(test)]
+mod retained_edge_tests {
+    use super::*;
+    use crate::{ThemeConfig, ThemeDensity, ThemeMode};
+    #[test]
+    fn registered_status_height_contains_full_children_after_density_changes_and_idle_settles() {
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let bar = ui.status_bar(ui.root(), LayoutStyle::default()).unwrap();
+        let host = ui
+            .status_bar_item(
+                bar,
+                StatusBarItemSettings {
+                    width: StatusItemWidth::Fixed(180.0),
+                    ..StatusBarItemSettings::new("command", "Command")
+                },
+            )
+            .unwrap();
+        let button = ui
+            .button(host, "Action", None, LayoutStyle::default())
+            .unwrap();
+        for density in [
+            ThemeDensity::Comfortable,
+            ThemeDensity::Touch,
+            ThemeDensity::Compact,
+            ThemeDensity::Touch,
+        ] {
+            ui.set_theme(Theme::Configured(
+                ThemeConfig::new(ThemeMode::Light).with_density(density),
+            ))
+            .unwrap();
+            let height = ui.theme.tokens().control_height;
+            ui.edit_props(button, |p| p.style.height = Length::Px(height))
+                .unwrap();
+            ui.update(Size::new(600.0, 200.0)).unwrap();
+            let bounds = ui.runtime.bounds(button).unwrap();
+            let clip = ui.runtime.clip(button).unwrap();
+            let visible = bounds.intersection(clip).unwrap();
+            assert!(
+                (bounds.width - visible.width).abs() < 0.01
+                    && (bounds.height - visible.height).abs() < 0.01,
+                "{bounds:?} {clip:?}"
+            );
+            assert_eq!(
+                ui.runtime.bounds(bar.container).unwrap().height,
+                height + 2.0
+            );
+            let idle = ui.update(Size::new(600.0, 200.0)).unwrap();
+            assert_eq!(idle.layout_passes, 0);
+            assert_eq!(idle.paint_passes, 0);
+        }
+    }
+    #[test]
+    fn status_sections_restore_source_order_and_removal_does_not_leave_overflow_orphans() {
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let bar = ui.status_bar(ui.root(), LayoutStyle::default()).unwrap();
+        let mut hosts = Vec::new();
+        for key in ["First", "Second", "Third"] {
+            hosts.push(
+                ui.status_bar_item(
+                    bar,
+                    StatusBarItemSettings {
+                        placement: StatusPlacement::Right,
+                        width: StatusItemWidth::Fixed(90.0),
+                        ..StatusBarItemSettings::new(key, key)
+                    },
+                )
+                .unwrap(),
+            );
+        }
+        ui.update(Size::new(500.0, 200.0)).unwrap();
+        ui.update(Size::new(150.0, 200.0)).unwrap();
+        ui.update(Size::new(500.0, 200.0)).unwrap();
+        assert_eq!(ui.runtime.tree().children(bar.right).unwrap(), hosts);
+        ui.update(Size::new(100.0, 200.0)).unwrap();
+        let overflow = ui.status_bar_overflow_button(bar).unwrap();
+        ui.activate(overflow).unwrap();
+        ui.update(Size::new(100.0, 200.0)).unwrap();
+        ui.remove(bar.container).unwrap();
+        assert!(hosts.iter().all(|host| !ui.runtime.tree().contains(*host)));
+        assert!(ui.status.bars.is_empty());
     }
 }

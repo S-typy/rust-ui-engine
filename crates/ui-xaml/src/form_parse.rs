@@ -348,21 +348,34 @@ pub(super) fn property(
             }
             Ok(true)
         }
-        ElementKind::StatusBarItem(item) => {
-            if attr.name() != "Placement" {
-                return Ok(false);
+        ElementKind::StatusBar(bar) | ElementKind::RibbonStatusBar(bar) => {
+            match attr.name() {
+                "IsCustomizable" => bar.is_customizable = boolean(document, attr)?,
+                "ShowResizeGrip" => bar.show_resize_grip = boolean(document, attr)?,
+                _ => return Ok(false),
             }
-            item.placement = match attr.value() {
-                "Left" => StatusBarPlacement::Left,
-                "Right" => StatusBarPlacement::Right,
-                _ => {
-                    return Err(at_attribute(
-                        document,
-                        attr,
-                        "Placement must be Left or Right",
-                    ));
+            Ok(true)
+        }
+        ElementKind::StatusBarItem(item) => {
+            match attr.name() {
+                "Key" => item.key = Some(attr.value().into()),
+                "Label" => item.label = Some(attr.value().into()),
+                "CanHide" => item.can_hide = boolean(document, attr)?,
+                "Placement" => {
+                    item.placement = match attr.value() {
+                        "Left" => StatusBarPlacement::Left,
+                        "Right" => StatusBarPlacement::Right,
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "Placement must be Left or Right",
+                            ));
+                        }
+                    }
                 }
-            };
+                _ => return Ok(false),
+            }
             Ok(true)
         }
         ElementKind::ProgressBar(progress) | ElementKind::BusyIndicator(progress) => {
@@ -822,14 +835,12 @@ pub(super) fn parse_children(
                         return Err(at_node(entry, "HeaderTemplate requires one child"));
                     }
                     *count += 1;
-                    header = Some(Box::new(parse_element(
-                        entry,
-                        depth + 2,
-                        parent,
-                        count,
-                        names,
-                        groups,
-                    )?));
+                    let mut content =
+                        parse_element(entry, depth + 2, parent, count, names, groups)?;
+                    if entry.attribute("VerticalAlignment").is_none() {
+                        content.common.vertical_alignment = Alignment::Center;
+                    }
+                    header = Some(Box::new(content));
                 } else {
                     require_empty_content(entry)?;
                 }
@@ -953,6 +964,47 @@ pub(super) fn parse_children(
                     for content in child.children() {
                         if !content.is_element() {
                             require_empty_content(content)?;
+                            continue;
+                        }
+                        if content.tag_name().namespace() == Some(UI_NAMESPACE)
+                            && content.tag_name().name() == "GroupTab.HeaderTemplate"
+                        {
+                            if tab.header_content.is_some() || content.attributes().len() != 0 {
+                                return Err(at_node(
+                                    content,
+                                    "Invalid or duplicate GroupTab.HeaderTemplate",
+                                ));
+                            }
+                            for visual in content.children() {
+                                if visual.is_element() {
+                                    if tab.header_content.is_some() {
+                                        return Err(at_node(
+                                            visual,
+                                            "GroupTab.HeaderTemplate requires exactly one child",
+                                        ));
+                                    }
+                                    let mut header = parse_element(
+                                        visual,
+                                        depth + 2,
+                                        tab_parent,
+                                        count,
+                                        names,
+                                        groups,
+                                    )?;
+                                    if visual.attribute("VerticalAlignment").is_none() {
+                                        header.common.vertical_alignment = Alignment::Center;
+                                    }
+                                    tab.header_content = Some(Box::new(header));
+                                } else {
+                                    require_empty_content(visual)?;
+                                }
+                            }
+                            if tab.header_content.is_none() {
+                                return Err(at_node(
+                                    content,
+                                    "GroupTab.HeaderTemplate requires exactly one child",
+                                ));
+                            }
                             continue;
                         }
                         if tab.child.is_some() {

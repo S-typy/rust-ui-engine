@@ -25,6 +25,10 @@ pub struct WindowSpec {
     pub placement_revision: u64,
     /// A native owner on Windows; it is not a child-window relationship.
     pub owner: Option<WindowKey>,
+    /// Block the owner's window family while this owned window exists. Nested
+    /// modal windows are supported; a modal must have an owner. This flag is
+    /// fixed for its lifetime, as is owner identity.
+    pub modal: bool,
     /// Whether a newly created window may activate. False avoids stealing focus.
     pub activate: bool,
 }
@@ -37,6 +41,7 @@ impl WindowSpec {
             position: None,
             placement_revision: 0,
             owner: None,
+            modal: false,
             activate: false,
         }
     }
@@ -97,6 +102,16 @@ pub(crate) fn validate_specs(specs: &[WindowSpec]) -> Result<(), String> {
         return Err("A nonempty native window set must contain WindowKey::MAIN".into());
     }
     for spec in specs {
+        if spec.modal && spec.owner.is_none() {
+            return Err("A modal window requires an owner".into());
+        }
+        if spec.modal
+            && specs
+                .iter()
+                .any(|other| other.key != spec.key && other.modal && other.owner == spec.owner)
+        {
+            return Err("An owner can have only one immediate modal window".into());
+        }
         let mut seen = HashSet::from([spec.key]);
         let mut owner = spec.owner;
         while let Some(key) = owner {
@@ -111,6 +126,60 @@ pub(crate) fn validate_specs(specs: &[WindowSpec]) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub(crate) fn modal_blocked(specs: &[WindowSpec]) -> HashSet<WindowKey> {
+    fn descends(specs: &[WindowSpec], mut key: WindowKey, ancestor: WindowKey) -> bool {
+        for _ in 0..=specs.len() {
+            if key == ancestor {
+                return true;
+            }
+            let Some(owner) = specs
+                .iter()
+                .find(|spec| spec.key == key)
+                .and_then(|spec| spec.owner)
+            else {
+                return false;
+            };
+            key = owner;
+        }
+        false
+    }
+    let mut blocked = HashSet::new();
+    for modal in specs.iter().filter(|spec| spec.modal) {
+        let Some(owner) = modal.owner else { continue };
+        for candidate in specs {
+            if !descends(specs, candidate.key, modal.key)
+                && (descends(specs, candidate.key, owner) || descends(specs, owner, candidate.key))
+            {
+                blocked.insert(candidate.key);
+            }
+        }
+    }
+    blocked
+}
+
+/// Resolve focus restoration before destroying any HWND. Multiple retiring
+/// levels can disappear together; the direct owner may not survive the update.
+pub(crate) fn modal_restore_target(
+    previous: &[WindowSpec],
+    wanted: &HashSet<WindowKey>,
+    focused: Option<WindowKey>,
+) -> Option<WindowKey> {
+    let focused = focused?;
+    let spec = previous.iter().find(|spec| spec.key == focused)?;
+    if !spec.modal || wanted.contains(&focused) {
+        return None;
+    }
+    let mut owner = spec.owner;
+    for _ in 0..previous.len() {
+        let key = owner?;
+        if wanted.contains(&key) {
+            return Some(key);
+        }
+        owner = previous.iter().find(|spec| spec.key == key)?.owner;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -151,5 +220,92 @@ mod tests {
             .map(|key| WindowSpec::new(WindowKey(key), RunOptions::default()))
             .collect();
         assert!(validate_specs(&many).is_err());
+    }
+
+    #[test]
+    fn nested_modality_blocks_owner_family_and_restores_it_after_close() {
+        let main = WindowSpec::new(WindowKey::MAIN, RunOptions::default());
+        let mut tool = WindowSpec::new(WindowKey(1), RunOptions::default());
+        tool.owner = Some(main.key);
+        let mut dialog = WindowSpec::new(WindowKey(2), RunOptions::default());
+        dialog.owner = Some(main.key);
+        dialog.modal = true;
+        let mut nested = WindowSpec::new(WindowKey(3), RunOptions::default());
+        nested.owner = Some(dialog.key);
+        nested.modal = true;
+        let unrelated = WindowSpec::new(WindowKey(4), RunOptions::default());
+        let specs = vec![
+            main.clone(),
+            tool.clone(),
+            dialog.clone(),
+            nested,
+            unrelated,
+        ];
+        assert!(validate_specs(&specs).is_ok());
+        assert_eq!(
+            modal_blocked(&specs),
+            HashSet::from([main.key, tool.key, dialog.key])
+        );
+        let specs = vec![main.clone(), tool.clone(), dialog];
+        assert_eq!(modal_blocked(&specs), HashSet::from([main.key, tool.key]));
+        assert!(modal_blocked(&[main, tool]).is_empty());
+    }
+
+    #[test]
+    fn modal_ambiguity_is_rejected_before_window_mutation() {
+        let mut dialog = WindowSpec::new(WindowKey(1), RunOptions::default());
+        dialog.modal = true;
+        let main = WindowSpec::new(WindowKey::MAIN, RunOptions::default());
+        assert!(validate_specs(&[main.clone(), dialog.clone()]).is_err());
+        dialog.owner = Some(main.key);
+        let mut sibling = dialog.clone();
+        sibling.key = WindowKey(2);
+        assert!(validate_specs(&[main, dialog, sibling]).is_err());
+    }
+
+    #[test]
+    fn closing_multiple_modal_levels_restores_the_first_surviving_ancestor() {
+        let main = WindowSpec::new(WindowKey::MAIN, RunOptions::default());
+        let mut dialog = WindowSpec::new(WindowKey(1), RunOptions::default());
+        dialog.owner = Some(main.key);
+        dialog.modal = true;
+        let mut nested = WindowSpec::new(WindowKey(2), RunOptions::default());
+        nested.owner = Some(dialog.key);
+        nested.modal = true;
+        let mut tool = WindowSpec::new(WindowKey(3), RunOptions::default());
+        tool.owner = Some(main.key);
+        let previous = vec![main.clone(), dialog.clone(), nested.clone(), tool.clone()];
+        assert_eq!(
+            modal_restore_target(
+                &previous,
+                &HashSet::from([main.key, dialog.key]),
+                Some(nested.key)
+            ),
+            Some(dialog.key)
+        );
+        assert_eq!(
+            modal_restore_target(&previous, &HashSet::from([main.key]), Some(nested.key)),
+            Some(main.key)
+        );
+        assert_eq!(
+            modal_restore_target(&previous, &HashSet::new(), Some(nested.key)),
+            None
+        );
+        assert_eq!(
+            modal_restore_target(
+                &previous,
+                &HashSet::from([main.key, nested.key]),
+                Some(nested.key)
+            ),
+            None
+        );
+        assert_eq!(
+            modal_restore_target(&previous, &HashSet::from([main.key]), Some(tool.key)),
+            None
+        );
+        assert_eq!(
+            modal_restore_target(&previous, &HashSet::from([main.key]), None),
+            None
+        );
     }
 }

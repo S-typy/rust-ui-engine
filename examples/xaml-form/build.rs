@@ -10,6 +10,8 @@ fn main() {
         ("DataWindow.xaml", "data_window.rs"),
         ("VisualsWindow.xaml", "visuals_window.rs"),
         ("BatchWindow.xaml", "batch_window.rs"),
+        ("WorkspaceWindow.xaml", "workspace_window.rs"),
+        ("DialogWindow.xaml", "dialog_window.rs"),
     ] {
         println!("cargo:rerun-if-changed={source}");
         if let Err(error) = rust_desktop_ui_xaml::compile_file(source, out.join(generated)) {

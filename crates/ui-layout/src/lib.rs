@@ -5,7 +5,8 @@
 //! and `Overlay` places independent children in the same
 //! padded area. An overlay needs an explicit or parent-assigned size: its children
 //! do not contribute intrinsic size. Auto overlay child dimensions fill that area
-//! subject to min/max constraints. Child offsets are applied after arrangement.
+//! subject to min/max constraints; an explicit vertical alignment other than
+//! Stretch keeps Auto height content-sized. Child offsets apply after arrangement.
 //!
 //! Geometry remains in fractional logical pixels. No rounding, clipping, scroll,
 //! paint borders, or visual translations are applied here. Each actual layout pass
@@ -467,7 +468,8 @@ fn map_style(style: &LayoutStyle, parent: Option<&LayoutStyle>) -> Style {
         align_content: Some(taffy::AlignContent::START),
         align_items: Some(alignment(style.align)),
         justify_content: Some(justification(style.justify)),
-        // Overlay auto height stretches even when explicit children are aligned.
+        // An overlay stretches unspecified Auto height, but an explicit
+        // alignment must keep a content-sized child at its requested position.
         align_self: match parent.map(|p| p.kind) {
             Some(
                 LayoutKind::Stack(Axis::Vertical)
@@ -475,7 +477,9 @@ fn map_style(style: &LayoutStyle, parent: Option<&LayoutStyle>) -> Style {
                 | LayoutKind::Wrap(Axis::Vertical),
             ) => style.horizontal_alignment.map(alignment),
             Some(LayoutKind::Grid) => style.vertical_alignment.map(alignment),
-            Some(LayoutKind::Overlay) if style.height == Length::Auto => {
+            Some(LayoutKind::Overlay)
+                if style.height == Length::Auto && style.vertical_alignment.is_none() =>
+            {
                 Some(taffy::AlignSelf::STRETCH)
             }
             _ => style.vertical_alignment.map(alignment),
@@ -685,6 +689,44 @@ mod tests {
         let snapshot = compute(&tree, 200.0, 100.0);
         assert_rect(&snapshot, auto, Rect::new(10.0, 5.0, 170.0, 80.0));
         assert_rect(&snapshot, half, Rect::new(12.0, 2.0, 85.0, 40.0));
+    }
+
+    #[test]
+    fn overlay_auto_height_preserves_explicit_alignment_and_child_measurement() {
+        for (alignment, top, height) in [
+            (None, 8.0, 64.0),
+            (Some(Align::Stretch), 8.0, 64.0),
+            (Some(Align::Start), 8.0, 24.0),
+            (Some(Align::Center), 28.0, 24.0),
+            (Some(Align::End), 48.0, 24.0),
+        ] {
+            let mut tree = UiTree::new();
+            let root = tree.root();
+            tree.set_style(
+                root,
+                LayoutStyle {
+                    kind: LayoutKind::Overlay,
+                    padding: Edges::all(8.0),
+                    ..LayoutStyle::default()
+                },
+            )
+            .unwrap();
+            let content = tree
+                .insert(
+                    root,
+                    props(LayoutStyle {
+                        kind: LayoutKind::Stack(Axis::Horizontal),
+                        width: Length::Px(100.0),
+                        vertical_alignment: alignment,
+                        ..LayoutStyle::default()
+                    }),
+                )
+                .unwrap();
+            let child = tree.insert(content, props(sized(40.0, 24.0))).unwrap();
+            let snapshot = compute(&tree, 240.0, 80.0);
+            assert_rect(&snapshot, content, Rect::new(8.0, top, 100.0, height));
+            assert_rect(&snapshot, child, Rect::new(0.0, 0.0, 40.0, 24.0));
+        }
     }
 
     #[test]

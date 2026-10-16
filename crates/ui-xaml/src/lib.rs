@@ -41,6 +41,7 @@ mod forms;
 mod grid_control;
 mod panels;
 mod status_bar;
+mod styles;
 pub use binding::{BindingDefinition, BindingInputDefinition, BindingMode, UpdateSourceTrigger};
 pub use forms::*;
 pub use grid_control::{
@@ -49,6 +50,7 @@ pub use grid_control::{
 };
 pub use panels::*;
 pub use status_bar::*;
+pub use styles::{ControlTemplateDefinition, ControlTemplateTarget, validate_control_template};
 mod docking;
 mod ribbon;
 
@@ -298,6 +300,8 @@ fn validate_chrome_placement(common: &CommonProperties, element: &str) -> Result
 /// Properties shared by every content element in a Window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommonProperties {
+    /// Optional compiled decorative presentation. The behavioral owner is retained.
+    pub control_template: Option<Box<ControlTemplateDefinition>>,
     pub rich_tool_tip: Option<RichToolTipDefinition>,
     pub is_link: bool,
     pub repeat_delay_ms: Option<u32>,
@@ -336,6 +340,7 @@ pub struct CommonProperties {
 impl Default for CommonProperties {
     fn default() -> Self {
         Self {
+            control_template: None,
             rich_tool_tip: None,
             is_link: false,
             repeat_delay_ms: None,
@@ -375,7 +380,14 @@ pub struct ElementDefinition {
 impl ElementDefinition {
     /// Content children in source order, including the contents of docking panes.
     pub fn children(&self) -> Vec<&ElementDefinition> {
-        match &self.kind {
+        let mut children: Vec<_> = self
+            .common
+            .control_template
+            .as_ref()
+            .map(|template| template.visual.as_ref())
+            .into_iter()
+            .collect();
+        let ordinary: Vec<_> = match &self.kind {
             ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
                 p.children.iter().collect()
             }
@@ -403,7 +415,12 @@ impl ElementDefinition {
             ElementKind::TabbedGroup(p) => p
                 .tabs
                 .iter()
-                .filter_map(|tab| tab.child.as_deref())
+                .flat_map(|tab| {
+                    tab.header_content
+                        .as_deref()
+                        .into_iter()
+                        .chain(tab.child.as_deref())
+                })
                 .collect(),
             ElementKind::ScrollViewer(p) => vec![&p.child],
             ElementKind::DockWorkspace(p) => p
@@ -412,7 +429,9 @@ impl ElementDefinition {
                 .map(|pane| pane.content.as_ref())
                 .collect(),
             _ => Vec::new(),
-        }
+        };
+        children.extend(ordinary);
+        children
     }
 
     /// Mutable content children in the same order as [`Self::children`].
@@ -431,7 +450,14 @@ impl ElementDefinition {
                 }
             }
         }
-        match &mut self.kind {
+        let mut children: Vec<_> = self
+            .common
+            .control_template
+            .as_mut()
+            .map(|template| template.visual.as_mut())
+            .into_iter()
+            .collect();
+        let ordinary: Vec<_> = match &mut self.kind {
             ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
                 p.children.iter_mut().collect()
             }
@@ -461,7 +487,12 @@ impl ElementDefinition {
             ElementKind::TabbedGroup(p) => p
                 .tabs
                 .iter_mut()
-                .filter_map(|tab| tab.child.as_deref_mut())
+                .flat_map(|tab| {
+                    tab.header_content
+                        .as_deref_mut()
+                        .into_iter()
+                        .chain(tab.child.as_deref_mut())
+                })
                 .collect(),
             ElementKind::ScrollViewer(p) => vec![&mut p.child],
             ElementKind::DockWorkspace(p) => {
@@ -470,7 +501,9 @@ impl ElementDefinition {
                 output
             }
             _ => Vec::new(),
-        }
+        };
+        children.extend(ordinary);
+        children
     }
 }
 
@@ -895,6 +928,22 @@ impl std::error::Error for Diagnostic {}
 /// values, or left/top/right/bottom values separated by commas. Names match
 /// `[A-Za-z_][A-Za-z0-9_]*`. Namespace aliases may be chosen freely.
 pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
+    if let Some(lowered) = styles::lower(source)? {
+        let mut definition = parse_lowered(&lowered.text).map_err(|diagnostic| {
+            extensions::remap(source, &lowered.text, &lowered.origins, diagnostic)
+        })?;
+        extensions::remap_bindings(
+            &mut definition.content,
+            source,
+            &lowered.text,
+            &lowered.origins,
+        );
+        return Ok(definition);
+    }
+    parse_lowered(source)
+}
+
+fn parse_lowered(source: &str) -> Result<WindowDefinition, Diagnostic> {
     if source.len() > MAX_SOURCE_BYTES {
         return Err(Diagnostic {
             line: 1,
@@ -1032,28 +1081,12 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
     Ok(definition)
 }
 
-fn parse_element(
+// Keep the property parser off the recursive content stack. This preserves the
+// advertised depth budget on the default Windows thread stack as the profile grows.
+fn parse_element_properties(
     node: Node<'_, '_>,
-    depth: usize,
-    parent: usize,
-    count: &mut usize,
     names: &mut HashSet<String>,
-    checked_radio_groups: &mut HashSet<RadioGroupKey>,
-) -> Result<ElementDefinition, Diagnostic> {
-    if depth > MAX_ELEMENT_DEPTH {
-        return Err(at_node(
-            node,
-            format!("content exceeds the maximum element depth of {MAX_ELEMENT_DEPTH}"),
-        ));
-    }
-    *count += 1;
-    let element_id = *count;
-    if *count > MAX_ELEMENTS {
-        return Err(at_node(
-            node,
-            format!("content exceeds the {MAX_ELEMENTS}-element limit"),
-        ));
-    }
+) -> Result<(CommonProperties, ElementKind), Diagnostic> {
     if node.tag_name().namespace() != Some(UI_NAMESPACE) {
         return Err(at_node(
             node,
@@ -1523,6 +1556,34 @@ fn parse_element(
             }
         }
     }
+    Ok((common, kind))
+}
+
+fn parse_element(
+    node: Node<'_, '_>,
+    depth: usize,
+    parent: usize,
+    count: &mut usize,
+    names: &mut HashSet<String>,
+    checked_radio_groups: &mut HashSet<RadioGroupKey>,
+) -> Result<ElementDefinition, Diagnostic> {
+    if depth > MAX_ELEMENT_DEPTH {
+        return Err(at_node(
+            node,
+            format!("content exceeds the maximum element depth of {MAX_ELEMENT_DEPTH}"),
+        ));
+    }
+    *count += 1;
+    let element_id = *count;
+    if *count > MAX_ELEMENTS {
+        return Err(at_node(
+            node,
+            format!("content exceeds the {MAX_ELEMENTS}-element limit"),
+        ));
+    }
+    let element_name = node.tag_name().name();
+    let document = node.document();
+    let (mut common, mut kind) = parse_element_properties(node, names)?;
     let mut menu_text_bytes = 0;
     if let ElementKind::DockWorkspace(workspace) = &mut kind {
         *workspace = docking::parse_workspace(node, depth, count, names, checked_radio_groups)?;
@@ -1660,6 +1721,31 @@ fn parse_element(
     } else {
         for child in node.children() {
             if child.is_element() {
+                if child.tag_name().name() == format!("{element_name}.Template") {
+                    let target = match &kind {
+                        ElementKind::Button(_) => ControlTemplateTarget::Button,
+                        ElementKind::ToggleButton(_) => ControlTemplateTarget::ToggleButton,
+                        _ => {
+                            return Err(at_node(
+                                child,
+                                "ControlTemplate requires Button or ToggleButton",
+                            ));
+                        }
+                    };
+                    if common.control_template.is_some() {
+                        return Err(at_node(child, "Duplicate ControlTemplate"));
+                    }
+                    common.control_template = Some(styles::parse_template(
+                        child,
+                        target,
+                        depth,
+                        element_id,
+                        count,
+                        names,
+                        checked_radio_groups,
+                    )?);
+                    continue;
+                }
                 if let ElementKind::StackPanel(panel)
                 | ElementKind::WrapPanel(panel)
                 | ElementKind::Overlay(panel) = &mut kind
@@ -2500,3 +2586,5 @@ mod visual_tests;
 
 #[cfg(test)]
 mod extras_tests;
+#[cfg(test)]
+mod style_tests;

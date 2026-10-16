@@ -7,6 +7,7 @@
 
 mod model;
 mod observable;
+mod query;
 mod scalar;
 mod source;
 #[cfg(feature = "sqlite")]
@@ -14,6 +15,7 @@ mod sqlite;
 
 pub use model::*;
 pub use observable::*;
+pub use query::*;
 pub use scalar::*;
 pub use source::*;
 #[cfg(feature = "sqlite")]
@@ -21,5 +23,7 @@ pub use sqlite::*;
 
 #[cfg(test)]
 mod observable_tests;
+#[cfg(test)]
+mod query_tests;
 #[cfg(test)]
 mod tests;

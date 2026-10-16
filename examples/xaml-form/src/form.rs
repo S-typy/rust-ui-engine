@@ -17,6 +17,7 @@ use std::{
 
 /// The mounted XAML tree plus the example's explicit Message/Confirm behavior.
 pub(crate) struct Form {
+    pub(crate) workspace: crate::workspace_model::WorkspaceState,
     batch: Option<crate::batch_model::BatchState>,
     pub(crate) ui: Controls,
     pub(crate) view: MountedView,
@@ -39,6 +40,15 @@ pub(crate) struct Form {
 }
 
 impl Form {
+    pub(crate) fn theme_selection(
+        &self,
+    ) -> (
+        rust_desktop_ui_xaml::Theme,
+        rust_desktop_ui_xaml::ThemeDensity,
+        Option<[u8; 3]>,
+    ) {
+        (self.theme_mode, self.theme_density, self.theme_accent)
+    }
     pub(crate) fn new(definition: WindowDefinition, diagnostics: bool) -> Result<Self, String> {
         Self::new_with_model(definition, diagnostics, None)
     }
@@ -67,6 +77,7 @@ impl Form {
             ui.register_data_source(name, source).map_err(err)?;
         }
         // Application-owned registration; the generic mount never invents handlers.
+        crate::workspace_model::register(&mut ui);
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
         for (id, label) in [
@@ -192,6 +203,7 @@ impl Form {
         ui.drain_edit_events();
         let batch = crate::batch_model::install(&mut ui, &view)?;
         Ok(Self {
+            workspace: crate::workspace_model::WorkspaceState::default(),
             batch,
             ui,
             view,
@@ -307,6 +319,9 @@ impl Form {
         for invocation in self.ui.drain_command_invocations() {
             if self.diagnostics {
                 println!("command={}", invocation.id.0);
+            }
+            if crate::workspace_model::command(self, &invocation.id.0)? {
+                continue;
             }
             if let Some(batch) = &mut self.batch
                 && batch.command(&mut self.ui, &invocation.id.0)?
@@ -498,6 +513,27 @@ impl Form {
 }
 
 impl DesktopApp for Form {
+    fn take_dialog_request(&mut self) -> Option<rust_desktop_ui_platform_winit::DialogRequest> {
+        self.workspace.native_request.take()
+    }
+    fn dialog_completed(
+        &mut self,
+        completion: rust_desktop_ui_platform_winit::DialogCompletion,
+    ) -> Result<EventResponse, String> {
+        crate::workspace_model::dialog_completed(self, completion)?;
+        Ok(EventResponse::redraw())
+    }
+    fn take_resize_request(
+        &mut self,
+    ) -> Option<rust_desktop_ui_platform_winit::WindowResizeDirection> {
+        self.ui
+            .take_window_resize_request()
+            .map(|direction| match direction {
+                rust_desktop_ui_controls::WindowResizeDirection::BottomRight => {
+                    rust_desktop_ui_platform_winit::WindowResizeDirection::BottomRight
+                }
+            })
+    }
     fn set_waker(&mut self, waker: Option<rust_desktop_ui_platform_winit::AppWaker>) {
         self.collection_wake = None;
         self.ui
@@ -577,7 +613,10 @@ impl DesktopApp for Form {
                 println!("popup-state {snapshot}");
                 self.last_popup_diagnostic = snapshot;
             }
-            if self.batch.is_some() {
+            if self.batch.is_some()
+                || self.find_name("WorkspaceTabs").is_some()
+                || self.find_name("DialogEditor").is_some()
+            {
                 let snapshot = crate::batch_diagnostics::snapshot(&self.ui, &self.view);
                 if snapshot != self.last_batch_diagnostic {
                     println!("batch-state {snapshot}");
@@ -614,6 +653,9 @@ impl DesktopApp for Form {
         })
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
+        if crate::workspace_model::dialog_key(self, &event)? {
+            return Ok(EventResponse::redraw());
+        }
         // Model revisions must invalidate pending validation before any event
         // path can poll completions or perform an internal layout update.
         self.view.sync_bindings(&mut self.ui);
@@ -745,8 +787,17 @@ impl DesktopApp for Form {
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
     fn accessibility(&mut self, scale: f32) -> accesskit::TreeUpdate {
-        self.accessible
-            .tree(&self.ui, &self.view, &self.title, scale)
+        let mut tree = self
+            .accessible
+            .tree(&self.ui, &self.view, &self.title, scale);
+        if self.workspace.session.is_some()
+            && let Some(info) = &tree.tree
+            && let Some((_, node)) = tree.nodes.iter_mut().find(|(id, _)| *id == info.root)
+        {
+            node.set_role(accesskit::Role::Dialog);
+            node.set_modal();
+        }
+        tree
     }
 }
 fn err(error: impl std::fmt::Display) -> String {

@@ -1,0 +1,74 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Рабочая область — вкладки и диалоги" Width="1200" Height="820" Padding="24">
+  <Window.Resources>
+    <Double x:Key="ActionSize" Value="14"/>
+    <Style x:Key="ActionBase" TargetType="Button"><Setter Property="FontSize" Value="{StaticResource ActionSize}"/><Setter Property="Height" Value="40"/></Style>
+    <Style x:Key="Action" TargetType="Button" BasedOn="{StaticResource ActionBase}"><Setter Property="Padding" Value="14,4"/></Style>
+    <ControlTemplate x:Key="ActionContent" TargetType="Button">
+      <StackPanel Orientation="Horizontal" Spacing="8"><Icon Symbol="Check" Width="18" Height="18"/><ContentPresenter x:Name="PART_Content"/></StackPanel>
+    </ControlTemplate>
+    <HeaderTemplate x:Key="SectionHeader"><TextBlock Text="{TemplateBinding Header}" FontWeight="SemiBold" FontSize="16"/></HeaderTemplate>
+    <DataTemplate x:Key="Description"><TextBlock Text="Повторно используемое содержимое" TextTone="Secondary"/></DataTemplate>
+  </Window.Resources>
+  <Grid Spacing="18">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="12">
+      <TextBlock Text="Рабочая область" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Вкладки сохраняют содержимое. Их можно перетаскивать или перемещать Ctrl+Shift+стрелками." TextTone="Secondary"/>
+      <WrapPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="Переместить вкладку" Command="WorkspaceReorder" Style="{StaticResource Action}" Width="220"/>
+        <Button Content="Светлая" Command="Light" Style="{StaticResource Action}" Width="120"/>
+        <Button Content="Тёмная" Command="Dark" Style="{StaticResource Action}" Width="120"/>
+        <Button Content="Крупно" Command="Touch" Width="120"/>
+      </WrapPanel>
+    </StackPanel>
+    <TabbedGroup x:Name="WorkspaceTabs" Grid.Row="1" AutomationName="Разделы рабочей области" Padding="18">
+      <GroupTab Header="Документ и диалоги" HeaderIcon="Edit">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="14">
+            <GroupBox x:Name="DocumentGroup" Header="Документ" HeaderTemplate="{StaticResource SectionHeader}">
+              <StackPanel Spacing="10">
+                <TextBox x:Name="WorkspaceEditor" Text="Черновик сохраняется при переключении и перестановке вкладок" AutomationName="Текст документа"/>
+                <ContentPresenter ContentTemplate="{StaticResource Description}"/>
+              </StackPanel>
+            </GroupBox>
+            <WrapPanel Orientation="Horizontal" Spacing="8">
+              <Button x:Name="OpenDialog" Content="Диалог формы" Command="WorkspaceDialog" Width="170"/>
+              <Button x:Name="OpenMessage" Content="Сообщение" Command="WorkspaceMessage" Width="150"/>
+              <Button x:Name="OpenFile" Content="Открыть файл" Command="WorkspaceOpen" Width="170"/>
+              <Button x:Name="SaveFile" Content="Выбрать имя" Command="WorkspaceSave" Width="160"/>
+              <Button x:Name="OpenFolder" Content="Папка" Command="WorkspaceFolder" Width="110"/>
+            </WrapPanel>
+            <TextBlock x:Name="ModalResult" Text="Название ещё не подтверждено"/>
+            <TextBlock x:Name="FilePath" Text="Файл не выбран" TextTrimming="CharacterEllipsis"/>
+            <TextBlock x:Name="DialogStatus" Text="Готово" TextTone="Secondary"/>
+          </StackPanel>
+        </ScrollViewer>
+      </GroupTab>
+      <GroupTab Header="Стили и шаблоны" HeaderIcon="Sun">
+        <StackPanel Spacing="16">
+          <TextBlock Text="Стили наследуют значения; локальные свойства имеют приоритет." FontSize="18"/>
+          <Button x:Name="TemplateAction" Content="Сменить шаблон" Command="WorkspaceTemplate" Style="{StaticResource Action}" Template="{StaticResource ActionContent}" Width="260"/>
+          <TextBlock Text="При смене оформления команда, фокус и идентичность кнопки сохраняются." TextTone="Secondary"/>
+        </StackPanel>
+      </GroupTab>
+      <GroupTab Header="Данные и итоги" HeaderIcon="FolderOpen">
+        <StackPanel Spacing="16">
+          <TextBlock Text="Количество &gt; 0 · группировка по категории · сумма" FontSize="18"/>
+          <Button x:Name="RunQuery" Content="Выполнить запрос" Command="WorkspaceQuery" Width="230"/>
+          <TextBlock x:Name="QueryResult" Text="Запрос ещё не выполнен"/>
+        </StackPanel>
+      </GroupTab>
+      <GroupTab Header="Дополнительные параметры"><TextBlock Text="Содержимое четвёртой вкладки"/></GroupTab>
+      <GroupTab Header="История изменений"><TextBox x:Name="HistoryDraft" Text="Отдельный черновик истории"/></GroupTab>
+      <GroupTab Header="Архив документов"><TextBlock Text="Архив"/></GroupTab>
+      <GroupTab Header="Недоступный раздел" IsEnabled="False"><TextBlock Text="Недоступно"/></GroupTab>
+    </TabbedGroup>
+    <RibbonStatusBar x:Name="WorkspaceStatus" Grid.Row="2" IsCustomizable="True" ShowResizeGrip="True" AutomationName="Состояние рабочей области">
+      <StatusBarItem Key="state" Label="Состояние" CanHide="False"><TextBlock Text="Готово к работе" FontSize="12"/></StatusBarItem>
+      <StatusBarItem Key="document" Label="Документ" Placement="Right" Width="180"><TextBlock Text="Документ · 1 страница" FontSize="12"/></StatusBarItem>
+      <StatusBarItem Key="progress" Label="Выполнение" Placement="Right" Width="150"><ProgressBar Value="65" AutomationName="Выполнение"/></StatusBarItem>
+      <StatusBarItem Key="zoom" Label="Масштаб" Placement="Right" Width="224"><ZoomControl Value="100" AutomationName="Масштаб"/></StatusBarItem>
+    </RibbonStatusBar>
+  </Grid>
+</Window>

@@ -37,6 +37,7 @@ impl Controls {
                         | Kind::CheckBox
                         | Kind::Radio { .. }
                         | Kind::MenuItem
+                        | Kind::Tab { .. }
                 ) || matches!(control.kind, Kind::Label) && self.group_owner(id).is_some()
             })
         {

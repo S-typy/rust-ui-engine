@@ -401,13 +401,16 @@ fn rejects_unknown_properties_and_directives() {
 }
 
 #[test]
-fn rejects_resources_and_other_extensions() {
-    for property in [
-        "PlaceholderText='{StaticResource Prompt}'",
-        "Text='{}{literal}'",
+fn rejects_missing_resources_and_other_extensions() {
+    for (property, diagnostic) in [
+        (
+            "PlaceholderText='{StaticResource Prompt}'",
+            "Unknown resource",
+        ),
+        ("Text='{}{literal}'", "markup extensions"),
     ] {
         let error = parse(&form("", &format!("<TextBox {property}/>"))).unwrap_err();
-        assert!(error.message.contains("markup extensions"), "{error}");
+        assert!(error.message.contains(diagnostic), "{error}");
     }
 }
 
@@ -662,7 +665,7 @@ fn brush_colors_require_strict_hex_and_report_the_attribute() {
         parse(&form("", "<TextBox Background='{StaticResource Brush}'/>"))
             .unwrap_err()
             .message
-            .contains("markup extensions")
+            .contains("Unknown resource")
     );
 }
 

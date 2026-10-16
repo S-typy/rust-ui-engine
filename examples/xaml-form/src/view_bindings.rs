@@ -345,6 +345,7 @@ impl MountedView {
         Ok(())
     }
     pub(crate) fn sync_bindings(&mut self, ui: &mut Controls) -> bool {
-        self.bindings.as_mut().is_some_and(|engine| engine.sync(ui))
+        let changed = self.bindings.as_mut().is_some_and(|engine| engine.sync(ui));
+        self.sync_template_bindings(ui) || changed
     }
 }

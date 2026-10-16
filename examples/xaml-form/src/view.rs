@@ -17,9 +17,15 @@ mod forms;
 mod grid;
 #[path = "view_status.rs"]
 mod status;
+#[path = "view_templates.rs"]
+mod templates;
 
 #[derive(Default)]
 pub(crate) struct MountedView {
+    presentations: HashMap<WidgetId, templates::Presentation>,
+    presentation_context: Option<templates::PresentationContext>,
+    presentation_owner_contexts: HashMap<WidgetId, String>,
+    presentation_revision: u64,
     pub(crate) ribbon: Option<crate::view_ribbon::MountedRibbon>,
     pub(crate) names: HashMap<String, WidgetId>,
     pub(crate) automation_names: HashMap<WidgetId, String>,
@@ -131,7 +137,8 @@ impl MountedView {
                     .map_err(err)?;
             }
             view.initialize_popups(ui)?;
-            view.initialize_bindings(ui, context, converters)?;
+            view.initialize_bindings(ui, context.clone(), converters.clone())?;
+            view.initialize_templates(ui, context, converters)?;
             Ok(view)
         })();
         if result.is_err() {
@@ -748,6 +755,10 @@ impl MountedView {
                 ui.set_automation_name(id, name).map_err(err)?;
             }
         }
+        self.presentation_owner_contexts.insert(id, context.clone());
+        if let Some(template) = &common.control_template {
+            self.mount_control_presentation(ui, id, template, available_width, &context)?;
+        }
         self.record_bindings(id, element, context);
         Ok(id)
     }
@@ -1095,6 +1106,22 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         bindings::validate_definitions(element)?;
+        if let Some(template) = &element.common.control_template {
+            rust_desktop_ui_xaml::validate_control_template(template)?;
+            let compatible = matches!(
+                (&element.kind, template.target),
+                (
+                    ElementKind::Button(_),
+                    rust_desktop_ui_xaml::ControlTemplateTarget::Button
+                ) | (
+                    ElementKind::ToggleButton(_),
+                    rust_desktop_ui_xaml::ControlTemplateTarget::ToggleButton
+                )
+            );
+            if !compatible {
+                return Err("ControlTemplate target does not match its behavioral owner".into());
+            }
+        }
         rust_desktop_ui_xaml::validate_additional_element(&element.kind)?;
         extras::validate_extra(ui, element)?;
         match &element.kind {
@@ -1250,10 +1277,12 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
         }
         if let ElementKind::TabbedGroup(group) = &element.kind {
             let first_tab = count - group.tabs.len() + 1;
-            pending.extend(group.tabs.iter().enumerate().filter_map(|(index, tab)| {
-                tab.child
+            pending.extend(group.tabs.iter().enumerate().flat_map(|(index, tab)| {
+                tab.header_content
                     .as_deref()
-                    .map(|child| (child, depth + 2, first_tab + index))
+                    .into_iter()
+                    .chain(tab.child.as_deref())
+                    .map(move |child| (child, depth + 2, first_tab + index))
             }));
         } else {
             pending.extend(

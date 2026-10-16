@@ -163,6 +163,12 @@ impl<A: DesktopApp> Host<A> {
             Err(error) => self.fail(event_loop, error),
         }
         self.sync_ime(event_loop);
+        if let Some(direction) = self.app.take_resize_request()
+            && let Some(window) = &self.window
+            && let Err(error) = crate::begin_resize(window, direction)
+        {
+            eprintln!("Native resize unavailable: {error}");
+        }
     }
 
     fn sync_ime(&mut self, event_loop: &ActiveEventLoop) {
@@ -747,6 +753,51 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
         self.drain_capture_loss(event_loop);
         if self.failure.is_some() {
             return;
+        }
+        if let Some(window) = self.window.clone()
+            && let Some(request) = self.app.take_dialog_request()
+        {
+            // A malformed request must not accept an editor draft through blur.
+            let request = crate::dialogs::validate_request(request);
+            let opened = request.is_ok();
+            let completion = match request {
+                Err(completion) => completion,
+                Ok(request) => {
+                    // Preserve the editor's blur policy before cancelling its IME.
+                    let was_focused = crate::modality::suspend_input(
+                        &mut self.focused,
+                        &mut self.modifiers,
+                        &mut self.ime,
+                    );
+                    if was_focused {
+                        dispatch_focus_transition(false, |event| self.dispatch(event_loop, event));
+                    } else {
+                        self.dispatch(event_loop, PlatformEvent::ImeCancel);
+                    }
+                    window.set_ime_allowed(false);
+                    if self.failure.is_some() {
+                        return;
+                    }
+                    crate::dialogs::show(&window, request)
+                }
+            };
+            match self.app.dialog_completed(completion) {
+                Ok(response) => self.effects(event_loop, response),
+                Err(error) => {
+                    self.fail(event_loop, error);
+                    return;
+                }
+            }
+            if opened {
+                self.focused = window.has_focus();
+                if self.focused {
+                    self.dispatch(
+                        event_loop,
+                        PlatformEvent::Input(InputEvent::WindowFocused(true)),
+                    );
+                }
+            }
+            window.request_redraw();
         }
         let now = Instant::now();
         if self.smoke_deadline.is_some_and(|at| at <= now) {
