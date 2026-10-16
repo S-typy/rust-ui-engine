@@ -71,6 +71,9 @@ pub struct GridSemanticRow {
     pub key: RowKey,
     pub index: usize,
     pub depth: usize,
+    pub parent: Option<RowKey>,
+    pub position_in_set: usize,
+    pub set_size: usize,
     pub bounds: Rect,
     pub selected: bool,
     pub focused: bool,
@@ -164,6 +167,9 @@ impl TreeGridView {
             let end = end
                 .saturating_add(grid.config.overscan)
                 .min(grid.row_count());
+            if end.saturating_sub(start) > rust_desktop_ui_core::MAX_REALIZED_ITEMS {
+                return Err(GridError::Capacity);
+            }
             for index in start..end {
                 let Some(row) = grid.row(source, index)? else {
                     continue;
@@ -347,10 +353,14 @@ fn paint_row(
             grid.palette.alternate_row
         },
     );
+    let (position_in_set, set_size) = grid.sibling_position(source, key).unwrap_or((0, 0));
     let mut semantics = GridSemanticRow {
         key,
         index: row.index,
         depth: row.depth,
+        parent: row.parent,
+        position_in_set: position_in_set + 1,
+        set_size,
         bounds: row_clip,
         selected,
         focused: grid.focused == Some(key),

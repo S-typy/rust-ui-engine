@@ -184,6 +184,91 @@ pub struct MemoEditDefinition {
     pub popup_height: f32,
 }
 
+/// Draft query with a retained suggestion popup. Providers remain application code.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchBoxDefinition {
+    pub editor: EditBoxDefinition,
+    pub min_query_length: usize,
+    pub max_suggestions: usize,
+    pub history_limit: usize,
+    pub popup_width: f32,
+    pub popup_height: f32,
+    pub choice_policy: SearchChoicePolicyDefinition,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SearchChoicePolicyDefinition {
+    #[default]
+    FillQuery,
+    FillAndSearch,
+}
+impl Default for SearchBoxDefinition {
+    fn default() -> Self {
+        Self {
+            editor: EditBoxDefinition {
+                max_length: Some(256),
+                commit_on_lost_focus: false,
+                validation_message: String::new(),
+                ..Default::default()
+            },
+            min_query_length: 1,
+            max_suggestions: 100,
+            history_limit: 20,
+            popup_width: 360.0,
+            popup_height: 280.0,
+            choice_policy: SearchChoicePolicyDefinition::FillQuery,
+        }
+    }
+}
+pub fn validate_search_box(
+    search: &SearchBoxDefinition,
+    common: &crate::CommonProperties,
+) -> Result<(), String> {
+    let max = search
+        .editor
+        .max_length
+        .ok_or("SearchBox requires a finite MaxLength in [1,4096]")?;
+    if !(1..=4096).contains(&max)
+        || search.min_query_length > max
+        || !(1..=1000).contains(&search.max_suggestions)
+        || search.history_limit > 100
+        || !search.popup_width.is_finite()
+        || !(160.0..=4096.0).contains(&search.popup_width)
+        || !search.popup_height.is_finite()
+        || !(80.0..=4096.0).contains(&search.popup_height)
+    {
+        return Err("Invalid SearchBox query, result, history or popup limits".into());
+    }
+    if search.editor.text.len() > 65536
+        || search.editor.text.graphemes(true).count() > max
+        || search.editor.text.contains(['\n', '\r', '\0'])
+    {
+        return Err("SearchBox Query must be a bounded single-line string".into());
+    }
+    if search.editor.commit_on_lost_focus
+        || search.editor.is_required
+        || !search.editor.validation_message.is_empty()
+    {
+        return Err(
+            "SearchBox Query is a draft, without business commit or required-value validation"
+                .into(),
+        );
+    }
+    if common
+        .bindings
+        .keys()
+        .any(|key| matches!(key.as_str(), "Text" | "Value"))
+        || common.bindings.get("Query").is_some_and(|binding| {
+            binding.update_source_trigger != crate::UpdateSourceTrigger::PropertyChanged
+        })
+    {
+        return Err(
+            "SearchBox binds Query with PropertyChanged; Text/Value are not query properties"
+                .into(),
+        );
+    }
+    Ok(())
+}
+
 impl Default for MemoEditDefinition {
     fn default() -> Self {
         Self {

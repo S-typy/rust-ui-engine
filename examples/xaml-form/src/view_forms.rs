@@ -276,6 +276,7 @@ impl MountedView {
             | ElementKind::LookupEdit(_)
             | ElementKind::ButtonEdit(_)
             | ElementKind::MemoEdit(_)
+            | ElementKind::SearchBox(_)
             | ElementKind::PasswordBox(_)
             | ElementKind::NumericEdit(_)
             | ElementKind::MaskEdit(_)
@@ -704,6 +705,45 @@ impl MountedView {
                 configure_editor(ui, &parts, &definition.editor)?;
                 parts
             }
+            ElementKind::SearchBox(definition) => {
+                let search = ui
+                    .search_box(
+                        parent,
+                        label,
+                        &definition.editor.text,
+                        SearchBoxSettings {
+                            min_query_length: definition.min_query_length,
+                            max_query_length: definition.editor.max_length.unwrap_or(256),
+                            max_suggestions: definition.max_suggestions,
+                            history_limit: definition.history_limit,
+                            popup_size: Size::new(definition.popup_width, definition.popup_height),
+                            choice_policy: match definition.choice_policy {
+                                x::SearchChoicePolicyDefinition::FillQuery => {
+                                    SearchChoicePolicy::FillQuery
+                                }
+                                x::SearchChoicePolicyDefinition::FillAndSearch => {
+                                    SearchChoicePolicy::FillAndSearch
+                                }
+                            },
+                        },
+                        style,
+                    )
+                    .map_err(err)?;
+                configure_editor(
+                    ui,
+                    &EditorControl {
+                        container: search.editor,
+                        editor: search.editor,
+                        buttons: Vec::new(),
+                    },
+                    &definition.editor,
+                )?;
+                EditorControl {
+                    container: search.container,
+                    editor: search.editor,
+                    buttons: vec![search.clear_button, search.search_button],
+                }
+            }
             ElementKind::PasswordBox(definition) => {
                 let id = ui
                     .password_box(
@@ -776,6 +816,7 @@ impl MountedView {
                     maximum: parse(&definition.maximum)?,
                     step: parse(&definition.increment)?,
                     precision: definition.precision,
+                    trim_trailing_zeros: false,
                     allow_empty: definition.allow_empty,
                     culture: match definition.culture {
                         x::NumericCultureDefinition::Russian => UiCulture::Russian,
@@ -1354,6 +1395,11 @@ impl MountedView {
         ui: &mut Controls,
         viewport: Size,
     ) -> Result<(), String> {
+        self.data_forms
+            .retain(|id, _| ui.runtime.tree().contains(*id));
+        for form in self.data_forms.values_mut() {
+            form.update(ui).map_err(err)?;
+        }
         if self.sync_automatic_heights(ui)? {
             ui.update(viewport).map_err(err)?;
         }

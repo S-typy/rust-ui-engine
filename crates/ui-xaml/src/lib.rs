@@ -50,6 +50,10 @@ pub use temporal::{
     DateTimeEditDefinition, validate_calendar, validate_date_range_edit, validate_date_time_edit,
 };
 mod grid_control;
+mod tree;
+pub use tree::{TreeColumnDefinition, TreeDefinition, validate_tree};
+mod data_form;
+pub use data_form::{DataFormDefinition, DataFormFieldDefinition, validate_data_form};
 mod panels;
 mod status_bar;
 mod styles;
@@ -556,6 +560,9 @@ pub enum ElementKind {
     WrapPanel(StackPanelDefinition),
     Grid(GridDefinition),
     GridControl(GridControlDefinition),
+    DataForm(DataFormDefinition),
+    TreeView(TreeDefinition),
+    TreeGrid(TreeDefinition),
     Border(BorderDefinition),
     GroupBox(GroupBoxDefinition),
     Expander(ExpanderDefinition),
@@ -567,6 +574,7 @@ pub enum ElementKind {
     LookupEdit(LookupDefinition),
     ButtonEdit(ButtonEditDefinition),
     MemoEdit(MemoEditDefinition),
+    SearchBox(SearchBoxDefinition),
     PasswordBox(PasswordBoxDefinition),
     NumericEdit(NumericEditDefinition),
     MaskEdit(MaskEditDefinition),
@@ -1202,6 +1210,7 @@ fn parse_element_properties(
                     | "IsExpanded"
                     | "SelectedIndex"
                     | "FilterText"
+                    | "Query"
             ) && !matches!(
                 kind,
                 ElementKind::TextBlock(_)
@@ -1219,6 +1228,7 @@ fn parse_element_properties(
                     | "IsExpanded"
                     | "SelectedIndex"
                     | "FilterText"
+                    | "Query"
             ) || matches!(
                 kind,
                 ElementKind::ZoomControl(_) | ElementKind::Slider(_) | ElementKind::Calendar(_)
@@ -1636,6 +1646,12 @@ fn parse_element(
         ribbon::parse_children(node, depth, count, ribbon, names, checked_radio_groups)?;
     } else if let ElementKind::GridControl(grid) = &mut kind {
         grid_control::parse_children(node, depth, count, grid)?;
+    } else if let ElementKind::DataForm(form) = &mut kind {
+        data_form::parse_children(node, depth, count, form)?;
+    } else if let ElementKind::TreeGrid(tree) = &mut kind {
+        tree::parse_children(node, depth, count, tree, true)?;
+    } else if let ElementKind::TreeView(tree) = &mut kind {
+        tree::parse_children(node, depth, count, tree, false)?;
     } else if matches!(
         kind,
         ElementKind::ToolBar(_) | ElementKind::MenuBar(_) | ElementKind::Popup(_)
@@ -1746,6 +1762,7 @@ fn parse_element(
             | ElementKind::LookupEdit(_)
             | ElementKind::ButtonEdit(_)
             | ElementKind::MemoEdit(_)
+            | ElementKind::SearchBox(_)
             | ElementKind::PasswordBox(_)
             | ElementKind::NumericEdit(_)
             | ElementKind::MaskEdit(_)

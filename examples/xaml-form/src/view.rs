@@ -9,6 +9,8 @@ use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind
 use std::collections::{HashMap, HashSet};
 #[path = "view_bindings.rs"]
 mod bindings;
+#[path = "view_data_form.rs"]
+mod data_form;
 #[path = "view_extras.rs"]
 mod extras;
 #[path = "view_forms.rs"]
@@ -19,9 +21,12 @@ mod grid;
 mod status;
 #[path = "view_templates.rs"]
 mod templates;
+#[path = "view_tree.rs"]
+mod tree;
 
 #[derive(Default)]
 pub(crate) struct MountedView {
+    pub(crate) data_forms: HashMap<WidgetId, rust_desktop_ui_controls::DataForm>,
     presentations: HashMap<WidgetId, templates::Presentation>,
     presentation_context: Option<templates::PresentationContext>,
     presentation_owner_contexts: HashMap<WidgetId, String>,
@@ -253,9 +258,13 @@ impl MountedView {
                 ElementKind::ZoomControl(_) => Length::Px(ui.theme().tokens().control_height - 8.0),
                 ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::Calendar(_) => Length::Px(300.0),
-                ElementKind::GridControl(_) => Length::Auto,
+                ElementKind::GridControl(_)
+                | ElementKind::DataForm(_)
+                | ElementKind::TreeView(_)
+                | ElementKind::TreeGrid(_) => Length::Auto,
                 ElementKind::TextBox(_)
                 | ElementKind::MemoEdit(_)
+                | ElementKind::SearchBox(_)
                 | ElementKind::PasswordBox(_)
                 | ElementKind::NumericEdit(_)
                 | ElementKind::MaskEdit(_)
@@ -331,6 +340,18 @@ impl MountedView {
                 style,
                 common.bindings.contains_key("Height"),
             )?,
+            ElementKind::DataForm(definition) => {
+                self.mount_data_form(ui, parent, definition, style)?
+            }
+            ElementKind::TreeView(definition) | ElementKind::TreeGrid(definition) => self
+                .mount_tree(
+                    ui,
+                    parent,
+                    definition,
+                    matches!(element.kind, ElementKind::TreeGrid(_)),
+                    style,
+                    common.bindings.contains_key("Height"),
+                )?,
             ElementKind::StatusBar(_)
             | ElementKind::RibbonStatusBar(_)
             | ElementKind::StatusBarItem(_)
@@ -340,6 +361,7 @@ impl MountedView {
             }
             ElementKind::ListBox(_)
             | ElementKind::MemoEdit(_)
+            | ElementKind::SearchBox(_)
             | ElementKind::PasswordBox(_)
             | ElementKind::NumericEdit(_)
             | ElementKind::MaskEdit(_)
@@ -755,6 +777,9 @@ impl MountedView {
                 ElementKind::ScrollViewer(_) => Role::ScrollView,
                 ElementKind::ListBox(_) => Role::ListBox,
                 ElementKind::GridControl(_) => Role::Grid,
+                ElementKind::TreeGrid(_) => Role::Grid,
+                ElementKind::TreeView(_) => Role::Tree,
+                ElementKind::DataForm(_) => Role::Group,
                 ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
                 ElementKind::ButtonEdit(_)
                 | ElementKind::NumericEdit(_)
@@ -774,6 +799,7 @@ impl MountedView {
                 ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) | ElementKind::MaskEdit(_) => Role::TextBox,
                 ElementKind::MemoEdit(_) => Role::Button,
+                ElementKind::SearchBox(_) => Role::Group,
                 ElementKind::PasswordBox(_) => Role::PasswordBox,
                 ElementKind::TextBlock(_) => Role::Label,
                 ElementKind::Button(_) => {
@@ -862,7 +888,10 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             extras::container_desired_width(ui, element)
         }
         ElementKind::ZoomControl(_) => Ok(220.0),
-        ElementKind::GridControl(_) => Ok(560.0),
+        ElementKind::GridControl(_) | ElementKind::DataForm(_) | ElementKind::TreeGrid(_) => {
+            Ok(560.0)
+        }
+        ElementKind::TreeView(_) => Ok(320.0),
         ElementKind::DockWorkspace(_) => {
             Err("DockWorkspace requires the docking window coordinator".into())
         }
@@ -885,6 +914,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         }
         ElementKind::TextBox(_)
         | ElementKind::MemoEdit(_)
+        | ElementKind::SearchBox(_)
         | ElementKind::PasswordBox(_)
         | ElementKind::NumericEdit(_)
         | ElementKind::MaskEdit(_)
@@ -1197,6 +1227,9 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             ElementKind::MemoEdit(definition) => {
                 rust_desktop_ui_xaml::validate_memo_edit(definition)?
             }
+            ElementKind::SearchBox(definition) => {
+                rust_desktop_ui_xaml::validate_search_box(definition, &element.common)?
+            }
             ElementKind::PasswordBox(definition) => {
                 rust_desktop_ui_xaml::validate_password_box(definition)?;
                 rust_desktop_ui_xaml::validate_password_bindings(&element.common)?;
@@ -1247,6 +1280,16 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                 }
             }
             ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
+            ElementKind::DataForm(form) => {
+                data_form::validate_source(ui, form)?;
+                count += form.fields.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || (!form.fields.is_empty()
+                        && depth + 2 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH)
+                {
+                    return Err("DataForm metadata count/depth exceeded".into());
+                }
+            }
             ElementKind::GridControl(grid) => {
                 rust_desktop_ui_xaml::validate_grid_control_bindings(&element.common)?;
                 grid::validate_source(ui, grid)?;
@@ -1258,6 +1301,21 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                     return Err(
                         "GridControl columns exceed the element count or depth limit".into(),
                     );
+                }
+            }
+            ElementKind::TreeView(definition) | ElementKind::TreeGrid(definition) => {
+                tree::validate_source(
+                    ui,
+                    definition,
+                    matches!(element.kind, ElementKind::TreeGrid(_)),
+                    &element.common,
+                )?;
+                count += definition.columns.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || (!definition.columns.is_empty()
+                        && depth + 2 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH)
+                {
+                    return Err("Tree metadata count/depth exceeded".into());
                 }
             }
             ElementKind::GroupBox(group) => {

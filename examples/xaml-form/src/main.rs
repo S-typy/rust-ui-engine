@@ -9,6 +9,7 @@ mod binding_adapter_tests;
 #[cfg(test)]
 mod data_adapter_tests;
 mod data_editors_model;
+mod data_form_model;
 mod data_model;
 #[cfg(test)]
 mod density_adapter_tests;
@@ -29,6 +30,7 @@ mod popup_diagnostics;
 #[cfg(test)]
 mod ribbon_tests;
 mod ribbon_workspace_model;
+mod search_model;
 mod selection_model;
 #[cfg(test)]
 mod status_adapter_tests;
@@ -36,6 +38,7 @@ mod status_adapter_tests;
 mod template_adapter_tests;
 #[cfg(test)]
 mod tests;
+mod tree_model;
 mod view;
 mod view_ribbon;
 mod visual_model;
@@ -84,6 +87,15 @@ mod generated_ribbon_workspace {
 mod generated_selection {
     include!(concat!(env!("OUT_DIR"), "/selection_window.rs"));
 }
+mod generated_search {
+    include!(concat!(env!("OUT_DIR"), "/search_window.rs"));
+}
+mod generated_data_form {
+    include!(concat!(env!("OUT_DIR"), "/data_form_window.rs"));
+}
+mod generated_tree {
+    include!(concat!(env!("OUT_DIR"), "/tree_window.rs"));
+}
 mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
 }
@@ -112,6 +124,9 @@ fn start() -> Result<(), String> {
     let mut data_editors = false;
     let mut ribbon_workspace = false;
     let mut selection = false;
+    let mut search = false;
+    let mut data_form = false;
+    let mut tree = false;
     let mut visuals = false;
     let mut batch = false;
     let mut workspace = false;
@@ -157,6 +172,9 @@ fn start() -> Result<(), String> {
             "--data-editors" => data_editors = true,
             "--ribbon-workspace" => ribbon_workspace = true,
             "--selection" => selection = true,
+            "--search" => search = true,
+            "--data-form" => data_form = true,
+            "--tree" => tree = true,
             "--docking" => docking = true,
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
@@ -232,6 +250,9 @@ fn start() -> Result<(), String> {
         data_editors,
         ribbon_workspace,
         selection,
+        search,
+        data_form,
+        tree,
     ]
     .into_iter()
     .filter(|v| *v)
@@ -251,7 +272,13 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if selection {
+    let mut definition = if data_form {
+        generated_data_form::window_definition()
+    } else if tree {
+        generated_tree::window_definition()
+    } else if search {
+        generated_search::window_definition()
+    } else if selection {
         generated_selection::window_definition()
     } else if ribbon_workspace {
         generated_ribbon_workspace::window_definition()
@@ -328,7 +355,14 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if selection {
+    let app = if data_form {
+        let (context, sources) = data_form_model::model()?;
+        form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
+    } else if tree {
+        form::Form::new_with_model(definition, diagnostics, Some(tree_model::model()?))?
+    } else if search {
+        form::Form::new_with_model(definition, diagnostics, Some(search_model::model()?))?
+    } else if selection {
         form::Form::new_with_model(definition, diagnostics, Some(selection_model::model()?))?
     } else if ribbon_workspace {
         form::Form::new_with_model(

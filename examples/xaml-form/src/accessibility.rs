@@ -9,6 +9,11 @@ const WINDOW: NodeId = NodeId(1);
 
 #[path = "accessibility_grid.rs"]
 mod grid;
+#[cfg(test)]
+#[path = "accessibility_search_tests.rs"]
+mod search_tests;
+#[path = "accessibility_tree.rs"]
+mod tree;
 
 pub(crate) struct Accessibility {
     root: NodeId,
@@ -16,6 +21,7 @@ pub(crate) struct Accessibility {
     errors: HashMap<WidgetId, NodeId>,
     next: u64,
     grids: grid::GridAccessibility,
+    trees: tree::TreeAccessibility,
 }
 impl Default for Accessibility {
     fn default() -> Self {
@@ -25,6 +31,7 @@ impl Default for Accessibility {
             errors: HashMap::new(),
             next: 2,
             grids: grid::GridAccessibility::default(),
+            trees: tree::TreeAccessibility::default(),
         }
     }
 }
@@ -38,6 +45,7 @@ impl Accessibility {
             widgets: HashMap::new(),
             errors: HashMap::new(),
             grids: grid::GridAccessibility::default(),
+            trees: tree::TreeAccessibility::default(),
         }
     }
 
@@ -57,6 +65,7 @@ impl Accessibility {
     ) -> accesskit::TreeUpdate {
         let semantics = ui.semantics();
         self.grids.begin();
+        self.trees.begin();
         let present: HashSet<_> = semantics.iter().map(|node| node.id).collect();
         self.widgets
             .retain(|widget, _| ui.runtime.tree().node(*widget).is_some());
@@ -169,6 +178,33 @@ impl Accessibility {
             if let Some(expanded) = semantic.expanded {
                 node.set_expanded(expanded);
             }
+            // Search keeps native editing focus while its highlighted suggestion
+            // becomes the accessibility focus through active-descendant routing.
+            if let Some(parts) = ui
+                .runtime
+                .tree()
+                .parent(widget)
+                .and_then(|parent| ui.search_parts(parent))
+                .filter(|parts| parts.editor == widget)
+            {
+                node.set_role(Role::SearchInput);
+                node.set_auto_complete(accesskit::AutoComplete::List);
+                node.set_has_popup(accesskit::HasPopup::Listbox);
+                let open = ui.search_popup_is_open(parts.container);
+                node.set_expanded(open);
+                if open && present.contains(&parts.list.container) {
+                    node.set_controls(vec![self.widgets[&parts.list.container]]);
+                    if semantic.focused
+                        && let Some(row) = ui
+                            .selected_keys(parts.list.container)
+                            .and_then(|keys| keys.first())
+                            .and_then(|key| ui.list_row_widget(parts.list.container, key))
+                            .filter(|row| present.contains(row) && ui.is_enabled(*row))
+                    {
+                        node.set_active_descendant(self.widgets[&row]);
+                    }
+                }
+            }
             if let Some(settings) = ui.editor_settings(widget) {
                 append_description(&mut node, &settings.placeholder);
             }
@@ -260,9 +296,16 @@ impl Accessibility {
             {
                 focus = grid_focus;
             }
+            if let Some(tree_focus) =
+                self.trees
+                    .project(ui, widget, scale, &mut self.next, &mut node, &mut nodes)
+            {
+                focus = tree_focus;
+            }
             nodes.push((id, node));
         }
         self.grids.finish();
+        self.trees.finish();
         accesskit::TreeUpdate {
             nodes,
             tree: Some(accesskit::TreeInfo::new(self.root)),
@@ -282,6 +325,9 @@ impl Accessibility {
         if self.grids.action(ui, &request)? {
             return Ok(());
         }
+        if self.trees.action(ui, &request)? {
+            return Ok(());
+        }
         let Some(widget) = self
             .widgets
             .iter()
@@ -290,6 +336,9 @@ impl Accessibility {
             return Ok(());
         };
         if grid::scroll(ui, widget, request.action)? {
+            return Ok(());
+        }
+        if tree::scroll(ui, widget, request.action)? {
             return Ok(());
         }
         let action = match request.action {
@@ -400,6 +449,7 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Switch => Role::Switch,
         ControlRole::Splitter => Role::Splitter,
         ControlRole::Grid => Role::Grid,
+        ControlRole::Tree => Role::Tree,
     }
 }
 
@@ -807,6 +857,7 @@ mod status_tests {
             Some("Enter a document code")
         );
     }
+
     #[test]
     fn virtual_list_projects_last_position_as_zero_based_accesskit_index() {
         use rust_desktop_ui_controls::{SelectionItem, SelectionSettings};

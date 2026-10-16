@@ -12,6 +12,8 @@ pub struct NumericEditSettings {
     pub allow_empty: bool,
     pub culture: UiCulture,
     pub grouping: bool,
+    /// Omit insignificant fractional zeros without reducing accepted precision.
+    pub trim_trailing_zeros: bool,
     pub calculator: bool,
 }
 impl Default for NumericEditSettings {
@@ -24,6 +26,7 @@ impl Default for NumericEditSettings {
             allow_empty: true,
             culture: UiCulture::Russian,
             grouping: false,
+            trim_trailing_zeros: false,
             calculator: true,
         }
     }
@@ -80,7 +83,12 @@ impl NumericEditSettings {
     pub fn format(&self, value: Option<DecimalValue>) -> Result<String, ControlError> {
         self.validate_value(value).map_err(ControlError::Invalid)?;
         Ok(value.map_or(String::new(), |v| {
-            format_decimal(v, self.culture, self.grouping, Some(self.precision))
+            format_decimal(
+                v,
+                self.culture,
+                self.grouping,
+                (!self.trim_trailing_zeros).then_some(self.precision),
+            )
         }))
     }
     /// Empty starts at zero clamped to the range. A step saturates at either bound.

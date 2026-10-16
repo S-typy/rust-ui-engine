@@ -687,3 +687,59 @@ fn numeric_calculator_retains_buttons_inside_surface_after_theme_and_resize() {
         }
     }
 }
+
+#[test]
+fn trailing_zero_display_option_preserves_max_precision_grouping_and_exact_roundtrip() {
+    for (culture, separator, group) in [
+        (UiCulture::Russian, ',', '\u{a0}'),
+        (UiCulture::English, '.', ','),
+        (UiCulture::Arabic, '٫', '٬'),
+    ] {
+        let settings = NumericEditSettings {
+            precision: 28,
+            grouping: true,
+            culture,
+            trim_trailing_zeros: true,
+            ..Default::default()
+        };
+        for (raw, expected) in [
+            ("12345.67", format!("12{group}345{separator}67")),
+            ("-12345.67", format!("-12{group}345{separator}67")),
+            ("12000", format!("12{group}000")),
+            ("-12000", format!("-12{group}000")),
+            ("0", "0".into()),
+            (
+                "0.1234567890123456789012345678",
+                format!("0{separator}1234567890123456789012345678"),
+            ),
+        ] {
+            let value = Some(decimal(raw));
+            let text = settings.format(value).unwrap();
+            assert_eq!(text, expected);
+            assert_eq!(settings.parse(&text).unwrap(), value);
+        }
+        assert_eq!(settings.format(None).unwrap(), "");
+        assert_eq!(settings.precision, 28);
+    }
+    assert_eq!(
+        NumericEditSettings::default()
+            .format(Some(decimal("12.3")))
+            .unwrap(),
+        "12,30"
+    );
+    let (mut ui, p) = setup();
+    let mut settings = ui.numeric_settings(p.container).unwrap().clone();
+    settings.precision = 28;
+    settings.trim_trailing_zeros = true;
+    ui.set_numeric_settings(p.container, settings.clone())
+        .unwrap();
+    assert_eq!(ui.document(p.editor).unwrap().text(), "12,3");
+    let next = decimal("0.1234567890123456789012345678");
+    ui.set_numeric_value(p.container, Some(next)).unwrap();
+    assert_eq!(ui.numeric_value(p.container), Some(Some(next)));
+    ui.set_text(p.editor, "7,").unwrap();
+    let draft = ui.document(p.editor).unwrap().text().to_owned();
+    settings.trim_trailing_zeros = false;
+    assert!(ui.set_numeric_settings(p.container, settings).is_err());
+    assert_eq!(ui.document(p.editor).unwrap().text(), draft);
+}

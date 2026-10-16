@@ -4,6 +4,9 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
     Some(match name {
         "Grid" => ElementKind::Grid(GridDefinition::default()),
         "GridControl" => ElementKind::GridControl(GridControlDefinition::default()),
+        "TreeView" => ElementKind::TreeView(TreeDefinition::default()),
+        "TreeGrid" => ElementKind::TreeGrid(TreeDefinition::default()),
+        "DataForm" => ElementKind::DataForm(DataFormDefinition::default()),
         "Border" => ElementKind::Border(BorderDefinition::default()),
         "GroupBox" => ElementKind::GroupBox(GroupBoxDefinition::default()),
         "Expander" => ElementKind::Expander(ExpanderDefinition::default()),
@@ -24,6 +27,7 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
         "LookupEdit" => ElementKind::LookupEdit(LookupDefinition::default()),
         "ButtonEdit" => ElementKind::ButtonEdit(ButtonEditDefinition::default()),
         "MemoEdit" => ElementKind::MemoEdit(MemoEditDefinition::default()),
+        "SearchBox" => ElementKind::SearchBox(SearchBoxDefinition::default()),
         "PasswordBox" => ElementKind::PasswordBox(PasswordBoxDefinition::default()),
         "NumericEdit" => ElementKind::NumericEdit(NumericEditDefinition::default()),
         "MaskEdit" => ElementKind::MaskEdit(MaskEditDefinition::default()),
@@ -49,6 +53,9 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
     }
     match kind {
         ElementKind::Slider(_) => name == "Value",
+        ElementKind::TreeView(_) | ElementKind::TreeGrid(_) => {
+            matches!(name, "SelectedKey" | "IsReadOnly")
+        }
         ElementKind::RangeSlider(_) => matches!(name, "LowerValue" | "UpperValue"),
         ElementKind::GridControl(_) => {
             matches!(name, "FilterText" | "SelectedValue" | "IsReadOnly")
@@ -64,6 +71,7 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         ElementKind::TextBox(_) | ElementKind::ButtonEdit(_) | ElementKind::MemoEdit(_) => {
             matches!(name, "Text" | "IsReadOnly" | "PlaceholderText")
         }
+        ElementKind::SearchBox(_) => matches!(name, "Query" | "IsReadOnly" | "PlaceholderText"),
         ElementKind::SpinBox(_)
         | ElementKind::NumericEdit(_)
         | ElementKind::MaskEdit(_)
@@ -422,12 +430,29 @@ pub(super) fn property(
                 selection_property(document, attr, selection)
             }
         }
+        ElementKind::TreeView(tree) => tree::property(document, attr, tree, false),
+        ElementKind::TreeGrid(tree) => tree::property(document, attr, tree, true),
         ElementKind::GridControl(grid) => {
             match attr.name() {
                 "DataSource" => grid.data_source = attr.value().into(),
                 "IsReadOnly" => grid.is_read_only = boolean(document, attr)?,
                 "FilterText" => grid.filter_text = attr.value().into(),
                 "SelectedValue" => grid.selected_value = Some(attr.value().into()),
+                _ => return Ok(false),
+            }
+            Ok(true)
+        }
+        ElementKind::DataForm(form) => {
+            match attr.name() {
+                "DataSource" => form.data_source = attr.value().into(),
+                "RowKey" => {
+                    form.row_key = attr.value().parse::<i64>().map_err(|_| {
+                        at_attribute(document, attr, "RowKey must be a signed 64-bit integer")
+                    })?
+                }
+                "IsReadOnly" => form.is_read_only = boolean(document, attr)?,
+                "LabelWidth" => form.label_width = editor_metric(document, attr, 4096.0, true)?,
+                "RowGap" => form.row_gap = editor_metric(document, attr, 256.0, true)?,
                 _ => return Ok(false),
             }
             Ok(true)
@@ -604,6 +629,43 @@ pub(super) fn property(
             Ok(true)
         }
         ElementKind::ButtonEdit(editor) => editor_property(document, attr, &mut editor.editor),
+        ElementKind::SearchBox(search) => {
+            match attr.name() {
+                "Query" => search.editor.text = attr.value().into(),
+                "MinQueryLength" | "MaxSuggestions" | "HistoryLimit" => {
+                    let value = attr.value().parse::<usize>().map_err(|_| {
+                        at_attribute(document, attr, "Expected a nonnegative integer")
+                    })?;
+                    match attr.name() {
+                        "MinQueryLength" => search.min_query_length = value,
+                        "MaxSuggestions" => search.max_suggestions = value,
+                        _ => search.history_limit = value,
+                    }
+                }
+                "PopupWidth" => search.popup_width = editor_metric(document, attr, 4096.0, false)?,
+                "PopupHeight" => {
+                    search.popup_height = editor_metric(document, attr, 4096.0, false)?
+                }
+                "ChoicePolicy" => {
+                    search.choice_policy = match attr.value() {
+                        "FillQuery" => SearchChoicePolicyDefinition::FillQuery,
+                        "FillAndSearch" => SearchChoicePolicyDefinition::FillAndSearch,
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "ChoicePolicy must be FillQuery or FillAndSearch",
+                            ));
+                        }
+                    }
+                }
+                "Text" | "Value" | "CommitOnLostFocus" | "IsRequired" | "ValidationMessage" => {
+                    return Ok(false);
+                }
+                _ => return editor_property(document, attr, &mut search.editor),
+            }
+            Ok(true)
+        }
         ElementKind::MemoEdit(memo) => {
             match attr.name() {
                 "PopupWidth" => {
@@ -1479,6 +1541,13 @@ pub(super) fn validate(
         }
     }
     match kind {
+        ElementKind::DataForm(form) => {
+            validate_data_form(form).map_err(|message| at_node(node, message))?;
+        }
+        ElementKind::TreeView(tree) | ElementKind::TreeGrid(tree) => {
+            validate_tree(tree, matches!(kind, ElementKind::TreeGrid(_)), common)
+                .map_err(|message| at_node(node, message))?;
+        }
         ElementKind::GridControl(grid) => {
             validate_grid_control(grid).map_err(|message| at_node(node, message))?;
             validate_grid_control_bindings(common).map_err(|message| at_node(node, message))?;
@@ -1532,6 +1601,9 @@ pub(super) fn validate(
         }
         ElementKind::MemoEdit(memo) => {
             validate_memo_edit(memo).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::SearchBox(search) => {
+            validate_search_box(search, common).map_err(|message| at_node(node, message))?
         }
         ElementKind::PasswordBox(password) => {
             validate_password_box(password).map_err(|message| at_node(node, message))?;

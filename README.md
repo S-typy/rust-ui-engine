@@ -59,12 +59,30 @@ cargo run --release --locked -p xaml-form -- --editors
 cargo run --release --locked -p xaml-form -- --groups
 cargo run --release --locked -p xaml-form -- --batch
 cargo run --release --locked -p xaml-form -- --workspace
+cargo run --release --locked -p xaml-form -- --ribbon-workspace
+cargo run --release --locked -p xaml-form -- --selection
+cargo run --release --locked -p xaml-form -- --search
+cargo run --release --locked -p xaml-form -- --data-form
+cargo run --release --locked -p xaml-form -- --tree
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
 
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
 the separate example of individual controls and popup menus.
+
+`--selection` demonstrates a 100,000-row list, variable row heights, checked and
+radio selection, tokens and lookup search. `--search` adds an application-owned
+delayed suggestion provider and explicit query execution. `--data-form` shows
+typed metadata editors, explicit atomic save, NULL and conflict handling.
+`--tree` opens two views of a shared hierarchy with lazy loading, node moves and
+column customization. See [selection](docs/public/list-box.md),
+[search](docs/public/search.md), [data forms](docs/public/data-form.md) and
+[tree controls](docs/public/tree-controls.md).
+
+`--ribbon-workspace` demonstrates retained Ribbon content, Backstage and
+quick-access customization. Its preferences remain in memory until the window
+closes; applications choose when to persist the serialized settings.
 
 `--workspace` opens [WorkspaceWindow.xaml](examples/xaml-form/WorkspaceWindow.xaml)
 with retained, reorderable tabs, modal forms, Windows file dialogs, customizable

@@ -1,6 +1,69 @@
 use crate::*;
 
 #[test]
+fn search_box_compiles_draft_query_and_bounded_suggestion_policy() {
+    let xml = source(
+        "<SearchBox Query='{Binding Search}' MinQueryLength='2' MaxLength='512' MaxSuggestions='20' HistoryLimit='10' PopupWidth='420' PopupHeight='240' ChoicePolicy='FillAndSearch' PlaceholderText='Find' IsReadOnly='{Binding Locked}'/>",
+    );
+    let window = parse(&xml).unwrap();
+    let ElementKind::SearchBox(search) = &window.content.kind else {
+        panic!()
+    };
+    assert_eq!(search.editor.max_length, Some(512));
+    assert!(!search.editor.commit_on_lost_focus);
+    assert_eq!(
+        search.choice_policy,
+        SearchChoicePolicyDefinition::FillAndSearch
+    );
+    assert_eq!(
+        window.content.common.bindings["Query"].mode,
+        BindingMode::TwoWay
+    );
+    assert_eq!(
+        window.content.common.bindings["Query"].update_source_trigger,
+        UpdateSourceTrigger::PropertyChanged
+    );
+    assert!(compile(&xml).unwrap().contains("SearchBoxDefinition"));
+    let default = parse(&source("<SearchBox/>")).unwrap();
+    let ElementKind::SearchBox(default) = default.content.kind else {
+        panic!()
+    };
+    assert_eq!(default, SearchBoxDefinition::default());
+}
+
+#[test]
+fn search_box_rejects_ambiguous_values_business_commit_and_invalid_budgets() {
+    for body in [
+        "<SearchBox Text='no'/>",
+        "<SearchBox Value='{Binding Value}'/>",
+        "<SearchBox IsRequired='True'/>",
+        "<SearchBox CommitOnLostFocus='True'/>",
+        "<SearchBox Query='{Binding Query, UpdateSourceTrigger=LostFocus}'/>",
+        "<SearchBox Query='x&#10;y'/>",
+        "<SearchBox MaxLength='0'/>",
+        "<SearchBox MaxLength='4097'/>",
+        "<SearchBox MinQueryLength='3' MaxLength='2'/>",
+        "<SearchBox MinQueryLength='-1'/>",
+        "<SearchBox MaxSuggestions='0'/>",
+        "<SearchBox MaxSuggestions='1001'/>",
+        "<SearchBox HistoryLimit='101'/>",
+        "<SearchBox PopupWidth='159'/>",
+        "<SearchBox PopupHeight='79'/>",
+        "<SearchBox ChoicePolicy='Search'/>",
+        "<SearchBox><TextBox/></SearchBox>",
+    ] {
+        assert!(parse(&source(body)).is_err(), "{body}");
+    }
+    assert!(
+        parse(&source(
+            "<SearchBox Query='👩‍💻' MaxLength='1' MinQueryLength='0' HistoryLimit='0'/>"
+        ))
+        .is_ok()
+    );
+    assert!(parse(&source("<SearchBox Query='a👩‍💻' MaxLength='1'/>")).is_err());
+}
+
+#[test]
 fn mask_edit_compiles_raw_values_culture_and_bounded_pattern_syntax() {
     let xml = source(
         "<MaskEdit Mask='LL-0009' Value='{Binding Reference}' Culture='en-US' PromptChar='?' AllowEmpty='False' MaxLength='20'/>",

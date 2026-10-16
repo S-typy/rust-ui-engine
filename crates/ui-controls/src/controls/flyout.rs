@@ -266,6 +266,19 @@ impl Controls {
         Ok(())
     }
     pub fn open_flyout(&mut self, flyout: Flyout) -> Result<(), ControlError> {
+        self.open_flyout_with_focus(flyout, true)
+    }
+    pub(super) fn open_flyout_preserving_focus(
+        &mut self,
+        flyout: Flyout,
+    ) -> Result<(), ControlError> {
+        self.open_flyout_with_focus(flyout, false)
+    }
+    fn open_flyout_with_focus(
+        &mut self,
+        flyout: Flyout,
+        focus_content: bool,
+    ) -> Result<(), ControlError> {
         let entry = self
             .flyouts
             .entries
@@ -329,7 +342,7 @@ impl Controls {
                     .is_some_and(|node| node.props.focusable)
                 && self.is_enabled(*id)
         });
-        if let Some(first) = first {
+        if focus_content && let Some(first) = first {
             self.runtime.apply(Mutation::Focus(Some(first)))?;
         }
         self.synchronize_editor_focus()?;
@@ -357,6 +370,20 @@ impl Controls {
     pub(super) fn close_all_flyouts(&mut self, restore: bool) -> Result<(), ControlError> {
         self.close_flyouts_from(0, restore)
     }
+    pub(super) fn close_flyout_preserving_focus(
+        &mut self,
+        flyout: Flyout,
+    ) -> Result<(), ControlError> {
+        if let Some(index) = self
+            .flyouts
+            .open
+            .iter()
+            .position(|id| *id == flyout.container)
+        {
+            self.close_flyouts_from(index, false)?;
+        }
+        Ok(())
+    }
     fn close_flyouts_from(&mut self, index: usize, restore: bool) -> Result<(), ControlError> {
         if index >= self.flyouts.open.len() {
             return Ok(());
@@ -364,6 +391,7 @@ impl Controls {
         let target = self.flyouts.entries.get(&self.flyouts.open[index]).cloned();
         let closing = self.flyouts.open[index..].to_vec();
         for id in closing {
+            self.search_will_close(id);
             self.temporal_will_close(id)?;
             self.memo_will_close(id)?;
             self.numeric_will_close(id);

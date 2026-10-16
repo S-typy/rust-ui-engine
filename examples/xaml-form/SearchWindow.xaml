@@ -1,0 +1,21 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Поиск документов" Width="1100" Height="780" Padding="28">
+  <Grid Spacing="18">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="8"><TextBlock Text="Поиск документов" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Подсказка заполняет строку. Enter или кнопка поиска запускает поиск." TextTone="Secondary"/></StackPanel>
+    <StackPanel Grid.Row="1" Spacing="12" Surface="Card" Padding="20">
+      <SearchBox x:Name="DocumentSearch" Query="{Binding Query}" IsReadOnly="{Binding Locked}" PlaceholderText="Название или категория" AutomationName="Поиск документов" MaxSuggestions="20" PopupWidth="520" PopupHeight="280"/>
+      <WrapPanel Spacing="12"><Button x:Name="ShowSearchHistory" Content="История запросов" Command="SearchDemoHistory"/><Button x:Name="ClearSearchHistory" Content="Очистить историю" Command="SearchDemoClearHistory"/><CheckBox Content="Только чтение" IsChecked="{Binding Locked}"/></WrapPanel>
+      <TextBlock x:Name="QueryPreview" Text="{Binding Query}" TextTone="Secondary"/>
+    </StackPanel>
+    <Grid Grid.Row="2" Spacing="14">
+      <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <TextBlock x:Name="SearchResultTitle" Text="Все документы" FontSize="20" FontWeight="SemiBold"/>
+      <ListBox x:Name="SearchResults" Grid.Row="1" Height="300" AutomationName="Результаты поиска">
+        <ListBox.ItemTemplate><StackPanel Orientation="Horizontal" Spacing="16"><Icon Symbol="Copy" Width="20" Height="20"/><TextBlock Text="{Binding Text}" Width="300"/><TextBlock Text="{Binding Column0}" Width="220" TextTone="Secondary"/></StackPanel></ListBox.ItemTemplate>
+      </ListBox>
+      <TextBlock Grid.Row="2" Text="Попробуйте «план» или «финансы». Для проверки ошибки источника введите «ошибка»." TextTone="Secondary"/>
+    </Grid>
+    <DockPanel Grid.Row="3"><WrapPanel DockPanel.Dock="Right" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel><TextBlock x:Name="SearchActivity" Text="Готово" TextTone="Secondary" VerticalAlignment="Center"/></DockPanel>
+  </Grid>
+</Window>

@@ -76,6 +76,37 @@ impl Gallery {
             if let Some(expanded) = item.expanded {
                 node.set_expanded(expanded);
             }
+            // Search keeps native editing focus while its highlighted suggestion
+            // becomes the accessibility focus through active-descendant routing.
+            if let Some(parts) = self
+                .ui
+                .runtime
+                .tree()
+                .parent(item.id)
+                .and_then(|parent| self.ui.search_parts(parent))
+                .filter(|parts| parts.editor == item.id)
+            {
+                node.set_role(Role::SearchInput);
+                node.set_auto_complete(
+                    rust_desktop_ui_platform_winit::accesskit::AutoComplete::List,
+                );
+                node.set_has_popup(HasPopup::Listbox);
+                let open = self.ui.search_popup_is_open(parts.container);
+                node.set_expanded(open);
+                if open && present.contains(&parts.list.container) {
+                    node.set_controls(vec![NodeId(self.accessible_widgets[&parts.list.container])]);
+                    if item.focused
+                        && let Some(row) = self
+                            .ui
+                            .selected_keys(parts.list.container)
+                            .and_then(|keys| keys.first())
+                            .and_then(|key| self.ui.list_row_widget(parts.list.container, key))
+                            .filter(|row| present.contains(row) && self.ui.is_enabled(*row))
+                    {
+                        node.set_active_descendant(NodeId(self.accessible_widgets[&row]));
+                    }
+                }
+            }
             if let Some(settings) = self.ui.editor_settings(item.id) {
                 append_description(&mut node, &settings.placeholder);
             }
@@ -207,7 +238,7 @@ impl Gallery {
                 for row in &self.frame.semantics.rows {
                     let mut row_node = Node::new(Role::Row);
                     row_node.set_row_index(row.index);
-                    row_node.set_level(row.depth + 1);
+                    row_node.set_level(row.depth);
                     row_node.set_selected(row.selected);
                     row_node.set_bounds(bounds(row.bounds, scale));
                     row_node.add_action(Action::Focus);
@@ -486,5 +517,6 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Switch => Role::Switch,
         ControlRole::Splitter => Role::Splitter,
         ControlRole::Grid => Role::Grid,
+        ControlRole::Tree => Role::Tree,
     }
 }

@@ -1,0 +1,33 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Иерархия и колонки" Width="1240" Height="820" Padding="24">
+  <Grid Spacing="16">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6"><TextBlock Text="Иерархия и колонки" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Общий источник, устойчивые ключи и независимое раскрытие веток." TextTone="Secondary"/></StackPanel>
+    <StackPanel Grid.Row="1" Spacing="8">
+      <WrapPanel Spacing="8"><Button x:Name="TreeBegin" Content="Начать загрузку" Command="TreeBeginLoad"/><Button x:Name="TreeFinish" Content="Получить ответ" Command="TreeCompleteLoad"/><Button x:Name="TreeCancel" Content="Отменить загрузку" Command="TreeCancelLoad"/><Button x:Name="TreeRename" Content="Переименовать узел" Command="TreeRename"/><Button x:Name="TreeReset" Content="Исходное дерево" Command="TreeReset"/></WrapPanel>
+      <WrapPanel Spacing="12"><CheckBox x:Name="TreeReadOnly" Content="Запретить перенос мышью" IsChecked="{Binding ReadOnly}"/><Button x:Name="TreeColumnMove" Content="Переставить колонки" Command="TreeReorderColumns"/><Button x:Name="TreeColumnPin" Content="Закрепить колонку" Command="TreePinColumn"/><Button x:Name="TreeColumnSize" Content="Изменить ширину" Command="TreeResizeColumn"/></WrapPanel>
+    </StackPanel>
+    <Grid Grid.Row="2" Spacing="16">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="340"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <Grid Spacing="8">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <TextBlock Text="Дерево" FontSize="18" FontWeight="SemiBold"/>
+        <TreeView x:Name="Hierarchy" Grid.Row="1" Source="TreeNodes" SelectedKey="{Binding SelectedNode}" AllowNodeDrag="True" IsReadOnly="{Binding ReadOnly}" AutomationName="Дерево документов"/>
+      </Grid>
+      <Grid Grid.Column="1" Spacing="8">
+        <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+        <TextBlock Text="Те же данные с колонками" FontSize="18" FontWeight="SemiBold"/>
+        <TreeGrid x:Name="HierarchyGrid" Grid.Row="1" Source="TreeNodes" SelectedKey="{Binding SelectedNode}" AllowNodeDrag="True" IsReadOnly="{Binding ReadOnly}" AutomationName="Таблица документов">
+          <TreeColumn Id="0" Header="Название" Width="280" IsPinned="True"/>
+          <TreeColumn Id="1" Header="Тип" Width="140"/>
+          <TreeColumn Id="2" Header="Состояние" Width="170"/>
+        </TreeGrid>
+      </Grid>
+    </Grid>
+    <StackPanel Grid.Row="3" Spacing="6">
+      <TextBlock x:Name="TreeSummary" Text="" TextTone="Secondary"/>
+      <TextBlock x:Name="TreeStatus" Text="Переносите узлы в строку назначения или к её краям. Escape отменяет перенос." TextWrapping="Wrap"/>
+      <WrapPanel Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel>
+    </StackPanel>
+  </Grid>
+</Window>

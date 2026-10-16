@@ -180,6 +180,20 @@ pub struct TreeGrid {
     locations: Locations,
     pending: HashMap<RowKey, RequestId>,
     failures: HashMap<RowKey, String>,
+    viewport_anchor: Option<crate::TreeScrollAnchor>,
+}
+
+/// Selection-only checkpoint for synchronous host validation. It cannot be
+/// restored into another model or after a structural refresh.
+#[derive(Clone)]
+pub struct TreeSelectionSnapshot {
+    model: u64,
+    epoch: u64,
+    selected: HashSet<RowKey>,
+    focused: Option<RowKey>,
+    column: Option<ColumnId>,
+    anchor: Option<RowKey>,
+    scroll: (f64, f64),
 }
 
 impl TreeGrid {
@@ -226,6 +240,7 @@ impl TreeGrid {
             locations: HashMap::new(),
             pending: HashMap::new(),
             failures: HashMap::new(),
+            viewport_anchor: None,
         };
         grid.index_columns();
         Ok(grid)
@@ -309,6 +324,9 @@ impl TreeGrid {
     /// Refresh after the source's indexed data changes. Invalidates pending
     /// requests and cached lazy responses, while preserving stable selected keys.
     pub fn refresh(&mut self, source: &mut impl TreeDataSource) -> Result<(), GridError> {
+        let anchor = self
+            .viewport_anchor
+            .unwrap_or_else(|| self.capture_scroll_anchor(source));
         let next = self.epoch.checked_add(1).ok_or(GridError::Capacity)?;
         let index = SparseIndex::rebuild(source, &self.expanded, &HashMap::new(), &HashMap::new())?;
         for request in self.pending.values().copied() {
@@ -328,6 +346,8 @@ impl TreeGrid {
             self.focused = None;
         }
         self.clamp_scroll();
+        self.restore_scroll_anchor(source, anchor)?;
+        self.viewport_anchor = Some(self.capture_scroll_anchor(source));
         Ok(())
     }
 
@@ -346,9 +366,13 @@ impl TreeGrid {
         if !x.is_finite() || !y.is_finite() {
             return Err(GridError::InvalidGeometry("scroll offsets must be finite"));
         }
+        let previous_y = self.scroll_y;
         self.scroll_x = x.max(0.0);
         self.scroll_y = y.max(0.0);
         self.clamp_scroll();
+        if self.scroll_y != previous_y {
+            self.viewport_anchor = None;
+        }
         Ok(())
     }
 
@@ -367,7 +391,19 @@ impl TreeGrid {
             ));
         }
         self.set_viewport(Size::new(bounds.width, bounds.height))?;
-        TreeGridView::paint(self, source, bounds)
+        let frame = TreeGridView::paint(self, source, bounds)?;
+        let height = f64::from(self.config.row_height);
+        let index = (self.scroll_y / height).floor() as usize;
+        self.viewport_anchor = Some(crate::TreeScrollAnchor {
+            key: frame
+                .rows
+                .iter()
+                .find(|r| r.index == index)
+                .and_then(|r| r.key.or(r.parent)),
+            fallback_index: index,
+            within_row: self.scroll_y % height,
+        });
+        Ok(frame)
     }
 
     /// Pointer interaction against the most recently painted frame. The host
@@ -489,6 +525,14 @@ impl TreeGrid {
         .ok_or(GridError::InvalidHierarchy(
             "source omitted an indexed child",
         ))?;
+        if !self.locations.contains_key(&key)
+            && (source.parent(key) != span.parent
+                || source.position(key) != Some(span.child_start + index - span.start))
+        {
+            return Err(GridError::InvalidHierarchy(
+                "child parent/position disagree with source index",
+            ));
+        }
         Ok(Some(VisibleRow {
             index,
             key: Some(key),
@@ -504,6 +548,202 @@ impl TreeGrid {
         self.index.index_of(parent, position)
     }
 
+    pub fn parent_key(&self, source: &impl TreeDataSource, row: RowKey) -> Option<RowKey> {
+        self.locations
+            .get(&row)
+            .map(|&(parent, _)| parent)
+            .or_else(|| source.parent(row))
+    }
+    /// Zero-based position and count within the logical sibling set, including
+    /// offscreen rows. Uses the provider index or the accepted lazy key cache.
+    pub fn sibling_position(
+        &self,
+        source: &impl TreeDataSource,
+        row: RowKey,
+    ) -> Option<(usize, usize)> {
+        let (parent, position) = self
+            .locations
+            .get(&row)
+            .map(|&(parent, position)| (Some(parent), position))
+            .or_else(|| {
+                source
+                    .position(row)
+                    .map(|position| (source.parent(row), position))
+            })?;
+        Some((position, index::count(source, &self.loaded, parent)?))
+    }
+
+    pub fn selection_snapshot(&self) -> TreeSelectionSnapshot {
+        TreeSelectionSnapshot {
+            model: self.model_id,
+            epoch: self.epoch,
+            selected: self.selected.clone(),
+            focused: self.focused,
+            column: self.focused_column,
+            anchor: self.anchor,
+            scroll: (self.scroll_x, self.scroll_y),
+        }
+    }
+    pub fn restore_selection_snapshot(
+        &mut self,
+        snapshot: TreeSelectionSnapshot,
+    ) -> Result<(), GridError> {
+        if snapshot.model != self.model_id || snapshot.epoch != self.epoch {
+            return Err(GridError::InvalidHierarchy(
+                "selection checkpoint belongs to another model revision",
+            ));
+        }
+        self.selected = snapshot.selected;
+        self.focused = snapshot.focused;
+        self.focused_column = snapshot.column;
+        self.anchor = snapshot.anchor;
+        self.scroll_to(snapshot.scroll.0, snapshot.scroll.1)
+    }
+
+    /// Assigns a known key without expanding its ancestors. A hidden selection
+    /// becomes visible when its branch is expanded; unknown keys are rejected.
+    pub fn assign_selected_key(
+        &mut self,
+        source: &impl TreeDataSource,
+        key: Option<RowKey>,
+    ) -> Result<(), GridError> {
+        if let Some(key) = key {
+            let mut current = Some(key);
+            let mut seen = HashSet::new();
+            while let Some(row) = current {
+                if !seen.insert(row) || seen.len() > 256 {
+                    return Err(GridError::InvalidHierarchy(
+                        "cycle or hierarchy depth above 256",
+                    ));
+                }
+                current = index::location(source, &self.locations, row)
+                    .ok_or(GridError::UnknownRow(row))?
+                    .0;
+            }
+            if self.visible_index(source, key).is_some() {
+                return self.select(source, key, SelectionModifiers::default());
+            }
+        }
+        self.selected = key.into_iter().collect();
+        self.anchor = key;
+        Ok(())
+    }
+
+    /// Permission and cycle checks without writing to the provider. Sources
+    /// additionally validate their own move capabilities and application rules.
+    pub fn validate_node_move(
+        &self,
+        source: &impl TreeDataSource,
+        rows: &[RowKey],
+        target: crate::TreeMoveTarget,
+    ) -> Result<(), GridError> {
+        use crate::TreeMoveTarget;
+        if rows.is_empty() || rows.len() > 4096 {
+            return Err(GridError::Capacity);
+        }
+        let requested: HashSet<_> = rows.iter().copied().collect();
+        if requested.len() != rows.len() {
+            return Err(GridError::InvalidHierarchy("duplicate move key"));
+        }
+        for &row in rows {
+            if index::location(source, &self.locations, row).is_none() {
+                return Err(GridError::UnknownRow(row));
+            }
+        }
+        let parent = match target {
+            TreeMoveTarget::Before(key) | TreeMoveTarget::After(key) => {
+                if requested.contains(&key) {
+                    return Err(GridError::InvalidHierarchy(
+                        "move destination belongs to moved rows",
+                    ));
+                }
+                index::location(source, &self.locations, key)
+                    .ok_or(GridError::UnknownRow(key))?
+                    .0
+            }
+            TreeMoveTarget::Into(parent) => {
+                if let Some(key) = parent {
+                    if index::location(source, &self.locations, key).is_none() {
+                        return Err(GridError::UnknownRow(key));
+                    }
+                    if index::count(source, &self.loaded, parent).is_none() {
+                        return Err(GridError::InvalidHierarchy(
+                            "load destination children before moving",
+                        ));
+                    }
+                }
+                parent
+            }
+        };
+        for start in
+            std::iter::once(parent).chain(rows.iter().map(|&key| self.parent_key(source, key)))
+        {
+            let mut current = start;
+            let mut seen = HashSet::new();
+            while let Some(key) = current {
+                if !seen.insert(key) || seen.len() > 256 {
+                    return Err(GridError::InvalidHierarchy("invalid move lineage"));
+                }
+                if requested.contains(&key) {
+                    return Err(GridError::InvalidHierarchy(
+                        "move contains or targets a descendant",
+                    ));
+                }
+                current = self.parent_key(source, key);
+            }
+        }
+        self.epoch.checked_add(1).ok_or(GridError::Capacity)?;
+        source
+            .validate_move(rows, target)
+            .map_err(GridError::Source)
+    }
+
+    pub fn move_nodes(
+        &mut self,
+        source: &mut impl TreeDataSource,
+        rows: &[RowKey],
+        target: crate::TreeMoveTarget,
+    ) -> Result<(), GridError> {
+        self.validate_node_move(source, rows, target)?;
+        let anchor = self.capture_scroll_anchor(source);
+        source.move_nodes(rows, target).map_err(GridError::Source)?;
+        self.cancel_pointer();
+        self.refresh(source)?;
+        self.restore_scroll_anchor(source, anchor)?;
+        self.viewport_anchor = Some(self.capture_scroll_anchor(source));
+        Ok(())
+    }
+
+    /// Horizontal column navigation is independent of hierarchy navigation.
+    pub fn navigate_column(
+        &mut self,
+        source: &impl TreeDataSource,
+        forward: bool,
+    ) -> Result<(), GridError> {
+        let order: Vec<_> = self
+            .pinned
+            .iter()
+            .chain(&self.regular)
+            .map(|&i| self.columns[i].id)
+            .collect();
+        let current = self
+            .focused_column
+            .and_then(|column| order.iter().position(|&id| id == column))
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1).min(order.len() - 1)
+        } else {
+            current.saturating_sub(1)
+        };
+        if let Some(row) = self.focused {
+            self.visible_index(source, row)
+                .ok_or(GridError::UnknownRow(row))?;
+            self.focused_column = Some(order[next]);
+            self.ensure_column_visible(order[next]);
+        }
+        Ok(())
+    }
+
     pub fn has_children(&self, source: &impl TreeDataSource, row: RowKey) -> bool {
         index::count(source, &self.loaded, Some(row)) != Some(0)
     }
@@ -514,6 +754,7 @@ impl TreeGrid {
         row: RowKey,
         expanded: bool,
     ) -> Result<Option<RequestId>, GridError> {
+        let anchor = self.capture_scroll_anchor(source);
         if index::location(source, &self.locations, row).is_none() {
             return Err(GridError::UnknownRow(row));
         }
@@ -564,13 +805,23 @@ impl TreeGrid {
                 self.clamp_scroll();
                 match source.request_children(row, request) {
                     Ok(ChildrenLoad::Ready(rows)) => {
-                        self.complete_children(source, request, Ok(rows))?;
+                        if let Err(error) = self.complete_children(source, request, Ok(rows)) {
+                            // A synchronous malformed response has no worker
+                            // left to complete this request. Keep the expanded
+                            // error placeholder and allow an explicit retry.
+                            self.complete_children(source, request, Err(error.to_string()))?;
+                            self.restore_scroll_anchor(source, anchor)?;
+                            self.viewport_anchor = Some(self.capture_scroll_anchor(source));
+                            return Err(error);
+                        }
                     }
                     Ok(ChildrenLoad::Pending) => {}
                     Err(error) => {
                         self.complete_children(source, request, Err(error))?;
                     }
                 }
+                self.restore_scroll_anchor(source, anchor)?;
+                self.viewport_anchor = Some(self.capture_scroll_anchor(source));
                 return Ok(Some(request));
             }
         } else {
@@ -599,6 +850,8 @@ impl TreeGrid {
             }
         }
         self.clamp_scroll();
+        self.restore_scroll_anchor(source, anchor)?;
+        self.viewport_anchor = Some(self.capture_scroll_anchor(source));
         Ok(None)
     }
 
@@ -617,6 +870,7 @@ impl TreeGrid {
         {
             return Ok(false);
         }
+        let anchor = self.capture_scroll_anchor(source);
         match response {
             Ok(rows) => {
                 let mut unique = HashSet::with_capacity(rows.len());
@@ -664,6 +918,8 @@ impl TreeGrid {
             }
         }
         self.pending.remove(&request.parent);
+        self.restore_scroll_anchor(source, anchor)?;
+        self.viewport_anchor = Some(self.capture_scroll_anchor(source));
         Ok(true)
     }
 

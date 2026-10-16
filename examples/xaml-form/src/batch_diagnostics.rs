@@ -11,7 +11,7 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
     let values = names.into_iter().map(|(name, &id)| {
         let bounds = ui.runtime.bounds(id).map_or_else(|| "null".into(), rectangle);
         let clip = ui.runtime.clip(id).map_or_else(|| "null".into(), rectangle);
-        let editor = ui.composite_editor(id).unwrap_or(id);
+        let editor = ui.composite_editor(id).or_else(|| ui.search_parts(id).map(|parts| parts.editor)).unwrap_or(id);
         let text = ui.document(editor).map(|doc| doc.text()).or_else(|| ui.label_text(id));
         let calendar = ui.temporal_calendar(id).map_or(id, |calendar| calendar.container);
         let calendar_bounds = ui.calendar_selection(calendar).and_then(|_| ui.runtime.bounds(calendar)).map_or_else(|| "null".into(), rectangle);
@@ -62,5 +62,26 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
         });
         Some(format!("{{\"name\":{},\"keys\":[{}],\"draft\":{},\"stats\":{}}}", string(name), list(keys), draft, stats))
     }).collect::<Vec<_>>().join(",");
-    format!("{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}]}}")
+    let searches = view.names.iter().filter_map(|(name, &id)| {
+        let query = ui.search_query(id)?;
+        let history = ui.search_history(id).unwrap_or_default().iter().map(|value| string(value)).collect::<Vec<_>>().join(",");
+        let suggestions = ui.search_suggestions(id).unwrap_or_default().iter().map(|value| format!("{{\"key\":{},\"text\":{}}}", string(&value.key), string(&value.text))).collect::<Vec<_>>().join(",");
+        Some(format!("{{\"name\":{},\"query\":{},\"status\":{},\"open\":{},\"history\":[{history}],\"suggestions\":[{suggestions}]}}", string(name), string(query), string(&format!("{:?}", ui.search_status(id).unwrap())), ui.search_popup_is_open(id)))
+    }).collect::<Vec<_>>().join(",");
+    let trees = view.names.iter().filter_map(|(name, &id)| {
+        let frame = ui.tree_frame(id)?;
+        let model = ui.tree_model(id)?;
+        let keys = ui.tree_selected_keys(id).unwrap_or_default().iter().map(|key| string(&key.0.to_string())).collect::<Vec<_>>().join(",");
+        let rows = frame.semantics.rows.iter().map(|row| {
+            let cells = row.cells.iter().map(|cell| format!("{{\"column\":{},\"text\":{},\"bounds\":{}}}",cell.column.0,string(&cell.label),rectangle(cell.bounds))).collect::<Vec<_>>().join(",");
+            format!("{{\"key\":{},\"index\":{},\"depth\":{},\"parent\":{},\"bounds\":{},\"selected\":{},\"expanded\":{},\"busy\":{},\"cells\":[{cells}]}}",string(&row.key.0.to_string()),row.index,row.depth,row.parent.map_or_else(||"null".into(),|key|string(&key.0.to_string())),rectangle(row.bounds),row.selected,row.expanded.map_or_else(||"null".into(),|value|value.to_string()),row.busy)
+        }).collect::<Vec<_>>().join(",");
+        let hits = frame.hits.iter().map(|hit|format!("{{\"kind\":{},\"bounds\":{}}}",string(&format!("{:?}",hit.kind)),rectangle(hit.bounds))).collect::<Vec<_>>().join(",");
+        let columns = model.columns().iter().map(|column|format!("{{\"id\":{},\"width\":{},\"pinned\":{}}}",column.id.0,column.width,column.pinned)).collect::<Vec<_>>().join(",");
+        let scroll=model.scroll_offset();
+        Some(format!("{{\"name\":{},\"keys\":[{keys}],\"logical\":{},\"materialized\":{},\"scroll\":[{},{}],\"rows\":[{rows}],\"hits\":[{hits}],\"columns\":[{columns}]}}",string(name),frame.stats.logical_rows,frame.stats.materialized_rows,scroll.0,scroll.1))
+    }).collect::<Vec<_>>().join(",");
+    format!(
+        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}]}}"
+    )
 }

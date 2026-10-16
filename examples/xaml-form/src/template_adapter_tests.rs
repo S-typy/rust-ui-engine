@@ -8,6 +8,160 @@ use std::{cell::RefCell, rc::Rc};
 const SIZE: Size = Size::new(640.0, 480.0);
 
 #[test]
+fn compiled_data_form_keeps_editor_identity_and_saves_one_typed_row() {
+    use rust_desktop_ui_controls::{DataFormArrangement, DataFormCommit};
+    use rust_desktop_ui_data::{
+        CellValue, CollectionAdapter, DataRow, DataSource, DataTable, FieldSchema, FieldType,
+        TableSchema,
+    };
+    let schema = TableSchema::new(vec![
+        FieldSchema::new("count", FieldType::Integer),
+        FieldSchema::new("name", FieldType::Text),
+    ])
+    .unwrap();
+    let source = Rc::new(RefCell::new(
+        DataSource::new(CollectionAdapter::new(
+            DataTable::new(
+                schema,
+                vec![DataRow::new(
+                    7,
+                    vec![
+                        CellValue::Integer(i64::MAX),
+                        CellValue::Text("Original".into()),
+                    ],
+                )],
+            )
+            .unwrap(),
+        ))
+        .unwrap(),
+    ));
+    let markup = parse(
+        r#"<DataForm x:Name="Editor" DataSource="Rows" RowKey="7"><DataForm.Fields><DataFormField FieldName="name" Label="Имя"/><DataFormField FieldName="count" Label="Количество"/></DataForm.Fields></DataForm>"#,
+    );
+    let mut form =
+        Form::new_with_sources(markup, false, None, vec![("Rows".into(), source.clone())]).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let owner = form.find_name("Editor").unwrap();
+    let data_form = form.view.data_forms.get_mut(&owner).unwrap();
+    let editor = data_form.field_editor("count").unwrap();
+    form.ui.set_text(editor, &i64::MIN.to_string()).unwrap();
+    data_form
+        .arrange(
+            &mut form.ui,
+            &[
+                DataFormArrangement {
+                    field: "count".into(),
+                    visible: true,
+                },
+                DataFormArrangement {
+                    field: "name".into(),
+                    visible: false,
+                },
+            ],
+            140.0,
+        )
+        .unwrap();
+    assert_eq!(data_form.field_editor("count"), Some(editor));
+    assert_eq!(
+        data_form.commit(&mut form.ui).unwrap(),
+        DataFormCommit::Saved
+    );
+    assert_eq!(
+        source.borrow().value(7, "count"),
+        Some(&CellValue::Integer(i64::MIN))
+    );
+    assert_eq!(
+        source.borrow().value(7, "name"),
+        Some(&CellValue::Text("Original".into()))
+    );
+}
+
+#[test]
+fn search_query_binding_is_live_and_suggestion_choice_does_not_implicitly_search() {
+    use rust_desktop_ui_controls::{SearchCompletion, SearchEventKind, SearchSuggestion};
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([
+            ("Search", "alpha".into()),
+            ("Locked", false.into()),
+            ("Hint", "Find".into()),
+        ]))
+        .unwrap(),
+    ));
+    let markup = parse(
+        r#"<SearchBox x:Name="Search" Query="{Binding Search}" IsReadOnly="{Binding Locked}" PlaceholderText="{Binding Hint}" ChoicePolicy="FillQuery" MaxLength="20"/>"#,
+    );
+    let mut form = Form::new_with_model(markup, false, Some(context.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let owner = form.find_name("Search").unwrap();
+    let parts = form.ui.search_parts(owner).unwrap();
+    assert!(
+        !form
+            .ui
+            .editor_settings(parts.editor)
+            .unwrap()
+            .commit_on_focus_lost
+    );
+    assert_eq!(form.ui.search_query(owner), Some("alpha"));
+    form.ui
+        .perform_action(
+            parts.editor,
+            rust_desktop_ui_controls::SemanticAction::Focus,
+            None,
+        )
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let old = form.ui.drain_search_suggestion_requests().pop().unwrap();
+    form.ui.set_text(parts.editor, "beta").unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(
+        context.borrow().get("Search").unwrap().as_str(),
+        Some("beta")
+    );
+    assert!(form.ui.drain_search_events().is_empty());
+    assert_eq!(
+        form.ui
+            .complete_search_suggestions(&old, Ok(vec![SearchSuggestion::new("old", "old")]))
+            .unwrap(),
+        SearchCompletion::Stale
+    );
+    let current = form.ui.drain_search_suggestion_requests().pop().unwrap();
+    assert_eq!(current.query(), "beta");
+    assert_eq!(
+        form.ui
+            .complete_search_suggestions(
+                &current,
+                Ok(vec![SearchSuggestion::new("b", "Beta result")])
+            )
+            .unwrap(),
+        SearchCompletion::Applied
+    );
+    form.ui.choose_search_suggestion(owner, "b").unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(
+        context.borrow().get("Search").unwrap().as_str(),
+        Some("Beta result")
+    );
+    let events = form.ui.drain_search_events();
+    assert_eq!(events.len(), 1);
+    assert!(matches!(
+        events[0].kind,
+        SearchEventKind::SuggestionChosen { .. }
+    ));
+    form.ui.submit_search(owner).unwrap();
+    assert!(
+        matches!(form.ui.drain_search_events().as_slice(), [event] if matches!(event.kind, SearchEventKind::SearchRequested { .. }))
+    );
+    context.borrow_mut().set("Locked", true.into()).unwrap();
+    context.borrow_mut().set("Hint", "Locked".into()).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(form.ui.is_read_only(parts.editor), Some(true));
+    assert_eq!(
+        form.ui.editor_settings(parts.editor).unwrap().placeholder,
+        "Locked"
+    );
+}
+
+#[test]
 fn compiled_item_templates_and_multiple_combo_bind_only_accepted_keys() {
     use rust_desktop_ui_controls::{SelectionValidator, SemanticAction};
     let context = Rc::new(RefCell::new(

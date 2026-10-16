@@ -17,6 +17,7 @@ use std::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BindingProperty {
     Text,
+    Query,
     FilterText,
     Header,
     IsExpanded,
@@ -1227,7 +1228,21 @@ impl ControlBindings {
             };
             source_check(value)
         };
-        if binding.target.property == BindingProperty::SelectedValue
+        if binding.target.property == BindingProperty::SelectedKey
+            && ui.tree_settings(binding.target.widget).is_some()
+        {
+            ui.chain_tree_selection_validator(
+                binding.target.widget,
+                SelectionValidator::new(move |keys| {
+                    validate(
+                        keys.first()
+                            .map(|key| DataValue::String(key.clone()))
+                            .unwrap_or(DataValue::Null),
+                    )
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::SelectedValue
             && ui.grid_settings(binding.target.widget).is_some()
         {
             ui.chain_grid_selection_validator(
@@ -1479,6 +1494,10 @@ fn read_property(
         return editor_parser(ui, endpoint).parse(text);
     }
     match endpoint.property {
+        BindingProperty::Query => ui
+            .search_query(id)
+            .map(|query| DataValue::String(query.into()))
+            .ok_or_else(|| invalid("Query requires SearchBox")),
         BindingProperty::FilterText => ui
             .grid_filter(id)
             .map(DataValue::from)
@@ -1514,13 +1533,23 @@ fn read_property(
             .map(DataValue::Bool)
             .ok_or_else(|| invalid("IsIndeterminate requires ProgressBar")),
         BindingProperty::SelectedKey => {
-            if ui.radio_items(id).is_some() {
+            if let Some(settings) = ui.tree_settings(id) {
+                if settings.selection_mode != crate::SelectionMode::Single {
+                    return Err(invalid("Tree SelectedKey requires Single selection"));
+                }
+                Ok(ui
+                    .tree_selected_keys(id)
+                    .unwrap()
+                    .first()
+                    .map(|key| DataValue::String(key.0.to_string()))
+                    .unwrap_or(DataValue::Null))
+            } else if ui.radio_items(id).is_some() {
                 Ok(ui
                     .radio_selected_key(id)
                     .map(DataValue::from)
                     .unwrap_or(DataValue::Null))
             } else {
-                Err(invalid("SelectedKey requires RadioGroup"))
+                Err(invalid("SelectedKey requires RadioGroup or tree"))
             }
         }
         BindingProperty::Value if ui.calendar_selection(id).is_some() => {
@@ -1598,14 +1627,22 @@ fn read_property(
         .into()),
         BindingProperty::IsReadOnly => ui
             .composite_read_only(id)
+            .or_else(|| {
+                ui.search_parts(id)
+                    .and_then(|parts| ui.is_read_only(parts.editor))
+            })
             .or_else(|| ui.is_read_only(id))
             .or_else(|| ui.selection_settings(id).map(|s| s.read_only))
             .or_else(|| ui.grid_settings(id).map(|s| s.is_read_only))
+            .or_else(|| ui.tree_settings(id).map(|s| s.read_only))
             .or_else(|| ui.calendar_settings(id).map(|s| s.is_read_only))
             .map(DataValue::Bool)
             .ok_or_else(|| invalid("IsReadOnly requires an editor or list")),
         BindingProperty::PlaceholderText => {
-            let editor = ui.composite_editor(id).unwrap_or(id);
+            let editor = ui
+                .composite_editor(id)
+                .or_else(|| ui.search_parts(id).map(|parts| parts.editor))
+                .unwrap_or(id);
             ui.editor_settings(editor)
                 .map(|s| s.placeholder.clone().into())
                 .ok_or_else(|| invalid("PlaceholderText requires an editor"))
@@ -1694,6 +1731,9 @@ fn write_property(
         return accepted(outcome);
     }
     match endpoint.property {
+        BindingProperty::Query => ui
+            .set_search_query(id, string(value)?)
+            .map_err(control_error),
         BindingProperty::FilterText => ui
             .set_grid_filter(id, string(value)?)
             .map_err(control_error),
@@ -1734,6 +1774,29 @@ fn write_property(
         BindingProperty::IsIndeterminate => ui
             .set_progress_indeterminate(id, boolean(value)?)
             .map_err(control_error),
+        BindingProperty::SelectedKey if ui.tree_settings(id).is_some() => {
+            if ui.tree_settings(id).unwrap().selection_mode != crate::SelectionMode::Single {
+                return Err(invalid("Tree SelectedKey requires Single selection"));
+            }
+            let key = match value {
+                DataValue::Null => None,
+                DataValue::String(text) => {
+                    let key = text
+                        .parse::<u64>()
+                        .map_err(|_| invalid("Tree key requires canonical u64 text"))?;
+                    if key.to_string() != *text {
+                        return Err(invalid("Tree key requires canonical u64 text"));
+                    }
+                    Some(rust_desktop_ui_treegrid::RowKey(key))
+                }
+                _ => {
+                    return Err(invalid(
+                        "Tree SelectedKey requires canonical u64 text or null",
+                    ));
+                }
+            };
+            ui.set_tree_selected_key(id, key).map_err(control_error)
+        }
         BindingProperty::SelectedKey => ui
             .set_radio_selected_key(
                 id,
@@ -1850,7 +1913,12 @@ fn write_property(
         BindingProperty::IsEnabled => ui.set_enabled(id, boolean(value)?).map_err(control_error),
         BindingProperty::IsReadOnly => {
             let value = boolean(value)?;
-            if let Some(settings) = ui.calendar_settings(id) {
+            if let Some(settings) = ui.tree_settings(id) {
+                ui.set_tree_interaction(id, settings.allow_node_drag, value)
+                    .map_err(control_error)
+            } else if let Some(parts) = ui.search_parts(id) {
+                ui.set_read_only(parts.editor, value).map_err(control_error)
+            } else if let Some(settings) = ui.calendar_settings(id) {
                 let mut settings = settings.clone();
                 settings.is_read_only = value;
                 ui.set_calendar_settings(id, settings)
@@ -1869,7 +1937,12 @@ fn write_property(
             }
         }
         BindingProperty::PlaceholderText => ui
-            .set_placeholder(ui.composite_editor(id).unwrap_or(id), string(value)?)
+            .set_placeholder(
+                ui.composite_editor(id)
+                    .or_else(|| ui.search_parts(id).map(|parts| parts.editor))
+                    .unwrap_or(id),
+                string(value)?,
+            )
             .map_err(control_error),
         BindingProperty::Visibility | BindingProperty::Width | BindingProperty::Height => {
             let mut props = ui

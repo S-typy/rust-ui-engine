@@ -21,7 +21,22 @@ use std::{
 
 mod appearance;
 mod choices;
+mod data_form;
+mod data_form_model;
+#[cfg(test)]
+mod data_form_tests;
 mod grid;
+pub use data_form::DataForm;
+pub use data_form_model::{
+    DataFormArrangement, DataFormCommit, DataFormEditorFactory, DataFormFactories, DataFormField,
+    DataFormIssue, DataFormSettings,
+};
+mod tree;
+mod tree_input;
+mod tree_scroll;
+#[cfg(test)]
+mod tree_tests;
+pub use tree::{TreeControlSettings, TreeSelectionChanged, TreeSourceHandle};
 mod images;
 mod text_display;
 pub use text_display::{InlineSpan, TextDisplaySettings, TextTrimming, validate_text_inlines};
@@ -44,6 +59,16 @@ pub use password::{
 };
 mod list_item_templates;
 mod list_items;
+mod search;
+mod search_model;
+#[cfg(test)]
+mod search_tests;
+pub use search::SearchBox;
+pub use search_model::{
+    MAX_SEARCH_QUERY_BYTES, MAX_SEARCH_RESULT_BYTES, SearchBoxSettings, SearchChoicePolicy,
+    SearchCompletion, SearchEvent, SearchEventKind, SearchStatus, SearchSuggestion,
+    SearchSuggestionRequest, SearchTarget,
+};
 #[cfg(test)]
 mod list_items_tests;
 mod list_virtualization;
@@ -215,6 +240,7 @@ pub enum Role {
     ProgressBar,
     Slider,
     Grid,
+    Tree,
     ToolBar,
     MenuBar,
     Link,
@@ -475,6 +501,7 @@ pub struct Controls {
     combos: combo_selection::ComboState,
     lookups: lookup::LookupState,
     list_items: list_items::ListItemsState,
+    searches: search::SearchState,
     calendars: calendar_view::CalendarState,
     temporal_popups: date_time_popup::TemporalPopupState,
     bars: bars::BarsState,
@@ -483,6 +510,7 @@ pub struct Controls {
     splitter_drag: Option<splitter::SplitterDrag>,
     images: images::ImageControls,
     grids: HashMap<WidgetId, grid::GridState>,
+    trees: tree::Trees,
     data_sources: HashMap<String, DataSourceHandle>,
     data_wake: grid::DataWake,
     pub runtime: UiRuntime,
@@ -571,6 +599,7 @@ impl Controls {
             combos: Default::default(),
             lookups: Default::default(),
             list_items: Default::default(),
+            searches: Default::default(),
             calendars: Default::default(),
             temporal_popups: Default::default(),
             bars: Default::default(),
@@ -579,6 +608,7 @@ impl Controls {
             splitter_drag: None,
             images: Default::default(),
             grids: HashMap::new(),
+            trees: tree::Trees::default(),
             data_sources: HashMap::new(),
             data_wake: grid::DataWake::default(),
             runtime,
@@ -976,6 +1006,7 @@ impl Controls {
         id: WidgetId,
         settings: EditorSettings,
     ) -> Result<(), ControlError> {
+        self.preflight_search_settings(id, &settings)?;
         self.preflight_editor_text(id, &settings.placeholder)?;
         let Some(Control {
             kind: Kind::TextBox(document),
@@ -1789,6 +1820,7 @@ impl Controls {
     /// ListBox's required content cannot be removed individually; remove their
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.preflight_search_removal(id)?;
         self.preflight_bar_removal(id)?;
         self.preflight_flyout_removal(id)?;
         self.preflight_memo_removal(id)?;
@@ -1833,6 +1865,7 @@ impl Controls {
         self.retain_rich_controls();
         self.retain_images();
         self.grids.retain(|id, _| self.controls.contains_key(id));
+        self.prune_trees();
         self.sync_data_wakes()?;
         self.groups.retain(|id, _| self.controls.contains_key(id));
         self.retain_status_controls()?;
@@ -1841,6 +1874,7 @@ impl Controls {
         self.retain_sliders()?;
         self.prune_button_contents();
         self.prune_list_item_content();
+        self.prune_searches()?;
         self.retain_progress_animations();
         self.layout.retain_measures(self.runtime.tree());
         self.retain_splitters()?;
@@ -1917,7 +1951,7 @@ impl Controls {
         self.controls.contains_key(&id) && self.effective_enabled(id)
     }
     fn activation_available(&self, id: WidgetId) -> bool {
-        if self.editor_button_blocked(id) {
+        if self.editor_button_blocked(id) || self.search_button_blocked(id) {
             return false;
         }
         if self.expander_transition_blocks(id) || self.bar_owner_blocks(id) {
@@ -1948,7 +1982,7 @@ impl Controls {
                 .is_none_or(|parent| self.effective_enabled(parent))
     }
     fn effective_enabled(&self, mut id: WidgetId) -> bool {
-        if self.editor_button_blocked(id) {
+        if self.editor_button_blocked(id) || self.search_button_blocked(id) {
             return false;
         }
         if self.expander_transition_blocks(id) || self.bar_owner_blocks(id) {
@@ -1970,6 +2004,7 @@ impl Controls {
                 .map_or(node.props.enabled, |control| {
                     control.enabled
                         && !self.editor_button_blocked(id)
+                        && !self.search_button_blocked(id)
                         && control
                             .metadata_command()
                             .is_none_or(|command| self.commands.enabled(command))
@@ -2097,6 +2132,7 @@ impl Controls {
                     id,
                     control.enabled
                         && !self.editor_button_blocked(id)
+                        && !self.search_button_blocked(id)
                         && control
                             .metadata_command()
                             .is_none_or(|command| self.commands.enabled(command)),
@@ -2195,6 +2231,7 @@ impl Controls {
         self.refresh_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
+        self.sync_searches()?;
         self.sync_passwords()?;
         self.poll_editor_validation()?;
         self.sync_memos()?;
@@ -2248,6 +2285,7 @@ impl Controls {
             self.sync_status_bars()?;
             self.sync_sliders()?;
             self.sync_grids()?;
+            self.sync_trees()?;
             let scrolls: Vec<_> = self
                 .controls
                 .iter()
@@ -2292,6 +2330,7 @@ impl Controls {
         self.cancel_tab_drag()?;
         self.cancel_splitter_interaction()?;
         self.cancel_grid_pointers();
+        self.cancel_tree_pointers();
         self.cancel_zoom_gesture()?;
         self.selecting = None;
         self.scroll_drag = None;
@@ -2370,6 +2409,7 @@ impl Controls {
             || self.password_before_input(&event)?
             || self.memo_before_input(&event)?
             || self.editor_scroll_before_input(&event)?
+            || self.search_before_input(&event)?
             || self.flyout_before_input(&event)?
             || self.bars_before_input(&event)?
             || self.tab_before_input(&event)?
@@ -2377,7 +2417,10 @@ impl Controls {
             return Ok(());
         }
         self.repeat_before_input(&event);
-        if self.slider_before_input(&event)? || self.grid_before_input(&event)? {
+        if self.slider_before_input(&event)?
+            || self.grid_before_input(&event)?
+            || self.tree_before_input(&event)?
+        {
             return Ok(());
         }
         if self.splitter_before_input(&event)? || self.scroll_before_input(&event)? {
@@ -2611,6 +2654,9 @@ impl Controls {
             return Ok(());
         }
         if self.activate_password(id)? {
+            return Ok(());
+        }
+        if self.activate_search(id)? {
             return Ok(());
         }
         if self.activate_status_grip(id)? {

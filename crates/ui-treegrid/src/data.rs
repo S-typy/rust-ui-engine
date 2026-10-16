@@ -1,3 +1,4 @@
+use crate::TreeMoveTarget;
 use std::{error::Error, fmt};
 
 /// Stable application-defined identity. It must survive sort/filter/reload.
@@ -96,6 +97,23 @@ pub trait TreeDataSource {
     fn parent(&self, row: RowKey) -> Option<RowKey>;
     fn position(&self, row: RowKey) -> Option<usize>;
     fn cell(&self, row: RowKey, column: ColumnId) -> String;
+
+    /// Changes whenever hierarchy or displayed data changes. Sources returning
+    /// the default zero require an explicit host refresh after external writes.
+    fn revision(&self) -> u64 {
+        0
+    }
+    /// Read-only permission and structural validation. The default source
+    /// cannot move nodes; no sequential or copy/delete fallback is performed.
+    fn validate_move(&self, _rows: &[RowKey], _target: TreeMoveTarget) -> Result<(), String> {
+        Err("data source does not support node moves".into())
+    }
+    /// An atomic reorder/reparent operation. On failure the complete source,
+    /// including revision, must remain unchanged. Successful writes must
+    /// preserve a valid indexed graph and every stable key.
+    fn move_nodes(&mut self, _rows: &[RowKey], _target: TreeMoveTarget) -> Result<(), String> {
+        Err("data source does not support node moves".into())
+    }
 
     fn editable(&self, _row: RowKey, _column: ColumnId) -> bool {
         false

@@ -42,6 +42,7 @@ impl Controls {
         id: WidgetId,
         text: &str,
     ) -> Result<(), ControlError> {
+        self.preflight_search_text(id, text)?;
         let style = *self
             .edit_box_style(id)
             .ok_or_else(|| ControlError::Invalid("Control is not a TextBox".into()))?;

@@ -24,6 +24,7 @@ pub(super) fn context_path(parent: &str, child: Option<&str>) -> String {
 fn property(name: &str) -> Result<BindingProperty, String> {
     Ok(match name {
         "Text" | "Content" => BindingProperty::Text,
+        "Query" => BindingProperty::Query,
         "Header" => BindingProperty::Header,
         "IsExpanded" => BindingProperty::IsExpanded,
         "SelectedIndex" => BindingProperty::SelectedIndex,

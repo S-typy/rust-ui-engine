@@ -22,6 +22,9 @@ pub(crate) struct Form {
     data_editors: Option<crate::data_editors_model::State>,
     ribbon_workspace: Option<crate::ribbon_workspace_model::State>,
     selection: Option<crate::selection_model::State>,
+    search: Option<crate::search_model::State>,
+    data_form: Option<crate::data_form_model::State>,
+    tree: Option<crate::tree_model::State>,
     pub(crate) ui: Controls,
     pub(crate) view: MountedView,
     pub(crate) accessible: Accessibility,
@@ -84,6 +87,9 @@ impl Form {
         crate::data_editors_model::register(&mut ui);
         crate::ribbon_workspace_model::register(&mut ui);
         crate::selection_model::register(&mut ui);
+        crate::search_model::register(&mut ui);
+        crate::data_form_model::register(&mut ui);
+        let tree_source = crate::tree_model::register(&mut ui)?;
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
         for (id, label) in [
@@ -129,7 +135,7 @@ impl Form {
         ui.update(Size::new(definition.width as f32, definition.height as f32))
             .map_err(err)?;
         let root = ui.root();
-        let view = if let Some(context) = context {
+        let mut view = if let Some(context) = context {
             let mut converters = rust_desktop_ui_controls::BindingConverterRegistry::default();
             converters
                 .register(
@@ -211,12 +217,18 @@ impl Form {
         let data_editors = crate::data_editors_model::install(&mut ui, &view)?;
         let ribbon_workspace = crate::ribbon_workspace_model::State::install(&view);
         let selection = crate::selection_model::State::install(&mut ui, &view)?;
+        let search = crate::search_model::State::install(&mut ui, &view)?;
+        let data_form = crate::data_form_model::State::install(&mut ui, &mut view)?;
+        let tree = crate::tree_model::State::install(&mut ui, &view, tree_source)?;
         Ok(Self {
             workspace: crate::workspace_model::WorkspaceState::default(),
             batch,
             data_editors,
             ribbon_workspace,
             selection,
+            search,
+            data_form,
+            tree,
             ui,
             view,
             accessible: Accessibility::default(),
@@ -338,6 +350,21 @@ impl Form {
                 continue;
             }
             if let Some(state) = &mut self.selection
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.search
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.data_form
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.tree
                 && state.command(&mut self.ui, &invocation.id.0)?
             {
                 continue;
@@ -525,6 +552,15 @@ impl Form {
         if let Some(state) = &self.selection {
             state.refresh(&mut self.ui)?;
         }
+        if let Some(state) = &mut self.search {
+            state.refresh(&mut self.ui)?;
+        }
+        if let Some(state) = &mut self.data_form {
+            state.refresh(&mut self.ui, &mut self.view)?;
+        }
+        if let Some(state) = &mut self.tree {
+            state.refresh(&mut self.ui)?;
+        }
         self.ui.drain_activated();
         let focus = self.ui.runtime.focused();
         if focus != self.last_focus {
@@ -650,6 +686,9 @@ impl DesktopApp for Form {
                 || self.data_editors.is_some()
                 || self.ribbon_workspace.is_some()
                 || self.selection.is_some()
+                || self.search.is_some()
+                || self.data_form.is_some()
+                || self.tree.is_some()
                 || self.find_name("WorkspaceTabs").is_some()
                 || self.find_name("DialogEditor").is_some()
             {
@@ -773,7 +812,13 @@ impl DesktopApp for Form {
             PlatformEvent::ImeCommit(text) => self.ui.ime_commit(&text).map_err(err)?,
             PlatformEvent::ImeCancel => self.ui.cancel_preedit(),
             PlatformEvent::Tick => {
-                redraw = self.ui.tick(Instant::now()).map_err(err)?;
+                let now = Instant::now();
+                redraw = self.ui.tick(now).map_err(err)?
+                    || self
+                        .search
+                        .as_ref()
+                        .and_then(|state| state.deadline())
+                        .is_some_and(|at| at <= now);
             }
             PlatformEvent::Accessibility(request) => {
                 self.suppress_text = false;
@@ -834,6 +879,9 @@ impl DesktopApp for Form {
     fn wake_after(&self) -> Option<Duration> {
         self.ui
             .next_deadline()
+            .into_iter()
+            .chain(self.search.as_ref().and_then(|state| state.deadline()))
+            .min()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
     fn accessibility(&mut self, scale: f32) -> accesskit::TreeUpdate {

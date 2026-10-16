@@ -1,4 +1,10 @@
-# TreeGrid alpha
+# TreeView и TreeGrid
+
+Retained-компоненты `Controls::tree_view` и `Controls::tree_grid` используют
+общую модель `TreeGrid`. Первый показывает иерархию без заголовка колонок,
+второй — строки и колонки. Оба принимают `TreeSourceHandle`, сохраняют выбор
+по ключам и материализуют только viewport. Детали подключения к форме,
+XAML, bindings и доступности описаны в [Tree controls](tree-controls.md).
 
 Для плоских таблиц из коллекций Rust и SQLite доступен retained
 [GridControl](grid-control.md) с общим редактором, bindings и XAML.
@@ -52,7 +58,7 @@ scene.append(&frame.scene);
   сохраняется при сворачивании предка; выбранные скрытые строки сохраняют ключи.
 - Header остаётся на фиксированной вертикальной позиции. Pinned columns
   закреплены слева; scrolling cells обрезаются по границе pinned области.
-- Высота строки в alpha фиксированная (`GridConfig::row_height`, default 28).
+- Высота строки фиксированная (`GridConfig::row_height`, default 28).
   Header — 32, font size — 14, overscan — 2 строки с каждой стороны.
 - Циклы и глубина выше 256 при expansion отвергаются. Источник обязан соблюдать
   согласованность parent/child/position и уникальность RowKey.

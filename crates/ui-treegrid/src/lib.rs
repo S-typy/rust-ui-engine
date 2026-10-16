@@ -7,8 +7,12 @@
 mod data;
 mod index;
 mod model;
+mod source;
+mod structure;
 mod view;
 
 pub use data::*;
 pub use model::*;
+pub use source::*;
+pub use structure::*;
 pub use view::*;
