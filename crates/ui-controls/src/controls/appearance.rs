@@ -194,11 +194,8 @@ impl Controls {
                 })
             })
             .collect();
-        for (id, label, style, width) in labels {
-            let height = self
-                .measure_styled_text(&label, width, style)?
-                .height
-                .ceil();
+        for (id, _, _, width) in labels {
+            let height = self.measure_text_display(id, width)?.height.ceil();
             if self
                 .runtime
                 .tree()

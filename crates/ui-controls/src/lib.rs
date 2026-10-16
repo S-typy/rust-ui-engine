@@ -7,9 +7,15 @@ mod control_bindings;
 mod controls;
 mod docking;
 mod editor;
+mod localization;
 mod primitives;
 mod ribbon;
 mod theme;
+pub use localization::*;
+mod editor_async;
+pub use editor_async::*;
+mod binding_expression;
+pub use binding_expression::*;
 
 pub use binding::*;
 pub use button::*;

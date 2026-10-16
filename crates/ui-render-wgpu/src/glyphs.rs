@@ -1,7 +1,7 @@
 //! A bounded GPU atlas and instanced glyph renderer. CPU shaping is in ui-text.
 use crate::{GpuError, linear_rgba, linear_to_srgb, srgb_to_linear};
 use bytemuck::{Pod, Zeroable};
-use rust_desktop_ui_core::{Rect, TextRun};
+use rust_desktop_ui_core::{Rect, Scene};
 use rust_desktop_ui_text::{GlyphBitmap, GlyphKey, TextEngine};
 use std::{
     collections::{HashMap, HashSet},
@@ -367,7 +367,7 @@ impl GlyphRenderer {
 
     pub fn prepare(
         &mut self,
-        texts: &[TextRun],
+        scene: &Scene,
         scale: f32,
         viewport: Rect,
         queue: &wgpu::Queue,
@@ -375,14 +375,14 @@ impl GlyphRenderer {
         self.instances.clear();
         self.ranges.clear();
         self.missing_glyphs = 0;
-        let mut runs = Vec::with_capacity(texts.len());
+        let mut runs = Vec::with_capacity(scene.texts.len());
         let mut glyph_count = 0;
         let mut raster_allocations = HashSet::new();
         let mut raster_bytes = 0usize;
-        for text in texts {
+        for (index, text) in scene.texts.iter().enumerate() {
             let run = self
                 .engine
-                .prepare(text, scale)
+                .prepare_styled(text, scene.text_spans(index), scale)
                 .map_err(|error| GpuError::Text(error.to_string()))?;
             glyph_count += run.glyphs.len();
             if glyph_count > MAX_GLYPHS {

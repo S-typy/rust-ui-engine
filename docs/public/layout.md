@@ -10,7 +10,7 @@ constraints and margin. Zero-sized viewports are valid.
 
 | Panel | Behavior |
 |---|---|
-| `Leaf` | No children; intrinsic size is zero without explicit size/minimum. |
+| `Leaf` | No children; explicit size/minimum or a registered intrinsic measure callback. |
 | `Stack(Axis)` | A single line; child main-axis sizes do not grow or shrink. |
 | `Flex(Axis)` | A single line with `flex_grow` and `flex_shrink` distribution. |
 | `Wrap(Axis)` | Flex lines wrap when the available main-axis space is exhausted. |
@@ -116,11 +116,50 @@ Collapsed nodes are also excluded from painting and input, regardless of the
 visual translation, painting and hit testing are applied by the retained runtime
 after arrangement. Paint border width does not change layout padding or size.
 
-Text measurement is separate: an application/control measures text and assigns
-appropriate dimensions. The adapter does not call a text engine for intrinsic
-Leaf sizing. Geometry remains fractional until the host applies DPI; the adapter
-does not round to physical pixels. See [retained runtime](retained-ui.md) and
+Text measurement is separate: an application/control may measure text and assign
+dimensions, or register a leaf callback as described below. The adapter itself
+does not depend on a text engine. Geometry remains fractional until the host
+applies DPI; the adapter does not round to physical pixels. See [retained runtime](retained-ui.md) and
 [text preparation](text.md) for those coordinate contracts.
+
+## Intrinsic measurement for custom controls
+
+`TaffyLayout::set_measure(widget, callback)` registers application-owned intrinsic
+content measurement. The callback receives `MeasureInput`: known width/height
+and `MeasureSpace::{Definite, MinContent, MaxContent}` on each axis. It returns
+`Result<Size, LayoutError>` in logical content pixels, excluding padding. Layout
+applies explicit dimensions, min/max constraints, padding, margins and alignment.
+Known dimensions override the callback's returned axis. Unregistered leaves
+measure as zero intrinsic content.
+
+Measurement may be requested several times with different constraints during
+one layout. The callback must be deterministic for the current content and must
+not modify the retained tree. Negative or non-finite results reject the complete
+layout pass and preserve the previous successful scene. A callback's returned
+error propagates through the same path; callbacks must not panic.
+
+`Controls::set_measure` accepts only leaf layout nodes and automatically requests
+layout. `Controls::invalidate_measure(widget)` requests fresh measurement when
+external content changes. `remove_measure` restores the default measurement
+without replacing the widget. At most 4096 callbacks are retained; removed nodes
+release callbacks and detached nodes retain them. Paint-only updates do not call
+measure callbacks.
+
+For applications using `UiRuntime` directly, `UiRuntime::invalidate_measure`
+provides the same invalidation. `MeasuredLayout::new(callback)` implements
+`LayoutEngine` with a callback receiving both the `WidgetId` and `MeasureInput`.
+`TaffyLayout::compute_with_measure` supplies a one-pass callback that overrides
+the registered callbacks for that computation. No backend layout types cross
+these interfaces. [SplitContainer and scrolling](splitter-scroll.md) use the
+same retained geometry, clipping and visibility rules.
+
+`Controls::update` settles text height, composite hosts, scroll clamping and
+anchored overlays before publishing a scene. One successful update therefore
+contains the final geometry of nested splitters and slider thumbs after text
+reflow. Settlement is bounded to twice the supported layout depth plus eight
+passes. Circular intrinsic-size rules return `RuntimeError::InvalidLayout`
+instead of silently publishing intermediate geometry. Change or remove the
+conflicting rule and call `update` again to recover.
 
 The underlying algorithms and semantics are documented by
 [Taffy](https://docs.rs/taffy/0.14.0/taffy/).

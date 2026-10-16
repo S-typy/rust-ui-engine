@@ -23,12 +23,23 @@ pub enum UpdateSourceTrigger {
 /// are literals converted to the target property's type by that host.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct BindingDefinition {
+    pub source_line: u32,
+    pub source_column: u32,
+    pub inputs: Vec<BindingInputDefinition>,
+    pub expression: Option<String>,
     pub path: String,
     pub element_name: Option<String>,
     pub mode: BindingMode,
     pub update_source_trigger: UpdateSourceTrigger,
     pub converter: Option<String>,
     pub fallback_value: Option<String>,
+}
+
+/// An explicit dependency in a MultiBinding. Data paths inherit the surrounding context.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct BindingInputDefinition {
+    pub path: String,
+    pub element_name: Option<String>,
 }
 
 pub(crate) fn valid_identifier(value: &str) -> bool {
@@ -76,8 +87,13 @@ pub(crate) fn parse_binding(
 ) -> Result<BindingDefinition, Diagnostic> {
     let fail = |message: &str| at_attribute(document, attribute, message);
     let source = attribute.value().trim();
+    let multiple = source.starts_with("{MultiBinding");
     let body = source
-        .strip_prefix("{Binding")
+        .strip_prefix(if multiple {
+            "{MultiBinding"
+        } else {
+            "{Binding"
+        })
         .and_then(|s| s.strip_suffix('}'))
         .filter(|body| body.starts_with(char::is_whitespace))
         .ok_or_else(|| fail("expected {Binding Path=Name, ...}"))?;
@@ -86,11 +102,14 @@ pub(crate) fn parse_binding(
             "nested markup extensions are not supported in Binding",
         ));
     }
+    let location = at_attribute(document, attribute, "");
     let mut result = BindingDefinition {
+        source_line: location.line,
+        source_column: location.column,
         update_source_trigger: default_trigger,
         ..Default::default()
     };
-    if editable {
+    if editable && !multiple {
         result.mode = BindingMode::TwoWay;
     }
     let mut seen = std::collections::HashSet::new();
@@ -133,8 +152,38 @@ pub(crate) fn parse_binding(
             value
         };
         match key {
-            "Path" if valid_path(value) => result.path = value.into(),
-            "ElementName" if valid_identifier(value) => result.element_name = Some(value.into()),
+            "Path" if !multiple && valid_path(value) => result.path = value.into(),
+            "Paths" if multiple => {
+                for path in value.split(';') {
+                    let path = path.trim();
+                    let (element_name, path) = if let Some(element) = path.strip_prefix('#') {
+                        let (name, path) = element
+                            .split_once('.')
+                            .ok_or_else(|| fail("Element input requires #Name.Property"))?;
+                        if !valid_identifier(name) {
+                            return Err(fail("Invalid multi-binding ElementName"));
+                        }
+                        (Some(name.into()), path)
+                    } else {
+                        (None, path)
+                    };
+                    if !valid_path(path) || result.inputs.len() >= 32 {
+                        return Err(fail(
+                            "MultiBinding requires 1..32 valid Paths separated by ;",
+                        ));
+                    }
+                    result.inputs.push(BindingInputDefinition {
+                        path: path.into(),
+                        element_name,
+                    });
+                }
+            }
+            "Expression" if multiple && !value.is_empty() && value.len() <= 4096 => {
+                result.expression = Some(value.into())
+            }
+            "ElementName" if !multiple && valid_identifier(value) => {
+                result.element_name = Some(value.into())
+            }
             "Mode" => {
                 result.mode = match value {
                     "OneWay" => BindingMode::OneWay,
@@ -157,8 +206,14 @@ pub(crate) fn parse_binding(
             _ => return Err(fail("unknown or invalid Binding argument")),
         }
     }
-    if result.path.is_empty() {
-        return Err(fail("Binding requires a nonempty Path"));
+    if (!multiple && result.path.is_empty()) || (multiple && result.inputs.is_empty()) {
+        return Err(fail("Binding requires Path; MultiBinding requires Paths"));
+    }
+    if multiple && !matches!(result.mode, BindingMode::OneWay | BindingMode::OneTime) {
+        return Err(fail("MultiBinding supports OneWay and OneTime only"));
+    }
+    if multiple && result.expression.is_none() && result.converter.is_none() {
+        return Err(fail("MultiBinding requires Expression or Converter"));
     }
     if !matches!(
         result.mode,

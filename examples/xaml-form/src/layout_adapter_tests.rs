@@ -34,6 +34,37 @@ fn assert_rect(actual: Rect, expected: Rect) {
 }
 
 #[test]
+fn horizontal_sliders_stretch_with_margins_and_resize_without_changing_explicit_widths() {
+    let mut form = form(
+        r#"<StackPanel>
+        <Slider x:Name="Stretch" Margin="10,0,20,0"/>
+        <RangeSlider x:Name="Range" Margin="10,0,20,0"/>
+        <Slider x:Name="Fixed" Width="120"/>
+        <Slider x:Name="Left" HorizontalAlignment="Left"/>
+        <Slider x:Name="Vertical" Orientation="Vertical"/>
+    </StackPanel>"#,
+        Size::new(600.0, 600.0),
+    );
+    for width in [600.0, 360.0] {
+        form.update(Size::new(width, 600.0), 1.0).unwrap();
+        for name in ["Stretch", "Range"] {
+            let rect = bounds(&form, name);
+            assert!(
+                (rect.width - (width - 30.0)).abs() < 0.01,
+                "{name}: {rect:?}"
+            );
+            assert_eq!(rect.x, 10.0);
+        }
+        assert_eq!(bounds(&form, "Fixed").width, 120.0);
+        assert_eq!(bounds(&form, "Left").width, 160.0);
+        assert_eq!(
+            bounds(&form, "Vertical").width,
+            form.ui.theme().tokens().control_height
+        );
+    }
+}
+
+#[test]
 fn border_padding_and_stroke_reserve_space_and_paint_rounded_surface() {
     let size = Size::new(400.0, 300.0);
     let form = form(

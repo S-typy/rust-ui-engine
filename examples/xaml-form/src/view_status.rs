@@ -64,17 +64,25 @@ impl MountedView {
                 }
                 Ok(id)
             }
-            ElementKind::ProgressBar(progress) => ui
-                .progress_bar(
-                    parent,
-                    ProgressBarSettings {
-                        minimum: progress.minimum,
-                        maximum: progress.maximum,
-                        value: progress.value,
-                    },
-                    style,
-                )
-                .map_err(err),
+            ElementKind::ProgressBar(progress) => {
+                let id = ui
+                    .progress_bar(
+                        parent,
+                        ProgressBarSettings {
+                            minimum: progress.minimum,
+                            maximum: progress.maximum,
+                            value: progress.value,
+                        },
+                        style,
+                    )
+                    .map_err(err)?;
+                ui.set_progress_indeterminate(id, progress.is_indeterminate)
+                    .map_err(err)?;
+                if progress.reduced_motion {
+                    ui.set_reduced_motion(true);
+                }
+                Ok(id)
+            }
             ElementKind::ZoomControl(zoom) => ui
                 .zoom_control(
                     parent,

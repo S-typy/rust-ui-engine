@@ -41,10 +41,16 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         return true;
     }
     match kind {
+        ElementKind::Slider(_) => name == "Value",
+        ElementKind::RangeSlider(_) => matches!(name, "LowerValue" | "UpperValue"),
         ElementKind::GridControl(_) => {
             matches!(name, "FilterText" | "SelectedValue" | "IsReadOnly")
         }
-        ElementKind::ProgressBar(_) | ElementKind::ZoomControl(_) => name == "Value",
+        ElementKind::ProgressBar(_) | ElementKind::BusyIndicator(_) => {
+            matches!(name, "Value" | "IsIndeterminate")
+        }
+        ElementKind::ZoomControl(_) => name == "Value",
+        ElementKind::RadioGroup(_) => matches!(name, "ItemsSource" | "SelectedKey"),
         ElementKind::GroupBox(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::Expander(_) => matches!(name, "Header" | "IsExpanded"),
         ElementKind::TabbedGroup(_) => name == "SelectedIndex",
@@ -58,7 +64,10 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         ElementKind::Button(_) | ElementKind::DropDownButton(_) | ElementKind::SplitButton(_) => {
             name == "Content"
         }
-        ElementKind::ToggleButton(_) | ElementKind::CheckBox(_) | ElementKind::RadioButton(_) => {
+        ElementKind::ToggleButton(_)
+        | ElementKind::CheckBox(_)
+        | ElementKind::Switch(_)
+        | ElementKind::RadioButton(_) => {
             matches!(name, "Content" | "IsChecked")
         }
         ElementKind::ListBox(_) | ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => {
@@ -287,8 +296,48 @@ pub(super) fn property(
     attr: Attribute<'_, '_>,
     kind: &mut ElementKind,
 ) -> Result<bool, Diagnostic> {
+    if let ElementKind::Expander(expander) = kind {
+        match attr.name() {
+            "ExpandDirection" => {
+                expander.expand_direction = match attr.value() {
+                    "Down" => ExpandDirectionDefinition::Down,
+                    "Up" => ExpandDirectionDefinition::Up,
+                    "Left" => ExpandDirectionDefinition::Left,
+                    "Right" => ExpandDirectionDefinition::Right,
+                    _ => {
+                        return Err(at_attribute(
+                            document,
+                            attr,
+                            "ExpandDirection must be Down/Up/Left/Right",
+                        ));
+                    }
+                };
+                return Ok(true);
+            }
+            "AnimationDurationMs" => {
+                expander.animation_duration_ms = attr
+                    .value()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| *n <= 1000)
+                    .ok_or_else(|| {
+                        at_attribute(document, attr, "AnimationDurationMs must be 0..1000")
+                    })?;
+                return Ok(true);
+            }
+            _ => {}
+        }
+    }
     let metric = || editor_metric(document, attr, MAX_DIMENSION, true);
     match kind {
+        ElementKind::RadioGroup(selection) => {
+            if attr.name() == "SelectedKey" {
+                selection.selected_value = Some(attr.value().into());
+                Ok(true)
+            } else {
+                selection_property(document, attr, selection)
+            }
+        }
         ElementKind::GridControl(grid) => {
             match attr.name() {
                 "DataSource" => grid.data_source = attr.value().into(),
@@ -316,8 +365,10 @@ pub(super) fn property(
             };
             Ok(true)
         }
-        ElementKind::ProgressBar(progress) => {
+        ElementKind::ProgressBar(progress) | ElementKind::BusyIndicator(progress) => {
             match attr.name() {
+                "IsIndeterminate" => progress.is_indeterminate = boolean(document, attr)?,
+                "ReducedMotion" => progress.reduced_motion = boolean(document, attr)?,
                 "Minimum" => progress.minimum = finite_number(document, attr)?,
                 "Maximum" => progress.maximum = finite_number(document, attr)?,
                 "Value" => progress.value = finite_number(document, attr)?,
@@ -755,6 +806,44 @@ pub(super) fn parse_children(
             return Err(at_node(child, "unsupported child namespace"));
         }
         let name = child.tag_name().name();
+        if matches!(name, "GroupBox.HeaderTemplate" | "Expander.HeaderTemplate") {
+            let belongs = matches!(
+                (&*kind, name),
+                (ElementKind::GroupBox(_), "GroupBox.HeaderTemplate")
+                    | (ElementKind::Expander(_), "Expander.HeaderTemplate")
+            );
+            if !belongs || !properties.insert(name) || child.attributes().len() != 0 {
+                return Err(at_node(child, "Invalid or duplicate header template"));
+            }
+            let mut header = None;
+            for entry in child.children() {
+                if entry.is_element() {
+                    if header.is_some() {
+                        return Err(at_node(entry, "HeaderTemplate requires one child"));
+                    }
+                    *count += 1;
+                    header = Some(Box::new(parse_element(
+                        entry,
+                        depth + 2,
+                        parent,
+                        count,
+                        names,
+                        groups,
+                    )?));
+                } else {
+                    require_empty_content(entry)?;
+                }
+            }
+            if header.is_none() {
+                return Err(at_node(child, "HeaderTemplate requires one child"));
+            }
+            match kind {
+                ElementKind::GroupBox(g) => g.header_content = header,
+                ElementKind::Expander(g) => g.header_content = header,
+                _ => unreachable!(),
+            }
+            continue;
+        }
         let property = matches!(
             name,
             "Grid.RowDefinitions"
@@ -880,7 +969,9 @@ pub(super) fn parse_children(
                     }
                     group.tabs.push(tab);
                 }
-                ElementKind::ListBox(selection) | ElementKind::ComboBox(selection) => {
+                ElementKind::ListBox(selection)
+                | ElementKind::ComboBox(selection)
+                | ElementKind::RadioGroup(selection) => {
                     *count += 1;
                     selection.items.push(item(child)?);
                 }
@@ -1027,7 +1118,7 @@ pub(super) fn validate(
             validate_grid_control(grid).map_err(|message| at_node(node, message))?;
             validate_grid_control_bindings(common).map_err(|message| at_node(node, message))?;
         }
-        ElementKind::ProgressBar(progress) => {
+        ElementKind::ProgressBar(progress) | ElementKind::BusyIndicator(progress) => {
             validate_progress_bar(progress).map_err(|message| at_node(node, message))?;
             if common.bindings.get("Value").is_some_and(|binding| {
                 !matches!(binding.mode, BindingMode::OneWay | BindingMode::OneTime)

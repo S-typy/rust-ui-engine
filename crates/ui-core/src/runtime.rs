@@ -186,6 +186,13 @@ impl UiRuntime {
     pub fn tree(&self) -> &UiTree {
         &self.tree
     }
+    /// Request fresh intrinsic measurement after application-owned leaf
+    /// content changes. Widget identity, focus and the last valid scene remain
+    /// intact until the next successful layout update.
+    pub fn invalidate_measure(&mut self, id: WidgetId) -> Result<(), RuntimeError> {
+        self.tree.mark_dirty(id, DirtyFlags::MEASURE)?;
+        Ok(())
+    }
     pub fn scene(&self) -> &Scene {
         &self.scene
     }

@@ -222,6 +222,12 @@ impl Controls {
     /// Resolve intrinsic logical dimensions through the same bounded cache used
     /// by image controls. Missing/invalid assets return a decoding diagnostic.
     pub fn image_resource_size(&mut self, name: &str) -> Result<Size, ImageError> {
+        self.image_resource_asset(name)
+            .map(|asset| asset.natural_size())
+    }
+    /// Decode a registered image through the shared bounded cache. The immutable
+    /// bitmap can be shared by a tooltip or another content presenter.
+    pub fn image_resource_asset(&mut self, name: &str) -> Result<ImageAsset, ImageError> {
         let source = self
             .images
             .resources
@@ -236,10 +242,7 @@ impl Controls {
         } else {
             DecodeOptions::default()
         };
-        self.images
-            .cache
-            .load(source, options)
-            .map(|asset| asset.natural_size())
+        self.images.cache.load(source, options)
     }
     fn require_image(&self, id: WidgetId) -> Result<(), ControlError> {
         if self.runtime.tree().contains(id) && self.images.controls.contains_key(&id) {

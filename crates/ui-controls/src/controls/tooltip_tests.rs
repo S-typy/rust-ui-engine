@@ -23,6 +23,73 @@ fn fixture() -> (Controls, WidgetId) {
     (ui, id)
 }
 
+#[test]
+fn rich_tooltip_paints_header_image_and_exposes_help_without_hover() {
+    let (mut ui, id) = fixture();
+    let image = Bitmap::new_rgba8(2, 1, vec![255; 8]).unwrap();
+    ui.set_rich_tooltip(
+        id,
+        RichToolTip {
+            header: "Header".into(),
+            text: "Long body ".repeat(80),
+            icon: Some(IconSymbol::Save),
+            image: Some(image.clone()),
+            image_description: "Example result".into(),
+        },
+    )
+    .unwrap();
+    let semantic = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.id == id)
+        .unwrap();
+    assert!(semantic.tooltip.unwrap().contains("Header\nLong body"));
+    assert_eq!(ui.tooltip_bounds(), None);
+    ui.runtime.apply(Mutation::Focus(Some(id))).unwrap();
+    show(&mut ui, id);
+    assert_eq!(ui.runtime.focused(), Some(id));
+    assert!(
+        ui.scene()
+            .texts
+            .iter()
+            .any(|run| run.text == "Header" && run.weight == 600)
+    );
+    assert!(
+        ui.scene()
+            .images
+            .iter()
+            .any(|primitive| primitive.bitmap.id() == image.id())
+    );
+    let bounds = ui.tooltip_bounds().unwrap();
+    assert!(bounds.width <= 320.0 && bounds.height <= 260.0);
+    let old = ui.rich_tooltip(id).cloned();
+    assert!(
+        ui.set_rich_tooltip(
+            id,
+            RichToolTip {
+                header: "x".repeat(1025),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    assert_eq!(ui.rich_tooltip(id), old.as_ref());
+    assert!(
+        ui.set_rich_tooltip(
+            id,
+            RichToolTip {
+                image: Some(image),
+                ..Default::default()
+            }
+        )
+        .is_err()
+    );
+    ui.set_tooltip(id, "Plain").unwrap();
+    assert!(ui.rich_tooltip(id).is_none());
+    ui.remove(id).unwrap();
+    assert!(ui.tooltip_state.rich.is_empty());
+}
+
 fn center(ui: &Controls, id: WidgetId) -> Point {
     let bounds = ui.runtime.bounds(id).unwrap();
     Point::new(

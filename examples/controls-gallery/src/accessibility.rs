@@ -67,6 +67,8 @@ impl Gallery {
             if item.has_popup {
                 node.set_has_popup(if item.role == ControlRole::ComboBox {
                     HasPopup::Listbox
+                } else if self.ui.button_flyout(item.id).is_some() {
+                    HasPopup::Dialog
                 } else {
                     HasPopup::Menu
                 });
@@ -74,16 +76,26 @@ impl Gallery {
             if let Some(expanded) = item.expanded {
                 node.set_expanded(expanded);
             }
+            if let Some(settings) = self.ui.editor_settings(item.id) {
+                append_description(&mut node, &settings.placeholder);
+            }
             if let Some(tooltip) = item.tooltip {
+                // Keep tooltip metadata while also supplying the description
+                // consumed by the native Windows accessibility provider.
+                append_description(&mut node, &tooltip);
                 node.set_tooltip(tooltip);
             }
-            if let Some(value) = item.value {
+            if self.ui.progress_indeterminate(item.id) != Some(true)
+                && let Some(value) = item.value
+            {
                 node.set_value(value);
             }
             if let Some(settings) = self.ui.progress_settings(item.id) {
-                node.set_min_numeric_value(settings.minimum);
-                node.set_max_numeric_value(settings.maximum);
-                node.set_numeric_value(settings.value);
+                if self.ui.progress_indeterminate(item.id) != Some(true) {
+                    node.set_min_numeric_value(settings.minimum);
+                    node.set_max_numeric_value(settings.maximum);
+                    node.set_numeric_value(settings.value);
+                }
                 node.set_read_only();
             }
             if let Some(settings) = self.ui.zoom_settings(item.id) {
@@ -95,11 +107,43 @@ impl Gallery {
                     rust_desktop_ui_platform_winit::accesskit::Orientation::Horizontal,
                 );
             }
-            if let Some(checked) = item.checked {
+            if let Some(settings) = self.ui.slider_settings(item.id) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_numeric_value_step(settings.step);
+                node.set_orientation(match settings.axis {
+                    rust_desktop_ui_core::Axis::Horizontal => {
+                        rust_desktop_ui_platform_winit::accesskit::Orientation::Horizontal
+                    }
+                    rust_desktop_ui_core::Axis::Vertical => {
+                        rust_desktop_ui_platform_winit::accesskit::Orientation::Vertical
+                    }
+                });
+            }
+            if item.checked_mixed {
+                node.set_toggled(Toggled::Mixed);
+            } else if let Some(checked) = item.checked {
                 node.set_toggled(if checked {
                     Toggled::True
                 } else {
                     Toggled::False
+                });
+            }
+            if let Some(settings) = self.ui.splitter_settings(item.id)
+                && item.role == ControlRole::Splitter
+            {
+                node.set_min_numeric_value(0.0);
+                node.set_max_numeric_value(1.0);
+                node.set_numeric_value(f64::from(settings.ratio));
+                node.set_numeric_value_step(0.02);
+                node.set_orientation(match settings.axis {
+                    rust_desktop_ui_core::Axis::Horizontal => {
+                        rust_desktop_ui_platform_winit::accesskit::Orientation::Vertical
+                    }
+                    rust_desktop_ui_core::Axis::Vertical => {
+                        rust_desktop_ui_platform_winit::accesskit::Orientation::Horizontal
+                    }
                 });
             }
             if matches!(item.role, ControlRole::Tab | ControlRole::ListItem) {
@@ -113,7 +157,7 @@ impl Gallery {
             }
             if let Some(error) = item.validation_error {
                 node.set_invalid(Invalid::True);
-                node.set_description(error);
+                append_description(&mut node, &error);
             }
             for action in item.actions {
                 match action {
@@ -322,7 +366,7 @@ impl Gallery {
                 let value = match &request.data {
                     Some(ActionData::Value(value)) => Some(value.to_string()),
                     Some(ActionData::NumericValue(value))
-                        if value.is_finite() && self.ui.zoom_settings(widget).is_some() =>
+                        if value.is_finite() && numeric_range(&self.ui, widget).is_some() =>
                     {
                         Some(value.to_string())
                     }
@@ -339,13 +383,12 @@ impl Gallery {
                         return Ok(());
                     }
                     if action == SemanticAction::SetValue
-                        && let Some(settings) = self.ui.zoom_settings(widget)
+                        && let Some((minimum, maximum)) = numeric_range(&self.ui, widget)
                         && value
                             .as_deref()
                             .and_then(|value| value.parse::<f64>().ok())
                             .is_none_or(|value| {
-                                !value.is_finite()
-                                    || !(settings.minimum..=settings.maximum).contains(&value)
+                                !value.is_finite() || !(minimum..=maximum).contains(&value)
                             })
                     {
                         return Ok(());
@@ -369,6 +412,31 @@ impl Gallery {
         self.search_changed()?;
         Ok(())
     }
+}
+
+fn append_description(node: &mut Node, text: &str) {
+    let mut parts: Vec<_> = node.description().unwrap_or_default().lines().collect();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if !parts.contains(&line) {
+            parts.push(line);
+        }
+    }
+    if !parts.is_empty() {
+        node.set_description(parts.join("\n"));
+    }
+}
+
+fn numeric_range(
+    ui: &rust_desktop_ui_controls::Controls,
+    widget: rust_desktop_ui_core::WidgetId,
+) -> Option<(f64, f64)> {
+    ui.zoom_settings(widget)
+        .map(|settings| (settings.minimum, settings.maximum))
+        .or_else(|| {
+            ui.slider_settings(widget)
+                .map(|settings| (settings.minimum, settings.maximum))
+        })
+        .or_else(|| ui.splitter_settings(widget).map(|_| (0.0, 1.0)))
 }
 
 fn role(role: ControlRole) -> Role {
@@ -395,6 +463,12 @@ fn role(role: ControlRole) -> Role {
         ControlRole::StatusBar => Role::Status,
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
+        ControlRole::RangeSlider => Role::Group,
+        ControlRole::ToolBar => Role::Toolbar,
+        ControlRole::MenuBar => Role::MenuBar,
+        ControlRole::Link => Role::Link,
+        ControlRole::Switch => Role::Switch,
+        ControlRole::Splitter => Role::Splitter,
         ControlRole::Grid => Role::Grid,
     }
 }

@@ -28,6 +28,10 @@ fn property(name: &str) -> Result<BindingProperty, String> {
         "IsExpanded" => BindingProperty::IsExpanded,
         "SelectedIndex" => BindingProperty::SelectedIndex,
         "Value" => BindingProperty::Value,
+        "LowerValue" => BindingProperty::LowerValue,
+        "UpperValue" => BindingProperty::UpperValue,
+        "IsIndeterminate" => BindingProperty::IsIndeterminate,
+        "SelectedKey" => BindingProperty::SelectedKey,
         "SelectedValue" => BindingProperty::SelectedValue,
         "FilterText" => BindingProperty::FilterText,
         "SelectedValues" => BindingProperty::SelectedValues,
@@ -42,6 +46,64 @@ fn property(name: &str) -> Result<BindingProperty, String> {
         _ => return Err(format!("Unsupported binding property '{name}'")),
     })
 }
+
+/// Validate expression syntax and every explicit dependency before creating widgets.
+pub(super) fn validate_definitions(element: &ElementDefinition) -> Result<(), String> {
+    for (target, definition) in &element.common.bindings {
+        let validate = || -> Result<(), String> {
+            property(target)?;
+            if definition.inputs.is_empty() {
+                if definition.expression.is_some() {
+                    return Err("An expression requires MultiBinding inputs".into());
+                }
+                if definition.element_name.is_some() {
+                    property(&definition.path)?;
+                } else {
+                    BindingPath::parse(&definition.path).map_err(err)?;
+                }
+            } else {
+                if definition.inputs.len() > 32
+                    || !matches!(
+                        definition.mode,
+                        x::BindingMode::OneWay | x::BindingMode::OneTime
+                    )
+                {
+                    return Err("MultiBinding requires 1..32 inputs and OneWay or OneTime".into());
+                }
+                for input in &definition.inputs {
+                    if input.element_name.is_some() {
+                        property(&input.path)?;
+                    } else {
+                        BindingPath::parse(&input.path).map_err(err)?;
+                    }
+                }
+                if let Some(source) = &definition.expression {
+                    if definition.converter.is_some() {
+                        return Err("MultiBinding cannot combine Expression and Converter".into());
+                    }
+                    let expression = BindingExpression::parse(source).map_err(err)?;
+                    if expression.input_count() > definition.inputs.len() {
+                        return Err("Expression references an absent MultiBinding input".into());
+                    }
+                } else if definition.converter.is_none() {
+                    return Err("MultiBinding needs Expression or Converter".into());
+                }
+            }
+            Ok(())
+        };
+        validate().map_err(|error| {
+            if definition.source_line > 0 {
+                format!(
+                    "{}:{}: {error}",
+                    definition.source_line, definition.source_column
+                )
+            } else {
+                error
+            }
+        })?;
+    }
+    Ok(())
+}
 fn fallback(
     ui: &Controls,
     widget: WidgetId,
@@ -50,6 +112,12 @@ fn fallback(
 ) -> Result<DataValue, String> {
     Ok(match property {
         BindingProperty::IsChecked
+            if value == "Null" || value == "{x:Null}" || value == "Indeterminate" =>
+        {
+            DataValue::Null
+        }
+        BindingProperty::IsChecked
+        | BindingProperty::IsIndeterminate
         | BindingProperty::IsEnabled
         | BindingProperty::IsReadOnly
         | BindingProperty::IsExpanded => match value.to_ascii_lowercase().as_str() {
@@ -78,9 +146,10 @@ fn fallback(
             }
             DataValue::Number(index)
         }
-        BindingProperty::Width | BindingProperty::Height => {
-            DataValue::Number(value.parse().map_err(err)?)
-        }
+        BindingProperty::Width
+        | BindingProperty::Height
+        | BindingProperty::LowerValue
+        | BindingProperty::UpperValue => DataValue::Number(value.parse().map_err(err)?),
         BindingProperty::Value
             if ui.spin_settings(widget).is_some()
                 || ui.progress_settings(widget).is_some()
@@ -102,7 +171,12 @@ fn fallback(
                 TimeValue::parse(value).map_err(err)?.to_iso().into()
             }
         }
-        BindingProperty::SelectedValue if value == "Null" => DataValue::Null,
+        BindingProperty::Value if ui.slider_value(widget).is_some() => {
+            DataValue::Number(value.parse().map_err(err)?)
+        }
+        BindingProperty::SelectedValue | BindingProperty::SelectedKey if value == "Null" => {
+            DataValue::Null
+        }
         _ => DataValue::String(value.into()),
     })
 }
@@ -117,7 +191,9 @@ impl MountedView {
             return;
         }
         let selection = match &element.kind {
-            ElementKind::ListBox(selection) | ElementKind::ComboBox(selection) => Some(selection),
+            ElementKind::ListBox(selection)
+            | ElementKind::ComboBox(selection)
+            | ElementKind::RadioGroup(selection) => Some(selection),
             ElementKind::LookupEdit(lookup) => Some(&lookup.selection),
             _ => None,
         };
@@ -168,7 +244,39 @@ impl MountedView {
             }
             for (name, definition) in pending.bindings {
                 let target_property = property(&name)?;
-                let source = if let Some(name) = &definition.element_name {
+                let source = if !definition.inputs.is_empty() {
+                    let inputs = definition
+                        .inputs
+                        .iter()
+                        .map(|input| {
+                            if let Some(name) = &input.element_name {
+                                let widget = self
+                                    .find_name(name)
+                                    .ok_or_else(|| format!("Unknown ElementName '{name}'"))?;
+                                Ok(BindingInput::Element(BindingEndpoint {
+                                    widget,
+                                    property: property(&input.path)?,
+                                }))
+                            } else {
+                                Ok(BindingInput::DataContext(
+                                    BindingPath::parse(&context_path(
+                                        &pending.context,
+                                        Some(&input.path),
+                                    ))
+                                    .map_err(err)?,
+                                ))
+                            }
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    if let Some(expression) = &definition.expression {
+                        BindingSource::Expression {
+                            inputs,
+                            expression: BindingExpression::parse(expression).map_err(err)?,
+                        }
+                    } else {
+                        BindingSource::Multi(inputs)
+                    }
+                } else if let Some(name) = &definition.element_name {
                     let widget = self
                         .find_name(name)
                         .ok_or_else(|| format!("Unknown ElementName '{name}'"))?;

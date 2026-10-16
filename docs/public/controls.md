@@ -36,12 +36,31 @@ commit передаются отдельно: `text_input`, `ime_preedit`, `ime_
 
 `needs_update` учитывает изменения runtime и текстовой сцены. `stats` возвращает
 накопленные счётчики layout/paint. При простое без изменений повторный update
-не выполняет эти проходы. Для мигания caret host может вызывать `blink_caret`
-по своему таймеру; метод возвращает false без сфокусированного TextBox. Нет
-необходимости запускать постоянный таймер для остальных controls; ToolTip
-запрашивает только одно пробуждение на время ожидающего hover.
+не выполняет эти проходы. Host планирует пробуждение по `next_deadline()` и
+вызывает `tick(Instant)` для caret, ToolTip, RepeatButton и визуальных переходов.
+У каждого механизма своя частота: анимация не ускоряет мигание caret.
+`set_reduced_motion` отключает движение; скрытые и неактивные элементы не требуют
+постоянных кадров. Низкоуровневый `blink_caret` остаётся доступен отдельно.
 
 ## Компоненты и состояния
+
+`CheckState` различает `Unchecked`, `Checked` и `Indeterminate`.
+`checkbox_tristate` и `set_three_state` разрешают nullable состояние;
+`set_check_presentation` выбирает CheckBox, Toggle или Switch. Switch имеет
+два состояния. Команда с boolean checked не становится трёхсоставной:
+такое сочетание отклоняется до изменения элемента. В XAML `IsChecked="Null"`
+требует `IsThreeState="True"`; nullable binding использует `DataValue::Null`.
+
+`radio_choice_group` хранит элементы по стабильному `SelectionItem.key`.
+`set_radio_items` сохраняет идентичность существующих пунктов и выбор при
+перестановке; удаление выбранного пункта очищает выбор, а фокус переходит на
+доступный пункт. `radio_item_widget` предоставляет retained узел для собственного
+неинтерактивного содержимого через `set_button_content`.
+
+Дополнительные контракты: [меню, кнопки и панели](menus-and-toolbars.md),
+[прокрутка и SplitContainer](splitter-scroll.md), [Slider/RangeSlider](sliders.md),
+[группы](groups.md), [progress и busy](status-bars.md),
+[display text](text.md) и [bindings/валидация](forms.md).
 
 | Builder | Поведение |
 |---|---|
@@ -652,7 +671,7 @@ composition и не создаёт `TextChanged`. Шрифт и padding прим
 PreparedText для рисования, прокрутки, hit-testing и каретки. Изменение стиля
 обновляет сцену, не меняя внешние размеры LayoutStyle; высоту поля задаёт приложение.
 Размеры контента не гарантируют, что любой текст поместится в эту высоту.
-Общие renderer/text budgets остаются в силе. Маски, асинхронная валидация,
+Общие renderer/text budgets остаются в силе. Асинхронное подтверждение и зависимые поля описаны в [контракте форм](forms.md#проверки-зависимых-полей-и-асинхронное-подтверждение). Маски,
 общая транзакция формы и интеграция accepted value с TreeGrid остаются отдельными
 возможностями.
 

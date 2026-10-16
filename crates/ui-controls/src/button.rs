@@ -24,6 +24,9 @@ pub enum ButtonChrome {
     Flat,
     /// Flat tab treatment with an accent underline while checked.
     Tab,
+    /// Text-action treatment with an accent foreground and an underline.
+    /// Activation still uses the shared command lifecycle; it opens no URL itself.
+    Link,
 }
 
 /// Optional colors shared by Button, ToggleButton, CheckBox and RadioButton. For indicators,
@@ -148,6 +151,12 @@ impl ButtonStyle {
                 } else {
                     theme.tokens().focus
                 });
+            }
+            if chrome == ButtonChrome::Link {
+                self.normal.foreground.get_or_insert(theme.tokens().focus);
+                self.hovered.foreground.get_or_insert(theme.tokens().focus);
+                self.pressed.foreground.get_or_insert(theme.tokens().focus);
+                self.checked.foreground.get_or_insert(theme.tokens().focus);
             }
         }
         let mut resolved = self.resolve(theme, state, false);

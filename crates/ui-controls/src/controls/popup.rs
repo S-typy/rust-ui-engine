@@ -169,6 +169,110 @@ fn validate_levels(levels: &[Level], commands: &CommandRegistry) -> Result<(), C
 }
 
 impl Controls {
+    pub(super) fn menu_root_anchor(&self) -> Option<WidgetId> {
+        self.popup.as_ref().map(|popup| popup.anchor)
+    }
+    pub(super) fn menu_chain_depth(&self) -> usize {
+        self.popup.as_ref().map_or(0, |popup| popup.levels.len())
+    }
+    /// Replaces a disclosure's menu atomically after validating the complete
+    /// tree. An open level is rebuilt, descendants are closed, and focus follows
+    /// the same command when it still exists. Failed validation changes nothing.
+    pub fn set_menu_entries(
+        &mut self,
+        owner: WidgetId,
+        entries: &[MenuEntry],
+    ) -> Result<(), ControlError> {
+        self.preflight_menu(entries)?;
+        if !self.runtime.tree().contains(owner)
+            || self
+                .controls
+                .get(&owner)
+                .is_none_or(|control| control.menu.is_none())
+        {
+            return Err(ControlError::Invalid(
+                "Menu replacement requires a live disclosure".into(),
+            ));
+        }
+        let level_index = self
+            .popup
+            .as_ref()
+            .and_then(|popup| popup.levels.iter().position(|level| level.anchor == owner));
+        let old_focus = self
+            .runtime
+            .focused()
+            .and_then(|id| self.controls.get(&id))
+            .and_then(|control| control.command.clone());
+        let mut prepared = None;
+        if let Some(index) = level_index {
+            let mut candidate = self.popup.as_ref().unwrap().levels[..=index].to_vec();
+            candidate[index].entries = entries.to_vec();
+            for child in (1..=index).rev() {
+                let anchor = candidate[child].anchor;
+                let items = candidate[child].entries.clone();
+                if let Some(entry) = level_entry_index(&candidate[child - 1], anchor) {
+                    match &mut candidate[child - 1].entries[entry] {
+                        MenuEntry::Submenu {
+                            items: existing, ..
+                        }
+                        | MenuEntry::CommandSubmenu {
+                            items: existing, ..
+                        } => *existing = items,
+                        _ => {}
+                    }
+                }
+            }
+            validate_levels(&candidate, &self.commands)?;
+            let bounds = self.validate_popup_anchor(owner)?;
+            let desired = self.menu_size(entries)?;
+            let mut level = self.build_menu_level(owner, entries, desired, bounds, index)?;
+            level.command_owner = candidate[index].command_owner.clone();
+            candidate[index] = level;
+            prepared = Some(candidate);
+        }
+        self.controls.get_mut(&owner).unwrap().menu = Some(entries.to_vec());
+        if let Some(levels) = prepared {
+            let index = level_index.unwrap();
+            let mut popup = self.popup.take().unwrap();
+            let removed: Vec<_> = popup
+                .levels
+                .drain(index..)
+                .map(|level| level.container)
+                .collect();
+            popup.levels = levels;
+            for level in popup.levels.iter().skip(1) {
+                if let Some(control) = self.controls.get_mut(&level.anchor) {
+                    control.menu = Some(level.entries.clone());
+                }
+            }
+            if let Some(control) = self.controls.get_mut(&popup.anchor)
+                && control.menu.is_some()
+            {
+                control.menu = Some(popup.levels[0].entries.clone());
+            }
+            self.popup = Some(popup);
+            for container in removed {
+                self.remove(container)?;
+            }
+            self.update(self.viewport)?;
+            let focused = self.popup.as_ref().unwrap().levels[index]
+                .items
+                .iter()
+                .copied()
+                .find(|id| {
+                    old_focus.is_some()
+                        && self.controls[id].command == old_focus
+                        && self.is_enabled(*id)
+                });
+            if let Some(id) = focused {
+                self.try_popup_focus(id)?;
+            } else {
+                self.focus_popup_item(index, false)?;
+            }
+        }
+        self.scene_dirty = true;
+        Ok(())
+    }
     pub(super) fn group_popup_focused(&self) -> bool {
         let (Some(popup), Some(mut focused)) = (&self.popup, self.runtime.focused()) else {
             return false;
@@ -374,9 +478,29 @@ impl Controls {
         label: impl Into<String>,
         command: Option<CommandId>,
         items: &[MenuEntry],
-        mut style: LayoutStyle,
+        style: LayoutStyle,
     ) -> Result<SplitButton, ControlError> {
         self.validate_menu_builder(parent, items, &style)?;
+        let split = self.split_button_content(parent, label, command, style)?;
+        self.controls.get_mut(&split.dropdown).unwrap().menu = Some(items.to_vec());
+        Ok(split)
+    }
+    /// Creates independent primary and disclosure buttons for retained content.
+    /// Build a Flyout anchored to `dropdown`, then attach it with
+    /// [`Self::set_button_flyout`]. No placeholder menu entries are created.
+    pub fn split_button_content(
+        &mut self,
+        parent: WidgetId,
+        label: impl Into<String>,
+        command: Option<CommandId>,
+        mut style: LayoutStyle,
+    ) -> Result<SplitButton, ControlError> {
+        if self.runtime.tree().node(parent).is_none() {
+            return Err(ControlError::Invalid("Unknown parent".into()));
+        }
+        style
+            .validate()
+            .map_err(|message| ControlError::Invalid(message.into()))?;
         let label = label.into();
         TextLimits::default().validate(&label).map_err(edit_error)?;
         style.kind = LayoutKind::Flex(Axis::Horizontal);
@@ -398,10 +522,10 @@ impl Controls {
                     ..Default::default()
                 },
             )?;
-            let dropdown = self.dropdown_button(
+            let dropdown = self.button(
                 container,
                 "",
-                items,
+                None,
                 LayoutStyle {
                     width: Length::Px(32.0),
                     height: Length::Percent(1.0),
@@ -656,20 +780,25 @@ impl Controls {
     /// Close the entire chain and restore an eligible anchor (or prior focus).
     pub fn close_popup(&mut self) -> Result<(), ControlError> {
         self.close_rich_popup(true)?;
-        self.close_popup_from(0, CloseReason::Restore)
+        self.close_popup_from(0, CloseReason::Restore)?;
+        self.close_all_flyouts(true)
     }
     pub fn popup_open(&self) -> bool {
-        self.popup.is_some() || self.rich.popup.is_some()
+        self.popup.is_some() || self.rich.popup.is_some() || self.flyout_open()
     }
     pub(crate) fn popup_anchor(&self) -> Option<WidgetId> {
         self.popup
             .as_ref()
             .map(|popup| popup.anchor)
             .or_else(|| self.rich.popup.as_ref().map(|p| p.owner))
+            .or_else(|| self.flyout_anchor())
     }
     /// Whether a client-local point lies in any currently open menu surface.
     /// Compositors can consume an outside click before forwarding it to another view.
     pub fn popup_contains_point(&self, point: Point) -> bool {
+        self.menu_contains_point(point) || self.flyout_contains_point(point)
+    }
+    pub(super) fn menu_contains_point(&self, point: Point) -> bool {
         self.rich.popup.as_ref().is_some_and(|p| {
             self.runtime
                 .bounds(p.surface)
@@ -683,13 +812,18 @@ impl Controls {
         })
     }
     pub fn popup_depth(&self) -> usize {
-        self.popup
-            .as_ref()
-            .map_or(usize::from(self.rich.popup.is_some()), |popup| {
-                popup.levels.len()
-            })
+        self.flyout_depth()
+            + self
+                .popup
+                .as_ref()
+                .map_or(usize::from(self.rich.popup.is_some()), |popup| {
+                    popup.levels.len()
+                })
     }
     pub fn popup_expanded(&self, id: WidgetId) -> Option<bool> {
+        if let Some(expanded) = self.flyout_expanded(id) {
+            return Some(expanded);
+        }
         if let Some(expanded) = self.rich_popup_expanded(id) {
             return Some(expanded);
         }
@@ -717,6 +851,17 @@ impl Controls {
         }
     }
     pub fn expand_popup(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        if let Some(expanded) = self.flyout_expanded(id) {
+            let target = self
+                .controls
+                .get(&id)
+                .and_then(|c| c.dropdown_target)
+                .unwrap_or(id);
+            if !expanded && self.is_enabled(id) && self.is_enabled(target) {
+                self.activate_flyout(target)?;
+            }
+            return Ok(());
+        }
         if self.rich_popup_expanded(id).is_some()
             && let Some(owner) = self.rich_owner(id)
         {
@@ -742,6 +887,17 @@ impl Controls {
         Ok(())
     }
     pub fn collapse_popup(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        if let Some(expanded) = self.flyout_expanded(id) {
+            let target = self
+                .controls
+                .get(&id)
+                .and_then(|c| c.dropdown_target)
+                .unwrap_or(id);
+            if expanded {
+                self.activate_flyout(target)?;
+            }
+            return Ok(());
+        }
         if self.rich_popup_expanded(id).is_some() {
             return self.close_rich_popup(true);
         }
@@ -845,7 +1001,7 @@ impl Controls {
             self.close_popup_from(0, CloseReason::Unavailable)?;
             return Ok(delta);
         }
-        let count = self.popup_depth();
+        let count = self.popup.as_ref().map_or(0, |popup| popup.levels.len());
         for index in 0..count {
             let Some(mut level) = self
                 .popup
@@ -973,8 +1129,8 @@ impl Controls {
         Ok(())
     }
     pub(super) fn popup_escape(&mut self) -> Result<(), ControlError> {
-        if self.popup_open() {
-            self.close_popup_from(self.popup_depth() - 1, CloseReason::Restore)?;
+        if let Some(count) = self.popup.as_ref().map(|popup| popup.levels.len()) {
+            self.close_popup_from(count - 1, CloseReason::Restore)?;
         }
         Ok(())
     }
@@ -1075,11 +1231,12 @@ impl Controls {
 pub(super) fn paint_indicator(
     scene: &mut Scene,
     control: &Control,
+    has_popup: bool,
     mut bounds: Rect,
     clip: Rect,
     color: Color,
 ) -> Rect {
-    if control.menu.is_none() {
+    if !has_popup || control.dropdown_target.is_some() {
         return bounds;
     }
     let reserved = bounds.width.min(20.0);

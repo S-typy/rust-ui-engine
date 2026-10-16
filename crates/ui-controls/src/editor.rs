@@ -115,6 +115,8 @@ impl fmt::Debug for EditorValidator {
 /// Acceptance is distinct from changing the draft or completing IME input.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CommitOutcome {
+    /// A worker is validating the current draft; acceptance occurs on a later UI update.
+    Pending,
     Committed,
     Unchanged,
     Invalid(String),

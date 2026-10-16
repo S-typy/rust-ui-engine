@@ -27,13 +27,112 @@ use taffy::{
 /// calling Taffy prevents a pathological tree from overflowing the native stack.
 pub const MAX_LAYOUT_DEPTH: usize = 128;
 
+type MeasureCallback = Box<dyn FnMut(MeasureInput) -> Result<Size, LayoutError>>;
+
 /// Computes layout without exposing third-party style or node types.
-#[derive(Debug, Default)]
-pub struct TaffyLayout;
+#[derive(Default)]
+pub struct TaffyLayout {
+    measures: HashMap<WidgetId, MeasureCallback>,
+}
+
+impl std::fmt::Debug for TaffyLayout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TaffyLayout")
+            .field("custom_measure_count", &self.measures.len())
+            .finish()
+    }
+}
 
 impl TaffyLayout {
-    pub const fn new() -> Self {
-        Self
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register or replace a leaf's intrinsic measure callback. At most 4096
+    /// callbacks may be registered. Request runtime invalidation after changing
+    /// a callback or its externally owned content.
+    pub fn set_measure(
+        &mut self,
+        id: WidgetId,
+        measure: impl FnMut(MeasureInput) -> Result<Size, LayoutError> + 'static,
+    ) -> Result<(), LayoutError> {
+        if !self.measures.contains_key(&id) && self.measures.len() >= 4096 {
+            return Err(LayoutError::Backend(
+                "At most 4096 custom measures may be registered".into(),
+            ));
+        }
+        self.measures.insert(id, Box::new(measure));
+        Ok(())
+    }
+
+    pub fn remove_measure(&mut self, id: WidgetId) -> bool {
+        self.measures.remove(&id).is_some()
+    }
+
+    /// Discard callbacks for removed nodes; detached nodes retain their callback.
+    pub fn retain_measures(&mut self, tree: &UiTree) {
+        self.measures.retain(|id, _| tree.contains(*id));
+    }
+
+    /// Measure leaf content while keeping backend types outside the public API.
+    /// The callback may run several times with different constraints. It must
+    /// return finite nonnegative content sizes and must not mutate the tree.
+    pub fn compute_with_measure(
+        &mut self,
+        tree: &UiTree,
+        viewport: Size,
+        mut measure: impl FnMut(WidgetId, MeasureInput) -> Result<Size, LayoutError>,
+    ) -> Result<LayoutSnapshot, LayoutError> {
+        Self::compute_measured(tree, viewport, &mut measure)
+    }
+}
+
+/// Available content space on one axis, before the leaf's own padding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MeasureSpace {
+    Definite(f32),
+    MinContent,
+    MaxContent,
+}
+
+/// Intrinsic measurement request in logical pixels. Known dimensions take
+/// precedence over a callback's result; `None` requests intrinsic sizing.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasureInput {
+    pub width: Option<f32>,
+    pub height: Option<f32>,
+    pub available_width: MeasureSpace,
+    pub available_height: MeasureSpace,
+}
+
+/// Layout engine with an application-owned leaf measurement function.
+///
+/// Changes to externally owned content require runtime layout invalidation.
+/// The callback is not invoked during paint-only updates.
+pub struct MeasuredLayout<F> {
+    measure: F,
+}
+
+impl<F> MeasuredLayout<F> {
+    pub const fn new(measure: F) -> Self {
+        Self { measure }
+    }
+}
+
+impl<F> LayoutEngine for MeasuredLayout<F>
+where
+    F: FnMut(WidgetId, MeasureInput) -> Result<Size, LayoutError>,
+{
+    fn compute(&mut self, tree: &UiTree, viewport: Size) -> Result<LayoutSnapshot, LayoutError> {
+        TaffyLayout::new().compute_with_measure(tree, viewport, &mut self.measure)
+    }
+}
+
+fn measure_space(value: AvailableSpace) -> MeasureSpace {
+    match value {
+        AvailableSpace::Definite(value) => MeasureSpace::Definite(value),
+        AvailableSpace::MinContent => MeasureSpace::MinContent,
+        AvailableSpace::MaxContent => MeasureSpace::MaxContent,
     }
 }
 
@@ -50,6 +149,21 @@ fn backend_error(error: taffy::TaffyError) -> LayoutError {
 
 impl LayoutEngine for TaffyLayout {
     fn compute(&mut self, tree: &UiTree, viewport: Size) -> Result<LayoutSnapshot, LayoutError> {
+        self.retain_measures(tree);
+        Self::compute_measured(tree, viewport, &mut |id, input| {
+            self.measures
+                .get_mut(&id)
+                .map_or(Ok(Size::ZERO), |measure| measure(input))
+        })
+    }
+}
+
+impl TaffyLayout {
+    fn compute_measured(
+        tree: &UiTree,
+        viewport: Size,
+        measure: &mut impl FnMut(WidgetId, MeasureInput) -> Result<Size, LayoutError>,
+    ) -> Result<LayoutSnapshot, LayoutError> {
         if !viewport.is_valid() {
             return Err(LayoutError::InvalidViewport);
         }
@@ -95,7 +209,7 @@ impl LayoutEngine for TaffyLayout {
             pending.extend(children.iter().rev().map(|&child| (child, depth + 1)));
         }
 
-        let mut backend = TaffyTree::<()>::new();
+        let mut backend = TaffyTree::<WidgetId>::new();
         backend.disable_rounding();
         let mut mapping: HashMap<WidgetId, BackendNode> = HashMap::with_capacity(order.len());
         for &id in order.iter().rev() {
@@ -139,6 +253,11 @@ impl LayoutEngine for TaffyLayout {
             let backend_node = backend
                 .new_with_children(style, &children)
                 .map_err(backend_error)?;
+            if children.is_empty() && node.props.style.kind == LayoutKind::Leaf {
+                backend
+                    .set_node_context(backend_node, Some(id))
+                    .map_err(backend_error)?;
+            }
             mapping.insert(
                 id,
                 BackendNode {
@@ -150,15 +269,47 @@ impl LayoutEngine for TaffyLayout {
         let root = mapping
             .get(&tree.root())
             .ok_or(LayoutError::MissingNode(tree.root()))?;
+        let mut measure_error = None;
         backend
-            .compute_layout(
+            .compute_layout_with_measure(
                 root.node,
                 taffy::Size {
                     width: AvailableSpace::Definite(viewport.width),
                     height: AvailableSpace::Definite(viewport.height),
                 },
+                |inputs, _, context, style| {
+                    taffy::compute_leaf_layout(inputs, style, |_, _| 0.0, |known, available| {
+                        let request = MeasureInput {
+                            width: known.width,
+                            height: known.height,
+                            available_width: measure_space(available.width),
+                            available_height: measure_space(available.height),
+                        };
+                        let size = if measure_error.is_some() {
+                            Size::ZERO
+                        } else if let Some(id) = context.as_deref() {
+                            match measure(*id, request) {
+                                Ok(size) if size.is_valid() => size,
+                                Ok(_) => {
+                                    measure_error = Some(LayoutError::InvalidStyle { node: *id, message: "Measure returned a non-finite or negative size" });
+                                    Size::ZERO
+                                }
+                                Err(error) => {
+                                    measure_error = Some(error);
+                                    Size::ZERO
+                                }
+                            }
+                        } else {
+                            Size::ZERO
+                        };
+                        taffy::Size { width: known.width.unwrap_or(size.width), height: known.height.unwrap_or(size.height) }
+                    })
+                },
             )
             .map_err(backend_error)?;
+        if let Some(error) = measure_error {
+            return Err(error);
+        }
 
         let mut snapshot = LayoutSnapshot {
             boxes: HashMap::with_capacity(order.len()),
@@ -1179,5 +1330,212 @@ mod tests {
             children[2],
             Rect::new(130.0, 0.0, 60.0, 20.0),
         );
+    }
+}
+
+#[cfg(test)]
+mod measure_tests {
+    use super::*;
+    use rust_desktop_ui_core::{Color, Edges, Mutation, NodeProps, Paint, UiRuntime};
+    use std::{cell::Cell, rc::Rc};
+
+    #[test]
+    fn custom_intrinsic_measure_obeys_known_axes_constraints_padding_and_resize() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Grid,
+                grid_columns: vec![GridTrack::Auto, GridTrack::Fr(1.0)],
+                grid_rows: vec![GridTrack::Auto],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let leaf = tree
+            .insert(
+                root,
+                NodeProps {
+                    style: LayoutStyle {
+                        kind: LayoutKind::Leaf,
+                        padding: Edges::all(3.0),
+                        min_size: Size::new(20.0, 0.0),
+                        max_size: Size::new(100.0, f32::INFINITY),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let calls = Rc::new(Cell::new(0));
+        let seen = calls.clone();
+        let mut layout = TaffyLayout::new();
+        layout
+            .set_measure(leaf, move |_| {
+                seen.set(seen.get() + 1);
+                Ok(Size::new(130.0, 24.0))
+            })
+            .unwrap();
+        for width in [400.0, 240.0, 640.0] {
+            let snapshot = layout.compute(&tree, Size::new(width, 200.0)).unwrap();
+            assert_eq!(snapshot.boxes[&leaf].width, 100.0);
+            assert_eq!(snapshot.boxes[&leaf].height, 30.0);
+        }
+        assert!(calls.get() > 0);
+    }
+
+    #[test]
+    fn invalid_measure_keeps_last_scene_then_invalidation_remeasures_without_identity_loss() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Stack(Axis::Vertical),
+                align: Align::Start,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let leaf = tree
+            .insert(
+                root,
+                NodeProps {
+                    style: LayoutStyle {
+                        kind: LayoutKind::Leaf,
+                        ..Default::default()
+                    },
+                    paint: Paint {
+                        background: Some(Color::rgb(30, 40, 50)),
+                        ..Default::default()
+                    },
+                    focusable: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let size = Rc::new(Cell::new(Size::new(80.0, 24.0)));
+        let observed = size.clone();
+        let mut layout = MeasuredLayout::new(move |_, _| Ok(observed.get()));
+        let mut runtime = UiRuntime::new(tree);
+        runtime
+            .update(&mut layout, Size::new(200.0, 100.0))
+            .unwrap();
+        runtime.apply(Mutation::Focus(Some(leaf))).unwrap();
+        let old = runtime.bounds(leaf);
+        size.set(Size::new(f32::NAN, 24.0));
+        runtime.invalidate_measure(leaf).unwrap();
+        assert!(
+            runtime
+                .update(&mut layout, Size::new(200.0, 100.0))
+                .is_err()
+        );
+        assert_eq!(runtime.bounds(leaf), old);
+        assert!(runtime.needs_update());
+        size.set(Size::new(120.0, 42.0));
+        runtime
+            .update(&mut layout, Size::new(200.0, 100.0))
+            .unwrap();
+        assert_eq!(runtime.bounds(leaf).unwrap().width, 120.0);
+        assert_eq!(runtime.focused(), Some(leaf));
+        assert_eq!(
+            runtime
+                .update(&mut layout, Size::new(200.0, 100.0))
+                .unwrap()
+                .layout_passes,
+            0
+        );
+    }
+
+    #[test]
+    fn hidden_and_collapsed_preserve_content_and_clipping_excludes_input() {
+        let mut tree = UiTree::new();
+        let root = tree.root();
+        tree.set_style(
+            root,
+            LayoutStyle {
+                kind: LayoutKind::Stack(Axis::Vertical),
+                align: Align::Start,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let parent = tree
+            .insert(
+                root,
+                NodeProps {
+                    style: LayoutStyle {
+                        kind: LayoutKind::Stack(Axis::Vertical),
+                        width: Length::Px(60.0),
+                        height: Length::Px(40.0),
+                        ..Default::default()
+                    },
+                    clip: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let child = tree
+            .insert(
+                parent,
+                NodeProps {
+                    style: LayoutStyle {
+                        kind: LayoutKind::Leaf,
+                        width: Length::Px(100.0),
+                        height: Length::Px(30.0),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let mut runtime = UiRuntime::new(tree);
+        let mut layout = TaffyLayout::new();
+        runtime
+            .update(&mut layout, Size::new(200.0, 200.0))
+            .unwrap();
+        assert_eq!(runtime.clip(child).unwrap().width, 60.0);
+        assert_ne!(
+            runtime.hit_test(rust_desktop_ui_core::Point::new(80.0, 10.0)),
+            Some(child)
+        );
+        let mut props = runtime.tree().node(parent).unwrap().props.clone();
+        props.visible = false;
+        runtime
+            .apply(Mutation::SetProps {
+                node: parent,
+                props: props.clone(),
+            })
+            .unwrap();
+        runtime
+            .update(&mut layout, Size::new(200.0, 200.0))
+            .unwrap();
+        assert!(runtime.bounds(child).is_none());
+        assert_eq!(runtime.layout_bounds(parent).unwrap().height, 40.0);
+        props.collapsed = true;
+        runtime
+            .apply(Mutation::SetProps {
+                node: parent,
+                props: props.clone(),
+            })
+            .unwrap();
+        runtime
+            .update(&mut layout, Size::new(200.0, 200.0))
+            .unwrap();
+        assert_eq!(runtime.layout_bounds(parent).unwrap().height, 0.0);
+        props.visible = true;
+        props.collapsed = false;
+        runtime
+            .apply(Mutation::SetProps {
+                node: parent,
+                props,
+            })
+            .unwrap();
+        runtime
+            .update(&mut layout, Size::new(200.0, 200.0))
+            .unwrap();
+        assert_eq!(runtime.bounds(child).unwrap().width, 100.0);
+        assert_eq!(runtime.tree().parent(child), Some(parent));
     }
 }

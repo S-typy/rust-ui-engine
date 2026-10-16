@@ -20,29 +20,55 @@ use std::{
 };
 
 mod appearance;
+mod choices;
 mod grid;
 mod images;
+mod text_display;
+pub use text_display::{InlineSpan, TextDisplaySettings, TextTrimming, validate_text_inlines};
+mod bars;
+mod flyout;
+mod repeat;
+mod sliders;
+mod splitter;
+pub use sliders::{RangeSliderSettings, SliderSettings, ThumbCrossing};
+mod custom_measure;
+mod editor_async;
+pub use bars::{
+    BarItemSnapshot, BarManager, BarPlacement, BarSnapshot, BarSnapshotEntry, MenuBar, MenuBarItem,
+    ToolBar, ToolBarItem, ToolBarItemKind,
+};
+pub use choices::{CheckPresentation, CheckState, RadioChoiceGroup};
+pub use flyout::{Flyout, FlyoutPlacement};
 pub use grid::{DataSourceHandle, GridControlColumn, GridControlSettings};
 pub use images::{ImageSettings, ImageStretch};
+pub use repeat::RepeatButtonSettings;
 pub use rust_desktop_ui_images::{
     ImageAsset, ImageCacheStats, ImageError, ImageFormat, ImageSource,
 };
+pub use splitter::{SplitContainer, SplitPane, SplitterSettings};
+pub use tooltip::RichToolTip;
 #[cfg(test)]
 mod appearance_tests;
+mod button_content;
 mod button_presentation;
 #[cfg(test)]
 mod grid_tests;
 #[cfg(test)]
 mod group_tests;
 mod groups;
+mod progress;
 mod status;
 #[cfg(test)]
 mod status_tests;
+mod timing;
 pub use status::{ProgressBarSettings, StatusBar, ZoomControlSettings};
 #[cfg(test)]
 mod tabbed_group_tests;
 mod tabbed_groups;
-pub use groups::{Expander, GroupAppearance, GroupBox, GroupHeaderStyle, GroupSettings};
+pub use groups::{
+    ExpandDirection, Expander, ExpanderAnimation, GroupAppearance, GroupBox, GroupHeaderStyle,
+    GroupSettings,
+};
 pub use tabbed_groups::{GroupTab, TabbedGroup};
 #[cfg(test)]
 mod pointer_cancel_tests;
@@ -117,6 +143,12 @@ pub enum Role {
     ProgressBar,
     Slider,
     Grid,
+    ToolBar,
+    MenuBar,
+    Link,
+    Switch,
+    RangeSlider,
+    Splitter,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SemanticAction {
@@ -136,6 +168,8 @@ pub struct SemanticNode {
     pub label: String,
     pub value: Option<String>,
     pub checked: Option<bool>,
+    /// A nullable check value; independent of selected state and ordinary false.
+    pub checked_mixed: bool,
     pub selected: bool,
     pub disabled: bool,
     pub read_only: bool,
@@ -355,6 +389,18 @@ struct Tabs {
 /// For registered controls, enabled state belongs to `set_enabled` and the command
 /// registry; runtime node properties are refreshed from those sources on update.
 pub struct Controls {
+    caret_clock: Option<(WidgetId, std::time::Instant)>,
+    text_displays: text_display::TextDisplays,
+    sliders: sliders::Sliders,
+    button_contents: button_content::ButtonContents,
+    progress_animation: progress::ProgressAnimation,
+    async_editors: editor_async::AsyncEditorStore,
+    choices: choices::ChoiceControls,
+    flyouts: flyout::FlyoutState,
+    bars: bars::BarsState,
+    repeats: repeat::RepeatState,
+    splitters: HashMap<WidgetId, splitter::SplitterState>,
+    splitter_drag: Option<splitter::SplitterDrag>,
     images: images::ImageControls,
     grids: HashMap<WidgetId, grid::GridState>,
     data_sources: HashMap<String, DataSourceHandle>,
@@ -427,6 +473,18 @@ impl Controls {
             },
         )?;
         Ok(Self {
+            choices: Default::default(),
+            async_editors: Default::default(),
+            progress_animation: Default::default(),
+            button_contents: Default::default(),
+            sliders: Default::default(),
+            text_displays: Default::default(),
+            caret_clock: None,
+            flyouts: Default::default(),
+            bars: Default::default(),
+            repeats: Default::default(),
+            splitters: HashMap::new(),
+            splitter_drag: None,
             images: Default::default(),
             grids: HashMap::new(),
             data_sources: HashMap::new(),
@@ -561,6 +619,7 @@ impl Controls {
                 text: document.text().to_owned(),
             });
             self.controls.get_mut(&id).unwrap().validation_error = None;
+            self.invalidate_async_editor(id);
         }
     }
     /// Business editing events, independent of the draft's `TextChanged` queue.
@@ -610,6 +669,9 @@ impl Controls {
     ) -> Result<(), ControlError> {
         self.editor_control(id)?;
         validation.validate()?;
+        if self.controls[&id].validation != validation {
+            self.invalidate_async_editor(id);
+        }
         let control = self.controls.get_mut(&id).unwrap();
         if control.validation != validation {
             control.validation = validation;
@@ -626,6 +688,7 @@ impl Controls {
         validator: Option<EditorValidator>,
     ) -> Result<(), ControlError> {
         self.editor_control(id)?;
+        self.invalidate_async_editor(id);
         let control = self.controls.get_mut(&id).unwrap();
         control.validator = validator;
         control.validation_error = None;
@@ -664,6 +727,9 @@ impl Controls {
             self.scene_dirty = true;
             return Ok(CommitOutcome::Invalid(message));
         }
+        if let Some(outcome) = self.begin_async_editor_commit(id, &value)? {
+            return Ok(outcome);
+        }
         let control = self.controls.get_mut(&id).unwrap();
         if control.validation_error.take().is_some() {
             self.scene_dirty = true;
@@ -681,6 +747,7 @@ impl Controls {
     /// The caret moves to the end. This is also an application-owned operation.
     pub fn cancel_edit(&mut self, id: WidgetId) -> Result<bool, ControlError> {
         self.editor_control(id)?;
+        self.invalidate_async_editor(id);
         let control = self.controls.get_mut(&id).unwrap();
         let Kind::TextBox(document) = &mut control.kind else {
             unreachable!()
@@ -723,6 +790,7 @@ impl Controls {
             return Ok(CommitOutcome::Invalid(message));
         }
         let value = value.into_owned();
+        self.invalidate_async_editor(id);
         let before = self.document(id).unwrap().text().to_owned();
         let control = self.controls.get_mut(&id).unwrap();
         let changed = control.accepted_value != value;
@@ -777,6 +845,7 @@ impl Controls {
             }
             return self.refresh_radio_tab_stops();
         }
+        self.set_choice_bool(id, checked);
         let control = self
             .controls
             .get_mut(&id)
@@ -834,6 +903,7 @@ impl Controls {
             document.cancel_preedit();
         }
         *editor = settings;
+        self.invalidate_async_editor(id);
         self.scene_dirty = true;
         self.refresh_paints()
     }
@@ -967,13 +1037,22 @@ impl Controls {
         id: WidgetId,
         label: impl Into<String>,
     ) -> Result<(), ControlError> {
+        let label = label.into();
+        TextLimits::default().validate(&label).map_err(edit_error)?;
         if self.group_owner(id).is_some() {
             return self.set_group_header(id, label);
+        }
+        if self
+            .controls
+            .get(&id)
+            .is_some_and(|control| control.label != label)
+        {
+            self.clear_text_inlines(id);
         }
         self.controls
             .get_mut(&id)
             .ok_or_else(|| ControlError::Invalid("Unknown control".into()))?
-            .label = label.into();
+            .label = label;
         self.scene_dirty = true;
         Ok(())
     }
@@ -1598,12 +1677,17 @@ impl Controls {
     /// ListBox's required content cannot be removed individually; remove their
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.preflight_bar_removal(id)?;
+        self.preflight_flyout_removal(id)?;
+        self.preflight_slider_removal(id)?;
+        self.preflight_splitter_removal(id)?;
         self.preflight_grid_removal(id)?;
         self.preflight_status_removal(id)?;
         self.preflight_group_removal(id)?;
         self.preflight_tab_removal(id)?;
         self.preflight_rich_removal(id)?;
         self.runtime.apply(Mutation::Remove(id))?;
+        self.poll_editor_validation()?;
         self.prune_removed_controls()
     }
     // Runtime handlers can remove subtrees through deferred commands without
@@ -1627,6 +1711,17 @@ impl Controls {
         self.sync_data_wakes()?;
         self.groups.retain(|id, _| self.controls.contains_key(id));
         self.retain_status_controls()?;
+        self.retain_choices();
+        self.retain_text_displays();
+        self.retain_sliders()?;
+        self.prune_button_contents();
+        self.retain_progress_animations();
+        self.layout.retain_measures(self.runtime.tree());
+        self.retain_splitters()?;
+        self.prune_flyouts()?;
+        self.prune_bars();
+        self.prune_repeat();
+        self.prune_rich_tooltips();
         if self.rich.popup.as_ref().is_some_and(|popup| {
             !self.rich.composites.contains_key(&popup.owner)
                 || !self.controls.contains_key(&popup.surface)
@@ -1691,6 +1786,9 @@ impl Controls {
         self.controls.contains_key(&id) && self.effective_enabled(id)
     }
     fn activation_available(&self, id: WidgetId) -> bool {
+        if self.expander_transition_blocks(id) || self.bar_owner_blocks(id) {
+            return false;
+        }
         if !self.runtime.tree().is_attached(id) {
             return false;
         }
@@ -1716,6 +1814,9 @@ impl Controls {
                 .is_none_or(|parent| self.effective_enabled(parent))
     }
     fn effective_enabled(&self, mut id: WidgetId) -> bool {
+        if self.expander_transition_blocks(id) || self.bar_owner_blocks(id) {
+            return false;
+        }
         if !self.runtime.tree().is_attached(id) {
             return false;
         }
@@ -1864,12 +1965,18 @@ impl Controls {
             })
             .collect();
         let mut updates = Vec::new();
+        let blocked: HashSet<_> = self
+            .controls
+            .keys()
+            .copied()
+            .filter(|id| self.expander_transition_blocks(*id) || self.bar_owner_blocks(*id))
+            .collect();
         for (&id, control) in &mut self.controls {
             let Some(node) = self.runtime.tree().node(id) else {
                 continue;
             };
             let enabled = local_enabled[&id];
-            let mut paint_enabled = enabled;
+            let mut paint_enabled = enabled && !blocked.contains(&id);
             let mut parent = self.runtime.tree().parent(id);
             while let Some(ancestor) = parent {
                 let Some(ancestor_node) = self.runtime.tree().node(ancestor) else {
@@ -1949,6 +2056,9 @@ impl Controls {
         self.refresh_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
+        self.poll_editor_validation()?;
+        self.sync_button_contents()?;
+        self.sync_expander_motion()?;
         if self.commands.poll_async() > 0 {
             self.scene_dirty = true;
         }
@@ -1960,31 +2070,7 @@ impl Controls {
         self.cancel_inactive_preedit();
         let mut delta = self.runtime.update(&mut self.layout, viewport)?;
         self.viewport = viewport;
-        if delta.layout_passes > 0 || self.scene_dirty {
-            self.sync_text_heights()?;
-        }
-        let scrolls: Vec<_> = self
-            .controls
-            .iter()
-            .filter_map(|(&id, c)| matches!(c.kind, Kind::Scroll { .. }).then_some(id))
-            .collect();
-        for id in scrolls {
-            let value = self
-                .runtime
-                .tree()
-                .node(id)
-                .map_or(Point::ZERO, |n| n.props.scroll);
-            self.scroll_to_point(id, value)?;
-        }
-        if self.runtime.needs_update() {
-            add_stats(&mut delta, self.runtime.update(&mut self.layout, viewport)?);
-        }
-        add_stats(&mut delta, self.sync_popup_layout()?);
-        add_stats(&mut delta, self.sync_rich_layout()?);
-        self.sync_grids()?;
-        if self.runtime.needs_update() {
-            add_stats(&mut delta, self.runtime.update(&mut self.layout, viewport)?);
-        }
+        add_stats(&mut delta, self.settle_control_geometry(viewport)?);
         self.tooltip_sync();
         if delta.paint_passes > 0 || self.scene_dirty {
             self.rebuild_scene()?;
@@ -1994,14 +2080,65 @@ impl Controls {
             }
             self.scene_dirty = false;
         }
+        self.sync_caret_clock();
         add_stats(&mut self.total, delta);
         Ok(delta)
+    }
+
+    /// A composed control can change a descendant's size after its parent was
+    /// arranged. Complete that dependency chain before publishing the scene.
+    /// The bounded fixed point also covers text reflow, overflow reparenting and
+    /// overlays anchored to a control whose final bounds changed in this frame.
+    fn settle_control_geometry(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
+        let mut total = FrameStats::default();
+        for _ in 0..(rust_desktop_ui_layout::MAX_LAYOUT_DEPTH * 2 + 8) {
+            let mut pass = FrameStats::default();
+            self.sync_text_heights()?;
+            self.sync_splitters()?;
+            self.sync_bars()?;
+            self.sync_sliders()?;
+            self.sync_grids()?;
+            let scrolls: Vec<_> = self
+                .controls
+                .iter()
+                .filter_map(|(&id, control)| {
+                    matches!(control.kind, Kind::Scroll { .. }).then_some(id)
+                })
+                .collect();
+            for id in scrolls {
+                let value = self
+                    .runtime
+                    .tree()
+                    .node(id)
+                    .map_or(Point::ZERO, |node| node.props.scroll);
+                self.scroll_to_point(id, value)?;
+            }
+            if self.runtime.needs_update() {
+                add_stats(&mut pass, self.runtime.update(&mut self.layout, viewport)?);
+            }
+            add_stats(&mut pass, self.sync_popup_layout()?);
+            add_stats(&mut pass, self.sync_rich_layout()?);
+            self.sync_flyouts()?;
+            if self.runtime.needs_update() {
+                add_stats(&mut pass, self.runtime.update(&mut self.layout, viewport)?);
+            }
+            add_stats(&mut total, pass);
+            if pass.layout_passes == 0 && !self.runtime.needs_update() {
+                return Ok(total);
+            }
+        }
+        Err(RuntimeError::InvalidLayout(
+            "Control geometry did not converge within the supported layout depth",
+        )
+        .into())
     }
     /// Cancel native pointer capture without synthesizing a button release or
     /// focus loss. Mouse selection and presses stop; keyboard presses, popup
     /// levels, editor drafts, accepted values and IME composition remain intact.
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
+        self.cancel_slider_interaction()?;
+        self.cancel_splitter_interaction()?;
         self.cancel_grid_pointers();
         self.cancel_zoom_gesture()?;
         self.selecting = None;
@@ -2031,6 +2168,8 @@ impl Controls {
         // A generic drag owns this gesture. Do not also select editor text,
         // commit/cancel its draft, or activate the source on pointer release.
         if self.runtime.drag_session().is_some() {
+            self.cancel_splitter_interaction()?;
+            self.cancel_slider_interaction()?;
             self.pressed = None;
             self.keyboard_pressed = false;
             self.selecting = None;
@@ -2073,10 +2212,14 @@ impl Controls {
             self.scene_dirty = true;
             return Ok(());
         }
-        if self.grid_before_input(&event)? {
+        if self.flyout_before_input(&event)? || self.bars_before_input(&event)? {
             return Ok(());
         }
-        if self.scroll_before_input(&event)? {
+        self.repeat_before_input(&event);
+        if self.slider_before_input(&event)? || self.grid_before_input(&event)? {
+            return Ok(());
+        }
+        if self.splitter_before_input(&event)? || self.scroll_before_input(&event)? {
             return Ok(());
         }
         if self.rich_before_input(&event)? {
@@ -2197,14 +2340,13 @@ impl Controls {
                 ..
             } => {
                 self.selecting = None;
-                if let Some(id) = self.pressed.take()
-                    && !self.keyboard_pressed
+                if !self.keyboard_pressed
+                    && let Some(id) = self.pressed.take()
                     && hit == Some(id)
                     && self.is_enabled(id)
                 {
                     self.activate(id)?;
                 }
-                self.keyboard_pressed = false;
                 self.scene_dirty = true;
             }
             InputEvent::KeyDown {
@@ -2270,14 +2412,15 @@ impl Controls {
             InputEvent::KeyUp {
                 key: Key::Space, ..
             } => {
-                if let Some(id) = self.pressed.take()
-                    && self.keyboard_pressed
-                    && self.runtime.focused() == Some(id)
-                    && self.is_enabled(id)
-                {
-                    self.activate(id)?;
+                if self.keyboard_pressed {
+                    if let Some(id) = self.pressed.take()
+                        && self.runtime.focused() == Some(id)
+                        && self.is_enabled(id)
+                    {
+                        self.activate(id)?;
+                    }
+                    self.keyboard_pressed = false;
                 }
-                self.keyboard_pressed = false;
                 self.scene_dirty = true;
             }
             InputEvent::Wheel { delta, .. } => {
@@ -2295,6 +2438,7 @@ impl Controls {
             }
             _ => {}
         }
+        self.repeat_after_input(&tooltip_event);
         self.tooltip_after_input(&tooltip_event);
         Ok(())
     }
@@ -2311,6 +2455,9 @@ impl Controls {
         if self.activate_rich_control(id)? {
             return Ok(());
         }
+        if self.activate_flyout(id)? {
+            return Ok(());
+        }
         if self.controls[&id].menu.is_some() {
             if self.popup_expanded(id) == Some(true) {
                 return self.collapse_popup(id);
@@ -2325,12 +2472,13 @@ impl Controls {
         if self.radio_group_of(id).is_some() {
             self.set_checked(id, true)?;
         }
+        let cycled_choice = self.cycle_choice(id)?;
         let Some(control) = self.controls.get_mut(&id) else {
             return Ok(());
         };
         if let Some(command) = &control.command {
             control.checked = self.commands.checked(command).unwrap_or(false);
-        } else if matches!(control.kind, Kind::Toggle | Kind::CheckBox) {
+        } else if !cycled_choice && matches!(control.kind, Kind::Toggle | Kind::CheckBox) {
             control.checked = !control.checked;
         }
         let tab = match control.kind {
@@ -2671,6 +2819,13 @@ impl Controls {
         if let Some(id) = self
             .runtime
             .focused()
+            .filter(|id| self.is_text_editable(*id))
+        {
+            self.invalidate_async_editor(id);
+        }
+        if let Some(id) = self
+            .runtime
+            .focused()
             .filter(|&id| self.is_text_editable(id))
             && let Some(Control {
                 kind: Kind::TextBox(document),
@@ -2897,6 +3052,15 @@ impl Controls {
             if self.paint_image(id, bounds, clip) {
                 continue;
             }
+            if self.paint_choice(id, bounds, clip)? {
+                continue;
+            }
+            if self.paint_text_display(id, bounds, clip)? {
+                continue;
+            }
+            if self.paint_slider(id, bounds, clip)? {
+                continue;
+            }
             if self.paint_status_control(id, bounds, clip)? {
                 continue;
             }
@@ -3106,15 +3270,20 @@ impl Controls {
                         },
                     );
                 }
+                let has_popup = self.popup_expanded(id).is_some();
                 let text_bounds = popup::paint_indicator(
                     &mut self.scene,
                     control,
+                    has_popup,
                     text_bounds,
                     clip,
                     style.foreground,
                 );
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
+                }
+                if self.button_content(id).is_some() {
+                    continue;
                 }
                 if control.button_content_layout != ButtonContentLayout::Leading
                     || control.ribbon_command
@@ -3195,6 +3364,25 @@ impl Controls {
                     let offset = ((text_bounds.height - height) * 0.5).max(0.0);
                     run.bounds.y += offset;
                     run.bounds.height = (text_bounds.height - offset).max(0.0);
+                    if control.button_chrome == ButtonChrome::Link {
+                        let measured = self
+                            .engine
+                            .prepare(&run, 1.0)
+                            .map_err(|error| ControlError::Text(error.to_string()))?;
+                        let width = measured.width.min(run.bounds.width);
+                        let x = run.bounds.x
+                            + if indicator {
+                                0.0
+                            } else {
+                                (run.bounds.width - width).max(0.0) / 2.0
+                            };
+                        fill_clipped(
+                            &mut self.scene,
+                            Rect::new(x, run.bounds.y + height - 2.0, width, 1.0),
+                            clip,
+                            style.foreground,
+                        );
+                    }
                     self.scene.text(run);
                 }
                 continue;
@@ -3304,6 +3492,8 @@ impl Controls {
                 append_clipped(&mut self.scene, custom, clip);
             }
             let enabled = self.effective_enabled(id);
+            let has_popup = self.popup_expanded(id).is_some();
+            let has_content = self.button_content(id).is_some();
             let Some(control) = self.controls.get_mut(&id) else {
                 continue;
             };
@@ -3334,11 +3524,16 @@ impl Controls {
             text_bounds = popup::paint_indicator(
                 &mut self.scene,
                 control,
+                has_popup,
                 text_bounds,
                 clip,
                 if enabled { tokens.text } else { tokens.muted },
             );
-            let mut label = control.display_label(&self.commands).to_owned();
+            let mut label = if has_content {
+                String::new()
+            } else {
+                control.display_label(&self.commands).to_owned()
+            };
             let editable = matches!(control.kind, Kind::TextBox(_));
             let align = if control.kind.clickable()
                 && !matches!(control.kind, Kind::CheckBox | Kind::MenuItem)
@@ -3598,6 +3793,7 @@ impl Controls {
                         label: String::new(),
                         value: None,
                         checked: None,
+                        checked_mixed: false,
                         selected: false,
                         disabled: !self.effective_enabled(id),
                         read_only: false,
@@ -3625,7 +3821,9 @@ impl Controls {
                         control.kind.role()
                     }
                 });
-                let value = if let Kind::TextBox(document) = &control.kind {
+                let value = if self.progress_indeterminate(id) == Some(true) {
+                    None
+                } else if let Kind::TextBox(document) = &control.kind {
                     Some(document.text().to_owned())
                 } else if let Some(editor) = self.composite_editor(id) {
                     self.document(editor)
@@ -3633,6 +3831,8 @@ impl Controls {
                 } else {
                     self.progress_value(id)
                         .or_else(|| self.zoom_value(id))
+                        .or_else(|| self.slider_value(id))
+                        .or_else(|| self.split_ratio(id).map(f64::from))
                         .map(|value| value.to_string())
                 };
                 let selected = match control.kind {
@@ -3669,8 +3869,14 @@ impl Controls {
                     if matches!(control.kind, Kind::TextBox(_)) && !control.editor.is_read_only {
                         actions.push(SemanticAction::SetValue);
                     }
-                    if self.zoom_settings(id).is_some() {
+                    if self.zoom_settings(id).is_some()
+                        || self.slider_value(id).is_some()
+                        || self.split_ratio(id).is_some()
+                    {
                         actions.push(SemanticAction::SetValue);
+                    }
+                    if self.split_ratio(id).is_some() {
+                        actions.extend([SemanticAction::Expand, SemanticAction::Collapse]);
                     }
                     if checked.is_some() && !matches!(control.kind, Kind::Radio { .. }) {
                         actions.push(SemanticAction::Toggle);
@@ -3690,6 +3896,7 @@ impl Controls {
                         .to_owned(),
                     value,
                     checked,
+                    checked_mixed: self.check_state(id) == Some(CheckState::Indeterminate),
                     selected,
                     disabled: !enabled,
                     read_only: control.editor.is_read_only
@@ -3749,10 +3956,14 @@ impl Controls {
                     .node(id)
                     .is_some_and(|node| node.props.focusable),
                 SemanticAction::SetValue => {
-                    self.is_text_editable(id) || self.zoom_settings(id).is_some()
+                    self.is_text_editable(id)
+                        || self.zoom_settings(id).is_some()
+                        || self.slider_value(id).is_some()
+                        || self.split_ratio(id).is_some()
                 }
                 SemanticAction::Expand | SemanticAction::Collapse => {
                     self.expander_expanded(id).is_some()
+                        || self.split_ratio(id).is_some()
                         || (self.popup_expanded(id).is_some() && !self.rich_read_only(id))
                 }
                 SemanticAction::Scroll => self
@@ -3779,10 +3990,28 @@ impl Controls {
             SemanticAction::Collapse if self.expander_expanded(id).is_some() => {
                 self.set_expander_expanded(id, false)?;
             }
+            SemanticAction::Expand if self.split_ratio(id).is_some() => {
+                self.set_split_collapsed(id, None)?;
+            }
+            SemanticAction::Collapse if self.split_ratio(id).is_some() => {
+                self.set_split_collapsed(id, Some(SplitPane::First))?;
+            }
             SemanticAction::Expand => self.expand_popup(id)?,
             SemanticAction::Collapse => self.collapse_popup(id)?,
             SemanticAction::SetValue => {
-                if self.zoom_settings(id).is_some() {
+                if self.slider_value(id).is_some() || self.split_ratio(id).is_some() {
+                    if let Ok(value) = value.unwrap_or_default().parse::<f64>() {
+                        let result = if self.slider_value(id).is_some() {
+                            self.set_slider_value(id, value)
+                        } else {
+                            self.set_split_ratio(id, value as f32)
+                        };
+                        match result {
+                            Ok(()) | Err(ControlError::Invalid(_)) => {}
+                            Err(error) => return Err(error),
+                        }
+                    }
+                } else if self.zoom_settings(id).is_some() {
                     // Native accessibility clients may submit malformed or
                     // out-of-range values. Reject those without ending the host.
                     if let Ok(value) = value.unwrap_or_default().parse::<f64>() {
@@ -4132,7 +4361,7 @@ fn append_clipped(target: &mut Scene, source: &Scene, clip: Rect) {
                 {
                     let mut run = run.clone();
                     run.clip = effective;
-                    target.text(run);
+                    let _ = target.styled_text(run, source.text_spans(index).to_vec());
                 }
             }
             rust_desktop_ui_core::DrawCommand::RoundedRectangle(index) => {

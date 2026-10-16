@@ -1,9 +1,9 @@
 //! Property bindings between application data and retained controls.
 
 use crate::{
-    BindingContext, BindingConverterRegistry, BindingError, BindingPath, BindingPathSegment,
-    CommitOutcome, Controls, DataValue, DateFormat, DateValue, EditorValidator, SelectionItem,
-    SelectionValidator, TimeValue,
+    BindingContext, BindingConverterRegistry, BindingError, BindingExpression, BindingPath,
+    BindingPathSegment, CommitOutcome, Controls, DataValue, DateFormat, DateValue, EditorValidator,
+    SelectionItem, SelectionValidator, TimeValue,
 };
 use rust_desktop_ui_core::{Length, Mutation, WidgetId};
 use std::{
@@ -20,6 +20,10 @@ pub enum BindingProperty {
     IsExpanded,
     SelectedIndex,
     Value,
+    LowerValue,
+    UpperValue,
+    IsIndeterminate,
+    SelectedKey,
     SelectedValue,
     SelectedValues,
     ItemsSource,
@@ -39,9 +43,56 @@ pub struct BindingEndpoint {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BindingInput {
+    DataContext(BindingPath),
+    Element(BindingEndpoint),
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum BindingSource {
     DataContext(BindingPath),
     Element(BindingEndpoint),
+    /// OneWay/OneTime source. Its converter receives a DataValue::List in input order.
+    Multi(Vec<BindingInput>),
+    /// OneWay/OneTime source using a bounded expression and explicit dependencies.
+    Expression {
+        inputs: Vec<BindingInput>,
+        expression: BindingExpression,
+    },
+}
+impl BindingSource {
+    fn elements(&self) -> Vec<BindingEndpoint> {
+        match self {
+            Self::Element(endpoint) => vec![*endpoint],
+            Self::DataContext(_) => vec![],
+            Self::Multi(inputs) | Self::Expression { inputs, .. } => inputs
+                .iter()
+                .filter_map(|input| {
+                    if let BindingInput::Element(e) = input {
+                        Some(*e)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        }
+    }
+    fn paths(&self) -> Vec<&BindingPath> {
+        match self {
+            Self::DataContext(path) => vec![path],
+            Self::Element(_) => vec![],
+            Self::Multi(inputs) | Self::Expression { inputs, .. } => inputs
+                .iter()
+                .filter_map(|input| {
+                    if let BindingInput::DataContext(p) = input {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -150,6 +201,7 @@ pub struct ControlBindings {
     diagnostics: Vec<BindingDiagnostic>,
     installed: bool,
     evaluation_order: Vec<usize>,
+    validation_revision: u64,
 }
 
 impl ControlBindings {
@@ -163,6 +215,7 @@ impl ControlBindings {
             diagnostics: Vec::new(),
             installed: false,
             evaluation_order: Vec::new(),
+            validation_revision: 0,
         }
     }
 
@@ -212,6 +265,20 @@ impl ControlBindings {
         if binding.target.property == BindingProperty::ItemsSource && binding.mode.writes_source() {
             return Err(invalid("ItemsSource supports OneWay or OneTime"));
         }
+        if let BindingSource::Multi(inputs) | BindingSource::Expression { inputs, .. } =
+            &binding.source
+        {
+            if inputs.is_empty() || inputs.len() > 32 || binding.mode.writes_source() {
+                return Err(invalid(
+                    "Multi-source bindings require 1..32 inputs and OneWay/OneTime mode",
+                ));
+            }
+            if let BindingSource::Expression { expression, .. } = &binding.source
+                && expression.input_count() > inputs.len()
+            {
+                return Err(invalid("Expression references an undeclared input"));
+            }
+        }
         if let Some(value) = &binding.fallback {
             value.validate()?;
         }
@@ -255,7 +322,7 @@ impl ControlBindings {
                 BindingUpdateTrigger::LostFocus,
                 &self.items.borrow(),
             )?;
-            if let BindingSource::Element(source) = binding.source {
+            for source in binding.source.elements() {
                 read_property(
                     ui,
                     source,
@@ -308,8 +375,16 @@ impl ControlBindings {
                     "A property can have only one binding, including group header aliases",
                 ));
             }
-            if let BindingSource::Element(source) = &mut binding.source {
-                *source = canonical(*source);
+            match &mut binding.source {
+                BindingSource::Element(source) => *source = canonical(*source),
+                BindingSource::Multi(inputs) | BindingSource::Expression { inputs, .. } => {
+                    for input in inputs {
+                        if let BindingInput::Element(source) = input {
+                            *source = canonical(*source);
+                        }
+                    }
+                }
+                BindingSource::DataContext(_) => {}
             }
             normalized.push(binding);
         }
@@ -354,13 +429,49 @@ impl ControlBindings {
             .enumerate()
             .map(|(index, link)| (dependency_endpoint(link.binding.target), index))
             .collect();
+        let mut parents: Vec<HashSet<usize>> = self
+            .links
+            .iter()
+            .map(|link| {
+                link.binding
+                    .source
+                    .elements()
+                    .into_iter()
+                    .filter_map(|source| targets.get(&dependency_endpoint(source)).copied())
+                    .collect()
+            })
+            .collect();
+        // Both range endpoints publish together. Their dependency sets are
+        // therefore one transaction: all inputs must be evaluated before either
+        // endpoint, and a dependency through the other thumb is still a cycle.
+        for (index, link) in self.links.iter().enumerate() {
+            if !link.binding.mode.reads_source()
+                || !matches!(
+                    link.binding.target.property,
+                    BindingProperty::LowerValue | BindingProperty::UpperValue
+                )
+            {
+                continue;
+            }
+            if let Some(partner) = self.links.iter().position(|other| {
+                other.binding.mode.reads_source()
+                    && other.binding.target.widget == link.binding.target.widget
+                    && matches!(
+                        other.binding.target.property,
+                        BindingProperty::LowerValue | BindingProperty::UpperValue
+                    )
+                    && other.binding.target.property != link.binding.target.property
+            }) {
+                let union: HashSet<_> = parents[index].union(&parents[partner]).copied().collect();
+                parents[index] = union.clone();
+                parents[partner] = union;
+            }
+        }
         let mut incoming = vec![0_usize; self.links.len()];
         let mut children = vec![Vec::new(); self.links.len()];
-        for (index, link) in self.links.iter().enumerate() {
-            if let BindingSource::Element(source) = link.binding.source
-                && let Some(&parent) = targets.get(&dependency_endpoint(source))
-            {
-                incoming[index] += 1;
+        for (index, parents) in parents.iter().enumerate() {
+            incoming[index] = parents.len();
+            for &parent in parents {
                 children[parent].push(index);
             }
         }
@@ -399,9 +510,39 @@ impl ControlBindings {
             return false;
         }
         let collection_result = self.context.borrow_mut().synchronize_collections();
+        let revision = self.context.borrow().revision();
+        if revision != self.validation_revision {
+            for link in &self.links {
+                if let Some(editor) = value_editor(ui, link.binding.target) {
+                    ui.invalidate_async_editor(editor);
+                }
+            }
+            self.validation_revision = revision;
+        }
         let order = self.evaluation_order.clone();
         let mut changed = false;
+        let mut range_skips = HashSet::new();
+        let mut ranges = HashSet::new();
         for index in order {
+            let target = self.links[index].binding.target;
+            if matches!(
+                target.property,
+                BindingProperty::LowerValue | BindingProperty::UpperValue
+            ) && ranges.insert(target.widget)
+            {
+                let (range_changed, skips) = self.synchronize_range_sources(ui, target.widget);
+                changed |= range_changed;
+                range_skips.extend(skips);
+                if !range_skips.contains(&index) {
+                    let (reverse_changed, skips) =
+                        self.synchronize_range_reverse(ui, target.widget, explicit);
+                    changed |= reverse_changed;
+                    range_skips.extend(skips);
+                }
+            }
+            if range_skips.contains(&index) {
+                continue;
+            }
             let binding = self.links[index].binding.clone();
             let blocked_collection = binding.mode.reads_source()
                 && !(binding.mode == ControlBindingMode::OneTime && self.links[index].initialized)
@@ -432,6 +573,229 @@ impl ControlBindings {
             }
         }
         changed
+    }
+
+    // Both thumbs are one value transaction. A model set_many must not fail on
+    // an intermediate (new lower, old upper) pair or expose half an invalid pair.
+    fn synchronize_range_sources(
+        &mut self,
+        ui: &mut Controls,
+        widget: WidgetId,
+    ) -> (bool, HashSet<usize>) {
+        let mut groups: HashMap<WidgetId, Vec<usize>> = HashMap::new();
+        for (index, link) in self.links.iter().enumerate() {
+            if link.binding.target.widget == widget
+                && matches!(
+                    link.binding.target.property,
+                    BindingProperty::LowerValue | BindingProperty::UpperValue
+                )
+                && link.binding.mode.reads_source()
+                && !(link.initialized && link.binding.mode == ControlBindingMode::OneTime)
+            {
+                groups
+                    .entry(link.binding.target.widget)
+                    .or_default()
+                    .push(index);
+            }
+        }
+        let mut changed = false;
+        let mut skip = HashSet::new();
+        for (id, indexes) in groups {
+            if indexes.len() != 2 {
+                continue;
+            }
+            let bindings: Vec<_> = indexes
+                .iter()
+                .map(|index| self.links[*index].binding.clone())
+                .collect();
+            let invalidated: Vec<_> = indexes
+                .iter()
+                .zip(&bindings)
+                .map(|(index, binding)| self.source_invalidated(*index, binding))
+                .collect();
+            if !invalidated.iter().any(|value| *value) {
+                continue;
+            }
+            let revisions = self.source_revisions();
+            let mut fallback_errors = HashMap::new();
+            let result: Result<bool, BindingError> = (|| {
+                let values = indexes
+                    .iter()
+                    .zip(&bindings)
+                    .map(|(index, binding)| {
+                        self.read_source(ui, binding).or_else(|error| {
+                            let Some(fallback) = &binding.fallback else {
+                                return Err(error);
+                            };
+                            fallback_errors.insert(*index, error.to_string());
+                            Ok(fallback.clone())
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                if indexes.iter().zip(&values).all(|(index, value)| {
+                    self.links[*index].initialized
+                        && self.links[*index].source.as_ref() == Some(value)
+                }) {
+                    for index in &indexes {
+                        self.accept_source_revision(*index, revisions);
+                    }
+                    return Ok(false);
+                }
+                let first = number(&values[0])?;
+                let second = number(&values[1])?;
+                let (lower, upper) = if bindings[0].target.property == BindingProperty::LowerValue {
+                    (first, second)
+                } else {
+                    (second, first)
+                };
+                ui.set_range_slider_values(id, lower, upper)
+                    .map_err(control_error)?;
+                for (index, value) in indexes.iter().zip(values) {
+                    self.links[*index].source = Some(value.clone());
+                    self.links[*index].target = Some(value);
+                    self.links[*index].initialized = true;
+                    self.accept_source_revision(*index, revisions);
+                }
+                Ok(true)
+            })();
+            match result {
+                Ok(did_change) => {
+                    changed |= did_change;
+                    for index in &indexes {
+                        if let Some(message) = fallback_errors.get(index) {
+                            if self.links[*index].error.as_ref() != Some(message) {
+                                if self.diagnostics.len() == 1024 {
+                                    self.diagnostics.remove(0);
+                                }
+                                self.diagnostics.push(BindingDiagnostic {
+                                    target: self.links[*index].binding.target,
+                                    message: message.clone(),
+                                });
+                            }
+                            self.links[*index].error = Some(message.clone());
+                        } else {
+                            self.links[*index].error = None;
+                        }
+                    }
+                    // A fallback is presentation only. Do not publish the pair
+                    // back into a missing or invalid model path on this pass.
+                    if !fallback_errors.is_empty() {
+                        skip.extend(indexes);
+                    }
+                }
+                Err(error) => {
+                    for index in indexes {
+                        let message = error.to_string();
+                        if self.links[index].error.as_ref() != Some(&message) {
+                            if self.diagnostics.len() == 1024 {
+                                self.diagnostics.remove(0);
+                            }
+                            self.diagnostics.push(BindingDiagnostic {
+                                target: self.links[index].binding.target,
+                                message: message.clone(),
+                            });
+                            self.links[index].error = Some(message);
+                        }
+                        skip.insert(index);
+                    }
+                }
+            }
+        }
+        (changed, skip)
+    }
+
+    // A pair of writable model paths is published in one set_many, so a
+    // cross-field validator observes the final pair in either direction.
+    fn synchronize_range_reverse(
+        &mut self,
+        ui: &Controls,
+        widget: WidgetId,
+        explicit: bool,
+    ) -> (bool, HashSet<usize>) {
+        let indexes: Vec<_> = self
+            .links
+            .iter()
+            .enumerate()
+            .filter(|(_, link)| {
+                link.binding.target.widget == widget
+                    && matches!(
+                        link.binding.target.property,
+                        BindingProperty::LowerValue | BindingProperty::UpperValue
+                    )
+                    && link.binding.mode.writes_source()
+                    && matches!(link.binding.source, BindingSource::DataContext(_))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        if indexes.len() != 2 {
+            return (false, HashSet::new());
+        }
+        let skip = indexes.iter().copied().collect();
+        let bindings: Vec<_> = indexes
+            .iter()
+            .map(|index| self.links[*index].binding.clone())
+            .collect();
+        if !explicit
+            && bindings
+                .iter()
+                .any(|binding| binding.trigger == BindingUpdateTrigger::Explicit)
+        {
+            return (false, skip);
+        }
+        let result: Result<bool, BindingError> = (|| {
+            let values = bindings
+                .iter()
+                .map(|binding| {
+                    read_property(ui, binding.target, binding.trigger, &self.items.borrow())
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            if indexes.iter().zip(&values).all(|(index, value)| {
+                self.links[*index].initialized && self.links[*index].target.as_ref() == Some(value)
+            }) {
+                return Ok(false);
+            }
+            let updates = bindings
+                .iter()
+                .zip(&values)
+                .map(|(binding, value)| {
+                    let BindingSource::DataContext(path) = &binding.source else {
+                        unreachable!()
+                    };
+                    Ok((path.as_str().to_owned(), self.convert_back(binding, value)?))
+                })
+                .collect::<Result<Vec<_>, BindingError>>()?;
+            let changed = self.context.borrow_mut().set_many(updates)?;
+            let revisions = self.source_revisions();
+            for ((index, binding), value) in indexes.iter().zip(&bindings).zip(values) {
+                if binding.mode.reads_source() {
+                    self.links[*index].source = Some(self.read_source(ui, binding)?);
+                    self.accept_source_revision(*index, revisions);
+                }
+                self.links[*index].target = Some(value);
+                self.links[*index].initialized = true;
+                self.links[*index].error = None;
+            }
+            Ok(changed)
+        })();
+        match result {
+            Ok(changed) => (changed, skip),
+            Err(error) => {
+                for index in indexes {
+                    let message = error.to_string();
+                    if self.links[index].error.as_ref() != Some(&message) {
+                        if self.diagnostics.len() == 1024 {
+                            self.diagnostics.remove(0);
+                        }
+                        self.diagnostics.push(BindingDiagnostic {
+                            target: self.links[index].binding.target,
+                            message: message.clone(),
+                        });
+                        self.links[index].error = Some(message);
+                    }
+                }
+                (false, skip)
+            }
+        }
     }
 
     fn sync_link(
@@ -515,8 +879,18 @@ impl ControlBindings {
             if document.composition().is_some() {
                 return Ok(false);
             }
+            if ui.has_async_editor_validator(editor)
+                && (explicit || read_trigger == BindingUpdateTrigger::PropertyChanged)
+                && document.text() != ui.accepted_value(editor).unwrap_or("")
+            {
+                let outcome = ui.commit_edit(editor).map_err(control_error)?;
+                match outcome {
+                    CommitOutcome::Pending => return Ok(false),
+                    other => accepted(other)?,
+                }
+            }
             if read_trigger == BindingUpdateTrigger::PropertyChanged {
-                ui.validate_edit(editor, document.text())
+                ui.validate_edit(editor, ui.document(editor).unwrap().text())
                     .map_err(BindingError::Validation)?;
             }
         }
@@ -547,6 +921,11 @@ impl ControlBindings {
                 result?;
                 true
             }
+            BindingSource::Multi(_) | BindingSource::Expression { .. } => {
+                return Err(invalid(
+                    "Multi-source bindings cannot write to their inputs",
+                ));
+            }
         };
         if explicit && let Some(editor) = value_editor(ui, binding.target) {
             self.applying.set(true);
@@ -573,9 +952,10 @@ impl ControlBindings {
         {
             return true;
         }
-        let BindingSource::DataContext(path) = &binding.source else {
+        if !binding.source.elements().is_empty() {
             return true;
-        };
+        }
+        let paths = binding.source.paths();
         let context = self.context.borrow();
         let Some(cursor) = link.source_revision else {
             return true;
@@ -583,9 +963,11 @@ impl ControlBindings {
         if cursor == context.revision() {
             return false;
         }
-        let affected = context
-            .changes_since(cursor)
-            .is_none_or(|changes| changes.iter().any(|change| change.affects(path)));
+        let affected = context.changes_since(cursor).is_none_or(|changes| {
+            changes
+                .iter()
+                .any(|change| paths.iter().any(|path| change.affects(path)))
+        });
         if !affected {
             // Advance through unrelated changes without cloning source data.
             link.source_revision = Some(context.revision());
@@ -618,11 +1000,36 @@ impl ControlBindings {
                 BindingUpdateTrigger::PropertyChanged,
                 &self.items.borrow(),
             )?,
+            BindingSource::Multi(inputs) => DataValue::List(self.read_inputs(ui, inputs)?),
+            BindingSource::Expression { inputs, expression } => {
+                expression.evaluate(&self.read_inputs(ui, inputs)?)?
+            }
         };
         match &binding.converter {
             Some(name) => self.converters.borrow().convert(name, &value),
             None => Ok(value),
         }
+    }
+
+    fn read_inputs(
+        &self,
+        ui: &Controls,
+        inputs: &[BindingInput],
+    ) -> Result<Vec<DataValue>, BindingError> {
+        inputs
+            .iter()
+            .map(|input| match input {
+                BindingInput::DataContext(path) => {
+                    Ok(self.context.borrow().get_path(path)?.clone())
+                }
+                BindingInput::Element(endpoint) => read_property(
+                    ui,
+                    *endpoint,
+                    BindingUpdateTrigger::PropertyChanged,
+                    &self.items.borrow(),
+                ),
+            })
+            .collect()
     }
 
     fn convert_back(
@@ -765,6 +1172,7 @@ impl ControlBindings {
                     Ok(())
                 })
             }
+            BindingSource::Multi(_) | BindingSource::Expression { .. } => return Ok(()),
         };
         let converters = Rc::clone(&self.converters);
         let converter = binding.converter.clone();
@@ -948,8 +1356,34 @@ fn read_property(
             .label_text(id)
             .map(DataValue::from)
             .ok_or_else(|| invalid("Text requires an editor or caption")),
+        BindingProperty::LowerValue | BindingProperty::UpperValue => ui
+            .range_slider_values(id)
+            .map(|(lower, upper)| {
+                DataValue::Number(if endpoint.property == BindingProperty::LowerValue {
+                    lower
+                } else {
+                    upper
+                })
+            })
+            .ok_or_else(|| invalid("Range value requires RangeSlider")),
+        BindingProperty::IsIndeterminate => ui
+            .progress_indeterminate(id)
+            .map(DataValue::Bool)
+            .ok_or_else(|| invalid("IsIndeterminate requires ProgressBar")),
+        BindingProperty::SelectedKey => {
+            if ui.radio_items(id).is_some() {
+                Ok(ui
+                    .radio_selected_key(id)
+                    .map(DataValue::from)
+                    .unwrap_or(DataValue::Null))
+            } else {
+                Err(invalid("SelectedKey requires RadioGroup"))
+            }
+        }
         BindingProperty::Value => ui
-            .progress_value(id)
+            .slider_value(id)
+            .or_else(|| ui.progress_value(id))
+            .or_else(|| ui.progress_settings(id).map(|s| s.value))
             .or_else(|| ui.zoom_value(id))
             .map(DataValue::Number)
             .ok_or_else(|| invalid("Value requires an editor, ProgressBar or ZoomControl")),
@@ -972,6 +1406,8 @@ fn read_property(
         }
         BindingProperty::ItemsSource => ui
             .selection_items(id)
+            .map(|v| v.to_vec())
+            .or_else(|| ui.radio_items(id))
             .map(|values| {
                 DataValue::List(
                     values
@@ -998,8 +1434,12 @@ fn read_property(
             })
             .ok_or_else(|| invalid("ItemsSource requires a selection control")),
         BindingProperty::IsChecked => ui
-            .checked(id)
-            .map(DataValue::Bool)
+            .check_state(id)
+            .map(|state| match state {
+                crate::CheckState::Indeterminate => DataValue::Null,
+                crate::CheckState::Checked => DataValue::Bool(true),
+                crate::CheckState::Unchecked => DataValue::Bool(false),
+            })
             .ok_or_else(|| invalid("IsChecked requires a checkable control")),
         BindingProperty::IsEnabled => Ok(props.enabled.into()),
         BindingProperty::Visibility => Ok(if props.collapsed {
@@ -1087,8 +1527,43 @@ fn write_property(
             .set_expander_expanded(id, boolean(value)?)
             .map_err(control_error),
         BindingProperty::Text => ui.set_label(id, string(value)?).map_err(control_error),
+        BindingProperty::LowerValue | BindingProperty::UpperValue => {
+            let (lower, upper) = ui
+                .range_slider_values(id)
+                .ok_or_else(|| invalid("Range value requires RangeSlider"))?;
+            ui.set_range_slider_values(
+                id,
+                if endpoint.property == BindingProperty::LowerValue {
+                    number(value)?
+                } else {
+                    lower
+                },
+                if endpoint.property == BindingProperty::UpperValue {
+                    number(value)?
+                } else {
+                    upper
+                },
+            )
+            .map_err(control_error)
+        }
+        BindingProperty::IsIndeterminate => ui
+            .set_progress_indeterminate(id, boolean(value)?)
+            .map_err(control_error),
+        BindingProperty::SelectedKey => ui
+            .set_radio_selected_key(
+                id,
+                if *value == DataValue::Null {
+                    None
+                } else {
+                    Some(string(value)?)
+                },
+            )
+            .map_err(control_error),
         BindingProperty::Value => {
-            if ui.progress_settings(id).is_some() {
+            if ui.slider_value(id).is_some() {
+                ui.set_slider_value(id, number(value)?)
+                    .map_err(control_error)
+            } else if ui.progress_settings(id).is_some() {
                 ui.set_progress_value(id, number(value)?)
                     .map_err(control_error)
             } else if ui.zoom_settings(id).is_some() {
@@ -1150,7 +1625,12 @@ fn write_property(
             // Install identity mapping before validators inspect a selection
             // retained across replacement. Restore it if the control rejects.
             let previous = items.borrow_mut().insert(id, state);
-            if let Err(error) = ui.set_selection_items(id, rows) {
+            let result = if ui.radio_items(id).is_some() {
+                ui.set_radio_items(id, rows)
+            } else {
+                ui.set_selection_items(id, rows)
+            };
+            if let Err(error) = result {
                 if let Some(previous) = previous {
                     items.borrow_mut().insert(id, previous);
                 } else {
@@ -1160,7 +1640,25 @@ fn write_property(
             }
             Ok(())
         }
-        BindingProperty::IsChecked => ui.set_checked(id, boolean(value)?).map_err(control_error),
+        BindingProperty::IsChecked => {
+            if *value == DataValue::Null {
+                if !ui.is_three_state(id) {
+                    return Err(invalid("Null IsChecked requires a three-state control"));
+                }
+                ui.set_check_state(id, crate::CheckState::Indeterminate)
+                    .map_err(control_error)
+            } else {
+                ui.set_check_state(
+                    id,
+                    if boolean(value)? {
+                        crate::CheckState::Checked
+                    } else {
+                        crate::CheckState::Unchecked
+                    },
+                )
+                .map_err(control_error)
+            }
+        }
         BindingProperty::IsEnabled => ui.set_enabled(id, boolean(value)?).map_err(control_error),
         BindingProperty::IsReadOnly => {
             let value = boolean(value)?;
@@ -1372,6 +1870,7 @@ fn accepted(outcome: CommitOutcome) -> Result<(), BindingError> {
     match outcome {
         CommitOutcome::Committed | CommitOutcome::Unchanged => Ok(()),
         CommitOutcome::Invalid(message) => Err(BindingError::Validation(message)),
+        CommitOutcome::Pending => Err(invalid("Editor validation is still pending")),
         CommitOutcome::CompositionActive => Err(invalid(
             "An active composition cannot be replaced by a binding",
         )),
@@ -1400,3 +1899,7 @@ mod tests;
 #[cfg(test)]
 #[path = "observable_binding_tests.rs"]
 mod observable_tests;
+
+#[cfg(test)]
+#[path = "multi_binding_tests.rs"]
+mod multi_tests;

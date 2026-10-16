@@ -9,6 +9,8 @@ use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind
 use std::collections::{HashMap, HashSet};
 #[path = "view_bindings.rs"]
 mod bindings;
+#[path = "view_extras.rs"]
+mod extras;
 #[path = "view_forms.rs"]
 mod forms;
 #[path = "view_grid.rs"]
@@ -30,6 +32,8 @@ pub(crate) struct MountedView {
     pub(crate) splits: HashMap<WidgetId, SplitButton>,
     pub(crate) bindings: Option<rust_desktop_ui_controls::ControlBindings>,
     pending_bindings: Vec<bindings::PendingBindings>,
+    pending_popups: Vec<extras::PendingPopup>,
+    initial_popups: Vec<rust_desktop_ui_controls::Flyout>,
     decorations: Vec<forms::BorderSurface>,
     scrolls: Vec<forms::ScrollLayout>,
     automatic_heights: Vec<forms::AutomaticHeight>,
@@ -93,35 +97,80 @@ impl MountedView {
         });
         validate_tree(ui, element)?;
         validate_ribbon_width(ui, element, available_width)?;
-        let mut view = Self::default();
-        let content =
-            view.mount_element(ui, parent, element, Axis::Vertical, available_width, "")?;
-        if element.common.height.is_none()
-            && !element.common.bindings.contains_key("Height")
-            && !matches!(&element.kind, ElementKind::GroupBox(group) if group.is_collapsible)
-            && element.common.vertical_alignment == rust_desktop_ui_xaml::Alignment::Stretch
-            && matches!(
-                element.kind,
-                ElementKind::Grid(_)
-                    | ElementKind::GridControl(_)
-                    | ElementKind::Border(_)
-                    | ElementKind::GroupBox(_)
-                    | ElementKind::TabbedGroup(_)
-                    | ElementKind::ScrollViewer(_)
-                    | ElementKind::DockPanel(_)
-            )
-        {
-            let mut style = ui.runtime.tree().node(content).unwrap().props.style.clone();
-            style.height = Length::Percent(1.0);
-            ui.runtime
-                .apply(rust_desktop_ui_core::Mutation::SetStyle {
-                    node: content,
-                    style,
+        let before: HashSet<_> = ui.runtime.tree().live_ids().into_iter().collect();
+        let focus_before = ui.runtime.focused();
+        let motion_before = ui.reduced_motion();
+        let result = (|| {
+            let mut view = Self::default();
+            let content =
+                view.mount_element(ui, parent, element, Axis::Vertical, available_width, "")?;
+            if element.common.height.is_none()
+                && !element.common.bindings.contains_key("Height")
+                && !matches!(&element.kind, ElementKind::GroupBox(group) if group.is_collapsible)
+                && element.common.vertical_alignment == rust_desktop_ui_xaml::Alignment::Stretch
+                && matches!(
+                    element.kind,
+                    ElementKind::Grid(_)
+                        | ElementKind::Overlay(_)
+                        | ElementKind::SplitContainer(_)
+                        | ElementKind::GridControl(_)
+                        | ElementKind::Border(_)
+                        | ElementKind::GroupBox(_)
+                        | ElementKind::TabbedGroup(_)
+                        | ElementKind::ScrollViewer(_)
+                        | ElementKind::DockPanel(_)
+                )
+            {
+                let mut style = ui.runtime.tree().node(content).unwrap().props.style.clone();
+                style.height = Length::Percent(1.0);
+                ui.runtime
+                    .apply(rust_desktop_ui_core::Mutation::SetStyle {
+                        node: content,
+                        style,
+                    })
+                    .map_err(err)?;
+            }
+            view.initialize_popups(ui)?;
+            view.initialize_bindings(ui, context, converters)?;
+            Ok(view)
+        })();
+        if result.is_err() {
+            let added_roots: Vec<_> = ui
+                .runtime
+                .tree()
+                .live_ids()
+                .into_iter()
+                .filter(|id| {
+                    !before.contains(id)
+                        && ui
+                            .runtime
+                            .tree()
+                            .parent(*id)
+                            .is_none_or(|parent| before.contains(&parent))
                 })
+                .map(rust_desktop_ui_core::Mutation::Remove)
+                .collect();
+            ui.runtime
+                .apply(rust_desktop_ui_core::Mutation::Batch(added_roots))
                 .map_err(err)?;
+            ui.set_reduced_motion(motion_before);
+            if ui.runtime.focused() != focus_before {
+                ui.runtime
+                    .apply(rust_desktop_ui_core::Mutation::Focus(focus_before))
+                    .map_err(err)?;
+            }
+            // Flush removal sidecars through the normal lifecycle without
+            // modifying any surviving retained document or user property.
+            ui.update(
+                ui.runtime
+                    .bounds(ui.root())
+                    .map_or(rust_desktop_ui_core::Size::new(0.0, 0.0), |bounds| {
+                        rust_desktop_ui_core::Size::new(bounds.width, bounds.height)
+                    }),
+            )
+            .map_err(err)?;
         }
-        view.initialize_bindings(ui, context, converters)?;
-        Ok(view)
+        result
     }
 
     pub(crate) fn find_name(&self, name: &str) -> Option<WidgetId> {
@@ -173,7 +222,27 @@ impl MountedView {
                 ElementKind::StatusBar(_) => Length::Px(ui.theme().tokens().control_height - 4.0),
                 ElementKind::RibbonStatusBar(_) => Length::Px(ui.theme().tokens().control_height),
                 ElementKind::StatusBarItem(_) => Length::Auto,
-                ElementKind::ProgressBar(_) => Length::Px(16.0),
+                ElementKind::ProgressBar(_) | ElementKind::BusyIndicator(_) => Length::Px(16.0),
+                ElementKind::Slider(slider) => {
+                    Length::Px(if slider.orientation == Orientation::Horizontal {
+                        ui.theme().tokens().control_height
+                    } else {
+                        160.0
+                    })
+                }
+                ElementKind::RangeSlider(range) => {
+                    Length::Px(if range.slider.orientation == Orientation::Horizontal {
+                        ui.theme().tokens().control_height
+                    } else {
+                        160.0
+                    })
+                }
+                ElementKind::ToolBar(_) => Length::Px(ui.theme().tokens().control_height + 8.0),
+                ElementKind::MenuBar(_) => Length::Px(ui.theme().tokens().control_height),
+                ElementKind::Popup(_) => Length::Px(0.0),
+                ElementKind::Overlay(_)
+                | ElementKind::SplitContainer(_)
+                | ElementKind::RadioGroup(_) => Length::Auto,
                 ElementKind::ZoomControl(_) => Length::Px(ui.theme().tokens().control_height - 8.0),
                 ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::GridControl(_) => Length::Auto,
@@ -188,7 +257,7 @@ impl MountedView {
                 | ElementKind::ToggleButton(_)
                 | ElementKind::DropDownButton(_)
                 | ElementKind::SplitButton(_) => Length::Px(ui.theme().tokens().control_height),
-                ElementKind::CheckBox(_) | ElementKind::RadioButton(_) => {
+                ElementKind::CheckBox(_) | ElementKind::Switch(_) | ElementKind::RadioButton(_) => {
                     Length::Px(ui.theme().tokens().control_height - 4.0)
                 }
                 ElementKind::TextBlock(_) => Length::Px(24.0),
@@ -229,6 +298,18 @@ impl MountedView {
             ..Default::default()
         };
         let id = match &element.kind {
+            ElementKind::Overlay(_)
+            | ElementKind::SplitContainer(_)
+            | ElementKind::Slider(_)
+            | ElementKind::RangeSlider(_)
+            | ElementKind::Switch(_)
+            | ElementKind::RadioGroup(_)
+            | ElementKind::ToolBar(_)
+            | ElementKind::MenuBar(_)
+            | ElementKind::Popup(_)
+            | ElementKind::BusyIndicator(_) => {
+                self.mount_extra(ui, parent, element, style, available_width, &context)?
+            }
             ElementKind::GridControl(definition) => self.mount_grid_control(
                 ui,
                 parent,
@@ -291,15 +372,23 @@ impl MountedView {
                     self.commands.push(command.clone());
                 }
                 if matches!(element.kind, ElementKind::SplitButton(_)) {
-                    let parts = ui
-                        .split_button(
+                    let parts = if entries.is_empty() {
+                        ui.split_button_content(
+                            parent,
+                            &button.content,
+                            button.command.as_deref().map(Into::into),
+                            style,
+                        )
+                    } else {
+                        ui.split_button(
                             parent,
                             &button.content,
                             button.command.as_deref().map(Into::into),
                             &entries,
                             style,
                         )
-                        .map_err(err)?;
+                    }
+                    .map_err(err)?;
                     for part in [parts.primary, parts.dropdown] {
                         ui.set_button_style(part, button_style(&button.style))
                             .map_err(err)?;
@@ -319,9 +408,12 @@ impl MountedView {
                     self.splits.insert(id, parts);
                     id
                 } else {
-                    let id = ui
-                        .dropdown_button(parent, &button.content, &entries, style)
-                        .map_err(err)?;
+                    let id = if entries.is_empty() {
+                        ui.button(parent, &button.content, None, style)
+                    } else {
+                        ui.dropdown_button(parent, &button.content, &entries, style)
+                    }
+                    .map_err(err)?;
                     ui.set_button_style(id, button_style(&button.style))
                         .map_err(err)?;
                     ui.set_button_icon(
@@ -365,6 +457,7 @@ impl MountedView {
             ElementKind::TextBlock(text) => {
                 let id = ui.label(parent, &text.text, style).map_err(err)?;
                 ui.set_text_style(id, text_style(text)).map_err(err)?;
+                extras::configure_text(ui, id, text)?;
                 ui.set_text_auto_height(id, common.height.is_none())
                     .map_err(err)?;
                 id
@@ -456,6 +549,11 @@ impl MountedView {
                     button_icon(button.icon, button.icon_size, button.icon_spacing),
                 )
                 .map_err(err)?;
+                ui.set_three_state(id, button.is_three_state).map_err(err)?;
+                if button.is_indeterminate {
+                    ui.set_check_state(id, rust_desktop_ui_controls::CheckState::Indeterminate)
+                        .map_err(err)?;
+                }
                 self.toggles.push(id);
                 id
             }
@@ -465,6 +563,11 @@ impl MountedView {
                     .map_err(err)?;
                 ui.set_button_style(id, button_style(&check.style))
                     .map_err(err)?;
+                ui.set_three_state(id, check.is_three_state).map_err(err)?;
+                if check.is_indeterminate {
+                    ui.set_check_state(id, rust_desktop_ui_controls::CheckState::Indeterminate)
+                        .map_err(err)?;
+                }
                 self.checks.push(id);
                 id
             }
@@ -542,6 +645,25 @@ impl MountedView {
                 id
             }
         };
+        if common.width.is_none()
+            && parent_axis == Axis::Vertical
+            && common.horizontal_alignment == rust_desktop_ui_xaml::Alignment::Stretch
+            && match &element.kind {
+                ElementKind::Slider(slider) => slider.orientation == Orientation::Horizontal,
+                ElementKind::RangeSlider(range) => {
+                    range.slider.orientation == Orientation::Horizontal
+                }
+                _ => false,
+            }
+        {
+            // Rust builders provide a useful standalone default. A XAML form
+            // instead retains Auto stretch so layout also accounts for margins.
+            let mut style = ui.runtime.tree().node(id).unwrap().props.style.clone();
+            style.width = Length::Auto;
+            ui.runtime
+                .apply(rust_desktop_ui_core::Mutation::SetStyle { node: id, style })
+                .map_err(err)?;
+        }
         if common.height.is_none() && !common.bindings.contains_key("Height") {
             self.record_automatic_height(ui, id, &element.kind);
         }
@@ -559,6 +681,7 @@ impl MountedView {
         {
             ui.set_tooltip(id, tip).map_err(err)?;
         }
+        extras::apply_common_extras(ui, id, element)?;
         self.roles.insert(
             id,
             match &element.kind {
@@ -585,11 +708,25 @@ impl MountedView {
                 ElementKind::Ribbon(_) => Role::Group,
                 ElementKind::TextBox(_) => Role::TextBox,
                 ElementKind::TextBlock(_) => Role::Label,
-                ElementKind::Button(_) => Role::Button,
+                ElementKind::Button(_) => {
+                    if common.is_link {
+                        Role::Link
+                    } else {
+                        Role::Button
+                    }
+                }
                 ElementKind::ToggleButton(_) => Role::ToggleButton,
                 ElementKind::DropDownButton(_) => Role::Button,
                 ElementKind::SplitButton(_) => Role::Group,
                 ElementKind::CheckBox(_) => Role::CheckBox,
+                ElementKind::Switch(_) => Role::Switch,
+                ElementKind::Slider(_) => Role::Slider,
+                ElementKind::RangeSlider(_) => Role::RangeSlider,
+                ElementKind::ToolBar(_) => Role::ToolBar,
+                ElementKind::MenuBar(_) => Role::MenuBar,
+                ElementKind::BusyIndicator(_) => Role::ProgressBar,
+                ElementKind::Overlay(_) | ElementKind::SplitContainer(_) => Role::Panel,
+                ElementKind::Popup(_) | ElementKind::RadioGroup(_) => Role::Group,
                 ElementKind::RadioButton(_) => Role::RadioButton,
                 ElementKind::Icon(_) | ElementKind::Image(_) => Role::Image,
                 ElementKind::Separator(_) => Role::Separator,
@@ -634,7 +771,24 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         ElementKind::StatusBarItem(item) => item.child.as_deref().map_or(Ok(0.0), |child| {
             Ok(desired_width(ui, child)? + child.common.margin[0] + child.common.margin[2])
         }),
-        ElementKind::ProgressBar(_) => Ok(120.0),
+        ElementKind::ProgressBar(_) | ElementKind::BusyIndicator(_) => Ok(120.0),
+        ElementKind::Slider(slider) => Ok(if slider.orientation == Orientation::Horizontal {
+            160.0
+        } else {
+            ui.theme().tokens().control_height
+        }),
+        ElementKind::RangeSlider(range) => {
+            Ok(if range.slider.orientation == Orientation::Horizontal {
+                160.0
+            } else {
+                ui.theme().tokens().control_height
+            })
+        }
+        ElementKind::RadioGroup(_) => Ok(240.0),
+        ElementKind::Popup(_) => Ok(0.0),
+        ElementKind::ToolBar(_) | ElementKind::MenuBar(_) | ElementKind::SplitContainer(_) => {
+            extras::container_desired_width(ui, element)
+        }
         ElementKind::ZoomControl(_) => Ok(220.0),
         ElementKind::GridControl(_) => Ok(560.0),
         ElementKind::DockWorkspace(_) => {
@@ -704,6 +858,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             Ok(header_width.max(content_width + group.padding[0] + group.padding[2]))
         }
         ElementKind::Grid(_)
+        | ElementKind::Overlay(_)
         | ElementKind::Border(_)
         | ElementKind::ScrollViewer(_)
         | ElementKind::DockPanel(_) => {
@@ -713,18 +868,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             }
             Ok(width)
         }
-        ElementKind::TextBlock(text) => Ok(ui
-            .measure_styled_text(
-                &text.text,
-                16384.0,
-                TextStyle {
-                    wrap: false,
-                    ..text_style(text)
-                },
-            )
-            .map_err(err)?
-            .width
-            + 16.0),
+        ElementKind::TextBlock(text) => extras::text_desired_width(ui, text),
         ElementKind::Button(button) => button_content_width(
             ui,
             &button.content,
@@ -741,7 +885,9 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             button.icon_size,
             button.icon_spacing,
         ),
-        ElementKind::CheckBox(check) => button_width(ui, &check.content, &check.style, true),
+        ElementKind::CheckBox(check) | ElementKind::Switch(check) => {
+            button_width(ui, &check.content, &check.style, true)
+        }
         ElementKind::RadioButton(radio) => button_width(ui, &radio.content, &radio.style, true),
         ElementKind::Icon(_) => Ok(16.0),
         ElementKind::Image(image) => Ok(ui
@@ -922,6 +1068,7 @@ fn validate_ribbon_width(
 
 fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), String> {
     rust_desktop_ui_xaml::validate_status_bars(root)?;
+    rust_desktop_ui_xaml::validate_popup_links(root)?;
     let mut pending = vec![(root, 1, 0)];
     let mut names = HashSet::new();
     let mut checked_radio_groups = HashSet::new();
@@ -947,6 +1094,9 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
         {
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
+        bindings::validate_definitions(element)?;
+        rust_desktop_ui_xaml::validate_additional_element(&element.kind)?;
+        extras::validate_extra(ui, element)?;
         match &element.kind {
             ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
             ElementKind::GridControl(grid) => {
@@ -1020,7 +1170,9 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                 if let Some(command) = &button.command {
                     validate_command(ui, command)?;
                 }
-                validate_menu(ui, &menu.items, depth, &mut count)?;
+                if !menu.items.is_empty() {
+                    validate_menu(ui, &menu.items, depth, &mut count)?;
+                }
             }
             ElementKind::StackPanel(panel) => {
                 if panel.children.len() > rust_desktop_ui_xaml::MAX_ELEMENTS {
@@ -1112,6 +1264,7 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             );
         }
     }
+    extras::validate_popup_targets(root)?;
     Ok(())
 }
 

@@ -64,6 +64,7 @@ fn group_header_style(style: x::GroupHeaderStyleDefinition) -> GroupHeaderStyle 
 }
 pub(super) fn group_settings(group: &x::GroupBoxDefinition) -> GroupSettings {
     GroupSettings {
+        expand_direction: ExpandDirection::Down,
         header: group.header.clone(),
         appearance: group_appearance(group.appearance),
         padding: edges(group.padding),
@@ -77,6 +78,12 @@ pub(super) fn group_settings(group: &x::GroupBoxDefinition) -> GroupSettings {
 }
 pub(super) fn expander_settings(group: &x::ExpanderDefinition) -> GroupSettings {
     GroupSettings {
+        expand_direction: match group.expand_direction {
+            x::ExpandDirectionDefinition::Down => ExpandDirection::Down,
+            x::ExpandDirectionDefinition::Up => ExpandDirection::Up,
+            x::ExpandDirectionDefinition::Left => ExpandDirection::Left,
+            x::ExpandDirectionDefinition::Right => ExpandDirection::Right,
+        },
         header: group.header.clone(),
         appearance: group_appearance(group.appearance),
         padding: edges(group.padding),
@@ -268,6 +275,18 @@ impl MountedView {
                 }
                 .map_err(err)?;
                 group_content_layout(ui, parts.content)?;
+                if let Some(header) = &group.header_content {
+                    let child = self.mount_element(
+                        ui,
+                        parts.header,
+                        header,
+                        Axis::Horizontal,
+                        (width - 62.0).max(0.0),
+                        context,
+                    )?;
+                    ui.set_group_header_content(parts.container, Some(child))
+                        .map_err(err)?;
+                }
                 if let Some(child) = &group.child {
                     self.mount_element(
                         ui,
@@ -288,7 +307,30 @@ impl MountedView {
                 let parts = ui
                     .expander(parent, expander_settings(group), group.is_expanded, style)
                     .map_err(err)?;
+                if group.animation_duration_ms > 0 {
+                    ui.set_expander_animation(
+                        parts.container,
+                        Some(ExpanderAnimation {
+                            duration: std::time::Duration::from_millis(
+                                group.animation_duration_ms as u64,
+                            ),
+                        }),
+                    )
+                    .map_err(err)?;
+                }
                 group_content_layout(ui, parts.content)?;
+                if let Some(header) = &group.header_content {
+                    let child = self.mount_element(
+                        ui,
+                        parts.header,
+                        header,
+                        Axis::Horizontal,
+                        (width - 62.0).max(0.0),
+                        context,
+                    )?;
+                    ui.set_group_header_content(parts.container, Some(child))
+                        .map_err(err)?;
+                }
                 if let Some(child) = &group.child {
                     self.mount_element(
                         ui,
@@ -898,6 +940,9 @@ impl MountedView {
             ui.set_custom_scene(border.id, scene).map_err(err)?;
         }
         if !self.decorations.is_empty() {
+            ui.update(viewport).map_err(err)?;
+        }
+        if self.open_initial_popups(ui)? {
             ui.update(viewport).map_err(err)?;
         }
         Ok(())

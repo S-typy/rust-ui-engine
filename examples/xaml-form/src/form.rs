@@ -17,6 +17,7 @@ use std::{
 
 /// The mounted XAML tree plus the example's explicit Message/Confirm behavior.
 pub(crate) struct Form {
+    batch: Option<crate::batch_model::BatchState>,
     pub(crate) ui: Controls,
     pub(crate) view: MountedView,
     pub(crate) accessible: Accessibility,
@@ -29,6 +30,7 @@ pub(crate) struct Form {
     diagnostics: bool,
     last_popup_diagnostic: String,
     last_ribbon_diagnostic: String,
+    last_batch_diagnostic: String,
     suppress_text: bool,
     collection_wake: Option<rust_desktop_ui_controls::CollectionWakeSubscription>,
     theme_mode: rust_desktop_ui_xaml::Theme,
@@ -68,6 +70,9 @@ impl Form {
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
         for (id, label) in [
+            ("BatchRussian", "Русский"),
+            ("BatchEnglish", "English"),
+            ("BatchArabic", "العربية"),
             ("Clear", "Очистить"),
             ("Light", "Светлая"),
             ("Dark", "Тёмная"),
@@ -185,7 +190,9 @@ impl Form {
         }
         ui.drain_text_changes();
         ui.drain_edit_events();
+        let batch = crate::batch_model::install(&mut ui, &view)?;
         Ok(Self {
+            batch,
             ui,
             view,
             accessible: Accessibility::default(),
@@ -198,6 +205,7 @@ impl Form {
             diagnostics,
             last_popup_diagnostic: String::new(),
             last_ribbon_diagnostic: String::new(),
+            last_batch_diagnostic: String::new(),
             suppress_text: false,
             collection_wake: None,
             theme_mode: definition.theme,
@@ -299,6 +307,11 @@ impl Form {
         for invocation in self.ui.drain_command_invocations() {
             if self.diagnostics {
                 println!("command={}", invocation.id.0);
+            }
+            if let Some(batch) = &mut self.batch
+                && batch.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
             }
             if invocation.id.0 == "Confirm" {
                 let editor = self
@@ -487,6 +500,12 @@ impl Form {
 impl DesktopApp for Form {
     fn set_waker(&mut self, waker: Option<rust_desktop_ui_platform_winit::AppWaker>) {
         self.collection_wake = None;
+        self.ui
+            .set_editor_validation_waker(waker.clone().map(|waker| {
+                std::sync::Arc::new(move || {
+                    waker.wake();
+                }) as std::sync::Arc<dyn Fn() + Send + Sync>
+            }));
         self.ui.commands_mut().set_waker(waker.clone().map(|waker| {
             std::sync::Arc::new(move || {
                 waker.wake();
@@ -515,6 +534,9 @@ impl DesktopApp for Form {
     fn update(&mut self, viewport: Size, scale: f32) -> Result<(), String> {
         self.ui.set_image_scale(scale).map_err(err)?;
         self.view.sync_bindings(&mut self.ui);
+        if let Some(batch) = &mut self.batch {
+            batch.refresh(&mut self.ui)?;
+        }
         // This demo applies the document's zoom to its editor typography. The
         // reusable ZoomControl owns only the numeric value and interaction.
         if let (Some(zoom), Some(editor)) = (
@@ -532,6 +554,11 @@ impl DesktopApp for Form {
         self.consume_edit_events();
         self.refresh_status()?;
         self.ui.update(viewport).map_err(err)?;
+        if let Some(batch) = &mut self.batch
+            && batch.refresh(&mut self.ui)?
+        {
+            self.ui.update(viewport).map_err(err)?;
+        }
         self.application_events()?;
         if let Some(mounted) = &mut self.view.ribbon {
             self.chrome
@@ -549,6 +576,13 @@ impl DesktopApp for Form {
             if snapshot != self.last_popup_diagnostic {
                 println!("popup-state {snapshot}");
                 self.last_popup_diagnostic = snapshot;
+            }
+            if self.batch.is_some() {
+                let snapshot = crate::batch_diagnostics::snapshot(&self.ui, &self.view);
+                if snapshot != self.last_batch_diagnostic {
+                    println!("batch-state {snapshot}");
+                    self.last_batch_diagnostic = snapshot;
+                }
             }
             if let Some(mounted) = &self.view.ribbon {
                 let snapshot = crate::popup_diagnostics::ribbon_snapshot(&self.ui, mounted);
@@ -580,6 +614,12 @@ impl DesktopApp for Form {
         })
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
+        // Model revisions must invalidate pending validation before any event
+        // path can poll completions or perform an internal layout update.
+        self.view.sync_bindings(&mut self.ui);
+        if let Some(batch) = &mut self.batch {
+            batch.refresh(&mut self.ui)?;
+        }
         if self.diagnostics
             && matches!(
                 &event,
@@ -650,8 +690,7 @@ impl DesktopApp for Form {
             PlatformEvent::ImeCommit(text) => self.ui.ime_commit(&text).map_err(err)?,
             PlatformEvent::ImeCancel => self.ui.cancel_preedit(),
             PlatformEvent::Tick => {
-                redraw = self.ui.blink_caret();
-                redraw |= self.ui.tooltip_tick(Instant::now()).map_err(err)?;
+                redraw = self.ui.tick(Instant::now()).map_err(err)?;
             }
             PlatformEvent::Accessibility(request) => {
                 self.suppress_text = false;
@@ -702,15 +741,8 @@ impl DesktopApp for Form {
     }
     fn wake_after(&self) -> Option<Duration> {
         self.ui
-            .caret_bounds()
-            .map(|_| Duration::from_millis(500))
-            .into_iter()
-            .chain(
-                self.ui
-                    .tooltip_deadline()
-                    .map(|deadline| deadline.saturating_duration_since(Instant::now())),
-            )
-            .min()
+            .next_deadline()
+            .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
     fn accessibility(&mut self, scale: f32) -> accesskit::TreeUpdate {
         self.accessible

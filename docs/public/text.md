@@ -61,6 +61,27 @@ One `PreparedText` additionally limits its retained unique glyph bitmap data to
 count once; a new raster allocation after eviction counts separately. Exceeding
 the budget returns `RasterLimit`.
 
+## Inline display text and trimming
+
+`Scene::styled_text` associates up to 256 ordered, nonoverlapping `TextSpan`
+ranges with a text command. Each range can override size, weight and color.
+`TextEngine::prepare_styled` validates complete grapheme boundaries and shapes
+the ranges in one paragraph, preserving bidi ordering and joining. The GPU
+renderer consumes these same ranges. Scene append, clipping and uniform scaling
+retain them; transformed sizes are validated before changing the destination.
+
+`TextEngine::fit_text` returns the exact text, ranges and metrics to paint.
+`TextTrimming::CharacterEllipsis` and `WordEllipsis` fit a complete prefix with
+an ellipsis; `max_lines` limits display to 1–256 lines. A box too small for the
+ellipsis paints no text. Original content is retained for accessibility.
+
+In Controls, `set_text_inlines` installs `InlineSpan` values on a TextBlock;
+`set_text_display` selects trimming and line count. `measure_text_display` and
+painting share the fitting path. Replacing a label through `set_label` or a
+Text binding clears old inline ranges; unchanged text keeps its formatting.
+Theme-relative defaults follow the theme, and disabled text uses the disabled
+foreground. This is display text, not an editable rich document.
+
 ## Editing and IME composition
 
 ```rust
@@ -163,7 +184,7 @@ produce no bitmap. Spaces and other nonpainting glyphs also produce no bitmap.
 Runs are limited to 1 MiB of UTF-8, 65,536 prepared glyphs and a physical font size
 of 1,024 pixels. Invalid or non-finite inputs return `TextError`. The engine uses
 system sans-serif selection with weight, size, alignment and wrapping; a public
-font-family/custom-font API, rich spans, password masking and vertical writing
+font-family/custom-font API, password masking and vertical writing
 are not provided. `TextDocument` is a plain UTF-8 string editor, not a large-file
 rope. OS IME events, clipboard access, caret blinking and accessibility belong to
 the host/control layer. Shaping tests do not replace interactive IME or GPU tests.

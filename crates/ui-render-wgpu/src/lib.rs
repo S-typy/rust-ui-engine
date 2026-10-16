@@ -821,7 +821,7 @@ impl GpuRenderer {
             self.config.height as f32,
         );
         self.glyphs
-            .prepare(&scene.texts, scale_factor, viewport, &self.queue)?;
+            .prepare(scene, scale_factor, viewport, &self.queue)?;
         self.strokes
             .prepare(&scene.stroke_paths, scale_factor, viewport, &self.queue)?;
         self.images.prepare(

@@ -70,6 +70,11 @@ impl Controls {
         let control = self.controls.get_mut(&id).unwrap();
         if control.button_chrome != chrome {
             control.button_chrome = chrome;
+            if chrome == ButtonChrome::Link {
+                control.role = Some(Role::Link);
+            } else if control.role == Some(Role::Link) {
+                control.role = None;
+            }
             self.scene_dirty = true;
         }
         Ok(())

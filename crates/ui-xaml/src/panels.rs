@@ -81,6 +81,7 @@ pub enum GroupHeaderStyleDefinition {
 /// A titled container. An empty group has no implicit content element.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupBoxDefinition {
+    pub header_content: Option<Box<ElementDefinition>>,
     pub header: String,
     pub appearance: GroupBoxAppearanceDefinition,
     pub header_style: GroupHeaderStyleDefinition,
@@ -99,6 +100,7 @@ pub struct GroupBoxDefinition {
 impl Default for GroupBoxDefinition {
     fn default() -> Self {
         Self {
+            header_content: None,
             header: String::new(),
             appearance: GroupBoxAppearanceDefinition::Card,
             header_style: GroupHeaderStyleDefinition::Normal,
@@ -118,6 +120,9 @@ impl Default for GroupBoxDefinition {
 /// A titled container whose content can be collapsed without discarding it.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExpanderDefinition {
+    pub header_content: Option<Box<ElementDefinition>>,
+    pub expand_direction: ExpandDirectionDefinition,
+    pub animation_duration_ms: u32,
     pub header: String,
     pub appearance: GroupBoxAppearanceDefinition,
     pub header_style: GroupHeaderStyleDefinition,
@@ -132,9 +137,20 @@ pub struct ExpanderDefinition {
     pub child: Option<Box<ElementDefinition>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExpandDirectionDefinition {
+    #[default]
+    Down,
+    Up,
+    Left,
+    Right,
+}
 impl Default for ExpanderDefinition {
     fn default() -> Self {
         Self {
+            header_content: None,
+            expand_direction: ExpandDirectionDefinition::Down,
+            animation_duration_ms: 0,
             header: String::new(),
             appearance: GroupBoxAppearanceDefinition::Card,
             header_style: GroupHeaderStyleDefinition::Normal,
@@ -154,6 +170,9 @@ impl Default for ExpanderDefinition {
 ///
 /// The child tree is validated by the host and [`crate::validate_window_docking`].
 pub fn validate_group_box(group: &GroupBoxDefinition) -> Result<(), String> {
+    if let Some(header) = &group.header_content {
+        validate_header_content(header)?;
+    }
     validate_group_properties(&group.header, group.padding, group.corner_radius)?;
     if group.is_collapsible && !group.show_header {
         return Err("collapsible GroupBox requires ShowHeader=True".into());
@@ -168,6 +187,12 @@ pub fn validate_group_box(group: &GroupBoxDefinition) -> Result<(), String> {
 ///
 /// Collapsed content participates in the same tree checks as expanded content.
 pub fn validate_expander(expander: &ExpanderDefinition) -> Result<(), String> {
+    if let Some(header) = &expander.header_content {
+        validate_header_content(header)?;
+    }
+    if expander.animation_duration_ms > 1000 {
+        return Err("Expander AnimationDurationMs must be 0..1000".into());
+    }
     validate_group_properties(&expander.header, expander.padding, expander.corner_radius)?;
     if !expander.show_header {
         return Err("Expander requires ShowHeader=True".into());
@@ -287,4 +312,39 @@ impl Default for DockPanelDefinition {
             children: Vec::new(),
         }
     }
+}
+
+/// Headers preserve one disclosure/focus target; their retained content is decorative.
+pub fn validate_header_content(element: &ElementDefinition) -> Result<(), String> {
+    let mut pending = vec![(element, 0)];
+    let mut count = 0;
+    while let Some((element, depth)) = pending.pop() {
+        count += 1;
+        if count > crate::MAX_ELEMENTS || depth > crate::MAX_ELEMENT_DEPTH {
+            return Err("Header content exceeds tree limits".into());
+        }
+        if !matches!(
+            element.kind,
+            crate::ElementKind::TextBlock(_)
+                | crate::ElementKind::Icon(_)
+                | crate::ElementKind::Image(_)
+                | crate::ElementKind::Separator(_)
+                | crate::ElementKind::StackPanel(_)
+                | crate::ElementKind::WrapPanel(_)
+                | crate::ElementKind::Grid(_)
+                | crate::ElementKind::Overlay(_)
+                | crate::ElementKind::Border(_)
+        ) {
+            return Err(
+                "HeaderTemplate accepts only noninteractive text, images and layout".into(),
+            );
+        }
+        pending.extend(
+            element
+                .children()
+                .into_iter()
+                .map(|child| (child, depth + 1)),
+        );
+    }
+    Ok(())
 }

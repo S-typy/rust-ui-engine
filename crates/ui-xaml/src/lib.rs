@@ -31,13 +31,17 @@ use roxmltree::{Attribute, Document, Node, ParsingOptions};
 use unicode_segmentation::UnicodeSegmentation;
 
 mod binding;
+mod extras;
+pub use extras::*;
+mod extensions;
+pub use extensions::{ComponentMarkup, ComponentRegistry};
 mod codegen;
 mod form_parse;
 mod forms;
 mod grid_control;
 mod panels;
 mod status_bar;
-pub use binding::{BindingDefinition, BindingMode, UpdateSourceTrigger};
+pub use binding::{BindingDefinition, BindingInputDefinition, BindingMode, UpdateSourceTrigger};
 pub use forms::*;
 pub use grid_control::{
     GridColumnDefinition, GridControlDefinition, MAX_GRID_COLUMNS, MAX_GRID_TEXT_BYTES,
@@ -294,6 +298,10 @@ fn validate_chrome_placement(common: &CommonProperties, element: &str) -> Result
 /// Properties shared by every content element in a Window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommonProperties {
+    pub rich_tool_tip: Option<RichToolTipDefinition>,
+    pub is_link: bool,
+    pub repeat_delay_ms: Option<u32>,
+    pub repeat_interval_ms: u32,
     /// Unique within the Window, supplied by `x:Name`.
     pub name: Option<String>,
     /// `None` uses automatic sizing defined by the container and form adapter.
@@ -328,6 +336,10 @@ pub struct CommonProperties {
 impl Default for CommonProperties {
     fn default() -> Self {
         Self {
+            rich_tool_tip: None,
+            is_link: false,
+            repeat_delay_ms: None,
+            repeat_interval_ms: 80,
             name: None,
             width: None,
             height: None,
@@ -364,14 +376,30 @@ impl ElementDefinition {
     /// Content children in source order, including the contents of docking panes.
     pub fn children(&self) -> Vec<&ElementDefinition> {
         match &self.kind {
-            ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) => p.children.iter().collect(),
+            ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
+                p.children.iter().collect()
+            }
+            ElementKind::ToolBar(p) => p.children.iter().collect(),
+            ElementKind::MenuBar(p) => p.items.iter().collect(),
+            ElementKind::Popup(p) => p.child.as_deref().into_iter().collect(),
+            ElementKind::SplitContainer(p) => p.children.iter().collect(),
             ElementKind::Grid(p) => p.children.iter().collect(),
             ElementKind::DockPanel(p) => p.children.iter().collect(),
             ElementKind::StatusBar(p) | ElementKind::RibbonStatusBar(p) => p.items.iter().collect(),
             ElementKind::StatusBarItem(p) => p.child.as_deref().into_iter().collect(),
             ElementKind::Border(p) => vec![&p.child],
-            ElementKind::GroupBox(p) => p.child.as_deref().into_iter().collect(),
-            ElementKind::Expander(p) => p.child.as_deref().into_iter().collect(),
+            ElementKind::GroupBox(p) => p
+                .header_content
+                .as_deref()
+                .into_iter()
+                .chain(p.child.as_deref())
+                .collect(),
+            ElementKind::Expander(p) => p
+                .header_content
+                .as_deref()
+                .into_iter()
+                .chain(p.child.as_deref())
+                .collect(),
             ElementKind::TabbedGroup(p) => p
                 .tabs
                 .iter()
@@ -404,9 +432,13 @@ impl ElementDefinition {
             }
         }
         match &mut self.kind {
-            ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) => {
+            ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
                 p.children.iter_mut().collect()
             }
+            ElementKind::ToolBar(p) => p.children.iter_mut().collect(),
+            ElementKind::MenuBar(p) => p.items.iter_mut().collect(),
+            ElementKind::Popup(p) => p.child.as_deref_mut().into_iter().collect(),
+            ElementKind::SplitContainer(p) => p.children.iter_mut().collect(),
             ElementKind::Grid(p) => p.children.iter_mut().collect(),
             ElementKind::DockPanel(p) => p.children.iter_mut().collect(),
             ElementKind::StatusBar(p) | ElementKind::RibbonStatusBar(p) => {
@@ -414,8 +446,18 @@ impl ElementDefinition {
             }
             ElementKind::StatusBarItem(p) => p.child.as_deref_mut().into_iter().collect(),
             ElementKind::Border(p) => vec![&mut p.child],
-            ElementKind::GroupBox(p) => p.child.as_deref_mut().into_iter().collect(),
-            ElementKind::Expander(p) => p.child.as_deref_mut().into_iter().collect(),
+            ElementKind::GroupBox(p) => p
+                .header_content
+                .as_deref_mut()
+                .into_iter()
+                .chain(p.child.as_deref_mut())
+                .collect(),
+            ElementKind::Expander(p) => p
+                .header_content
+                .as_deref_mut()
+                .into_iter()
+                .chain(p.child.as_deref_mut())
+                .collect(),
             ElementKind::TabbedGroup(p) => p
                 .tabs
                 .iter_mut()
@@ -435,6 +477,16 @@ impl ElementDefinition {
 /// Supported layout elements. Menu buttons own static menu entries separately.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
+    ToolBar(ToolBarDefinition),
+    MenuBar(MenuBarDefinition),
+    Popup(PopupDefinition),
+    Switch(CheckBoxDefinition),
+    RadioGroup(SelectionDefinition),
+    BusyIndicator(ProgressBarDefinition),
+    Overlay(StackPanelDefinition),
+    SplitContainer(SplitContainerDefinition),
+    Slider(SliderDefinition),
+    RangeSlider(RangeSliderDefinition),
     StackPanel(StackPanelDefinition),
     WrapPanel(StackPanelDefinition),
     Grid(GridDefinition),
@@ -516,6 +568,9 @@ pub enum TextToneDefinition {
 /// Non-editable text content.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextBlockDefinition {
+    pub trimming: TextTrimmingDefinition,
+    pub max_lines: Option<usize>,
+    pub inlines: Vec<InlineDefinition>,
     pub text: String,
     /// `None` uses the current control theme's font size.
     pub font_size: Option<f32>,
@@ -528,9 +583,27 @@ pub struct TextBlockDefinition {
     pub wrap: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TextTrimmingDefinition {
+    #[default]
+    None,
+    CharacterEllipsis,
+    WordEllipsis,
+}
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct InlineDefinition {
+    pub text: String,
+    pub font_size: Option<f32>,
+    pub font_weight: Option<u16>,
+    pub foreground: Option<[u8; 4]>,
+}
+
 impl Default for TextBlockDefinition {
     fn default() -> Self {
         Self {
+            trimming: TextTrimmingDefinition::None,
+            max_lines: None,
+            inlines: Vec::new(),
             text: String::new(),
             font_size: None,
             font_weight: None,
@@ -543,6 +616,23 @@ impl Default for TextBlockDefinition {
 
 /// Validate typography before mounting a manually constructed text block.
 pub fn validate_text_block(text: &TextBlockDefinition) -> Result<(), String> {
+    if text.max_lines.is_some_and(|n| n == 0 || n > 256)
+        || text.inlines.len() > 256
+        || (!text.text.is_empty() && !text.inlines.is_empty())
+    {
+        return Err(
+            "TextBlock MaxLines must be 1..256 and inline content cannot mix with Text".into(),
+        );
+    }
+    for span in &text.inlines {
+        if span
+            .font_size
+            .is_some_and(|s| !s.is_finite() || s <= 0.0 || s > MAX_FONT_SIZE as f32)
+            || span.font_weight.is_some_and(|w| !(1..=1000).contains(&w))
+        {
+            return Err("Invalid inline font metrics".into());
+        }
+    }
     if text
         .font_size
         .is_some_and(|size| !size.is_finite() || size <= 0.0 || size > MAX_FONT_SIZE as f32)
@@ -582,7 +672,8 @@ impl Default for ButtonDefinition {
     }
 }
 
-/// A styled button with a static menu. SplitButton requires a primary command;
+/// A styled button with menu entries or a separately declared retained Popup.
+/// SplitButton requires a primary command;
 /// DropDownButton forbids one. Menu children are not layout children.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MenuButtonDefinition {
@@ -609,6 +700,8 @@ pub struct MenuItemDefinition {
 /// precedence over `is_checked` when the example mounts the definition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ToggleButtonDefinition {
+    pub is_three_state: bool,
+    pub is_indeterminate: bool,
     pub content: String,
     pub command: Option<String>,
     pub is_checked: bool,
@@ -621,6 +714,8 @@ pub struct ToggleButtonDefinition {
 impl Default for ToggleButtonDefinition {
     fn default() -> Self {
         Self {
+            is_three_state: false,
+            is_indeterminate: false,
             content: String::new(),
             command: None,
             is_checked: false,
@@ -681,6 +776,8 @@ impl Default for SeparatorDefinition {
 /// A two-state check box with literal content.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CheckBoxDefinition {
+    pub is_three_state: bool,
+    pub is_indeterminate: bool,
     pub content: String,
     pub is_checked: bool,
     pub style: ButtonStyleDefinition,
@@ -931,6 +1028,7 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
     }
     validate_window_docking(&definition).map_err(|message| at_node(window, message))?;
     validate_window_chrome(&definition).map_err(|message| at_node(window, message))?;
+    validate_popup_links(&definition.content).map_err(|message| at_node(window, message))?;
     Ok(definition)
 }
 
@@ -969,15 +1067,24 @@ fn parse_element(
         "Ribbon" => ElementKind::Ribbon(RibbonDefinition::default()),
         "TextBox" => ElementKind::TextBox(EditBoxDefinition::default()),
         "TextBlock" => ElementKind::TextBlock(TextBlockDefinition::default()),
-        "Button" => ElementKind::Button(ButtonDefinition::default()),
+        "Button" | "LinkButton" | "RepeatButton" => {
+            ElementKind::Button(ButtonDefinition::default())
+        }
         "ToggleButton" => ElementKind::ToggleButton(ToggleButtonDefinition::default()),
         "DropDownButton" => ElementKind::DropDownButton(MenuButtonDefinition::default()),
         "SplitButton" => ElementKind::SplitButton(MenuButtonDefinition::default()),
         "CheckBox" => ElementKind::CheckBox(CheckBoxDefinition::default()),
+        "Switch" => ElementKind::Switch(CheckBoxDefinition::default()),
+        "RadioGroup" => ElementKind::RadioGroup(SelectionDefinition::default()),
+        "BusyIndicator" => ElementKind::BusyIndicator(ProgressBarDefinition {
+            is_indeterminate: true,
+            ..Default::default()
+        }),
         "RadioButton" => ElementKind::RadioButton(RadioButtonDefinition::default()),
         "Icon" => ElementKind::Icon(IconDefinition::default()),
         "Image" => ElementKind::Image(ImageDefinition::default()),
         "Separator" => ElementKind::Separator(SeparatorDefinition::default()),
+        name if extras::new_kind(name).is_some() => extras::new_kind(name).unwrap(),
         name if form_parse::new_kind(name).is_some() => form_parse::new_kind(name).unwrap(),
         name => {
             return Err(at_node(
@@ -987,13 +1094,19 @@ fn parse_element(
         }
     };
     let document = node.document();
-    let mut common = CommonProperties::default();
+    let mut common = CommonProperties {
+        is_link: element_name == "LinkButton",
+        repeat_delay_ms: (element_name == "RepeatButton").then_some(400),
+        ..Default::default()
+    };
     for attribute in node.attributes() {
         if attribute.namespace().is_none() && attribute.name() == "DataContext" {
             form_parse::common_property(document, attribute, &mut common)?;
             continue;
         }
-        if attribute.namespace().is_none() && attribute.value().trim_start().starts_with("{Binding")
+        if attribute.namespace().is_none()
+            && (attribute.value().trim_start().starts_with("{Binding")
+                || attribute.value().trim_start().starts_with("{MultiBinding"))
         {
             let property = attribute.name();
             if !form_parse::is_binding_property(&kind, property) {
@@ -1008,6 +1121,9 @@ fn parse_element(
                 "Text"
                     | "Value"
                     | "SelectedValue"
+                    | "SelectedKey"
+                    | "LowerValue"
+                    | "UpperValue"
                     | "SelectedValues"
                     | "IsChecked"
                     | "IsExpanded"
@@ -1015,17 +1131,24 @@ fn parse_element(
                     | "FilterText"
             ) && !matches!(
                 kind,
-                ElementKind::TextBlock(_) | ElementKind::ProgressBar(_)
+                ElementKind::TextBlock(_)
+                    | ElementKind::ProgressBar(_)
+                    | ElementKind::BusyIndicator(_)
             );
-            let immediate = matches!(
-                property,
-                "SelectedValue"
-                    | "SelectedValues"
-                    | "IsChecked"
-                    | "IsExpanded"
-                    | "SelectedIndex"
-                    | "FilterText"
-            ) || matches!(kind, ElementKind::ZoomControl(_)) && property == "Value";
+            let immediate =
+                matches!(
+                    property,
+                    "SelectedValue"
+                        | "SelectedKey"
+                        | "LowerValue"
+                        | "UpperValue"
+                        | "SelectedValues"
+                        | "IsChecked"
+                        | "IsExpanded"
+                        | "SelectedIndex"
+                        | "FilterText"
+                ) || matches!(kind, ElementKind::ZoomControl(_) | ElementKind::Slider(_))
+                    && property == "Value";
             let trigger = if editable && !immediate {
                 UpdateSourceTrigger::LostFocus
             } else {
@@ -1059,6 +1182,53 @@ fn parse_element(
             ));
         }
         match attribute.name() {
+            "ButtonChrome" if matches!(kind, ElementKind::Button(_)) => {
+                common.is_link = match attribute.value() {
+                    "Link" => true,
+                    "Standard" => false,
+                    _ => {
+                        return Err(at_attribute(
+                            document,
+                            attribute,
+                            "ButtonChrome must be Link or Standard",
+                        ));
+                    }
+                }
+            }
+            "RepeatDelayMs" | "RepeatIntervalMs" if matches!(kind, ElementKind::Button(_)) => {
+                let value = attribute
+                    .value()
+                    .parse::<u32>()
+                    .ok()
+                    .filter(|n| {
+                        if attribute.name() == "RepeatDelayMs" {
+                            (1..=60000).contains(n)
+                        } else {
+                            (16..=60000).contains(n)
+                        }
+                    })
+                    .ok_or_else(|| {
+                        at_attribute(
+                            document,
+                            attribute,
+                            "Repeat interval must be 16..60000ms; delay 1..60000ms",
+                        )
+                    })?;
+                if attribute.name() == "RepeatDelayMs" {
+                    common.repeat_delay_ms = Some(value);
+                } else {
+                    common.repeat_interval_ms = value;
+                }
+            }
+            "ToolTipHeader" | "ToolTipIcon" | "ToolTipImage" | "ToolTipImageDescription" => {
+                let tip = common.rich_tool_tip.get_or_insert_with(Default::default);
+                match attribute.name() {
+                    "ToolTipHeader" => tip.header = attribute.value().into(),
+                    "ToolTipIcon" => tip.icon = Some(icon_symbol(document, attribute)?),
+                    "ToolTipImage" => tip.image = Some(attribute.value().into()),
+                    _ => tip.image_description = attribute.value().into(),
+                }
+            }
             "AutomationName" => common.automation_name = Some(attribute.value().into()),
             "ToolTip" => {
                 if attribute.value().len() > MAX_TOOLTIP_BYTES {
@@ -1108,48 +1278,48 @@ fn parse_element(
                         }
                     }
                     ElementKind::TextBox(editor) => editor_property(document, attribute, editor)?,
-                    ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) => {
-                        match property {
-                            "Orientation" => {
-                                panel.orientation = match attribute.value() {
-                                    "Vertical" => Orientation::Vertical,
-                                    "Horizontal" => Orientation::Horizontal,
-                                    _ => {
-                                        return Err(at_attribute(
-                                            document,
-                                            attribute,
-                                            "Orientation must be Vertical or Horizontal",
-                                        ));
-                                    }
-                                };
-                                true
-                            }
-                            "Spacing" => {
-                                panel.spacing =
-                                    editor_metric(document, attribute, MAX_DIMENSION, true)?;
-                                true
-                            }
-                            "Padding" => {
-                                panel.padding = thickness(document, attribute)?;
-                                true
-                            }
-                            "Surface" => {
-                                panel.surface = match attribute.value() {
-                                    "Transparent" => SurfaceKindDefinition::Transparent,
-                                    "Card" => SurfaceKindDefinition::Card,
-                                    _ => {
-                                        return Err(at_attribute(
-                                            document,
-                                            attribute,
-                                            "Surface must be Transparent or Card",
-                                        ));
-                                    }
-                                };
-                                true
-                            }
-                            _ => false,
+                    ElementKind::StackPanel(panel)
+                    | ElementKind::WrapPanel(panel)
+                    | ElementKind::Overlay(panel) => match property {
+                        "Orientation" => {
+                            panel.orientation = match attribute.value() {
+                                "Vertical" => Orientation::Vertical,
+                                "Horizontal" => Orientation::Horizontal,
+                                _ => {
+                                    return Err(at_attribute(
+                                        document,
+                                        attribute,
+                                        "Orientation must be Vertical or Horizontal",
+                                    ));
+                                }
+                            };
+                            true
                         }
-                    }
+                        "Spacing" => {
+                            panel.spacing =
+                                editor_metric(document, attribute, MAX_DIMENSION, true)?;
+                            true
+                        }
+                        "Padding" => {
+                            panel.padding = thickness(document, attribute)?;
+                            true
+                        }
+                        "Surface" => {
+                            panel.surface = match attribute.value() {
+                                "Transparent" => SurfaceKindDefinition::Transparent,
+                                "Card" => SurfaceKindDefinition::Card,
+                                _ => {
+                                    return Err(at_attribute(
+                                        document,
+                                        attribute,
+                                        "Surface must be Transparent or Card",
+                                    ));
+                                }
+                            };
+                            true
+                        }
+                        _ => false,
+                    },
                     ElementKind::TextBlock(text) => text_block_property(document, attribute, text)?,
                     ElementKind::Button(button) => match property {
                         "Icon" => {
@@ -1202,22 +1372,44 @@ fn parse_element(
                             true
                         }
                         "IsChecked" => {
-                            button.is_checked = boolean(document, attribute)?;
+                            button.is_indeterminate =
+                                attribute.value() == "Indeterminate" || attribute.value() == "Null";
+                            button.is_checked = if button.is_indeterminate {
+                                false
+                            } else {
+                                boolean(document, attribute)?
+                            };
+                            true
+                        }
+                        "IsThreeState" => {
+                            button.is_three_state = boolean(document, attribute)?;
                             true
                         }
                         _ => button_style_property(document, attribute, &mut button.style)?,
                     },
-                    ElementKind::CheckBox(check_box) => match property {
-                        "Content" => {
-                            check_box.content = attribute.value().into();
-                            true
+                    ElementKind::CheckBox(check_box) | ElementKind::Switch(check_box) => {
+                        match property {
+                            "Content" => {
+                                check_box.content = attribute.value().into();
+                                true
+                            }
+                            "IsChecked" => {
+                                check_box.is_indeterminate = attribute.value() == "Indeterminate"
+                                    || attribute.value() == "Null";
+                                check_box.is_checked = if check_box.is_indeterminate {
+                                    false
+                                } else {
+                                    boolean(document, attribute)?
+                                };
+                                true
+                            }
+                            "IsThreeState" => {
+                                check_box.is_three_state = boolean(document, attribute)?;
+                                true
+                            }
+                            _ => button_style_property(document, attribute, &mut check_box.style)?,
                         }
-                        "IsChecked" => {
-                            check_box.is_checked = boolean(document, attribute)?;
-                            true
-                        }
-                        _ => button_style_property(document, attribute, &mut check_box.style)?,
-                    },
+                    }
                     ElementKind::RadioButton(radio) => match property {
                         "Content" => {
                             radio.content = attribute.value().into();
@@ -1316,7 +1508,10 @@ fn parse_element(
                         }
                         _ => false,
                     },
-                    _ => form_parse::property(document, attribute, &mut kind)?,
+                    _ => {
+                        extras::property(document, attribute, &mut kind)?
+                            || form_parse::property(document, attribute, &mut kind)?
+                    }
                 };
                 if !supported {
                     return Err(at_attribute(
@@ -1337,7 +1532,103 @@ fn parse_element(
         grid_control::parse_children(node, depth, count, grid)?;
     } else if matches!(
         kind,
+        ElementKind::ToolBar(_) | ElementKind::MenuBar(_) | ElementKind::Popup(_)
+    ) {
+        for child in node.children() {
+            if child.is_element() {
+                let content = parse_element(
+                    child,
+                    depth + 1,
+                    element_id,
+                    count,
+                    names,
+                    checked_radio_groups,
+                )?;
+                match &mut kind {
+                    ElementKind::ToolBar(bar) => bar.children.push(content),
+                    ElementKind::MenuBar(bar) => bar.items.push(content),
+                    ElementKind::Popup(popup) => {
+                        if popup.child.is_some() {
+                            return Err(at_node(child, "Popup requires exactly one child"));
+                        }
+                        popup.child = Some(Box::new(content));
+                    }
+                    _ => unreachable!(),
+                }
+            } else {
+                require_empty_content(child)?;
+            }
+        }
+    } else if let ElementKind::TextBlock(text) = &mut kind {
+        for child in node.children() {
+            if child.is_element() {
+                if child.tag_name().namespace() != Some(UI_NAMESPACE)
+                    || !matches!(child.tag_name().name(), "Run" | "Inline")
+                {
+                    return Err(at_node(child, "TextBlock accepts Run/Inline children"));
+                }
+                *count += 1;
+                if *count > MAX_ELEMENTS || depth + 1 > MAX_ELEMENT_DEPTH {
+                    return Err(at_node(child, "Inline count/depth limit exceeded"));
+                }
+                let mut span = InlineDefinition::default();
+                for attr in child.attributes() {
+                    if attr.namespace().is_some() {
+                        return Err(at_attribute(
+                            document,
+                            attr,
+                            "Inline directives are not supported",
+                        ));
+                    }
+                    match attr.name() {
+                        "Text" => span.text = attr.value().into(),
+                        "FontSize" => {
+                            span.font_size =
+                                Some(editor_metric(document, attr, MAX_FONT_SIZE, false)?)
+                        }
+                        "FontWeight" => {
+                            let mut typography = TextBlockDefinition::default();
+                            text_block_property(document, attr, &mut typography)?;
+                            span.font_weight = typography.font_weight;
+                        }
+                        "Foreground" => span.foreground = Some(color(document, attr)?),
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "Unsupported inline attribute",
+                            ));
+                        }
+                    }
+                }
+                for content in child.children() {
+                    require_empty_content(content)?;
+                }
+                text.inlines.push(span);
+            } else {
+                require_empty_content(child)?;
+            }
+        }
+    } else if let ElementKind::SplitContainer(split) = &mut kind {
+        for child in node.children() {
+            if child.is_element() {
+                split.children.push(parse_element(
+                    child,
+                    depth + 1,
+                    element_id,
+                    count,
+                    names,
+                    checked_radio_groups,
+                )?);
+            } else {
+                require_empty_content(child)?;
+            }
+        }
+    } else if matches!(
+        kind,
         ElementKind::Grid(_)
+            | ElementKind::RadioGroup(_)
+            | ElementKind::BusyIndicator(_)
             | ElementKind::Border(_)
             | ElementKind::GroupBox(_)
             | ElementKind::Expander(_)
@@ -1369,7 +1660,10 @@ fn parse_element(
     } else {
         for child in node.children() {
             if child.is_element() {
-                if let ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) = &mut kind {
+                if let ElementKind::StackPanel(panel)
+                | ElementKind::WrapPanel(panel)
+                | ElementKind::Overlay(panel) = &mut kind
+                {
                     panel.children.push(parse_element(
                         child,
                         depth + 1,
@@ -1403,7 +1697,9 @@ fn parse_element(
         // A bound value is resolved by the host. Keep its construction-time
         // placeholder valid even when a custom range excludes the default.
         match &mut kind {
-            ElementKind::ProgressBar(progress) if progress.minimum < progress.maximum => {
+            ElementKind::ProgressBar(progress) | ElementKind::BusyIndicator(progress)
+                if progress.minimum < progress.maximum =>
+            {
                 progress.value = progress.value.clamp(progress.minimum, progress.maximum);
             }
             ElementKind::ZoomControl(zoom) if zoom.minimum < zoom.maximum => {
@@ -1412,6 +1708,77 @@ fn parse_element(
             _ => {}
         }
     }
+    if let ElementKind::Slider(slider) = &mut kind
+        && common.bindings.contains_key("Value")
+        && slider.minimum < slider.maximum
+    {
+        slider.value = slider.value.clamp(slider.minimum, slider.maximum);
+    }
+    if let ElementKind::RangeSlider(range) = &mut kind
+        && range.slider.minimum < range.slider.maximum
+    {
+        range.slider.value = range
+            .slider
+            .value
+            .clamp(range.slider.minimum, range.slider.maximum);
+        if common.bindings.contains_key("LowerValue") {
+            range.lower_value = range
+                .lower_value
+                .clamp(range.slider.minimum, range.slider.maximum);
+        }
+        if common.bindings.contains_key("UpperValue") {
+            range.upper_value = range
+                .upper_value
+                .clamp(range.lower_value, range.slider.maximum);
+        }
+    }
+    if let ElementKind::TextBlock(text) = &kind {
+        validate_text_block(text).map_err(|message| at_node(node, message))?;
+    }
+    if let Some(tip) = &common.rich_tool_tip
+        && (tip.header.len() > 1024
+            || tip.header.len()
+                + tip.image_description.len()
+                + common.tool_tip.as_ref().map_or(0, String::len)
+                + 2
+                > MAX_TOOLTIP_BYTES
+            || tip.image.as_ref().is_some_and(|name| {
+                name.is_empty()
+                    || name.len() > 256
+                    || !name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+            })
+            || (tip.image.is_some() && tip.image_description.trim().is_empty()))
+    {
+        return Err(at_node(
+            node,
+            "Rich tooltip requires bounded text, a valid image resource and image description",
+        ));
+    }
+    let check_flags = match &kind {
+        ElementKind::CheckBox(c) | ElementKind::Switch(c) => {
+            Some((c.is_three_state, c.is_indeterminate, false))
+        }
+        ElementKind::ToggleButton(c) => {
+            Some((c.is_three_state, c.is_indeterminate, c.command.is_some()))
+        }
+        _ => None,
+    };
+    if let Some((three, mixed, command)) = check_flags {
+        let valid = if three {
+            !command && !matches!(kind, ElementKind::Switch(_))
+        } else {
+            !mixed
+        };
+        if !valid {
+            return Err(at_node(
+                node,
+                "Indeterminate requires IsThreeState; command toggles and Switch are boolean",
+            ));
+        }
+    }
+    extras::validate_additional_element(&kind).map_err(|message| at_node(node, message))?;
     form_parse::validate(node, &kind, &common)?;
     if let ElementKind::TextBox(editor) = &kind {
         validate_initial_text(node, editor)?;
@@ -1430,13 +1797,10 @@ fn parse_element(
         ElementKind::ToggleButton(button) => Some((&button.content, button.icon)),
         _ => None,
     };
-    if let ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) = &kind {
-        if menu.items.is_empty() {
-            return Err(at_node(node, "A menu button requires nonempty menu items"));
-        }
-        if matches!(kind, ElementKind::SplitButton(_)) && menu.button.command.is_none() {
-            return Err(at_node(node, "SplitButton requires a Command"));
-        }
+    if let ElementKind::SplitButton(menu) = &kind
+        && menu.button.command.is_none()
+    {
+        return Err(at_node(node, "SplitButton requires a Command"));
     }
     if let Some((content, icon)) = button_icon {
         if icon.is_none()
@@ -1508,6 +1872,30 @@ fn text_block_property(
     text: &mut TextBlockDefinition,
 ) -> Result<bool, Diagnostic> {
     match attribute.name() {
+        "TextTrimming" => {
+            text.trimming = match attribute.value() {
+                "None" => TextTrimmingDefinition::None,
+                "CharacterEllipsis" => TextTrimmingDefinition::CharacterEllipsis,
+                "WordEllipsis" => TextTrimmingDefinition::WordEllipsis,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attribute,
+                        "TextTrimming must be None, CharacterEllipsis or WordEllipsis",
+                    ));
+                }
+            }
+        }
+        "MaxLines" => {
+            text.max_lines = Some(
+                attribute
+                    .value()
+                    .parse::<usize>()
+                    .ok()
+                    .filter(|n| (1..=256).contains(n))
+                    .ok_or_else(|| at_attribute(document, attribute, "MaxLines must be 1..256"))?,
+            )
+        }
         "Text" => text.text = attribute.value().into(),
         "FontSize" => {
             text.font_size = Some(editor_metric(document, attribute, MAX_FONT_SIZE, false)?)
@@ -1515,7 +1903,7 @@ fn text_block_property(
         "FontWeight" => {
             let value = attribute.value();
             let weight = match value {
-                "Normal" => Some(400),
+                "Normal" | "Regular" => Some(400),
                 "SemiBold" => Some(600),
                 "Bold" => Some(700),
                 _ if !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()) => {
@@ -2109,3 +2497,6 @@ mod status_bar_tests;
 mod tests;
 #[cfg(test)]
 mod visual_tests;
+
+#[cfg(test)]
+mod extras_tests;

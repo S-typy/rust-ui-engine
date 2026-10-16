@@ -9,6 +9,7 @@ fn main() {
         ("StatusWindow.xaml", "status_window.rs"),
         ("DataWindow.xaml", "data_window.rs"),
         ("VisualsWindow.xaml", "visuals_window.rs"),
+        ("BatchWindow.xaml", "batch_window.rs"),
     ] {
         println!("cargo:rerun-if-changed={source}");
         if let Err(error) = rust_desktop_ui_xaml::compile_file(source, out.join(generated)) {

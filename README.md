@@ -57,12 +57,21 @@ cargo run --release --locked -p xaml-form -- --ribbon-minimized
 cargo run --release --locked -p xaml-form -- --controls
 cargo run --release --locked -p xaml-form -- --editors
 cargo run --release --locked -p xaml-form -- --groups
+cargo run --release --locked -p xaml-form -- --batch
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
 
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
 the separate example of individual controls and popup menus.
+
+`--batch` opens [BatchWindow.xaml](examples/xaml-form/BatchWindow.xaml): resizable
+panes, menus and toolbars, retained popup editors, switches, nullable checks,
+radio choices, sliders, range selection and progress. The form also demonstrates
+multi-source expressions, asynchronous validation and changing display language
+while retaining edited values. See [menus and toolbars](docs/public/menus-and-toolbars.md),
+[splitters and scrolling](docs/public/splitter-scroll.md),
+[sliders](docs/public/sliders.md) and [localization](docs/public/localization.md).
 
 `--visuals` opens [VisualsWindow.xaml](examples/xaml-form/VisualsWindow.xaml) with
 complex text, raster/SVG images and live theme switching. Choose light, dark or

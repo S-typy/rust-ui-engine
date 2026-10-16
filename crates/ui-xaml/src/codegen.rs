@@ -46,9 +46,10 @@ fn optional_icon(value: Option<IconSymbol>) -> String {
     }
 }
 
-fn element(element: &ElementDefinition) -> String {
+pub(crate) fn element(element: &ElementDefinition) -> String {
     let common = &element.common;
     let kind = match &element.kind {
+        ElementKind::ToolBar(_) | ElementKind::MenuBar(_) | ElementKind::Popup(_) | ElementKind::SplitContainer(_) | ElementKind::Slider(_) | ElementKind::RangeSlider(_) => crate::extras::codegen(&element.kind).unwrap(),
         ElementKind::DockWorkspace(workspace) => format!(
             "rust_desktop_ui_xaml::ElementKind::DockWorkspace(rust_desktop_ui_xaml::DockWorkspaceDefinition {{ root: {} }})",
             dock_node(&workspace.root),
@@ -63,7 +64,7 @@ fn element(element: &ElementDefinition) -> String {
             format!("rust_desktop_ui_xaml::ElementKind::{kind}(rust_desktop_ui_xaml::MenuButtonDefinition {{ button: rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }}, items: vec![{}] }})",
                 button.content, optional_string(&button.command), button_style(&button.style), optional_icon(button.icon), button.icon_size, button.icon_spacing, menu.items.iter().map(menu_entry).collect::<Vec<_>>().join(","))
         }
-        ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) => format!(
+        ElementKind::StackPanel(panel) | ElementKind::WrapPanel(panel) | ElementKind::Overlay(panel) => format!(
             "rust_desktop_ui_xaml::ElementKind::{kind}(rust_desktop_ui_xaml::StackPanelDefinition {{
                 orientation: rust_desktop_ui_xaml::Orientation::{orientation:?},
                 spacing: {spacing:?},
@@ -75,7 +76,7 @@ fn element(element: &ElementDefinition) -> String {
             spacing = panel.spacing,
             padding = panel.padding,
             surface = panel.surface,
-            kind = if matches!(element.kind, ElementKind::WrapPanel(_)) { "WrapPanel" } else { "StackPanel" },
+            kind = if matches!(element.kind, ElementKind::WrapPanel(_)) { "WrapPanel" } else if matches!(element.kind, ElementKind::Overlay(_)) { "Overlay" } else { "StackPanel" },
             children = panel.children.iter().map(self::element).collect::<Vec<_>>().join(",\n"),
         ),
         ElementKind::TextBox(editor) => format!(
@@ -83,8 +84,8 @@ fn element(element: &ElementDefinition) -> String {
             edit_box(editor),
         ),
         ElementKind::TextBlock(text) => format!(
-            "rust_desktop_ui_xaml::ElementKind::TextBlock(rust_desktop_ui_xaml::TextBlockDefinition {{ text: {:?}.into(), font_size: {:?}, font_weight: {:?}, foreground: {:?}, tone: rust_desktop_ui_xaml::TextToneDefinition::{:?}, wrap: {} }})",
-            text.text, text.font_size, text.font_weight, text.foreground, text.tone, text.wrap,
+            "rust_desktop_ui_xaml::ElementKind::TextBlock(rust_desktop_ui_xaml::TextBlockDefinition {{ text: {:?}.into(), font_size: {:?}, font_weight: {:?}, foreground: {:?}, tone: rust_desktop_ui_xaml::TextToneDefinition::{:?}, wrap: {}, trimming: rust_desktop_ui_xaml::TextTrimmingDefinition::{:?}, max_lines: {:?}, inlines: vec![{}] }})",
+            text.text, text.font_size, text.font_weight, text.foreground, text.tone, text.wrap, text.trimming, text.max_lines, text.inlines.iter().map(|s| format!("rust_desktop_ui_xaml::InlineDefinition {{ text: {:?}.into(), font_size: {:?}, font_weight: {:?}, foreground: {:?} }}", s.text, s.font_size, s.font_weight, s.foreground)).collect::<Vec<_>>().join(","),
         ),
         ElementKind::Button(button) => format!(
             "rust_desktop_ui_xaml::ElementKind::Button(rust_desktop_ui_xaml::ButtonDefinition {{ content: {:?}.into(), command: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }})",
@@ -94,17 +95,17 @@ fn element(element: &ElementDefinition) -> String {
             optional_icon(button.icon), button.icon_size, button.icon_spacing,
         ),
         ElementKind::ToggleButton(button) => format!(
-            "rust_desktop_ui_xaml::ElementKind::ToggleButton(rust_desktop_ui_xaml::ToggleButtonDefinition {{ content: {:?}.into(), command: {}, is_checked: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }})",
+            "rust_desktop_ui_xaml::ElementKind::ToggleButton(rust_desktop_ui_xaml::ToggleButtonDefinition {{ content: {:?}.into(), command: {}, is_checked: {}, is_three_state: {}, is_indeterminate: {}, style: {}, icon: {}, icon_size: {:?}, icon_spacing: {:?} }})",
             button.content,
             optional_string(&button.command),
-            button.is_checked,
+            button.is_checked, button.is_three_state, button.is_indeterminate,
             button_style(&button.style),
             optional_icon(button.icon), button.icon_size, button.icon_spacing,
         ),
-        ElementKind::CheckBox(check_box) => format!(
-            "rust_desktop_ui_xaml::ElementKind::CheckBox(rust_desktop_ui_xaml::CheckBoxDefinition {{ content: {:?}.into(), is_checked: {}, style: {} }})",
-            check_box.content,
-            check_box.is_checked,
+        ElementKind::CheckBox(check_box) | ElementKind::Switch(check_box) => format!(
+            "rust_desktop_ui_xaml::ElementKind::{}(rust_desktop_ui_xaml::CheckBoxDefinition {{ content: {:?}.into(), is_checked: {}, is_three_state: {}, is_indeterminate: {}, style: {} }})",
+            if matches!(element.kind, ElementKind::Switch(_)) { "Switch" } else { "CheckBox" }, check_box.content,
+            check_box.is_checked, check_box.is_three_state, check_box.is_indeterminate,
             button_style(&check_box.style),
         ),
         ElementKind::RadioButton(radio) => format!(
@@ -132,6 +133,7 @@ fn element(element: &ElementDefinition) -> String {
         "rust_desktop_ui_xaml::ElementDefinition {{
             common: rust_desktop_ui_xaml::CommonProperties {{
                 name: {name},
+                rich_tool_tip: {rich_tool_tip}, is_link: {is_link}, repeat_delay_ms: {repeat_delay_ms:?}, repeat_interval_ms: {repeat_interval_ms},
                 width: {width:?},
                 height: {height:?},
                 margin: {margin:?},
@@ -151,6 +153,8 @@ fn element(element: &ElementDefinition) -> String {
             kind: {kind},
         }}",
         name = optional_string(&common.name),
+        rich_tool_tip = common.rich_tool_tip.as_ref().map_or("None".into(), |tip| format!("Some(rust_desktop_ui_xaml::RichToolTipDefinition {{ header: {:?}.into(), icon: {}, image: {}, image_description: {:?}.into() }})", tip.header, optional_icon(tip.icon), optional_string(&tip.image), tip.image_description)),
+        is_link = common.is_link, repeat_delay_ms = common.repeat_delay_ms, repeat_interval_ms = common.repeat_interval_ms,
         width = common.width,
         height = common.height,
         margin = common.margin,
@@ -176,8 +180,8 @@ fn element(element: &ElementDefinition) -> String {
 
 fn bindings(bindings: &std::collections::BTreeMap<String, crate::BindingDefinition>) -> String {
     format!("std::collections::BTreeMap::from([{}])", bindings.iter().map(|(property,b)| format!(
-        "({property:?}.into(), rust_desktop_ui_xaml::BindingDefinition {{ path: {:?}.into(), element_name: {}, mode: rust_desktop_ui_xaml::BindingMode::{:?}, update_source_trigger: rust_desktop_ui_xaml::UpdateSourceTrigger::{:?}, converter: {}, fallback_value: {} }})",
-        b.path, optional_string(&b.element_name), b.mode, b.update_source_trigger, optional_string(&b.converter), optional_string(&b.fallback_value)
+        "({property:?}.into(), rust_desktop_ui_xaml::BindingDefinition {{ source_line: {}, source_column: {}, path: {:?}.into(), element_name: {}, mode: rust_desktop_ui_xaml::BindingMode::{:?}, update_source_trigger: rust_desktop_ui_xaml::UpdateSourceTrigger::{:?}, converter: {}, fallback_value: {}, inputs: vec![{}], expression: {} }})",
+        b.source_line, b.source_column, b.path, optional_string(&b.element_name), b.mode, b.update_source_trigger, optional_string(&b.converter), optional_string(&b.fallback_value), b.inputs.iter().map(|i| format!("rust_desktop_ui_xaml::BindingInputDefinition {{ path: {:?}.into(), element_name: {} }}", i.path, optional_string(&i.element_name))).collect::<Vec<_>>().join(","), optional_string(&b.expression)
     )).collect::<Vec<_>>().join(","))
 }
 
@@ -206,11 +210,12 @@ fn form_kind(kind: &ElementKind) -> String {
         ElementKind::GridControl(grid) => ("GridControl", format!("rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: vec![{}], is_read_only: {}, filter_text: {:?}.into(), selected_value: {} }}", grid.data_source, grid.columns.iter().map(|column| format!("rust_desktop_ui_xaml::GridColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?}, min_width: {:?}, max_width: {:?}, is_pinned: {}, is_read_only: {} }}", column.field, column.header, column.width, column.min_width, column.max_width, column.is_pinned, column.is_read_only)).collect::<Vec<_>>().join(","), grid.is_read_only, grid.filter_text, optional_string(&grid.selected_value))),
         ElementKind::StatusBar(bar) | ElementKind::RibbonStatusBar(bar) => (if matches!(kind, ElementKind::StatusBar(_)) { "StatusBar" } else { "RibbonStatusBar" }, format!("rust_desktop_ui_xaml::StatusBarDefinition {{ items: vec![{}] }}", bar.items.iter().map(element).collect::<Vec<_>>().join(","))),
         ElementKind::StatusBarItem(item) => ("StatusBarItem", format!("rust_desktop_ui_xaml::StatusBarItemDefinition {{ placement: rust_desktop_ui_xaml::StatusBarPlacement::{:?}, child: {} }}", item.placement, optional_child(item.child.as_deref()))),
-        ElementKind::ProgressBar(progress) => ("ProgressBar", format!("rust_desktop_ui_xaml::ProgressBarDefinition {{ minimum: {:?}, maximum: {:?}, value: {:?} }}", progress.minimum, progress.maximum, progress.value)),
+        ElementKind::ProgressBar(progress) | ElementKind::BusyIndicator(progress) => (if matches!(kind, ElementKind::BusyIndicator(_)) { "BusyIndicator" } else { "ProgressBar" }, format!("rust_desktop_ui_xaml::ProgressBarDefinition {{ minimum: {:?}, maximum: {:?}, value: {:?}, is_indeterminate: {}, reduced_motion: {} }}", progress.minimum, progress.maximum, progress.value, progress.is_indeterminate, progress.reduced_motion)),
         ElementKind::ZoomControl(zoom) => ("ZoomControl", format!("rust_desktop_ui_xaml::ZoomControlDefinition {{ minimum: {:?}, maximum: {:?}, value: {:?}, step: {:?} }}", zoom.minimum, zoom.maximum, zoom.value, zoom.step)),
-        ElementKind::GroupBox(g) => ("GroupBox", format!("rust_desktop_ui_xaml::GroupBoxDefinition {{ header: {:?}.into(), appearance: rust_desktop_ui_xaml::GroupBoxAppearanceDefinition::{:?}, header_style: rust_desktop_ui_xaml::GroupHeaderStyleDefinition::{:?}, header_icon: {}, show_header: {}, corner_radius: {:?}, header_foreground: {:?}, header_background: {:?}, padding: {:?}, is_collapsible: {}, is_expanded: {}, child: {} }}", g.header, g.appearance, g.header_style, optional_icon(g.header_icon), g.show_header, g.corner_radius, g.header_foreground, g.header_background, g.padding, g.is_collapsible, g.is_expanded, optional_child(g.child.as_deref()))),
-        ElementKind::Expander(e) => ("Expander", format!("rust_desktop_ui_xaml::ExpanderDefinition {{ header: {:?}.into(), appearance: rust_desktop_ui_xaml::GroupBoxAppearanceDefinition::{:?}, header_style: rust_desktop_ui_xaml::GroupHeaderStyleDefinition::{:?}, header_icon: {}, show_header: {}, corner_radius: {:?}, header_foreground: {:?}, header_background: {:?}, padding: {:?}, is_expanded: {}, child: {} }}", e.header, e.appearance, e.header_style, optional_icon(e.header_icon), e.show_header, e.corner_radius, e.header_foreground, e.header_background, e.padding, e.is_expanded, optional_child(e.child.as_deref()))),
+        ElementKind::GroupBox(g) => ("GroupBox", format!("rust_desktop_ui_xaml::GroupBoxDefinition {{ header: {:?}.into(), appearance: rust_desktop_ui_xaml::GroupBoxAppearanceDefinition::{:?}, header_style: rust_desktop_ui_xaml::GroupHeaderStyleDefinition::{:?}, header_icon: {}, show_header: {}, corner_radius: {:?}, header_foreground: {:?}, header_background: {:?}, padding: {:?}, is_collapsible: {}, is_expanded: {}, child: {}, header_content: {} }}", g.header, g.appearance, g.header_style, optional_icon(g.header_icon), g.show_header, g.corner_radius, g.header_foreground, g.header_background, g.padding, g.is_collapsible, g.is_expanded, optional_child(g.child.as_deref()), optional_child(g.header_content.as_deref()))),
+        ElementKind::Expander(e) => ("Expander", format!("rust_desktop_ui_xaml::ExpanderDefinition {{ header: {:?}.into(), appearance: rust_desktop_ui_xaml::GroupBoxAppearanceDefinition::{:?}, header_style: rust_desktop_ui_xaml::GroupHeaderStyleDefinition::{:?}, header_icon: {}, show_header: {}, corner_radius: {:?}, header_foreground: {:?}, header_background: {:?}, padding: {:?}, is_expanded: {}, child: {}, header_content: {}, expand_direction: rust_desktop_ui_xaml::ExpandDirectionDefinition::{:?}, animation_duration_ms: {} }}", e.header, e.appearance, e.header_style, optional_icon(e.header_icon), e.show_header, e.corner_radius, e.header_foreground, e.header_background, e.padding, e.is_expanded, optional_child(e.child.as_deref()), optional_child(e.header_content.as_deref()), e.expand_direction, e.animation_duration_ms)),
         ElementKind::TabbedGroup(g) => ("TabbedGroup", format!("rust_desktop_ui_xaml::TabbedGroupDefinition {{ selected_index: {}, padding: {:?}, tabs: vec![{}] }}", g.selected_index, g.padding, g.tabs.iter().map(|tab| format!("rust_desktop_ui_xaml::GroupTabDefinition {{ header: {:?}.into(), header_icon: {}, is_enabled: {}, child: {} }}", tab.header, optional_icon(tab.header_icon), tab.is_enabled, optional_child(tab.child.as_deref()))).collect::<Vec<_>>().join(","))),
+        ElementKind::RadioGroup(s) => ("RadioGroup", selection(s)),
         ElementKind::ListBox(s) => ("ListBox", selection(s)),
         ElementKind::ComboBox(s) => ("ComboBox", selection(s)),
         ElementKind::LookupEdit(l) => ("LookupEdit", format!("rust_desktop_ui_xaml::LookupDefinition {{ selection: {}, columns: vec![{}] }}", selection(&l.selection), l.columns.iter().map(|c| format!("rust_desktop_ui_xaml::LookupColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?} }}", c.field, c.header, c.width)).collect::<Vec<_>>().join(","))),

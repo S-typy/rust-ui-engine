@@ -443,7 +443,8 @@ impl WindowState {
         app: &mut dyn DesktopApp,
         clipboard: &mut Option<arboard::Clipboard>,
     ) -> Result<bool, String> {
-        let allowed = self.focused && app.ime_cursor().is_some();
+        let allowed =
+            self.focused && crate::ime::valid_cursor(app.ime_target(), app.ime_cursor()).is_some();
         let changed = self.ime.set_target(app.ime_target(), allowed);
         let cancelled = self.ime.cancelled_by_editor(app.ime_composition_active());
         let mut redraw = false;
@@ -507,7 +508,7 @@ impl WindowState {
             return Err(error);
         }
         let redraw = self.sync_ime(app, clipboard)?;
-        if let Some(caret) = app.ime_cursor() {
+        if let Some(caret) = crate::ime::valid_cursor(app.ime_target(), app.ime_cursor()) {
             self.window.set_ime_cursor_area(
                 LogicalPosition::new(f64::from(caret.x), f64::from(caret.y)),
                 LogicalSize::new(f64::from(caret.width.max(1.0)), f64::from(caret.height)),

@@ -31,6 +31,7 @@ fn text_block_typography_defaults_and_supported_weights_are_explicit() {
                 foreground: Some([68, 85, 102, 128]),
                 tone: TextToneDefinition::Secondary,
                 wrap: false,
+                ..Default::default()
             }
         );
         validate_text_block(&text).unwrap();
@@ -1271,7 +1272,7 @@ fn button_style_reports_invalid_properties_without_accepting_state_markup() {
             "CheckedBackground='#FFFFFF'",
             "CheckmarkBrush='#000000'",
             "SelectionBrush='#112233'",
-            "IsThreeState='True'",
+            "IsThreeState='invalid'",
         ] {
             let error = parse(&form("", &format!("<{tag}\n {attributes}/>"))).unwrap_err();
             assert!(error.line > 0 && error.column > 0, "{tag} {attributes}");
@@ -1381,7 +1382,7 @@ fn radio_group_names_and_selection_are_literals_with_typed_codegen() {
         "GroupName='a.b'",
         "IsChecked='null'",
         "Command='Select'",
-        "IsThreeState='True'",
+        "IsThreeState='invalid'",
     ] {
         let error = parse(&form("", &format!("<RadioButton\n {attributes}/>"))).unwrap_err();
         assert_eq!(error.line, 3);

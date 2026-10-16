@@ -925,7 +925,7 @@ impl DesktopApp for DockWindow {
             .filter_map(|g| state.panes.get(&g.active).and_then(DesktopApp::wake_after))
             .chain(
                 self.ui
-                    .tooltip_deadline()
+                    .next_deadline()
                     .map(|deadline| deadline.saturating_duration_since(std::time::Instant::now())),
             )
             .min()

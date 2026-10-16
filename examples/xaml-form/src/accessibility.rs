@@ -106,13 +106,17 @@ impl Accessibility {
                 // must not make the complete bar a repeated live announcement.
                 node.set_live(accesskit::Live::Off);
             }
-            if let Some(value) = semantic.value {
+            if ui.progress_indeterminate(widget) != Some(true)
+                && let Some(value) = semantic.value
+            {
                 node.set_value(value);
             }
             if let Some(settings) = ui.progress_settings(widget) {
-                node.set_min_numeric_value(settings.minimum);
-                node.set_max_numeric_value(settings.maximum);
-                node.set_numeric_value(settings.value);
+                if ui.progress_indeterminate(widget) != Some(true) {
+                    node.set_min_numeric_value(settings.minimum);
+                    node.set_max_numeric_value(settings.maximum);
+                    node.set_numeric_value(settings.value);
+                }
                 node.set_read_only();
             }
             if let Some(settings) = ui.zoom_settings(widget) {
@@ -122,16 +126,42 @@ impl Accessibility {
                 node.set_numeric_value_step(settings.step);
                 node.set_orientation(accesskit::Orientation::Horizontal);
             }
-            if let Some(checked) = semantic.checked {
+            if let Some(settings) = ui.slider_settings(widget) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_numeric_value_step(settings.step);
+                node.set_orientation(match settings.axis {
+                    rust_desktop_ui_core::Axis::Horizontal => accesskit::Orientation::Horizontal,
+                    rust_desktop_ui_core::Axis::Vertical => accesskit::Orientation::Vertical,
+                });
+            }
+            if semantic.checked_mixed {
+                node.set_toggled(accesskit::Toggled::Mixed);
+            } else if let Some(checked) = semantic.checked {
                 node.set_toggled(if checked {
                     accesskit::Toggled::True
                 } else {
                     accesskit::Toggled::False
                 });
             }
+            if let Some(settings) = ui.splitter_settings(widget)
+                && semantic.role == ControlRole::Splitter
+            {
+                node.set_min_numeric_value(0.0);
+                node.set_max_numeric_value(1.0);
+                node.set_numeric_value(f64::from(settings.ratio));
+                node.set_numeric_value_step(0.02);
+                node.set_orientation(match settings.axis {
+                    rust_desktop_ui_core::Axis::Horizontal => accesskit::Orientation::Vertical,
+                    rust_desktop_ui_core::Axis::Vertical => accesskit::Orientation::Horizontal,
+                });
+            }
             if semantic.has_popup {
                 node.set_has_popup(if semantic.role == ControlRole::ComboBox {
                     accesskit::HasPopup::Listbox
+                } else if ui.button_flyout(widget).is_some() {
+                    accesskit::HasPopup::Dialog
                 } else {
                     accesskit::HasPopup::Menu
                 });
@@ -139,7 +169,13 @@ impl Accessibility {
             if let Some(expanded) = semantic.expanded {
                 node.set_expanded(expanded);
             }
+            if let Some(settings) = ui.editor_settings(widget) {
+                append_description(&mut node, &settings.placeholder);
+            }
             if let Some(tooltip) = semantic.tooltip {
+                // Windows UIA exposes description as FullDescription/HelpText;
+                // the tooltip property alone is not projected by this backend.
+                append_description(&mut node, &tooltip);
                 node.set_tooltip(tooltip);
             }
             if semantic.disabled {
@@ -150,9 +186,6 @@ impl Accessibility {
             }
             if matches!(semantic.role, ControlRole::Tab | ControlRole::ListItem) {
                 node.set_selected(semantic.selected);
-            }
-            if let Some(settings) = ui.editor_settings(widget) {
-                node.set_description(&settings.placeholder);
             }
             if ui
                 .editor_validation(widget)
@@ -262,7 +295,7 @@ impl Accessibility {
         }
         let numeric_value = match &request.data {
             Some(accesskit::ActionData::NumericValue(value))
-                if value.is_finite() && ui.zoom_settings(widget).is_some() =>
+                if value.is_finite() && numeric_range(ui, widget).is_some() =>
             {
                 Some(value.to_string())
             }
@@ -277,12 +310,10 @@ impl Accessibility {
             return Ok(());
         }
         if action == SemanticAction::SetValue
-            && let Some(settings) = ui.zoom_settings(widget)
+            && let Some((minimum, maximum)) = numeric_range(ui, widget)
             && value
                 .and_then(|value| value.parse::<f64>().ok())
-                .is_none_or(|value| {
-                    !value.is_finite() || !(settings.minimum..=settings.maximum).contains(&value)
-                })
+                .is_none_or(|value| !value.is_finite() || !(minimum..=maximum).contains(&value))
         {
             // Native range requests are untrusted input. An invalid value
             // preserves state without terminating the application event loop.
@@ -291,6 +322,28 @@ impl Accessibility {
         ui.perform_action(widget, action, value)
             .map_err(|error| error.to_string())
     }
+}
+
+fn append_description(node: &mut Node, text: &str) {
+    let mut parts: Vec<_> = node.description().unwrap_or_default().lines().collect();
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if !parts.contains(&line) {
+            parts.push(line);
+        }
+    }
+    if !parts.is_empty() {
+        node.set_description(parts.join("\n"));
+    }
+}
+
+fn numeric_range(ui: &Controls, widget: WidgetId) -> Option<(f64, f64)> {
+    ui.zoom_settings(widget)
+        .map(|settings| (settings.minimum, settings.maximum))
+        .or_else(|| {
+            ui.slider_settings(widget)
+                .map(|settings| (settings.minimum, settings.maximum))
+        })
+        .or_else(|| ui.splitter_settings(widget).map(|_| (0.0, 1.0)))
 }
 
 fn bounds(rect: Rect, scale: f32) -> accesskit::Rect {
@@ -324,6 +377,12 @@ fn role(role: ControlRole) -> Role {
         ControlRole::StatusBar => Role::Status,
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
+        ControlRole::RangeSlider => Role::Group,
+        ControlRole::ToolBar => Role::Toolbar,
+        ControlRole::MenuBar => Role::MenuBar,
+        ControlRole::Link => Role::Link,
+        ControlRole::Switch => Role::Switch,
+        ControlRole::Splitter => Role::Splitter,
         ControlRole::Grid => Role::Grid,
     }
 }
@@ -555,5 +614,181 @@ mod status_tests {
         fixture.ui.remove(fixture.bar).unwrap();
         fixture.set_value(fixture.zoom, 180.0).unwrap();
         assert_eq!(fixture.ui.zoom_value(fixture.zoom), None);
+    }
+
+    #[test]
+    fn sliders_project_range_thumbs_and_route_native_numeric_actions() {
+        use rust_desktop_ui_controls::{RangeSliderSettings, SliderSettings, SplitterSettings};
+        let mut fixture = Fixture::new(false);
+        let root = fixture.ui.root();
+        let slider = fixture
+            .ui
+            .slider(
+                root,
+                SliderSettings {
+                    minimum: -20.0,
+                    maximum: 80.0,
+                    value: 10.0,
+                    step: 2.5,
+                    axis: rust_desktop_ui_core::Axis::Vertical,
+                    ..Default::default()
+                },
+                LayoutStyle::default(),
+            )
+            .unwrap();
+        let range = fixture
+            .ui
+            .range_slider(root, RangeSliderSettings::default(), LayoutStyle::default())
+            .unwrap();
+        let (lower, upper) = fixture.ui.range_slider_thumbs(range).unwrap();
+        let split = fixture
+            .ui
+            .split_container(
+                root,
+                SplitterSettings::default(),
+                LayoutStyle {
+                    width: Length::Px(400.0),
+                    height: Length::Px(80.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture.ui.update(Size::new(800.0, 600.0)).unwrap();
+        let tree = fixture.tree();
+        let scalar = fixture.node(&tree, slider);
+        assert_eq!(scalar.role(), Role::Slider);
+        assert_eq!(scalar.orientation(), Some(accesskit::Orientation::Vertical));
+        assert_eq!(scalar.min_numeric_value(), Some(-20.0));
+        assert_eq!(scalar.max_numeric_value(), Some(80.0));
+        assert_eq!(scalar.numeric_value_step(), Some(2.5));
+        assert_eq!(fixture.node(&tree, range).role(), Role::Group);
+        assert_eq!(fixture.node(&tree, range).numeric_value(), None);
+        assert_eq!(fixture.node(&tree, lower).numeric_value(), Some(25.0));
+        assert_eq!(fixture.node(&tree, upper).numeric_value(), Some(75.0));
+        assert!(fixture.node(&tree, lower).supports_action(Action::SetValue));
+        fixture.set_value(slider, 42.5).unwrap();
+        fixture.set_value(lower, 30.0).unwrap();
+        fixture.set_value(upper, 85.0).unwrap();
+        fixture.set_value(split.divider, 0.75).unwrap();
+        assert_eq!(fixture.ui.slider_value(slider), Some(42.5));
+        assert_eq!(fixture.ui.range_slider_values(range), Some((30.0, 85.0)));
+        assert_eq!(fixture.ui.split_ratio(split.container), Some(0.75));
+        for invalid in [f64::NAN, f64::INFINITY, -100.0, 1000.0] {
+            fixture.set_value(slider, invalid).unwrap();
+            fixture.set_value(lower, invalid).unwrap();
+            fixture.set_value(split.divider, invalid).unwrap();
+        }
+        assert_eq!(fixture.ui.slider_value(slider), Some(42.5));
+        assert_eq!(fixture.ui.range_slider_values(range), Some((30.0, 85.0)));
+        assert_eq!(fixture.ui.split_ratio(split.container), Some(0.75));
+    }
+
+    #[test]
+    fn indeterminate_progress_omits_a_fabricated_numeric_percentage() {
+        let mut fixture = Fixture::new(false);
+        fixture
+            .ui
+            .set_progress_indeterminate(fixture.progress, true)
+            .unwrap();
+        let tree = fixture.tree();
+        let node = fixture.node(&tree, fixture.progress);
+        assert_eq!(node.role(), Role::ProgressIndicator);
+        assert_eq!(node.numeric_value(), None);
+        assert_eq!(node.min_numeric_value(), None);
+        assert_eq!(node.max_numeric_value(), None);
+        assert_eq!(node.value(), None);
+        assert!(node.is_read_only());
+        fixture
+            .ui
+            .set_progress_indeterminate(fixture.progress, false)
+            .unwrap();
+        let tree = fixture.tree();
+        assert_eq!(
+            fixture.node(&tree, fixture.progress).numeric_value(),
+            Some(45.0)
+        );
+    }
+
+    #[test]
+    fn custom_editor_flyout_is_a_dialog_disclosure() {
+        let mut fixture = Fixture::new(false);
+        let button = fixture
+            .ui
+            .button(fixture.ui.root(), "Details", None, LayoutStyle::default())
+            .unwrap();
+        let flyout = fixture.ui.flyout(button, Size::new(240.0, 100.0)).unwrap();
+        fixture
+            .ui
+            .edit_box(flyout.content, "Value", "Draft", LayoutStyle::default())
+            .unwrap();
+        fixture.ui.set_button_flyout(button, flyout).unwrap();
+        fixture.ui.update(VIEWPORT).unwrap();
+        let tree = fixture.tree();
+        let node = fixture.node(&tree, button);
+        assert_eq!(node.has_popup(), Some(accesskit::HasPopup::Dialog));
+        assert_eq!(node.is_expanded(), Some(false));
+        assert!(node.supports_action(Action::Expand));
+    }
+
+    #[test]
+    fn rich_tooltip_description_preserves_placeholder_without_duplicate_help() {
+        use rust_desktop_ui_controls::{EditorSettings, RichToolTip};
+        use rust_desktop_ui_core::Bitmap;
+        let mut fixture = Fixture::new(false);
+        let root = fixture.ui.root();
+        let button = fixture
+            .ui
+            .button(root, "Details", None, LayoutStyle::default())
+            .unwrap();
+        let editor = fixture
+            .ui
+            .edit_box(root, "Document code", "", LayoutStyle::default())
+            .unwrap();
+        fixture
+            .ui
+            .set_editor_settings(
+                editor,
+                EditorSettings {
+                    placeholder: "Enter a document code".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let tip = RichToolTip {
+            header: "Document details".into(),
+            text: "Fields are checked before saving".into(),
+            image: Some(Bitmap::new_rgba8(1, 1, vec![255; 4]).unwrap()),
+            image_description: "Example document preview".into(),
+            ..Default::default()
+        };
+        for owner in [button, editor] {
+            fixture.ui.set_rich_tooltip(owner, tip.clone()).unwrap();
+        }
+        fixture.ui.update(VIEWPORT).unwrap();
+        let tree = fixture.tree();
+        let rich = "Document details\nFields are checked before saving\nExample document preview";
+        let button_node = fixture.node(&tree, button);
+        assert_eq!(button_node.tooltip(), Some(rich));
+        assert_eq!(button_node.description(), Some(rich));
+        let editor_node = fixture.node(&tree, editor);
+        assert_eq!(editor_node.tooltip(), Some(rich));
+        assert_eq!(
+            editor_node.description(),
+            Some(format!("Enter a document code\n{rich}").as_str())
+        );
+        assert_eq!(fixture.ui.tooltip_bounds(), None); // Native help is present before hover.
+        fixture
+            .ui
+            .set_tooltip(editor, "Enter a document code")
+            .unwrap();
+        let tree = fixture.tree();
+        assert_eq!(
+            fixture.node(&tree, editor).description(),
+            Some("Enter a document code")
+        );
+        assert_eq!(
+            fixture.node(&tree, editor).tooltip(),
+            Some("Enter a document code")
+        );
     }
 }

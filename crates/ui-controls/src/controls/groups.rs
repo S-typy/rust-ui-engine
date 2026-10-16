@@ -1,5 +1,35 @@
 //! Retained groups and disclosure panels with theme-relative chrome.
 use super::*;
+use std::time::{Duration, Instant};
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ExpandDirection {
+    #[default]
+    Down,
+    Up,
+    Left,
+    Right,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpanderAnimation {
+    pub duration: Duration,
+}
+impl Default for ExpanderAnimation {
+    fn default() -> Self {
+        Self {
+            duration: Duration::from_millis(160),
+        }
+    }
+}
+#[derive(Clone)]
+struct ExpansionTransition {
+    started: Instant,
+    deadline: Instant,
+    duration: Duration,
+    size: f32,
+    original_style: LayoutStyle,
+    opening: bool,
+}
 
 /// Decoration shared by static groups and expandable sections.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -39,6 +69,7 @@ pub struct GroupSettings {
     pub header_background: Option<Color>,
     /// Insets of the retained content host, independent of header spacing.
     pub padding: Edges,
+    pub expand_direction: ExpandDirection,
 }
 
 impl Default for GroupSettings {
@@ -53,6 +84,7 @@ impl Default for GroupSettings {
             header_foreground: None,
             header_background: None,
             padding: Edges::all(16.0),
+            expand_direction: ExpandDirection::Down,
         }
     }
 }
@@ -130,6 +162,8 @@ pub(super) struct GroupState {
     parts: GroupBox,
     settings: GroupSettings,
     expanded: Option<bool>,
+    animation: Option<ExpanderAnimation>,
+    transition: Option<ExpansionTransition>,
 }
 
 impl Controls {
@@ -226,8 +260,11 @@ impl Controls {
                 parts,
                 settings,
                 expanded,
+                animation: None,
+                transition: None,
             },
         );
+        self.apply_expand_direction(container)?;
         Ok(parts)
     }
 
@@ -283,6 +320,7 @@ impl Controls {
             return Ok(());
         }
         let parts = group.parts;
+        self.finish_expander_transition(owner)?;
         self.edit_props(parts.header, |props| {
             props.style.height = Length::Px(settings.header_height());
             props.collapsed = !settings.show_header;
@@ -293,6 +331,7 @@ impl Controls {
         self.controls.get_mut(&owner).unwrap().label = settings.header.clone();
         self.controls.get_mut(&parts.header).unwrap().label = settings.header.clone();
         self.groups.get_mut(&owner).unwrap().settings = settings;
+        self.apply_expand_direction(owner)?;
         self.scene_dirty = true;
         Ok(())
     }
@@ -312,6 +351,7 @@ impl Controls {
         let owner = self
             .group_owner(id)
             .ok_or_else(|| ControlError::Invalid("Unknown expander".into()))?;
+        self.finish_expander_transition(owner)?;
         let group = &self.groups[&owner];
         let previous = group
             .expanded
@@ -320,6 +360,27 @@ impl Controls {
             return Ok(());
         }
         let parts = group.parts;
+        let animation = group
+            .animation
+            .filter(|_| !self.reduced_motion() && self.window_focused);
+        let original_style = self
+            .runtime
+            .tree()
+            .node(parts.content)
+            .unwrap()
+            .props
+            .style
+            .clone();
+        let old_size = self.runtime.bounds(parts.content).map(|bounds| {
+            if matches!(
+                group.settings.expand_direction,
+                ExpandDirection::Left | ExpandDirection::Right
+            ) {
+                bounds.width
+            } else {
+                bounds.height
+            }
+        });
         let focus_within = self.runtime.focused().is_some_and(|focused| {
             self.group_descendant(focused, parts.content)
                 || self.rich.popup.as_ref().is_some_and(|popup| {
@@ -366,11 +427,245 @@ impl Controls {
                 self.selecting = None;
             }
             self.tooltip_sync();
+            self.sync_flyouts()?;
             if focus_within && self.is_enabled(parts.header) && self.window_focused {
                 self.runtime.apply(Mutation::Focus(Some(parts.header)))?;
             }
         }
+        if let Some(animation) = animation {
+            // Measure an opening subtree once before shrinking its layout box.
+            // The retained widgets are never rebuilt and interaction is paused
+            // until the transition completes.
+            self.runtime.update(&mut self.layout, self.viewport)?;
+            let horizontal = matches!(
+                self.groups[&owner].settings.expand_direction,
+                ExpandDirection::Left | ExpandDirection::Right
+            );
+            let size = if expanded {
+                self.runtime.bounds(parts.content).map(|bounds| {
+                    if horizontal {
+                        bounds.width
+                    } else {
+                        bounds.height
+                    }
+                })
+            } else {
+                old_size
+            };
+            if let Some(size) = size.filter(|size| *size > 0.0) {
+                let started = Instant::now();
+                self.edit_props(parts.content, |props| {
+                    props.collapsed = false;
+                    props.style.flex_grow = 0.0;
+                    props.style.flex_shrink = 0.0;
+                    if horizontal {
+                        props.style.width = Length::Px(if expanded { 0.0 } else { size });
+                    } else {
+                        props.style.height = Length::Px(if expanded { 0.0 } else { size });
+                    }
+                })?;
+                self.groups.get_mut(&owner).unwrap().transition = Some(ExpansionTransition {
+                    started,
+                    deadline: started + Duration::from_millis(16),
+                    duration: animation.duration,
+                    size,
+                    original_style,
+                    opening: expanded,
+                });
+            }
+        }
         self.scene_dirty = true;
+        Ok(())
+    }
+
+    /// Enables bounded reveal/contraction transitions. `None` is immediate.
+    /// Reduced-motion mode and inactive windows always finish immediately.
+    pub fn set_expander_animation(
+        &mut self,
+        id: WidgetId,
+        animation: Option<ExpanderAnimation>,
+    ) -> Result<(), ControlError> {
+        let owner = self
+            .group_owner(id)
+            .filter(|owner| self.groups[owner].expanded.is_some())
+            .ok_or_else(|| ControlError::Invalid("Unknown expander".into()))?;
+        if animation.is_some_and(|value| {
+            !(Duration::from_millis(16)..=Duration::from_secs(2)).contains(&value.duration)
+        }) {
+            return Err(ControlError::Invalid(
+                "Expander animation duration must be 16..2000ms".into(),
+            ));
+        }
+        self.finish_expander_transition(owner)?;
+        self.groups.get_mut(&owner).unwrap().animation = animation;
+        Ok(())
+    }
+    pub fn expander_deadline(&self) -> Option<Instant> {
+        self.groups
+            .values()
+            .filter_map(|group| {
+                group
+                    .transition
+                    .as_ref()
+                    .map(|transition| transition.deadline)
+            })
+            .min()
+    }
+    pub fn expander_tick(&mut self, now: Instant) -> Result<bool, ControlError> {
+        let active: Vec<_> = self
+            .groups
+            .iter()
+            .filter_map(|(id, group)| {
+                group.transition.clone().map(|transition| {
+                    (
+                        *id,
+                        group.parts,
+                        group.settings.expand_direction,
+                        transition,
+                    )
+                })
+            })
+            .collect();
+        let mut changed = false;
+        for (owner, parts, direction, transition) in active {
+            if self.reduced_motion()
+                || !self.window_focused
+                || now.saturating_duration_since(transition.started) >= transition.duration
+            {
+                self.finish_expander_transition(owner)?;
+                changed = true;
+                continue;
+            }
+            if now < transition.deadline {
+                continue;
+            }
+            let fraction = now
+                .saturating_duration_since(transition.started)
+                .as_secs_f32()
+                / transition.duration.as_secs_f32();
+            let smooth = fraction * fraction * (3.0 - 2.0 * fraction);
+            let size = transition.size
+                * if transition.opening {
+                    smooth
+                } else {
+                    1.0 - smooth
+                };
+            self.edit_props(parts.content, |props| {
+                if matches!(direction, ExpandDirection::Left | ExpandDirection::Right) {
+                    props.style.width = Length::Px(size);
+                } else {
+                    props.style.height = Length::Px(size);
+                }
+            })?;
+            self.groups
+                .get_mut(&owner)
+                .unwrap()
+                .transition
+                .as_mut()
+                .unwrap()
+                .deadline = now + Duration::from_millis(16);
+            changed = true;
+        }
+        if changed {
+            self.scene_dirty = true;
+        }
+        Ok(changed)
+    }
+    pub(super) fn sync_expander_motion(&mut self) -> Result<(), ControlError> {
+        if self.reduced_motion() || !self.window_focused {
+            let owners: Vec<_> = self
+                .groups
+                .iter()
+                .filter_map(|(id, group)| group.transition.is_some().then_some(*id))
+                .collect();
+            for owner in owners {
+                self.finish_expander_transition(owner)?;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn expander_transition_blocks(&self, id: WidgetId) -> bool {
+        self.groups.values().any(|group| {
+            group.transition.is_some() && self.group_descendant(id, group.parts.content)
+        })
+    }
+    fn finish_expander_transition(&mut self, owner: WidgetId) -> Result<(), ControlError> {
+        let Some(group) = self.groups.get_mut(&owner) else {
+            return Ok(());
+        };
+        let Some(transition) = group.transition.take() else {
+            return Ok(());
+        };
+        let content = group.parts.content;
+        if self.runtime.tree().contains(content) {
+            self.edit_props(content, |props| {
+                props.style = transition.original_style;
+                props.collapsed = !transition.opening;
+            })?;
+        }
+        self.scene_dirty = true;
+        Ok(())
+    }
+    fn apply_expand_direction(&mut self, owner: WidgetId) -> Result<(), ControlError> {
+        let group = &self.groups[&owner];
+        let parts = group.parts;
+        let direction = group.settings.expand_direction;
+        let horizontal = matches!(direction, ExpandDirection::Left | ExpandDirection::Right);
+        let extent = group.settings.header_height();
+        self.edit_props(owner, |props| {
+            props.style.kind = LayoutKind::Flex(if horizontal {
+                Axis::Horizontal
+            } else {
+                Axis::Vertical
+            })
+        })?;
+        self.edit_props(parts.header, |props| {
+            props.style.width = if horizontal {
+                Length::Px(120.0)
+            } else {
+                Length::Auto
+            };
+            props.style.height = if horizontal {
+                Length::Percent(1.0)
+            } else {
+                Length::Px(extent)
+            };
+        })?;
+        let [first, last] = if matches!(direction, ExpandDirection::Up | ExpandDirection::Left) {
+            [parts.content, parts.header]
+        } else {
+            [parts.header, parts.content]
+        };
+        if self.runtime.tree().children(owner) != Some([first, last].as_slice()) {
+            self.runtime.apply(Mutation::Batch(vec![
+                Mutation::Reparent {
+                    node: first,
+                    parent: owner,
+                },
+                Mutation::Reparent {
+                    node: last,
+                    parent: owner,
+                },
+            ]))?;
+        }
+        Ok(())
+    }
+    /// A noninteractive retained header subtree; disclosure/focus remains on the
+    /// original header. Header text continues to name the accessible group.
+    pub fn set_group_header_content(
+        &mut self,
+        id: WidgetId,
+        content: Option<WidgetId>,
+    ) -> Result<(), ControlError> {
+        let owner = self
+            .group_owner(id)
+            .ok_or_else(|| ControlError::Invalid("Unknown group".into()))?;
+        let header = self.groups[&owner].parts.header;
+        self.set_button_content(header, content)?;
+        self.edit_props(header, |props| {
+            props.style.padding.left = 16.0;
+            props.style.padding.right = 46.0;
+        })?;
         Ok(())
     }
 
@@ -446,6 +741,7 @@ impl Controls {
                 editor_fill(&mut self.scene, bounds, clip, radius, chrome.card_surface);
             }
             if settings.appearance == GroupAppearance::Standard
+                && settings.expand_direction == ExpandDirection::Down
                 && settings.show_header
                 && let Some(header) = self.runtime.bounds(header_id)
             {
@@ -502,7 +798,8 @@ impl Controls {
         } else {
             chrome.disabled_text
         };
-        let standard = settings.appearance == GroupAppearance::Standard;
+        let standard = settings.appearance == GroupAppearance::Standard
+            && settings.expand_direction == ExpandDirection::Down;
         let (run, caption_end) = self.group_caption(&settings, bounds, clip, expanded, enabled)?;
         let header_surface = if standard {
             Rect::new(
@@ -579,23 +876,39 @@ impl Controls {
             GroupAppearance::Card | GroupAppearance::Outline
         ) && expanded != Some(false)
         {
-            fill_clipped(
-                &mut self.scene,
-                Rect::new(
+            let divider = match settings.expand_direction {
+                ExpandDirection::Down => Rect::new(
                     bounds.x + 1.0,
                     bounds.y + bounds.height - 1.0,
                     (bounds.width - 2.0).max(0.0),
                     1.0,
                 ),
-                clip,
-                chrome.divider,
-            );
+                ExpandDirection::Up => {
+                    Rect::new(bounds.x + 1.0, bounds.y, (bounds.width - 2.0).max(0.0), 1.0)
+                }
+                ExpandDirection::Right => Rect::new(
+                    bounds.x + bounds.width - 1.0,
+                    bounds.y + 1.0,
+                    1.0,
+                    (bounds.height - 2.0).max(0.0),
+                ),
+                ExpandDirection::Left => Rect::new(
+                    bounds.x,
+                    bounds.y + 1.0,
+                    1.0,
+                    (bounds.height - 2.0).max(0.0),
+                ),
+            };
+            fill_clipped(&mut self.scene, divider, clip, chrome.divider);
         }
-        self.scene.text(run);
+        let custom_header = self.button_content(id).is_some();
+        if !custom_header {
+            self.scene.text(run);
+        }
         let glyph_clip = bounds
             .intersection(clip)
             .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
-        if let Some(icon) = settings.header_icon {
+        if let Some(icon) = settings.header_icon.filter(|_| !custom_header) {
             let start = 16.0
                 + if standard && expanded.is_some() {
                     24.0
@@ -632,7 +945,45 @@ impl Controls {
                 16.0,
                 16.0,
             );
-            crate::primitives::paint_icon(&mut self.scene, symbol, arrow, glyph_clip, color);
+            if expanded
+                && matches!(
+                    settings.expand_direction,
+                    ExpandDirection::Up | ExpandDirection::Left
+                )
+            {
+                use rust_desktop_ui_core::StrokeSegment;
+                let points = if settings.expand_direction == ExpandDirection::Up {
+                    [(3.0, 10.0), (8.0, 5.0), (13.0, 10.0)]
+                } else {
+                    [(10.0, 3.0), (5.0, 8.0), (10.0, 13.0)]
+                };
+                let point = |(x, y): (f32, f32)| Point::new(arrow.x + x, arrow.y + y);
+                self.scene.stroke_path(
+                    &[
+                        StrokeSegment {
+                            start: point(points[0]),
+                            end: point(points[1]),
+                        },
+                        StrokeSegment {
+                            start: point(points[1]),
+                            end: point(points[2]),
+                        },
+                    ],
+                    glyph_clip,
+                    1.5,
+                    color,
+                );
+            } else if expanded && settings.expand_direction == ExpandDirection::Right {
+                crate::primitives::paint_icon(
+                    &mut self.scene,
+                    IconSymbol::ChevronRight,
+                    arrow,
+                    glyph_clip,
+                    color,
+                );
+            } else {
+                crate::primitives::paint_icon(&mut self.scene, symbol, arrow, glyph_clip, color);
+            }
         }
         Ok(true)
     }
@@ -645,7 +996,8 @@ impl Controls {
         expanded: Option<bool>,
         enabled: bool,
     ) -> Result<(TextRun, f32), ControlError> {
-        let standard = settings.appearance == GroupAppearance::Standard;
+        let standard = settings.appearance == GroupAppearance::Standard
+            && settings.expand_direction == ExpandDirection::Down;
         let leading =
             16.0 + if settings.header_icon.is_some() {
                 24.0

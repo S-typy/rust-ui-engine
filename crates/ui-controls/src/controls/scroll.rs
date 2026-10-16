@@ -44,6 +44,89 @@ struct ScrollBar {
 }
 
 impl Controls {
+    /// Reveal a virtual item's content-local rectangle with the smallest
+    /// possible scroll. No widget needs to exist for this rectangle. Oversized
+    /// targets align their leading edge; disabled axes remain unchanged.
+    /// Returns whether either offset changed. Does not move keyboard focus.
+    pub fn scroll_rect_into_view(
+        &mut self,
+        id: WidgetId,
+        target: Rect,
+    ) -> Result<bool, ControlError> {
+        if !target.is_valid()
+            || !(target.x + target.width).is_finite()
+            || !(target.y + target.height).is_finite()
+        {
+            return Err(ControlError::Invalid(
+                "Invalid bring-into-view rectangle".into(),
+            ));
+        }
+        let current = self
+            .scroll_offset(id)
+            .ok_or_else(|| ControlError::Invalid("Unknown scroll viewer".into()))?;
+        let viewport = self.runtime.bounds(id).ok_or_else(|| {
+            ControlError::Invalid("Scroll viewer must be attached, visible and arranged".into())
+        })?;
+        let reveal = |offset: f32, start: f32, size: f32, length: f32| {
+            if start < offset || size > length {
+                start
+            } else if start + size > offset + length {
+                start + size - length
+            } else {
+                offset
+            }
+        };
+        self.scroll_to_point(
+            id,
+            Point::new(
+                reveal(current.x, target.x, target.width, viewport.width),
+                reveal(current.y, target.y, target.height, viewport.height),
+            ),
+        )?;
+        Ok(self.scroll_offset(id) != Some(current))
+    }
+
+    /// Reveal an arranged retained descendant through every enclosing scroll
+    /// viewer, from the innermost outwards. Each inner viewport clips the area
+    /// requested from its parent. Hidden, collapsed and detached targets are
+    /// rejected without changing offsets. Focus and child identities survive.
+    pub fn bring_into_view(&mut self, id: WidgetId) -> Result<bool, ControlError> {
+        let mut target = self.runtime.bounds(id).ok_or_else(|| {
+            ControlError::Invalid(
+                "Bring-into-view target must be attached, visible and arranged".into(),
+            )
+        })?;
+        let mut ancestors = Vec::new();
+        let mut parent = self.runtime.tree().parent(id);
+        while let Some(id) = parent {
+            if self.scroll_offset(id).is_some() {
+                ancestors.push(id);
+            }
+            parent = self.runtime.tree().parent(id);
+        }
+        let mut changed = false;
+        for id in ancestors {
+            let Some(viewport) = self.runtime.bounds(id) else {
+                continue;
+            };
+            let old = self.scroll_offset(id).unwrap();
+            let local = Rect::new(
+                target.x - viewport.x + old.x,
+                target.y - viewport.y + old.y,
+                target.width,
+                target.height,
+            );
+            changed |= self.scroll_rect_into_view(id, local)?;
+            let new = self.scroll_offset(id).unwrap();
+            target.x -= new.x - old.x;
+            target.y -= new.y - old.y;
+            target = target
+                .intersection(viewport)
+                .unwrap_or(Rect::new(viewport.x, viewport.y, 0.0, 0.0));
+        }
+        Ok(changed)
+    }
+
     pub(super) fn scroll_wheel_from(
         &mut self,
         id: WidgetId,
@@ -458,6 +541,133 @@ impl Controls {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn virtual_rect_reveal_is_minimal_clamped_and_rejects_bad_geometry_atomically() {
+        let (mut ui, view) = viewer(ScrollSettings {
+            horizontal: ScrollBarVisibility::Auto,
+            vertical: ScrollBarVisibility::Auto,
+        });
+        let count = ui.runtime.tree().len();
+        ui.set_scroll_extent_size(view.viewport, Size::new(600.0, 100_000.0))
+            .unwrap();
+        assert!(
+            ui.scroll_rect_into_view(view.viewport, Rect::new(300.0, 50_000.0, 60.0, 24.0))
+                .unwrap()
+        );
+        assert_eq!(
+            ui.scroll_offset(view.viewport),
+            Some(Point::new(160.0, 49_924.0))
+        );
+        assert!(
+            !ui.scroll_rect_into_view(view.viewport, Rect::new(300.0, 50_000.0, 60.0, 24.0))
+                .unwrap()
+        );
+        assert_eq!(ui.runtime.tree().len(), count);
+        let before = ui.scroll_offset(view.viewport);
+        assert!(
+            ui.scroll_rect_into_view(view.viewport, Rect::new(f32::MAX, 0.0, f32::MAX, 1.0))
+                .is_err()
+        );
+        assert_eq!(ui.scroll_offset(view.viewport), before);
+        ui.scroll_rect_into_view(view.viewport, Rect::new(20.0, 100.0, 1000.0, 200.0))
+            .unwrap();
+        assert_eq!(
+            ui.scroll_offset(view.viewport),
+            Some(Point::new(20.0, 100.0))
+        );
+    }
+
+    #[test]
+    fn nested_reveal_scrolls_inner_then_outer_and_preserves_focus_and_content() {
+        let (mut ui, outer) = viewer(ScrollSettings::default());
+        ui.edit_props(outer.content, |p| {
+            p.style.padding = Edges::all(0.0);
+            p.style.gap = 0.0;
+        })
+        .unwrap();
+        ui.panel(
+            outer.content,
+            LayoutStyle {
+                height: Length::Px(200.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let inner = ui
+            .scroll_view(
+                outer.content,
+                LayoutStyle {
+                    width: Length::Px(180.0),
+                    height: Length::Px(80.0),
+                    ..Default::default()
+                },
+                400.0,
+            )
+            .unwrap();
+        ui.edit_props(inner.content, |p| {
+            p.style.padding = Edges::all(0.0);
+            p.style.gap = 0.0;
+        })
+        .unwrap();
+        ui.panel(
+            inner.content,
+            LayoutStyle {
+                height: Length::Px(250.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let editor = ui
+            .edit_box(
+                inner.content,
+                "Retained",
+                "draft",
+                LayoutStyle {
+                    height: Length::Px(30.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        ui.update(Size::new(400.0, 300.0)).unwrap();
+        ui.perform_action(editor, SemanticAction::Focus, None)
+            .unwrap();
+        assert!(ui.bring_into_view(editor).unwrap());
+        ui.update(Size::new(400.0, 300.0)).unwrap();
+        assert_eq!(
+            ui.scroll_offset(inner.viewport),
+            Some(Point::new(0.0, 200.0))
+        );
+        assert_eq!(
+            ui.scroll_offset(outer.viewport),
+            Some(Point::new(0.0, 180.0))
+        );
+        let bounds = ui.runtime.bounds(editor).unwrap();
+        let clip = ui.runtime.clip(editor).unwrap();
+        assert_eq!(bounds.intersection(clip), Some(bounds));
+        assert_eq!(ui.runtime.focused(), Some(editor));
+        assert_eq!(ui.document(editor).unwrap().text(), "draft");
+        assert!(!ui.bring_into_view(editor).unwrap());
+    }
+
+    #[test]
+    fn hidden_bring_target_is_rejected_without_moving_parent() {
+        let (mut ui, view) = viewer(ScrollSettings::default());
+        let child = ui
+            .panel(
+                view.content,
+                LayoutStyle {
+                    height: Length::Px(20.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        ui.edit_props(child, |p| p.visible = false).unwrap();
+        ui.update(Size::new(400.0, 300.0)).unwrap();
+        assert!(ui.bring_into_view(child).is_err());
+        assert_eq!(ui.scroll_offset(view.viewport), Some(Point::ZERO));
+        assert!(ui.runtime.tree().contains(child));
+    }
 
     fn viewer(settings: ScrollSettings) -> (Controls, ScrollViewer) {
         let mut ui = Controls::new(Theme::Light).unwrap();

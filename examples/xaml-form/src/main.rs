@@ -1,6 +1,10 @@
 //! A native form whose structure and initial properties are compiled from XAML.
 mod accessibility;
 #[cfg(test)]
+mod batch_binding_tests;
+mod batch_diagnostics;
+mod batch_model;
+#[cfg(test)]
 mod binding_adapter_tests;
 #[cfg(test)]
 mod data_adapter_tests;
@@ -35,6 +39,9 @@ mod visual_tests;
 
 mod generated_visuals {
     include!(concat!(env!("OUT_DIR"), "/visuals_window.rs"));
+}
+mod generated_batch {
+    include!(concat!(env!("OUT_DIR"), "/batch_window.rs"));
 }
 
 mod generated {
@@ -81,6 +88,7 @@ fn start() -> Result<(), String> {
     let mut status = false;
     let mut data = false;
     let mut visuals = false;
+    let mut batch = false;
     let mut density = None;
     let mut recovery = false;
     let mut docking = false;
@@ -101,6 +109,7 @@ fn start() -> Result<(), String> {
             "--compact" => density = Some(rust_desktop_ui_xaml::ThemeDensity::Compact),
             "--touch" => density = Some(rust_desktop_ui_xaml::ThemeDensity::Touch),
             "--visuals" => visuals = true,
+            "--batch" => batch = true,
             "--recovery-smoke" => {
                 recovery = true;
                 smoke_test = true;
@@ -125,6 +134,9 @@ fn start() -> Result<(), String> {
             "--native-title-bar" => native_title_bar = true,
             "--no-activate" => activate = false,
             "--help" | "-h" => {
+                println!(
+                    "--batch opens BatchWindow.xaml: panels, popup content, toolbars, choices, sliders, localization and asynchronous validation."
+                );
                 println!(
                     "xaml-form [--controls | --editors | --groups | --status | --data | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics] [--no-activate]"
                 );
@@ -157,14 +169,16 @@ fn start() -> Result<(), String> {
             _ => return Err(format!("Unknown argument: {argument}")),
         }
     }
-    if [controls, docking, editors, groups, status, data, visuals]
-        .into_iter()
-        .filter(|v| *v)
-        .count()
+    if [
+        controls, docking, editors, groups, status, data, visuals, batch,
+    ]
+    .into_iter()
+    .filter(|v| *v)
+    .count()
         > 1
     {
         return Err(
-            "--controls, --editors, --groups, --status, --data, --visuals and --docking are mutually exclusive".into(),
+            "--controls, --editors, --groups, --status, --data, --visuals, --batch and --docking are mutually exclusive".into(),
         );
     }
     if float_pane.is_some() && !docking {
@@ -173,7 +187,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if visuals {
+    let mut definition = if batch {
+        generated_batch::window_definition()
+    } else if visuals {
         generated_visuals::window_definition()
     } else if docking {
         generated_docking::window_definition()
@@ -234,7 +250,9 @@ fn start() -> Result<(), String> {
         app.set_layout_file(path);
         return rust_desktop_ui_platform_winit::run_multi(app);
     }
-    let app = if data {
+    let app = if batch {
+        form::Form::new_with_model(definition, diagnostics, Some(batch_model::model()?))?
+    } else if data {
         let (context, sources) = data_model::model()?;
         form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
     } else if editors || groups || status {

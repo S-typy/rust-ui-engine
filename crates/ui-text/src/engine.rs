@@ -2,7 +2,7 @@ use parley::{
     Affinity, Alignment, AlignmentOptions, Cursor, FontContext, FontWeight, Layout, LayoutContext,
     PositionedLayoutItem, StyleProperty, TextWrapMode,
 };
-use rust_desktop_ui_core::{Color, Point, Rect, TextAlign, TextRun};
+use rust_desktop_ui_core::{Color, Point, Rect, TextAlign, TextRun, TextSpan, valid_text_spans};
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     fmt,
@@ -132,7 +132,7 @@ pub struct PreparedText {
     pub rasterized_glyphs: usize,
     /// Color bitmaps, before clipping; these retain their font palette colors.
     pub color_glyphs: usize,
-    layout: Arc<Layout<()>>,
+    layout: Arc<Layout<u16>>,
     text: Arc<str>,
     graphemes: Arc<[usize]>,
     origin: Point,
@@ -373,7 +373,7 @@ pub struct TextStats {
 }
 
 struct CachedLayout {
-    layout: Arc<Layout<()>>,
+    layout: Arc<Layout<u16>>,
     graphemes: Arc<[usize]>,
     clusters: usize,
 }
@@ -387,6 +387,13 @@ struct LayoutKey {
     weight: u16,
     align: TextAlign,
     wrap: bool,
+    spans: Vec<SpanKey>,
+}
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct SpanKey {
+    range: Range<usize>,
+    size: Option<u32>,
+    weight: Option<u16>,
 }
 #[derive(Clone)]
 struct CachedGlyph {
@@ -400,7 +407,7 @@ struct CachedGlyph {
 /// Layout keys exclude screen position, clip and color, so scrolling reuses shaping.
 pub struct TextEngine {
     fonts: FontContext,
-    layout_context: LayoutContext<()>,
+    layout_context: LayoutContext<u16>,
     scale_context: ScaleContext,
     layouts: HashMap<LayoutKey, Arc<CachedLayout>>,
     layout_order: VecDeque<LayoutKey>,
@@ -449,6 +456,17 @@ impl TextEngine {
     }
 
     pub fn prepare(&mut self, run: &TextRun, scale: f32) -> Result<PreparedText, TextError> {
+        self.prepare_styled(run, &[], scale)
+    }
+
+    /// Shapes inline typography as one paragraph. Color changes preserve
+    /// joining, bidi ordering and ligatures; all ranges end at grapheme boundaries.
+    pub fn prepare_styled(
+        &mut self,
+        run: &TextRun,
+        spans: &[TextSpan],
+        scale: f32,
+    ) -> Result<PreparedText, TextError> {
         if !run.is_valid() {
             return Err(TextError::InvalidRun);
         }
@@ -461,6 +479,28 @@ impl TextEngine {
         }
         if run.text.len() > MAX_TEXT_BYTES {
             return Err(TextError::TextTooLong);
+        }
+        if !valid_text_spans(&run.text, spans) {
+            return Err(TextError::InvalidRun);
+        }
+        if !spans.is_empty() {
+            let boundaries: HashSet<_> = run
+                .text
+                .grapheme_indices(true)
+                .map(|(index, _)| index)
+                .chain(std::iter::once(run.text.len()))
+                .collect();
+            if spans.iter().any(|span| {
+                !boundaries.contains(&span.range.start) || !boundaries.contains(&span.range.end)
+            }) {
+                return Err(TextError::InvalidRun);
+            }
+            if spans.iter().any(|span| {
+                span.font_size
+                    .is_some_and(|size| !(size * scale).is_finite() || size * scale > 1024.0)
+            }) {
+                return Err(TextError::InvalidScale);
+            }
         }
         let bounds = scaled_rect(run.bounds, scale).ok_or(TextError::InvalidScale)?;
         let clip = scaled_rect(run.clip, scale).ok_or(TextError::InvalidScale)?;
@@ -475,6 +515,14 @@ impl TextEngine {
             weight: run.weight,
             align: run.align,
             wrap: run.wrap,
+            spans: spans
+                .iter()
+                .map(|span| SpanKey {
+                    range: span.range.clone(),
+                    size: span.font_size.map(f32::to_bits),
+                    weight: span.weight,
+                })
+                .collect(),
         };
         let layout = if let Some(layout) = self.layouts.get(&key) {
             self.stats.layout_hits += 1;
@@ -484,6 +532,7 @@ impl TextEngine {
                 self.layout_context
                     .ranged_builder(&mut self.fonts, &run.text, scale, true);
             builder.push_default(StyleProperty::FontSize(run.font_size));
+            builder.push_default(StyleProperty::Brush(0));
             builder.push_default(StyleProperty::FontWeight(FontWeight::new(f32::from(
                 run.weight,
             ))));
@@ -492,7 +541,19 @@ impl TextEngine {
             } else {
                 TextWrapMode::NoWrap
             }));
-            let mut layout: Layout<()> = builder.build(&run.text);
+            for (index, span) in spans.iter().enumerate() {
+                if let Some(size) = span.font_size {
+                    builder.push(StyleProperty::FontSize(size), span.range.clone());
+                }
+                if let Some(weight) = span.weight {
+                    builder.push(
+                        StyleProperty::FontWeight(FontWeight::new(f32::from(weight))),
+                        span.range.clone(),
+                    );
+                }
+                builder.push(StyleProperty::Brush((index + 1) as u16), span.range.clone());
+            }
+            let mut layout: Layout<u16> = builder.build(&run.text);
             layout.break_all_lines(Some(bounds.width));
             layout.align(
                 match run.align {
@@ -562,6 +623,13 @@ impl TextEngine {
                     continue;
                 };
                 let font_run = glyph_run.run();
+                let color = glyph_run
+                    .style()
+                    .brush
+                    .checked_sub(1)
+                    .and_then(|index| spans.get(index as usize))
+                    .and_then(|span| span.color)
+                    .unwrap_or(run.color);
                 let font = font_run.font();
                 let coords: Arc<[i16]> = Arc::from(font_run.normalized_coords());
                 for glyph in glyph_run.positioned_glyphs() {
@@ -614,10 +682,10 @@ impl TextEngine {
                                 r: 1.0,
                                 g: 1.0,
                                 b: 1.0,
-                                a: run.color.a,
+                                a: color.a,
                             }
                         } else {
-                            run.color
+                            color
                         };
                         glyphs.push(RasterGlyph {
                             key,

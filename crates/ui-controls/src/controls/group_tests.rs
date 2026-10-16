@@ -10,6 +10,144 @@ fn settings(header: &str) -> GroupSettings {
         ..Default::default()
     }
 }
+
+#[test]
+fn expansion_directions_preserve_ids_and_position_the_header_on_each_side() {
+    use super::groups::ExpandDirection;
+    for direction in [
+        ExpandDirection::Down,
+        ExpandDirection::Up,
+        ExpandDirection::Left,
+        ExpandDirection::Right,
+    ] {
+        let mut ui = ui();
+        let group = ui
+            .expander(
+                ui.root(),
+                GroupSettings {
+                    expand_direction: direction,
+                    ..settings("Direction")
+                },
+                true,
+                LayoutStyle {
+                    width: Length::Px(360.0),
+                    height: Length::Px(180.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let editor = ui
+            .edit_box(group.content, "Value", "retained", LayoutStyle::default())
+            .unwrap();
+        frame(&mut ui);
+        let header = ui.runtime.bounds(group.header).unwrap();
+        let content = ui.runtime.bounds(group.content).unwrap();
+        match direction {
+            ExpandDirection::Down => assert!(header.y + header.height <= content.y + 0.01),
+            ExpandDirection::Up => assert!(content.y + content.height <= header.y + 0.01),
+            ExpandDirection::Left => assert!(content.x + content.width <= header.x + 0.01),
+            ExpandDirection::Right => assert!(header.x + header.width <= content.x + 0.01),
+        }
+        ui.set_expander_expanded(group.container, false).unwrap();
+        ui.set_expander_expanded(group.container, true).unwrap();
+        frame(&mut ui);
+        assert_eq!(ui.document(editor).unwrap().text(), "retained");
+    }
+}
+
+#[test]
+fn expander_animation_uses_bounded_ticks_and_reduced_motion_preserves_draft() {
+    use super::groups::ExpanderAnimation;
+    use std::time::Duration;
+    let mut ui = ui();
+    let group = ui
+        .expander(ui.root(), settings("Animated"), true, style())
+        .unwrap();
+    let editor = ui
+        .edit_box(group.content, "Name", "accepted", LayoutStyle::default())
+        .unwrap();
+    frame(&mut ui);
+    ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
+    ui.text_input(" draft").unwrap();
+    let draft = ui.document(editor).unwrap().text().to_owned();
+    ui.set_expander_animation(
+        group.container,
+        Some(ExpanderAnimation {
+            duration: Duration::from_millis(160),
+        }),
+    )
+    .unwrap();
+    assert!(
+        ui.set_expander_animation(
+            group.container,
+            Some(ExpanderAnimation {
+                duration: Duration::from_secs(10)
+            })
+        )
+        .is_err()
+    );
+    ui.set_expander_expanded(group.container, false).unwrap();
+    assert_eq!(ui.runtime.focused(), Some(group.header));
+    assert_eq!(ui.accepted_value(editor), Some("accepted"));
+    assert!(!ui.is_enabled(editor));
+    let deadline = ui.expander_deadline().unwrap();
+    assert!(
+        !ui.expander_tick(deadline - Duration::from_millis(1))
+            .unwrap()
+    );
+    assert!(
+        ui.expander_tick(deadline + Duration::from_millis(60))
+            .unwrap()
+    );
+    assert!(ui.expander_tick(deadline + Duration::from_secs(2)).unwrap());
+    assert!(ui.expander_deadline().is_none());
+    frame(&mut ui);
+    assert!(ui.runtime.bounds(group.content).is_none());
+    ui.set_expander_expanded(group.container, true).unwrap();
+    assert!(ui.expander_deadline().is_some());
+    ui.set_reduced_motion(true);
+    frame(&mut ui);
+    assert!(ui.expander_deadline().is_none());
+    assert!(ui.is_enabled(editor));
+    assert_eq!(ui.document(editor).unwrap().text(), draft);
+    assert_eq!(ui.accepted_value(editor), Some("accepted"));
+}
+
+#[test]
+fn retained_header_templates_keep_static_group_and_expander_names() {
+    let mut ui = ui();
+    for collapsible in [false, true] {
+        let parts = if collapsible {
+            ui.collapsible_group_box(ui.root(), settings("Semantic header"), true, style())
+                .unwrap()
+        } else {
+            ui.group_box(ui.root(), settings("Semantic header"), style())
+                .unwrap()
+        };
+        let template = ui
+            .transparent_panel(ui.root(), LayoutStyle::default())
+            .unwrap();
+        ui.label(template, "Custom header", LayoutStyle::default())
+            .unwrap();
+        ui.set_group_header_content(parts.container, Some(template))
+            .unwrap();
+        frame(&mut ui);
+        assert_eq!(ui.button_content(parts.header), Some(template));
+        assert!(
+            ui.scene()
+                .texts
+                .iter()
+                .any(|run| run.text == "Custom header")
+        );
+        assert!(
+            !ui.scene()
+                .texts
+                .iter()
+                .any(|run| run.text == "Semantic header")
+        );
+        assert_eq!(ui.group_header(parts.container), Some("Semantic header"));
+    }
+}
 fn style() -> LayoutStyle {
     LayoutStyle {
         width: Length::Px(340.0),

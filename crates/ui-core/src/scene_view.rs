@@ -126,14 +126,20 @@ impl Scene {
                 DrawCommand::Text(index) => {
                     let item = source.texts.get(index).ok_or("Invalid text reference")?;
                     let mut item = item.clone();
+                    let mut spans = source.text_spans(index).to_vec();
+                    for span in &mut spans {
+                        if let Some(size) = &mut span.font_size {
+                            *size *= scale;
+                        }
+                    }
                     item.bounds = translate(item.bounds)?;
                     item.font_size *= scale;
-                    if !item.is_valid() {
+                    if !item.is_valid() || !crate::valid_text_spans(&item.text, &spans) {
                         return Err("Scene view text metrics or color are invalid");
                     }
                     if let Some(clip) = translate(item.clip)?.intersection(clip) {
                         item.clip = clip;
-                        view.text(item);
+                        view.styled_text(item, spans)?;
                     }
                 }
                 DrawCommand::Image(index) => {
@@ -162,6 +168,42 @@ impl Scene {
 mod tests {
     use super::*;
     use crate::{Color, TextRun};
+
+    #[test]
+    fn inline_ranges_survive_append_transform_and_clear() {
+        let bounds = Rect::new(0.0, 0.0, 100.0, 30.0);
+        let mut source = Scene::default();
+        source
+            .styled_text(
+                TextRun::new("Hello", bounds, Color::rgb(0, 0, 0), 14.0),
+                vec![crate::TextSpan {
+                    range: 0..5,
+                    font_size: Some(18.0),
+                    weight: Some(700),
+                    color: Some(Color::rgb(10, 100, 200)),
+                }],
+            )
+            .unwrap();
+        let mut target = Scene::default();
+        target.text(TextRun::new("Before", bounds, Color::rgb(0, 0, 0), 14.0));
+        target
+            .append_transformed_view(
+                &source,
+                Point::new(3.0, 4.0),
+                2.0,
+                Rect::new(0.0, 0.0, 500.0, 100.0),
+            )
+            .unwrap();
+        assert!(target.text_spans(0).is_empty());
+        assert_eq!(target.text_spans(1)[0].font_size, Some(36.0));
+        assert_eq!(source.text_spans(0)[0].font_size, Some(18.0));
+        let saved = target.clone();
+        source.texts[0].text = "H".into();
+        assert!(target.append_view(&source, Point::ZERO, bounds).is_err());
+        assert_eq!(target, saved);
+        target.clear();
+        assert!(target.text_spans(1).is_empty());
+    }
 
     #[test]
     fn scaled_text_limit_and_corrupt_source_metrics_fail_atomically() {

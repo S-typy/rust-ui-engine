@@ -142,6 +142,7 @@ pub struct Scene {
     pub stroke_paths: Vec<StrokePath>,
     pub texts: Vec<TextRun>,
     pub images: Vec<ImagePrimitive>,
+    text_spans: std::collections::BTreeMap<usize, Vec<TextSpan>>,
     commands: Vec<DrawCommand>,
 }
 
@@ -248,6 +249,24 @@ impl Scene {
         }
     }
 
+    /// Inline ranges stay in one shaping context, including bidirectional text.
+    /// Invalid ranges are rejected before the painter order changes.
+    pub fn styled_text(&mut self, run: TextRun, spans: Vec<TextSpan>) -> Result<(), &'static str> {
+        if !run.is_valid() || !valid_text_spans(&run.text, &spans) {
+            return Err("Invalid inline text ranges");
+        }
+        let index = self.texts.len();
+        self.text(run);
+        if self.texts.len() != index && !spans.is_empty() {
+            self.text_spans.insert(index, spans);
+        }
+        Ok(())
+    }
+
+    pub fn text_spans(&self, index: usize) -> &[TextSpan] {
+        self.text_spans.get(&index).map_or(&[], Vec::as_slice)
+    }
+
     pub fn commands(&self) -> &[DrawCommand] {
         &self.commands
     }
@@ -258,6 +277,7 @@ impl Scene {
         self.rounded_rectangles.clear();
         self.stroke_paths.clear();
         self.texts.clear();
+        self.text_spans.clear();
         self.images.clear();
         self.commands.clear();
     }
@@ -273,6 +293,12 @@ impl Scene {
             .extend_from_slice(&other.rounded_rectangles);
         self.stroke_paths.extend_from_slice(&other.stroke_paths);
         self.texts.extend_from_slice(&other.texts);
+        self.text_spans.extend(
+            other
+                .text_spans
+                .iter()
+                .map(|(index, spans)| (texts + index, spans.clone())),
+        );
         self.images.extend_from_slice(&other.images);
         self.commands
             .extend(other.commands.iter().map(|command| match command {

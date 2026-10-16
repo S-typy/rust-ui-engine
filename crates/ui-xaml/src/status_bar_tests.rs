@@ -102,7 +102,7 @@ fn progress_and_zoom_validate_finite_ranges_values_and_steps() {
     );
     let generated = compile(&source).unwrap();
     assert!(
-        generated.contains("ProgressBarDefinition { minimum: -5.0, maximum: 5.0, value: -5.0 }")
+        generated.contains("ProgressBarDefinition { minimum: -5.0, maximum: 5.0, value: -5.0, is_indeterminate: false, reduced_motion: false }")
     );
     assert!(generated.contains(
         "ZoomControlDefinition { minimum: 10.0, maximum: 500.0, value: 500.0, step: 12.5 }"

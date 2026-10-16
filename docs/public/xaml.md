@@ -1000,6 +1000,114 @@ Backend выбирается через `WGPU_BACKEND`. Такой тест по
 диагонали, clipping и painter order при масштабе 1/1.5/2. Оба теста прошли
 2026-10-13 на DX12 и Vulkan с NVIDIA RTX 3090.
 
+## Дополнительные элементы и расширение компилятора
+
+Компилятор создаёт те же типизированные definitions, которые доступны Rust-коду.
+Новые варианты проходят общие проверки имён, вложенности, размеров и количества
+элементов; неизвестное свойство остаётся ошибкой.
+
+| Элемент / свойство | Контракт |
+| --- | --- |
+| `Overlay` | Дочерние элементы занимают общую область в порядке разметки; размеры и alignment задаются каждому ребёнку. |
+| `SplitContainer` | Ровно два ребёнка; `Orientation`, `Ratio`, `FirstMinSize`, `SecondMinSize`, `FirstMaxSize`, `SecondMaxSize`, `DividerWidth`, `CollapsedPane=None/First/Second`. `Horizontal` размещает панели рядом. |
+| `Slider` | `Minimum`, `Maximum`, `Value`, `Step`, `Orientation`, `TickFrequency`, `SnapToTicks`, `IsReversed`; конечные согласованные границы и положительные шаг/частота. |
+| `RangeSlider` | Свойства Slider, `LowerValue`, `UpperValue`, `CrossingPolicy=Clamp/Swap`; начальные значения упорядочены внутри диапазона. |
+| `Switch` | Двухсостоянийное `IsChecked`; nullable state запрещён. |
+| `CheckBox`, `ToggleButton` | `IsThreeState=True` разрешает `IsChecked=Null/Indeterminate`. Command-bound ToggleButton остаётся двухсостоянийным. |
+| `RadioGroup` | `ItemsSource`, `SelectedKey`, `DisplayMemberPath`, `ValueMemberPath`; ключи сохраняют идентичность при переупорядочивании данных. |
+| `TextBlock` | `TextTrimming=None/CharacterEllipsis/WordEllipsis`, `MaxLines=1..256`; дети `Run`/`Inline` с `Text`, `FontSize`, `FontWeight`, `Foreground`. Текстовый атрибут и inline-дети не совмещаются. |
+| `BusyIndicator`, `ProgressBar` | `IsIndeterminate`, `ReducedMotion`; BusyIndicator по умолчанию неопределённый. |
+| `LinkButton`, `RepeatButton` | Обычная команда Button; Link задаёт собственное chrome. Repeat: `RepeatDelayMs=1..60000`, `RepeatIntervalMs=16..60000`; defaults 400/80 мс. |
+| `ToolBar` | `Key` и 1..128 дочерних controls; доступные элементы сохраняются при переносе в overflow. |
+| `MenuBar` | 1..32 дочерних DropDownButton; обычные MenuItem/Submenu с общим popup lifecycle. |
+| `Popup` | Один ребёнок, `PlacementTarget` с именем существующего anchor, `Placement=Below/Beside`, `PopupWidth`, `PopupHeight`, `IsOpen`. Ссылка может указывать на элемент ниже по разметке. |
+
+`Run` и `Inline` принимают `FontWeight=Normal/Regular/SemiBold/Bold` либо число
+1..1000. Их текст входит в общие лимиты содержимого TextBlock. Полный логический
+текст сохраняется для accessibility даже при визуальном сокращении.
+
+`Popup PlacementTarget="SplitName"` привязывается к стрелке SplitButton;
+основной Command остаётся независимым. SplitButton и обычный DropDownButton
+могут не содержать MenuItem, если ровно один Popup ссылается на их `x:Name`.
+Меню и retained Popup взаимоисключающие; MenuBar использует только меню.
+Неизвестные targets, повторная привязка к одному anchor и циклы владельцев
+отклоняются до монтажа. Например:
+
+```xml
+<StackPanel>
+    <SplitButton x:Name="Apply" Content="Применить" Command="Apply"/>
+    <Popup PlacementTarget="Apply" PopupWidth="280" PopupHeight="120">
+        <TextBox Text="Параметры"/>
+    </Popup>
+</StackPanel>
+```
+
+Для расширенной подсказки доступны `ToolTipHeader`, `ToolTipIcon`, `ToolTipImage`
+и `ToolTipImageDescription` вместе с обычным `ToolTip`. Имя изображения ссылается
+на ресурс, зарегистрированный приложением до монтажа; файл из XAML не загружается.
+
+`GroupBox.HeaderTemplate` и `Expander.HeaderTemplate` содержат одно декоративное
+поддерево из TextBlock/Icon/Image/Separator, StackPanel/WrapPanel/Grid/Overlay
+и Border. Оно создаётся один раз и принадлежит заголовку. Интерактивные controls
+в таком поддереве запрещены. Expander также принимает
+`ExpandDirection=Down/Up/Left/Right` и `AnimationDurationMs=0..1000`; нулевая
+длительность отключает анимацию, а общий ReducedMotion имеет приоритет.
+Это конкретный slot для содержимого заголовка, а не общая система runtime templates.
+
+`MultiBinding` задаёт 1..32 явных входа через `Paths`, разделённых `;`. Вход
+`#Name.Property` ссылается на именованный control; остальные пути наследуют
+DataContext. Для результата нужен один `Converter` либо `Expression`:
+
+```xml
+<TextBlock Text="{MultiBinding Paths='Count;Price', Expression='concat(&quot;Total: &quot;, $0 * $1)'}"/>
+```
+
+Поддерживаются только OneWay/OneTime. Выражения ограничены арифметикой, логикой,
+сравнениями, `??`, `if`, `concat`, `len` и индексированными входами `$0..$31`.
+Синтаксис выражения, все зависимости и их циклы проверяются до успешного монтажа.
+Подробные правила обновления и атомарной передачи диапазонов описаны в
+[контракте форм и bindings](forms.md).
+
+### Зарегистрированные компоненты приложения
+
+`ComponentRegistry` позволяет приложению расширить **build-time** компилятор
+собственным XML namespace. Фабрика получает `ComponentMarkup` с именем,
+атрибутами, дочерней разметкой и исходной строкой/колонкой. Она возвращает XML
+поддерживаемых элементов. Полученный XML проходит обычный parser и codegen;
+готовый Rust-код фабрики не принимают.
+
+```rust
+use rust_desktop_ui_xaml::ComponentRegistry;
+
+let mut components = ComponentRegistry::default();
+components.register("urn:my-app", "Title", |_| {
+    Ok(r#"<TextBlock xmlns="urn:rust-ui-engine:ui"
+                    Text="Application" FontWeight="SemiBold"/>"#.into())
+})?;
+let generated_rust = components.compile(r#"
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:app="urn:my-app">
+    <app:Title/>
+</Window>"#)?;
+```
+
+Приложение записывает результат в свой `OUT_DIR` и подключает его обычным
+`include!`. Пространства имён встроенного профиля и XAML нельзя переопределить.
+Лимиты: 128 зарегистрированных фабрик, 256 вызовов на форму, восемь раундов
+вложенного раскрытия, 1 MiB итогового XML и общий лимит XML nodes. DTD,
+processing instructions и неизвестные компоненты отклоняются. Фабрика отвечает
+за экранирование передаваемых в XML динамических строк.
+
+Ошибка внутри раскрытого компонента указывает на место его использования
+в исходном файле; source location сохраняется также в `BindingDefinition`
+для диагностики adapter preflight. Простая `parse` не использует глобальный
+реестр: расширение действует только в конкретном `ComponentRegistry`.
+
+Адаптер примера сначала проверяет definitions и зависимости. Если ошибка
+разрешения имён, конвертера или binding graph возникает после создания новых
+узлов, новые узлы удаляются; прежние WidgetId, документы, фокус и настройка
+ReducedMotion сохраняются. Отсутствующий путь данных после успешного монтажа
+остаётся runtime diagnostic binding, с поддержкой `FallbackValue`.
+
 ## Происхождение и лицензии
 
 Собственная реализация распространяется под Apache-2.0.

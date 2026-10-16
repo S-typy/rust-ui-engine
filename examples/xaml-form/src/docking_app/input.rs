@@ -33,8 +33,7 @@ impl DockWindow {
                 self.route_input(input, &mut response)?;
             }
             PlatformEvent::Tick => {
-                response.redraw |= self.ui.blink_caret();
-                response.redraw |= self.ui.tooltip_tick(Instant::now()).map_err(err)?;
+                response.redraw |= self.ui.tick(Instant::now()).map_err(err)?;
                 for pane in self.live_panes() {
                     self.deliver_pane(&pane, PlatformEvent::Tick, &mut response)?;
                 }

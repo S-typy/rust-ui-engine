@@ -127,6 +127,12 @@ impl UiTree {
         self.nodes.len()
     }
 
+    /// Identity snapshot including detached subtrees, for ownership and cleanup.
+    /// Layout and input traversal should continue to use `preorder`.
+    pub fn live_ids(&self) -> Vec<WidgetId> {
+        self.nodes.ids()
+    }
+
     /// Always false: every tree owns its permanent root.
     pub fn is_empty(&self) -> bool {
         false

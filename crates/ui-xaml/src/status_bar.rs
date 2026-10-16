@@ -25,6 +25,8 @@ pub struct StatusBarItemDefinition {
 /// A determinate, non-editable progress indicator.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProgressBarDefinition {
+    pub is_indeterminate: bool,
+    pub reduced_motion: bool,
     pub minimum: f64,
     pub maximum: f64,
     pub value: f64,
@@ -33,6 +35,8 @@ pub struct ProgressBarDefinition {
 impl Default for ProgressBarDefinition {
     fn default() -> Self {
         Self {
+            is_indeterminate: false,
+            reduced_motion: false,
             minimum: 0.0,
             maximum: 100.0,
             value: 0.0,
@@ -126,7 +130,7 @@ pub fn validate_status_bars(root: &ElementDefinition) -> Result<(), String> {
             return Err("status bars cannot be nested inside another status bar".into());
         }
         match &element.kind {
-            ElementKind::ProgressBar(progress) => {
+            ElementKind::ProgressBar(progress) | ElementKind::BusyIndicator(progress) => {
                 validate_progress_bar(progress)?;
                 if element.common.bindings.get("Value").is_some_and(|binding| {
                     !matches!(binding.mode, BindingMode::OneWay | BindingMode::OneTime)

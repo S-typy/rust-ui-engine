@@ -166,7 +166,8 @@ impl<A: DesktopApp> Host<A> {
     }
 
     fn sync_ime(&mut self, event_loop: &ActiveEventLoop) {
-        let allowed = self.focused && self.app.ime_cursor().is_some();
+        let allowed = self.focused
+            && crate::ime::valid_cursor(self.app.ime_target(), self.app.ime_cursor()).is_some();
         let changed = self.ime.set_target(self.app.ime_target(), allowed);
         let cancelled = self
             .ime
@@ -290,7 +291,7 @@ impl<A: DesktopApp> Host<A> {
             return;
         }
         self.sync_ime(event_loop);
-        let caret = self.app.ime_cursor();
+        let caret = crate::ime::valid_cursor(self.app.ime_target(), self.app.ime_cursor());
         if let Some(caret) = caret {
             window.set_ime_cursor_area(
                 LogicalPosition::new(f64::from(caret.x), f64::from(caret.y)),
@@ -500,6 +501,9 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
             waker.deactivate();
         }
         self.app.set_waker(None);
+        self.focused = false;
+        self.modifiers = Modifiers::default();
+        self.occluded = false;
         dispatch_focus_transition(false, |event| self.dispatch(event_loop, event));
         self.ime = crate::ime::ImeSession::default();
         self.wake_at = None;

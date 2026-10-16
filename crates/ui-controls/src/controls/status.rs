@@ -543,6 +543,9 @@ impl Controls {
         bounds: Rect,
         clip: Rect,
     ) -> Result<bool, ControlError> {
+        if self.paint_busy_progress(id, bounds, clip) {
+            return Ok(true);
+        }
         let is_status = self.status.bars.contains_key(&id)
             || self.status.progress.contains_key(&id)
             || self.status.zoom.contains_key(&id);

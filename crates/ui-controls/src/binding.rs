@@ -319,7 +319,57 @@ type ModelValidator = dyn Fn(&DataValue) -> Result<(), String>;
 #[derive(Clone)]
 pub struct BindingValidator(Rc<ModelValidator>);
 
+/// A declarative boolean condition over explicit model paths. Failure is atomic.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CrossFieldRule {
+    pub paths: Vec<BindingPath>,
+    pub condition: crate::BindingExpression,
+    pub message: String,
+}
+
 impl BindingValidator {
+    pub fn from_rules(rules: Vec<CrossFieldRule>) -> Result<Self, BindingError> {
+        if rules.is_empty() || rules.len() > 128 {
+            return Err(BindingError::InvalidBinding(
+                "A validation policy requires 1..128 rules".into(),
+            ));
+        }
+        for rule in &rules {
+            if rule.paths.is_empty()
+                || rule.paths.len() > 32
+                || rule.condition.input_count() > rule.paths.len()
+                || rule.message.is_empty()
+                || rule.message.len() > 4096
+            {
+                return Err(BindingError::InvalidBinding(
+                    "Invalid cross-field rule inputs/message".into(),
+                ));
+            }
+        }
+        Ok(Self::new(move |root| {
+            for rule in &rules {
+                let inputs = rule
+                    .paths
+                    .iter()
+                    .map(|path| {
+                        lookup(root, path)
+                            .cloned()
+                            .ok_or_else(|| format!("Missing validation path: {}", path.as_str()))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                match rule
+                    .condition
+                    .evaluate(&inputs)
+                    .map_err(|error| error.to_string())?
+                {
+                    DataValue::Bool(true) => {}
+                    DataValue::Bool(false) => return Err(rule.message.clone()),
+                    _ => return Err("Validation expression must produce boolean".into()),
+                }
+            }
+            Ok(())
+        }))
+    }
     pub fn new(validate: impl Fn(&DataValue) -> Result<(), String> + 'static) -> Self {
         Self(Rc::new(validate))
     }
