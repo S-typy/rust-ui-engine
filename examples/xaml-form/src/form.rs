@@ -20,6 +20,7 @@ pub(crate) struct Form {
     pub(crate) workspace: crate::workspace_model::WorkspaceState,
     batch: Option<crate::batch_model::BatchState>,
     data_editors: Option<crate::data_editors_model::State>,
+    ribbon_workspace: Option<crate::ribbon_workspace_model::State>,
     pub(crate) ui: Controls,
     pub(crate) view: MountedView,
     pub(crate) accessible: Accessibility,
@@ -80,6 +81,7 @@ impl Form {
         // Application-owned registration; the generic mount never invents handlers.
         crate::workspace_model::register(&mut ui);
         crate::data_editors_model::register(&mut ui);
+        crate::ribbon_workspace_model::register(&mut ui);
         ui.commands_mut().register("Confirm", "Подтвердить");
         ui.commands_mut().register_toggle("Pin", "Закрепить", false);
         for (id, label) in [
@@ -205,10 +207,12 @@ impl Form {
         ui.drain_edit_events();
         let batch = crate::batch_model::install(&mut ui, &view)?;
         let data_editors = crate::data_editors_model::install(&mut ui, &view)?;
+        let ribbon_workspace = crate::ribbon_workspace_model::State::install(&view);
         Ok(Self {
             workspace: crate::workspace_model::WorkspaceState::default(),
             batch,
             data_editors,
+            ribbon_workspace,
             ui,
             view,
             accessible: Accessibility::default(),
@@ -323,6 +327,11 @@ impl Form {
         for invocation in self.ui.drain_command_invocations() {
             if self.diagnostics {
                 println!("command={}", invocation.id.0);
+            }
+            if let Some(state) = &mut self.ribbon_workspace
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
             }
             if let Some(state) = &mut self.data_editors
                 && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
@@ -627,6 +636,7 @@ impl DesktopApp for Form {
             }
             if self.batch.is_some()
                 || self.data_editors.is_some()
+                || self.ribbon_workspace.is_some()
                 || self.find_name("WorkspaceTabs").is_some()
                 || self.find_name("DialogEditor").is_some()
             {

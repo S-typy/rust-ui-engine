@@ -60,6 +60,10 @@ pub use status_bar::*;
 pub use styles::{ControlTemplateDefinition, ControlTemplateTarget, validate_control_template};
 mod docking;
 mod ribbon;
+mod ribbon_content;
+pub use ribbon_content::{
+    RibbonBackstageDefinition, RibbonBackstageItemDefinition, RibbonContentDefinition,
+};
 
 pub use docking::{
     DockNodeDefinition, DockPaneDefinition, DockWorkspaceDefinition, MAX_DOCK_PANES,
@@ -406,6 +410,7 @@ impl ElementDefinition {
             ElementKind::ToolBar(p) => p.children.iter().collect(),
             ElementKind::MenuBar(p) => p.items.iter().collect(),
             ElementKind::Popup(p) => p.child.as_deref().into_iter().collect(),
+            ElementKind::Ribbon(p) => p.content_elements(),
             ElementKind::SplitContainer(p) => p.children.iter().collect(),
             ElementKind::Grid(p) => p.children.iter().collect(),
             ElementKind::DockPanel(p) => p.children.iter().collect(),
@@ -481,6 +486,7 @@ impl ElementDefinition {
             ElementKind::ToolBar(p) => p.children.iter_mut().collect(),
             ElementKind::MenuBar(p) => p.items.iter_mut().collect(),
             ElementKind::Popup(p) => p.child.as_deref_mut().into_iter().collect(),
+            ElementKind::Ribbon(p) => p.content_elements_mut(),
             ElementKind::SplitContainer(p) => p.children.iter_mut().collect(),
             ElementKind::Grid(p) => p.children.iter_mut().collect(),
             ElementKind::DockPanel(p) => p.children.iter_mut().collect(),
@@ -1334,6 +1340,10 @@ fn parse_element_properties(
                         ribbon.is_minimized = boolean(document, attribute)?;
                         true
                     }
+                    ElementKind::Ribbon(ribbon) if property == "CustomizeQuickAccess" => {
+                        ribbon.customize_quick_access = boolean(document, attribute)?;
+                        true
+                    }
                     ElementKind::DropDownButton(menu) | ElementKind::SplitButton(menu) => {
                         if property == "Command" && element_name == "DropDownButton" {
                             false
@@ -1619,7 +1629,7 @@ fn parse_element(
     if let ElementKind::DockWorkspace(workspace) = &mut kind {
         *workspace = docking::parse_workspace(node, depth, count, names, checked_radio_groups)?;
     } else if let ElementKind::Ribbon(ribbon) = &mut kind {
-        ribbon::parse_children(node, depth, count, ribbon)?;
+        ribbon::parse_children(node, depth, count, ribbon, names, checked_radio_groups)?;
     } else if let ElementKind::GridControl(grid) = &mut kind {
         grid_control::parse_children(node, depth, count, grid)?;
     } else if matches!(

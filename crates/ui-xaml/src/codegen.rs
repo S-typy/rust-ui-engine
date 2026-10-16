@@ -278,9 +278,13 @@ fn ribbon_definition(ribbon: &crate::RibbonDefinition) -> String {
                 "rust_desktop_ui_xaml::RibbonItemDefinition {{ command: {:?}.into(), key_tip: {:?}.into(), size: rust_desktop_ui_xaml::RibbonItemSize::{:?}, min_size: rust_desktop_ui_xaml::RibbonItemSize::{:?}, kind: rust_desktop_ui_xaml::RibbonItemKindDefinition::{:?}, icon: {}, tool_tip: {}, menu: {} }}",
                 item.command, item.key_tip, item.size, item.min_size, item.kind, optional_icon(item.icon), optional_string(&item.tool_tip), ribbon_menu_entries(&item.menu),
             )).collect::<Vec<_>>().join(",");
+            let contents = group.contents.iter().map(|slot| format!(
+                "rust_desktop_ui_xaml::RibbonContentDefinition {{ id: {:?}.into(), header: {:?}.into(), key_tip: {:?}.into(), width: {:?}, min_width: {:?}, height: {:?}, content: Box::new({}) }}",
+                slot.id, slot.header, slot.key_tip, slot.width, slot.min_width, slot.height, element(&slot.content),
+            )).collect::<Vec<_>>().join(",");
             format!(
-                "rust_desktop_ui_xaml::RibbonGroupDefinition {{ id: {:?}.into(), header: {:?}.into(), collapse_priority: {}, items: vec![{}] }}",
-                group.id, group.header, group.collapse_priority, items,
+                "rust_desktop_ui_xaml::RibbonGroupDefinition {{ id: {:?}.into(), header: {:?}.into(), collapse_priority: {}, items: vec![{}], contents: vec![{}] }}",
+                group.id, group.header, group.collapse_priority, items, contents,
             )
         }).collect::<Vec<_>>().join(",");
         format!(
@@ -289,10 +293,20 @@ fn ribbon_definition(ribbon: &crate::RibbonDefinition) -> String {
         )
     }).collect::<Vec<_>>().join(",");
     format!(
-        "rust_desktop_ui_xaml::RibbonDefinition {{ selected_tab: {}, is_minimized: {}, quick_access: {}, tabs: vec![{}] }}",
+        "rust_desktop_ui_xaml::RibbonDefinition {{ selected_tab: {}, is_minimized: {}, customize_quick_access: {}, quick_access: {}, backstage: {}, tabs: vec![{}] }}",
         optional_string(&ribbon.selected_tab),
         ribbon.is_minimized,
+        ribbon.customize_quick_access,
         string_vec(&ribbon.quick_access),
+        ribbon.backstage.as_ref().map_or_else(|| "None".into(), |backstage| {
+            let items = backstage.items.iter().map(|item| match item {
+                crate::RibbonBackstageItemDefinition::Page { id, header, key_tip, content } => format!(
+                    "rust_desktop_ui_xaml::RibbonBackstageItemDefinition::Page {{ id: {id:?}.into(), header: {header:?}.into(), key_tip: {key_tip:?}.into(), content: Box::new({}) }}", element(content)),
+                crate::RibbonBackstageItemDefinition::Command { command, key_tip } => format!(
+                    "rust_desktop_ui_xaml::RibbonBackstageItemDefinition::Command {{ command: {command:?}.into(), key_tip: {key_tip:?}.into() }}"),
+            }).collect::<Vec<_>>().join(",");
+            format!("Some(rust_desktop_ui_xaml::RibbonBackstageDefinition {{ header: {:?}.into(), key_tip: {:?}.into(), items: vec![{}] }})", backstage.header, backstage.key_tip, items)
+        }),
         tabs,
     )
 }

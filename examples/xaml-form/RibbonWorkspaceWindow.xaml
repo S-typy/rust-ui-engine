@@ -1,0 +1,70 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Редактор документа — Ribbon" TitleBar="Ribbon" Width="1200" Height="800" Padding="0">
+  <Grid Spacing="0">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Ribbon x:Name="MainRibbon" CustomizeQuickAccess="True">
+      <Ribbon.QuickAccessToolbar><Button Command="StudioSave"/><Button Command="Pin"/></Ribbon.QuickAccessToolbar>
+      <Ribbon.Backstage>
+        <Backstage Header="Файл" KeyTip="F">
+          <BackstagePage Id="Info" Header="Сведения" KeyTip="I">
+            <StackPanel Spacing="14" Margin="24">
+              <TextBlock Text="Сведения о документе" FontSize="28" FontWeight="SemiBold"/>
+              <TextBlock Text="Название"/>
+              <TextBox x:Name="BackstageTitle" Text="{Binding Title}" AutomationName="Название документа" CommitOnLostFocus="False"/>
+              <TextBlock Text="Enter подтверждает название. Escape закрывает меню и сохраняет черновик." TextTone="Secondary"/>
+              <TextBlock Text="Принятое название" FontWeight="SemiBold"/>
+              <TextBlock x:Name="AcceptedBackstageTitle" Text="{Binding Title}"/>
+            </StackPanel>
+          </BackstagePage>
+          <BackstagePage Id="Options" Header="Параметры" KeyTip="O">
+            <StackPanel Spacing="14" Margin="24">
+              <TextBlock Text="Оформление" FontSize="28" FontWeight="SemiBold"/>
+              <WrapPanel Spacing="8"><Button Content="Светлая" Command="Light" Width="160"/><Button Content="Тёмная" Command="Dark" Width="160"/><Button Content="Крупно" Command="Touch" Width="160"/></WrapPanel>
+              <TextBox x:Name="BackstageNote" Text="Комментарий к параметрам" CommitOnLostFocus="False" AutomationName="Комментарий к параметрам"/>
+            </StackPanel>
+          </BackstagePage>
+          <BackstageCommand Command="StudioSave" KeyTip="S"/>
+        </Backstage>
+      </Ribbon.Backstage>
+      <RibbonTab Id="Home" Header="Главная" KeyTip="H">
+        <RibbonGroup Id="Document" Header="Документ" CollapsePriority="3">
+          <Button Command="StudioSave" Icon="Save" KeyTip="S" ToolTip="Сохранить документ"/>
+          <SplitButton Command="StudioExport" Icon="Copy" KeyTip="E"><MenuItem Command="StudioPdf"/><MenuItem Command="StudioText"/></SplitButton>
+          <ToggleButton Command="Pin" Icon="Pin" KeyTip="P"/>
+        </RibbonGroup>
+        <RibbonGroup Id="Typography" Header="Шрифт" CollapsePriority="2">
+          <RibbonContent Id="Font" Header="Шрифт документа" KeyTip="FF" Width="220" MinWidth="150" Height="84">
+            <StackPanel Spacing="4"><TextBlock Text="Гарнитура" FontSize="12"/><ComboBox x:Name="RibbonFont" ItemsSource="{Binding Fonts}" SelectedValue="{Binding Font}" AutomationName="Гарнитура"/></StackPanel>
+          </RibbonContent>
+          <RibbonContent Id="Size" Header="Размер шрифта" KeyTip="FS" Width="160" MinWidth="130" Height="84">
+            <StackPanel Spacing="4"><TextBlock Text="Размер" FontSize="12"/><NumericEdit x:Name="RibbonSize" Value="{Binding Size}" Minimum="6" Maximum="72" Increment="1" Precision="0" ShowCalculator="False" AutomationName="Размер шрифта"/></StackPanel>
+          </RibbonContent>
+        </RibbonGroup>
+        <RibbonGroup Id="Identity" Header="Название" CollapsePriority="1">
+          <RibbonContent Id="Title" Header="Название в ленте" KeyTip="TN" Width="240" MinWidth="160" Height="84">
+            <StackPanel Spacing="4"><TextBlock Text="Название документа" FontSize="12"/><TextBox x:Name="RibbonTitle" Text="{Binding Title}" CommitOnLostFocus="False" AutomationName="Название в ленте"/></StackPanel>
+          </RibbonContent>
+        </RibbonGroup>
+      </RibbonTab>
+      <RibbonTab Id="View" Header="Вид" KeyTip="V">
+        <RibbonGroup Id="Theme" Header="Оформление"><Button Command="Light" Icon="Sun" KeyTip="L"/><Button Command="Dark" Icon="Moon" KeyTip="D"/><Button Command="Touch" Icon="Add" KeyTip="T"/></RibbonGroup>
+        <RibbonGroup Id="Preferences" Header="Панель быстрого доступа"><Button Command="StudioSaveSettings" Icon="Save" KeyTip="S"/><Button Command="StudioRestoreSettings" Icon="FolderOpen" KeyTip="R"/></RibbonGroup>
+      </RibbonTab>
+      <RibbonTab Id="Context" Header="Инструменты" KeyTip="T" Context="Document">
+        <RibbonGroup Id="ContextTools" Header="Работа с документом"><Button Command="StudioPdf" Icon="Copy" KeyTip="P"/></RibbonGroup>
+      </RibbonTab>
+    </Ribbon>
+    <ScrollViewer Grid.Row="1" Margin="24,16" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="16">
+        <TextBlock Text="Рабочая область" FontSize="28" FontWeight="SemiBold"/>
+        <TextBlock Text="Редакторы в ленте и на страницах сохраняют своё состояние при изменении ширины и переключении вкладок." TextTone="Secondary"/>
+        <GroupBox Header="Документ">
+          <StackPanel Spacing="10"><TextBlock x:Name="StudioTitle" Text="{Binding Title}" FontSize="20" FontWeight="SemiBold"/><TextBox x:Name="StudioBody" Text="Черновик основного документа" AutomationName="Текст документа" CommitOnLostFocus="False"/><TextBlock Text="Измените название в ленте, затем сузьте окно: черновик останется в том же редакторе." TextTone="Secondary"/></StackPanel>
+        </GroupBox>
+        <WrapPanel Spacing="8"><ToggleButton x:Name="StudioContext" Content="Контекст документа" Command="StudioContext" Width="200"/><ToggleButton x:Name="StudioMerge" Content="Команды расширения" Command="StudioMerge" Width="210"/><Button x:Name="StudioSavePreferences" Content="Запомнить QAT" Command="StudioSaveSettings" Width="180"/><Button x:Name="StudioRestorePreferences" Content="Вернуть QAT" Command="StudioRestoreSettings" Width="180"/></WrapPanel>
+        <TextBlock Text="Настройки запоминаются по команде и действуют до закрытия окна." TextTone="Secondary"/>
+      </StackPanel>
+    </ScrollViewer>
+    <RibbonStatusBar Grid.Row="2" IsCustomizable="False"><StatusBarItem Key="state" Label="Состояние" CanHide="False"><TextBlock x:Name="RibbonStudioStatus" Text="Готово"/></StatusBarItem></RibbonStatusBar>
+  </Grid>
+</Window>

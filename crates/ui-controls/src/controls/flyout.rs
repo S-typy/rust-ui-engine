@@ -9,6 +9,9 @@ pub enum FlyoutPlacement {
     #[default]
     Below,
     Beside,
+    /// Align to the bottom-left of the client viewport. A shorter desired
+    /// height leaves a reserved strip above the surface, for window chrome.
+    Client,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Flyout {
@@ -224,6 +227,44 @@ impl Controls {
         }
         Ok(())
     }
+    /// Validates ownership, visibility, window activation and nesting without
+    /// changing focus, popup state or the visual tree.
+    pub fn preflight_open_flyout(&self, flyout: Flyout) -> Result<(), ControlError> {
+        let entry = self
+            .flyouts
+            .entries
+            .get(&flyout.container)
+            .filter(|entry| entry.handle == flyout)
+            .ok_or_else(|| ControlError::Invalid("Unknown flyout".into()))?;
+        if !self.runtime.tree().contains(entry.handle.content)
+            || !self.is_enabled(entry.anchor)
+            || self
+                .runtime
+                .bounds(entry.anchor)
+                .zip(self.runtime.clip(entry.anchor))
+                .and_then(|(bounds, clip)| bounds.intersection(clip))
+                .is_none()
+            || !self.window_focused
+            || self.viewport.width <= 0.0
+            || self.viewport.height <= 0.0
+        {
+            return Err(ControlError::Invalid(
+                "Flyout owner must be enabled, visible and laid out".into(),
+            ));
+        }
+        let depth = self
+            .flyouts
+            .open
+            .iter()
+            .rposition(|id| self.flyout_descendant(entry.anchor, *id))
+            .map_or(0, |index| index + 1);
+        if depth >= MAX_OPEN {
+            return Err(ControlError::Invalid(
+                "Flyout nesting exceeds eight surfaces".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn open_flyout(&mut self, flyout: Flyout) -> Result<(), ControlError> {
         let entry = self
             .flyouts
@@ -436,12 +477,18 @@ impl Controls {
                 self.close_flyouts_from(index, false)?;
                 break;
             }
-            let bounds = popup::place_overlay(
-                anchor.unwrap(),
-                entry.desired,
-                self.viewport,
-                entry.placement == FlyoutPlacement::Beside,
-            );
+            let bounds = if entry.placement == FlyoutPlacement::Client {
+                let width = entry.desired.width.min(self.viewport.width).max(0.0);
+                let height = entry.desired.height.min(self.viewport.height).max(0.0);
+                Rect::new(0.0, self.viewport.height - height, width, height)
+            } else {
+                popup::place_overlay(
+                    anchor.unwrap(),
+                    entry.desired,
+                    self.viewport,
+                    entry.placement == FlyoutPlacement::Beside,
+                )
+            };
             let mut style = self
                 .runtime
                 .tree()

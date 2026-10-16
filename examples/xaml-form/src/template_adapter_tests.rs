@@ -8,6 +8,162 @@ use std::{cell::RefCell, rc::Rc};
 const SIZE: Size = Size::new(640.0, 480.0);
 
 #[test]
+fn ribbon_retained_xaml_editors_keep_identity_draft_and_bindings_across_presentations() {
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([
+            ("Font", "Segoe UI".into()),
+            ("Title", "Document".into()),
+        ]))
+        .unwrap(),
+    ));
+    let markup = parse(
+        r#"<StackPanel><Ribbon CustomizeQuickAccess="True">
+        <Ribbon.Backstage><Backstage Header="File" KeyTip="F">
+            <BackstagePage Id="Info" Header="Info" KeyTip="I"><TextBox x:Name="Title" Text="{Binding Title}" CommitOnLostFocus="False"/></BackstagePage>
+            <BackstageCommand Command="Confirm" KeyTip="C"/>
+        </Backstage></Ribbon.Backstage>
+        <RibbonTab Id="Home" Header="Home" KeyTip="H"><RibbonGroup Id="Text" Header="Text">
+            <Button Command="Confirm" KeyTip="C"/>
+            <RibbonContent Id="Font" Header="Font" KeyTip="FF" Width="180" MinWidth="120" Height="84">
+                <TextBox x:Name="Font" Text="{Binding Font}" CommitOnLostFocus="False"/>
+            </RibbonContent>
+        </RibbonGroup></RibbonTab>
+        <RibbonTab Id="View" Header="View" KeyTip="V"><RibbonGroup Id="View" Header="View"><Button Command="Confirm" KeyTip="C"/></RibbonGroup></RibbonTab>
+    </Ribbon><TextBlock x:Name="TitlePreview" Text="{Binding Text, ElementName=Title}"/><TextBox x:Name="Message"/></StackPanel>"#,
+    );
+    let mut form = Form::new_with_model(markup, false, Some(context.clone())).unwrap();
+    form.update(Size::new(960.0, 640.0), 1.0).unwrap();
+    let font = form.find_name("Font").unwrap();
+    let title = form.find_name("Title").unwrap();
+    let slot_host = form
+        .view
+        .ribbon
+        .as_ref()
+        .unwrap()
+        .ribbon
+        .content_host("Font")
+        .unwrap();
+    let page_host = form
+        .view
+        .ribbon
+        .as_ref()
+        .unwrap()
+        .ribbon
+        .backstage_page_host("Info")
+        .unwrap();
+    form.ui
+        .perform_action(font, rust_desktop_ui_controls::SemanticAction::Focus, None)
+        .unwrap();
+    form.ui.set_text(font, "Font draft").unwrap();
+    for width in [280.0, 960.0, 420.0, 960.0] {
+        form.update(Size::new(width, 640.0), 1.0).unwrap();
+        assert_eq!(form.find_name("Font"), Some(font));
+        assert_eq!(form.ui.document(font).unwrap().text(), "Font draft");
+        assert_eq!(form.ui.accepted_value(font), Some("Segoe UI"));
+        assert_eq!(
+            form.view
+                .ribbon
+                .as_ref()
+                .unwrap()
+                .ribbon
+                .content_host("Font"),
+            Some(slot_host)
+        );
+    }
+    for tab in ["View", "Home"] {
+        assert!(
+            form.view
+                .ribbon
+                .as_mut()
+                .unwrap()
+                .ribbon
+                .set_active_tab(tab)
+        );
+        form.update(Size::new(960.0, 640.0), 1.0).unwrap();
+        assert_eq!(form.ui.document(font).unwrap().text(), "Font draft");
+    }
+    for minimized in [true, false] {
+        form.view
+            .ribbon
+            .as_mut()
+            .unwrap()
+            .ribbon
+            .set_minimized(minimized);
+        form.update(Size::new(960.0, 640.0), 1.0).unwrap();
+        assert_eq!(form.ui.document(font).unwrap().text(), "Font draft");
+    }
+    form.view
+        .ribbon
+        .as_mut()
+        .unwrap()
+        .ribbon
+        .open_backstage(&mut form.ui)
+        .unwrap();
+    form.update(Size::new(960.0, 640.0), 1.0).unwrap();
+    form.ui.set_text(title, "Title draft").unwrap();
+    form.view
+        .ribbon
+        .as_mut()
+        .unwrap()
+        .ribbon
+        .close_backstage(&mut form.ui)
+        .unwrap();
+    form.update(Size::new(960.0, 640.0), 1.0).unwrap();
+    form.view
+        .ribbon
+        .as_mut()
+        .unwrap()
+        .ribbon
+        .open_backstage(&mut form.ui)
+        .unwrap();
+    form.update(Size::new(960.0, 640.0), 1.0).unwrap();
+    assert_eq!(
+        form.view
+            .ribbon
+            .as_ref()
+            .unwrap()
+            .ribbon
+            .backstage_page_host("Info"),
+        Some(page_host)
+    );
+    assert_eq!(form.find_name("Title"), Some(title));
+    assert_eq!(form.ui.document(title).unwrap().text(), "Title draft");
+    assert_eq!(form.ui.accepted_value(title), Some("Document"));
+    form.ui.commit_edit(title).unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(
+        context.borrow().get("Title").unwrap(),
+        &DataValue::from("Title draft")
+    );
+    context
+        .borrow_mut()
+        .set("Font", "Model font".into())
+        .unwrap();
+    form.view.sync_bindings(&mut form.ui);
+    assert_eq!(form.ui.document(font).unwrap().text(), "Model font");
+}
+
+#[test]
+fn ribbon_retained_content_mount_preflights_commands_names_and_bindings_atomically() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    ui.commands_mut().register("Confirm", "Confirm");
+    ui.update(Size::new(960.0, 640.0)).unwrap();
+    for body in [
+        "<Button Content='Missing' Command='Missing'/>",
+        "<TextBlock Text='{Binding Text, ElementName=Absent}'/>",
+        "<MaskEdit Mask='00' Value='AB'/>",
+    ] {
+        let definition = parse(&format!(
+            "<Ribbon><RibbonTab Id='Home' Header='Home' KeyTip='H'><RibbonGroup Id='Content' Header='Content'><RibbonContent Id='Content' Header='Content' KeyTip='C'>{body}</RibbonContent></RibbonGroup></RibbonTab></Ribbon>"
+        ));
+        let before = ui.runtime.tree().live_ids();
+        let root = ui.root();
+        assert!(MountedView::mount(&mut ui, root, &definition.content).is_err());
+        assert_eq!(ui.runtime.tree().live_ids(), before);
+    }
+}
+
+#[test]
 fn mask_xaml_binds_raw_storage_without_literals_and_rejects_invalid_mount_atomically() {
     let context = Rc::new(RefCell::new(
         BindingContext::new(DataValue::object([("Reference", "AB123".into())])).unwrap(),

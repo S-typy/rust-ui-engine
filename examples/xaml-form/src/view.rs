@@ -367,6 +367,7 @@ impl MountedView {
             }
             ElementKind::Ribbon(definition) => {
                 let mut ribbon = crate::view_ribbon::build_ribbon(ui, definition)?;
+                crate::view_ribbon::configure_customization(ui, &mut ribbon, definition)?;
                 let initial_width = resolved_width(ui, element, parent_axis, available_width)?;
                 ribbon.preflight(ui, initial_width).map_err(err)?;
                 let wrapper = ui
@@ -381,6 +382,46 @@ impl MountedView {
                 ribbon
                     .mount_with_width(ui, wrapper, initial_width)
                     .map_err(err)?;
+                for slot in definition
+                    .tabs
+                    .iter()
+                    .flat_map(|tab| &tab.groups)
+                    .flat_map(|group| &group.contents)
+                {
+                    let host = ribbon
+                        .content_host(&slot.id)
+                        .ok_or("Missing retained Ribbon content host")?;
+                    self.mount_element(
+                        ui,
+                        host,
+                        &slot.content,
+                        Axis::Vertical,
+                        slot.width,
+                        &context,
+                    )?;
+                }
+                if let Some(backstage) = &definition.backstage {
+                    for page in &backstage.items {
+                        if let rust_desktop_ui_xaml::RibbonBackstageItemDefinition::Page {
+                            id,
+                            content,
+                            ..
+                        } = page
+                        {
+                            let host = ribbon
+                                .backstage_page_host(id)
+                                .ok_or("Missing retained Backstage page host")?;
+                            self.mount_element(
+                                ui,
+                                host,
+                                content,
+                                Axis::Vertical,
+                                initial_width,
+                                &context,
+                            )?;
+                        }
+                    }
+                }
                 self.commands
                     .extend(crate::view_ribbon::commands(definition));
                 self.ribbon = Some(crate::view_ribbon::MountedRibbon { wrapper, ribbon });
@@ -1042,9 +1083,9 @@ fn validate_ribbon_width(
         match &element.kind {
             ElementKind::Ribbon(definition) => {
                 let width = resolved_width(ui, element, parent_axis, available_width)?;
-                crate::view_ribbon::build_ribbon(ui, definition)?
-                    .preflight(ui, width)
-                    .map_err(err)?;
+                let mut ribbon = crate::view_ribbon::build_ribbon(ui, definition)?;
+                crate::view_ribbon::configure_customization(ui, &mut ribbon, definition)?;
+                ribbon.preflight(ui, width).map_err(err)?;
             }
             ElementKind::StackPanel(panel) => {
                 let width = resolved_width(ui, element, parent_axis, available_width)?;
@@ -1354,7 +1395,16 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             }
             _ => {}
         }
-        if let ElementKind::TabbedGroup(group) = &element.kind {
+        if let ElementKind::Ribbon(ribbon) = &element.kind {
+            let contents = ribbon.content_elements();
+            let first_host = count - contents.len() + 1;
+            pending.extend(
+                contents
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, child)| (child, depth + 4, first_host + index)),
+            );
+        } else if let ElementKind::TabbedGroup(group) = &element.kind {
             let first_tab = count - group.tabs.len() + 1;
             pending.extend(group.tabs.iter().enumerate().flat_map(|(index, tab)| {
                 tab.header_content

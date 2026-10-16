@@ -82,8 +82,16 @@ pub(crate) fn ribbon_snapshot(
             .collect::<Vec<_>>()
             .join(",")
     });
+    let quick_access = mounted
+        .ribbon
+        .model()
+        .quick_access
+        .iter()
+        .map(|command| string(&command.0))
+        .collect::<Vec<_>>()
+        .join(",");
     format!(
-        "{{\"active_tab\":{},\"key_tips\":{},\"key_tip_labels\":[{}],\"bounds\":{},\"presentations\":{},\"minimized\":{},\"body_visible\":{},\"item_presentations\":[{}],\"header_bounds\":{},\"header_interactive\":[{}]}}",
+        "{{\"active_tab\":{},\"key_tips\":{},\"key_tip_labels\":[{}],\"bounds\":{},\"presentations\":{},\"minimized\":{},\"body_visible\":{},\"item_presentations\":[{}],\"header_bounds\":{},\"header_interactive\":[{}],\"quick_access\":[{}],\"customizing\":{},\"backstage\":{},\"backstage_page\":{},\"content_popup\":{}}}",
         string(mounted.ribbon.active_tab()),
         mounted.ribbon.key_tips_visible(),
         key_tip_labels,
@@ -96,6 +104,14 @@ pub(crate) fn ribbon_snapshot(
         items,
         header_bounds,
         header_interactive,
+        quick_access,
+        mounted.ribbon.quick_access_customization_is_open(ui),
+        mounted.ribbon.backstage_is_open(ui),
+        mounted
+            .ribbon
+            .active_backstage_page()
+            .map_or_else(|| "null".into(), string),
+        mounted.ribbon.content_popup_is_open(ui),
     )
 }
 

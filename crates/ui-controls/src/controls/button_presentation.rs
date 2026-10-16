@@ -26,6 +26,19 @@ fn validate_content_measure(
 }
 
 impl Controls {
+    fn require_key_tip_anchor(&self, id: WidgetId) -> Result<(), ControlError> {
+        if self.runtime.tree().contains(id)
+            && self.controls.get(&id).is_some_and(|control| {
+                matches!(control.kind, Kind::Button | Kind::Toggle | Kind::Panel)
+            })
+        {
+            Ok(())
+        } else {
+            Err(ControlError::Invalid(
+                "KeyTip requires a live Button, ToggleButton or presentation panel".into(),
+            ))
+        }
+    }
     fn require_content_button(&self, id: WidgetId) -> Result<(), ControlError> {
         if self.runtime.tree().node(id).is_some()
             && self
@@ -87,9 +100,10 @@ impl Controls {
 
     /// Adds a paint-only navigation badge. This does not register a shortcut,
     /// alter accessibility text, change focus or invalidate the layout.
+    /// Buttons and retained presentation panels can anchor a badge.
     /// Text uses the shared one-MiB limit and consists of alphanumeric characters.
     pub fn set_key_tip(&mut self, id: WidgetId, text: Option<String>) -> Result<(), ControlError> {
-        self.require_content_button(id)?;
+        self.require_key_tip_anchor(id)?;
         if let Some(text) = &text {
             TextLimits::default().validate(text).map_err(edit_error)?;
             if text.is_empty() || !text.chars().all(char::is_alphanumeric) {
@@ -107,7 +121,7 @@ impl Controls {
     }
 
     pub fn key_tip(&self, id: WidgetId) -> Option<&str> {
-        self.require_content_button(id).ok()?;
+        self.require_key_tip_anchor(id).ok()?;
         self.controls[&id].key_tip.as_deref()
     }
 

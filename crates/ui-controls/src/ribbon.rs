@@ -25,6 +25,14 @@ mod customization_view;
 #[path = "ribbon_merge.rs"]
 mod merge;
 use customization_view::QuickAccessEditor;
+#[path = "ribbon_content.rs"]
+mod content;
+use content::RetainedContent;
+pub use content::RibbonContentSpec;
+#[path = "ribbon_backstage.rs"]
+mod backstage;
+use backstage::BackstageState;
+pub use backstage::{RibbonBackstageItem, RibbonBackstageSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RibbonItemKind {
@@ -149,6 +157,8 @@ enum Action {
     Dropdown,
     Minimize,
     CustomizeQuickAccess,
+    ContentGroups(Vec<String>),
+    Backstage,
     Command(CommandId),
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -156,6 +166,7 @@ enum Tips {
     Hidden,
     Tabs,
     Commands,
+    Backstage,
 }
 
 #[derive(Clone, Copy)]
@@ -340,6 +351,8 @@ struct RibbonMeasurements {
 /// Retained Ribbon composition; application logic stays in the command registry.
 pub struct Ribbon {
     model: RibbonModel,
+    retained: RetainedContent,
+    backstage: BackstageState,
     default_quick_access: Vec<CommandId>,
     base_tabs: Vec<RibbonTab>,
     merge_sources: Vec<(String, Vec<RibbonTab>)>,
@@ -472,6 +485,8 @@ impl Ribbon {
             base_tabs: model.tabs.clone(),
             merge_sources: Vec::new(),
             model,
+            retained: RetainedContent::default(),
+            backstage: BackstageState::default(),
             active,
             context: None,
             parent: None,
@@ -689,12 +704,24 @@ impl Ribbon {
             &self.command_appearances,
             &self.size_limits,
         )?;
+        self.preflight_retained(ui)?;
+        widths.include_content(&self.retained.specs);
         for tab in &self.model.tabs {
             widths.adapt(tab, (width - 12.0).max(0.0));
         }
         let available = (width - 12.0).max(0.0);
         let mut metrics =
             RibbonMetrics::measure(ui, &self.model, &widths, &self.command_appearances)?;
+        let content_height = self
+            .retained
+            .specs
+            .iter()
+            .map(|slot| slot.height)
+            .fold(0.0_f32, f32::max);
+        if content_height > metrics.large {
+            metrics.groups += content_height - metrics.large;
+            metrics.large = content_height;
+        }
         let header = self
             .header
             .as_ref()
@@ -804,6 +831,8 @@ impl Ribbon {
         if !width.is_finite() || width < 0.0 {
             return Err(ControlError::Invalid("Invalid Ribbon width".into()));
         }
+        self.validate_retained_tree(ui)?;
+        self.sync_retained_lifecycle(ui)?;
         if !self.dirty && self.width == width && self.theme == Some(ui.theme()) {
             return self.sync_key_tips(ui);
         }
@@ -812,6 +841,7 @@ impl Ribbon {
         };
         let measured = self.preflight_metrics(ui, width)?;
         self.remember_external_focus(ui);
+        self.park_content(ui)?;
         if !self.is_expanded()
             && ui
                 .runtime
@@ -837,7 +867,7 @@ impl Ribbon {
         let restore_ribbon_focus = popup_anchor.is_some()
             || focused.is_some_and(|id| self.owns_node(ui, id))
             || self.quick_access_customization_is_open(ui);
-        if popup_anchor.is_some() {
+        if popup_anchor.is_some() && !self.retained_overlay_open(ui) {
             ui.close_popup()?;
         }
         self.discard_quick_access_editor(ui)?;
@@ -849,6 +879,9 @@ impl Ribbon {
                 .unwrap_or_default()
                 .to_vec();
             for child in children {
+                if Some(child) == self.retained.parking {
+                    continue;
+                }
                 ui.remove(child)?;
             }
         }
@@ -886,6 +919,8 @@ impl Ribbon {
             ui.transparent_panel(parent, style)?
         };
         self.container = Some(container);
+        self.mount_retained_roots(ui, container)?;
+        self.mount_backstage(ui, container)?;
         let available = (width - 12.0).max(0.0);
         if let Some(header) = &measured.header {
             self.mount_header(ui, container, header, &measured.widths, metrics.qat)?;
@@ -906,7 +941,11 @@ impl Ribbon {
         } else {
             0.0
         };
-        let tabs_available = (available - minimize_width - customize_width - 8.0).max(0.0);
+        let backstage_width = self
+            .backstage_button_width(ui)?
+            .min((available - minimize_width - customize_width).max(0.0));
+        let tabs_available =
+            (available - minimize_width - customize_width - backstage_width - 8.0).max(0.0);
         let tab_gaps = visible.len().saturating_sub(1) as f32;
         let tab_gap = if tab_gaps > 0.0 {
             4.0_f32.min(tabs_available / tab_gaps)
@@ -933,6 +972,7 @@ impl Ribbon {
             },
         )?;
         ui.set_role(tab_row, Role::TabList);
+        self.mount_backstage_button(ui, tab_row, backstage_width, metrics.tab)?;
         for tab in visible {
             let id = ui.toggle(
                 tab_row,
@@ -1049,23 +1089,30 @@ impl Ribbon {
                         RibbonPresentation::Collapsed(id) => {
                             if let Some(group) = tab.groups.iter().find(|g| g.id == id) {
                                 let entries = group_entries(ui, group)?;
-                                let button = ribbon_dropdown(
-                                    ui,
-                                    groups_row,
-                                    group.label.clone(),
-                                    &entries,
-                                    LayoutStyle {
-                                        width: Length::Px(
-                                            measured.widths.group(&tab.id, &group.id).collapsed,
-                                        ),
-                                        height: Length::Percent(1.0),
-                                        flex_shrink: 0.0,
-                                        ..Default::default()
-                                    },
-                                )?;
+                                let style = LayoutStyle {
+                                    width: Length::Px(
+                                        measured.widths.group(&tab.id, &group.id).collapsed,
+                                    ),
+                                    height: Length::Percent(1.0),
+                                    flex_shrink: 0.0,
+                                    ..Default::default()
+                                };
+                                let has_content = self.group_has_content(&group.id);
+                                let button = if has_content {
+                                    ui.button(groups_row, &group.label, None, style)?
+                                } else {
+                                    ribbon_dropdown(ui, groups_row, &group.label, &entries, style)?
+                                };
                                 ui.set_button_style(button, ribbon_button_style())?;
                                 ui.set_button_chrome(button, ButtonChrome::Flat)?;
-                                self.actions.insert(button, Action::Dropdown);
+                                self.actions.insert(
+                                    button,
+                                    if has_content {
+                                        Action::ContentGroups(vec![group.id.clone()])
+                                    } else {
+                                        Action::Dropdown
+                                    },
+                                );
                                 self.group_anchors.insert(group.id.clone(), button);
                             }
                         }
@@ -1074,21 +1121,33 @@ impl Ribbon {
                             for group in &tab.groups {
                                 items.extend(group_entries(ui, group)?);
                             }
-                            let button = ribbon_dropdown(
-                                ui,
-                                groups_row,
-                                "All commands",
-                                &items,
-                                LayoutStyle {
-                                    width: Length::Px((available - SURFACE_PADDING * 2.0).max(0.0)),
-                                    height: Length::Px(48.0),
-                                    flex_shrink: 0.0,
-                                    ..Default::default()
-                                },
-                            )?;
+                            let style = LayoutStyle {
+                                width: Length::Px((available - SURFACE_PADDING * 2.0).max(0.0)),
+                                height: Length::Px(48.0),
+                                flex_shrink: 0.0,
+                                ..Default::default()
+                            };
+                            let has_content = tab
+                                .groups
+                                .iter()
+                                .any(|group| self.group_has_content(&group.id));
+                            let button = if has_content {
+                                ui.button(groups_row, "All commands", None, style)?
+                            } else {
+                                ribbon_dropdown(ui, groups_row, "All commands", &items, style)?
+                            };
                             ui.set_button_style(button, ribbon_button_style())?;
                             ui.set_button_chrome(button, ButtonChrome::Flat)?;
-                            self.actions.insert(button, Action::Dropdown);
+                            self.actions.insert(
+                                button,
+                                if has_content {
+                                    Action::ContentGroups(
+                                        tab.groups.iter().map(|g| g.id.clone()).collect(),
+                                    )
+                                } else {
+                                    Action::Dropdown
+                                },
+                            );
                             for group in &tab.groups {
                                 self.group_anchors.insert(group.id.clone(), button);
                             }
@@ -1097,6 +1156,8 @@ impl Ribbon {
                 }
             }
         }
+        self.finish_content_layout(ui, metrics, &measured.widths)?;
+        self.sync_backstage_geometry(ui)?;
         self.dirty = false;
         self.sync_key_tips(ui)?;
         // Focus can be restored before layout because eligibility is a logical tree property.
@@ -1114,6 +1175,11 @@ impl Ribbon {
                         (Some(Action::Tab(tab)), Some(Action::Tab(candidate))) => tab == candidate,
                         (Some(Action::Minimize), Some(Action::Minimize)) => true,
                         (
+                            Some(Action::ContentGroups(groups)),
+                            Some(Action::ContentGroups(candidate)),
+                        ) => groups == candidate,
+                        (Some(Action::Backstage), Some(Action::Backstage)) => true,
+                        (
                             Some(Action::CustomizeQuickAccess),
                             Some(Action::CustomizeQuickAccess),
                         ) => true,
@@ -1126,14 +1192,20 @@ impl Ribbon {
                     .flatten()
                     .filter(|id| ui.is_enabled(*id))
             });
-        if let Some(id) = restored {
+        if let Some(id) = restored.filter(|_| {
+            !focused.is_some_and(|old| {
+                ui.runtime.focused() == Some(old)
+                    && ui.is_enabled(old)
+                    && self.retained_owns(ui, old)
+            })
+        }) {
             let _ = ui.runtime.apply(Mutation::Focus(Some(id)));
         }
         Ok(())
     }
     fn owns_node(&self, ui: &Controls, mut id: WidgetId) -> bool {
         loop {
-            if Some(id) == self.container {
+            if Some(id) == self.container || self.retained_owns(ui, id) {
                 return true;
             }
             let Some(parent) = ui.runtime.tree().parent(id) else {
@@ -1360,6 +1432,7 @@ impl Ribbon {
                 },
             );
         }
+        self.mount_group_content(ui, row, &group.id, measured)?;
         let caption = ui.label(
             panel,
             group.label.clone(),
@@ -1400,6 +1473,9 @@ impl Ribbon {
         let mut unhandled = Vec::new();
         let menu_was_owned = self.owned_menu_open;
         for id in ui.drain_activated() {
+            if self.process_backstage(ui, id)? {
+                continue;
+            }
             if self.process_quick_access_editor(ui, id)? {
                 continue;
             }
@@ -1417,8 +1493,17 @@ impl Ribbon {
                     self.set_minimized(minimized);
                     self.finish_key_tips(ui, false);
                 }
+                Some(Action::ContentGroups(groups)) => {
+                    self.open_content_groups(ui, groups)?;
+                }
+                Some(Action::Backstage) => {
+                    self.open_backstage(ui)?;
+                }
                 Some(Action::Dropdown | Action::CustomizeQuickAccess) => {}
                 Some(Action::Command(_)) => {
+                    if self.content_overlay_owns(ui, id) {
+                        self.close_content_groups(ui)?;
+                    }
                     if self.body_owns(ui, id) {
                         self.close_transient(ui, true);
                     }
@@ -1445,6 +1530,9 @@ impl Ribbon {
         event: &InputEvent,
     ) -> Result<bool, ControlError> {
         self.remember_external_focus(ui);
+        if self.handle_backstage_input(ui, event)? || self.handle_content_input(ui, event) {
+            return Ok(true);
+        }
         if self.quick_access_customization_is_open(ui) {
             return Ok(false);
         }
@@ -1570,6 +1658,10 @@ impl Ribbon {
         };
         self.tip_prefix.push_str(&character.to_uppercase());
         if self.tips == Tips::Tabs {
+            if self.backstage_matches_tip(&self.tip_prefix) {
+                self.open_backstage(ui)?;
+                return Ok(true);
+            }
             if let Ok(index) = self.tip_prefix.parse::<usize>()
                 && index > 0
                 && index <= 9
@@ -1599,12 +1691,15 @@ impl Ribbon {
                 {
                     ui.runtime.apply(Mutation::Focus(Some(id)))?;
                 }
-            } else if !visible
-                .iter()
-                .any(|tab| tab.key_tip.to_uppercase().starts_with(&self.tip_prefix))
+            } else if !self.backstage_has_prefix(&self.tip_prefix)
+                && !visible
+                    .iter()
+                    .any(|tab| tab.key_tip.to_uppercase().starts_with(&self.tip_prefix))
             {
                 self.tip_prefix.clear();
             }
+        } else if self.activate_content_tip(ui)? {
+            return Ok(true);
         } else if let Some(tab) = self.model.tabs.iter().find(|tab| tab.id == self.active) {
             let items: Vec<_> = tab.groups.iter().flat_map(|group| &group.items).collect();
             if let Some(item) = items
@@ -1643,9 +1738,10 @@ impl Ribbon {
                         self.close_transient(ui, true);
                     }
                 }
-            } else if !items
-                .iter()
-                .any(|item| item.key_tip.to_uppercase().starts_with(&self.tip_prefix))
+            } else if !self.content_has_prefix(&self.tip_prefix)
+                && !items
+                    .iter()
+                    .any(|item| item.key_tip.to_uppercase().starts_with(&self.tip_prefix))
             {
                 self.tip_prefix.clear();
             }
@@ -1842,3 +1938,7 @@ mod tests {
         assert!(ribbon.remove_quick_access(&"save".into()));
     }
 }
+
+#[cfg(test)]
+#[path = "ribbon_content_tests.rs"]
+mod content_tests;

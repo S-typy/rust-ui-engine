@@ -14,7 +14,10 @@ pub struct RibbonDefinition {
     pub selected_tab: Option<String>,
     /// Initial minimized state; the runtime owns subsequent reveal transitions.
     pub is_minimized: bool,
+    /// Show the explicit QAT customization surface for this Ribbon's commands.
+    pub customize_quick_access: bool,
     pub quick_access: Vec<String>,
+    pub backstage: Option<crate::RibbonBackstageDefinition>,
     pub tabs: Vec<RibbonTabDefinition>,
 }
 
@@ -33,6 +36,8 @@ pub struct RibbonGroupDefinition {
     pub header: String,
     pub collapse_priority: u16,
     pub items: Vec<RibbonItemDefinition>,
+    /// Retained control subtrees after the command placements.
+    pub contents: Vec<crate::RibbonContentDefinition>,
 }
 
 /// A command placement. SplitButton and DropDownButton own nonempty menus.
@@ -139,8 +144,8 @@ pub fn validate_ribbon(ribbon: &RibbonDefinition) -> Result<(), String> {
                         .into(),
                 );
             }
-            if group.items.is_empty() {
-                return Err("RibbonGroup requires at least one command item".into());
+            if group.items.is_empty() && group.contents.is_empty() {
+                return Err("RibbonGroup requires a command item or RibbonContent".into());
             }
             for item in &group.items {
                 count += 1;
@@ -179,6 +184,7 @@ pub fn validate_ribbon(ribbon: &RibbonDefinition) -> Result<(), String> {
             }
         }
     }
+    crate::ribbon_content::validate_extensions(ribbon, &mut count, &mut text)?;
     if count > MAX_ELEMENTS {
         return Err("Ribbon exceeds the element count limit".into());
     }
@@ -240,7 +246,7 @@ fn validate_menu_entries(
     Ok(())
 }
 
-fn check_identifier(value: &str, property: &str) -> Result<(), String> {
+pub(super) fn check_identifier(value: &str, property: &str) -> Result<(), String> {
     let mut chars = value.chars();
     if !chars
         .next()
@@ -273,13 +279,15 @@ pub enum RibbonItemKindDefinition {
 }
 
 pub(super) fn count(element: &ElementDefinition) -> usize {
-    match &element.kind {
-        ElementKind::Ribbon(_) => 1,
-        _ => element.children().into_iter().map(count).sum(),
-    }
+    usize::from(matches!(element.kind, ElementKind::Ribbon(_)))
+        + element.children().into_iter().map(count).sum::<usize>()
 }
 
-fn bounded(node: Node<'_, '_>, depth: usize, count: &mut usize) -> Result<(), Diagnostic> {
+pub(super) fn bounded(
+    node: Node<'_, '_>,
+    depth: usize,
+    count: &mut usize,
+) -> Result<(), Diagnostic> {
     *count += 1;
     if depth > MAX_ELEMENT_DEPTH || *count > MAX_ELEMENTS {
         return Err(at_node(
@@ -293,7 +301,7 @@ fn bounded(node: Node<'_, '_>, depth: usize, count: &mut usize) -> Result<(), Di
     Ok(())
 }
 
-fn checked_attributes(node: Node<'_, '_>) -> Result<(), Diagnostic> {
+pub(super) fn checked_attributes(node: Node<'_, '_>) -> Result<(), Diagnostic> {
     for attribute in node.attributes() {
         reject_extension(node.document(), attribute)?;
         if attribute.namespace().is_some() {
@@ -307,7 +315,7 @@ fn checked_attributes(node: Node<'_, '_>) -> Result<(), Diagnostic> {
     Ok(())
 }
 
-fn nonempty(node: Node<'_, '_>, value: &str, property: &str) -> Result<(), Diagnostic> {
+pub(super) fn nonempty(node: Node<'_, '_>, value: &str, property: &str) -> Result<(), Diagnostic> {
     if value.trim().is_empty() {
         return Err(at_node(
             node,
@@ -317,7 +325,7 @@ fn nonempty(node: Node<'_, '_>, value: &str, property: &str) -> Result<(), Diagn
     Ok(())
 }
 
-fn key_tip(
+pub(super) fn key_tip(
     node: Node<'_, '_>,
     candidate: &str,
     existing: &[String],
@@ -336,7 +344,7 @@ fn key_tip(
     Ok(())
 }
 
-fn valid_key_tip(candidate: &str, existing: &[String], tab: bool) -> bool {
+pub(super) fn valid_key_tip(candidate: &str, existing: &[String], tab: bool) -> bool {
     !(candidate.is_empty()
         || !candidate.chars().all(|value| value.is_ascii_alphanumeric())
         || existing
@@ -350,6 +358,8 @@ pub(super) fn parse_children(
     depth: usize,
     count: &mut usize,
     ribbon: &mut RibbonDefinition,
+    names: &mut HashSet<String>,
+    radios: &mut HashSet<crate::RadioGroupKey>,
 ) -> Result<(), Diagnostic> {
     let mut qat_seen = false;
     let mut ids = HashSet::new();
@@ -387,8 +397,19 @@ pub(super) fn parse_children(
                     require_empty_content(reference)?;
                 }
             }
+        } else if child.tag_name().name() == "Ribbon.Backstage" {
+            if ribbon.backstage.is_some() {
+                return Err(at_node(child, "Ribbon accepts one Ribbon.Backstage"));
+            }
+            ribbon.backstage = Some(crate::ribbon_content::parse_backstage(
+                child,
+                depth + 1,
+                count,
+                names,
+                radios,
+            )?);
         } else {
-            let tab = parse_tab(child, depth + 1, count)?;
+            let tab = parse_tab(child, depth + 1, count, names, radios)?;
             if !ids.insert(tab.id.clone()) {
                 return Err(at_node(
                     child,
@@ -424,6 +445,8 @@ fn parse_tab(
     node: Node<'_, '_>,
     depth: usize,
     count: &mut usize,
+    names: &mut HashSet<String>,
+    radios: &mut HashSet<crate::RadioGroupKey>,
 ) -> Result<RibbonTabDefinition, Diagnostic> {
     require_element(node, "RibbonTab")?;
     checked_attributes(node)?;
@@ -456,7 +479,7 @@ fn parse_tab(
     for child in node.children() {
         if child.is_element() {
             bounded(child, depth + 1, count)?;
-            let group = parse_group(child, depth + 1, count, &mut tips)?;
+            let group = parse_group(child, depth + 1, count, &mut tips, names, radios)?;
             if !ids.insert(group.id.clone()) {
                 return Err(at_node(child, "RibbonGroup Id must be unique within a tab"));
             }
@@ -476,6 +499,8 @@ fn parse_group(
     depth: usize,
     count: &mut usize,
     tips: &mut Vec<String>,
+    names: &mut HashSet<String>,
+    radios: &mut HashSet<crate::RadioGroupKey>,
 ) -> Result<RibbonGroupDefinition, Diagnostic> {
     require_element(node, "RibbonGroup")?;
     checked_attributes(node)?;
@@ -518,6 +543,20 @@ fn parse_group(
     for child in node.children() {
         if child.is_element() {
             bounded(child, depth + 1, count)?;
+            if child.tag_name().name() == "RibbonContent" {
+                let content =
+                    crate::ribbon_content::parse_content(child, depth + 1, count, names, radios)?;
+                key_tip(child, &content.key_tip, tips, false)?;
+                tips.push(content.key_tip.clone());
+                group.contents.push(content);
+                continue;
+            }
+            if !group.contents.is_empty() {
+                return Err(at_node(
+                    child,
+                    "Ribbon commands must precede RibbonContent slots",
+                ));
+            }
             let item = parse_item(child, depth + 1, count)?;
             key_tip(child, &item.key_tip, tips, false)?;
             tips.push(item.key_tip.clone());
@@ -526,10 +565,10 @@ fn parse_group(
             require_empty_content(child)?;
         }
     }
-    if group.items.is_empty() {
+    if group.items.is_empty() && group.contents.is_empty() {
         return Err(at_node(
             node,
-            "RibbonGroup requires at least one command item",
+            "RibbonGroup requires a command item or RibbonContent",
         ));
     }
     Ok(group)

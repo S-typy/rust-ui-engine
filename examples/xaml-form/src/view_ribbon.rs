@@ -1,12 +1,13 @@
 //! Bridge from the bounded compiled Ribbon profile to retained command controls.
 use rust_desktop_ui_controls::{
-    ButtonIcon, Controls, Ribbon, RibbonCommandAppearance, RibbonGroup, RibbonItem, RibbonItemKind,
+    ButtonIcon, Controls, Ribbon, RibbonBackstageItem, RibbonBackstageSpec,
+    RibbonCommandAppearance, RibbonContentSpec, RibbonGroup, RibbonItem, RibbonItemKind,
     RibbonItemSize as RuntimeSize, RibbonMenuEntry, RibbonModel, RibbonTab,
 };
 use rust_desktop_ui_core::WidgetId;
 use rust_desktop_ui_xaml::{
-    RibbonDefinition, RibbonItemKindDefinition, RibbonItemSize, RibbonMenuEntryDefinition,
-    validate_ribbon,
+    RibbonBackstageItemDefinition, RibbonDefinition, RibbonItemKindDefinition, RibbonItemSize,
+    RibbonMenuEntryDefinition, validate_ribbon,
 };
 use std::collections::HashMap;
 
@@ -129,9 +130,74 @@ pub(crate) fn build_ribbon(ui: &Controls, definition: &RibbonDefinition) -> Resu
                 .set_item_size_limits(&tab.id, &item.key_tip, size(item.size), size(item.min_size))
                 .map_err(err)?;
         }
+        for group in &tab.groups {
+            for slot in &group.contents {
+                ribbon
+                    .add_content(RibbonContentSpec {
+                        id: slot.id.clone(),
+                        tab_id: tab.id.clone(),
+                        group_id: group.id.clone(),
+                        label: slot.header.clone(),
+                        key_tip: slot.key_tip.clone(),
+                        preferred_width: slot.width,
+                        minimum_width: slot.min_width,
+                        height: slot.height,
+                    })
+                    .map_err(err)?;
+            }
+        }
     }
+    ribbon
+        .set_backstage(definition.backstage.as_ref().map(|backstage| {
+            RibbonBackstageSpec {
+                label: backstage.header.clone(),
+                key_tip: backstage.key_tip.clone(),
+                items: backstage
+                    .items
+                    .iter()
+                    .map(|item| match item {
+                        RibbonBackstageItemDefinition::Page {
+                            id,
+                            header,
+                            key_tip,
+                            ..
+                        } => RibbonBackstageItem::Page {
+                            id: id.clone(),
+                            label: header.clone(),
+                            key_tip: key_tip.clone(),
+                        },
+                        RibbonBackstageItemDefinition::Command { command, key_tip } => {
+                            RibbonBackstageItem::Command {
+                                command: command.as_str().into(),
+                                key_tip: key_tip.clone(),
+                            }
+                        }
+                    })
+                    .collect(),
+            }
+        }))
+        .map_err(err)?;
     ribbon.set_minimized(definition.is_minimized);
     Ok(ribbon)
+}
+
+pub(crate) fn configure_customization(
+    ui: &mut Controls,
+    ribbon: &mut Ribbon,
+    definition: &RibbonDefinition,
+) -> Result<(), String> {
+    if definition.customize_quick_access {
+        let mut seen = std::collections::HashSet::new();
+        let catalog = commands(definition)
+            .into_iter()
+            .filter(|id| seen.insert(id.clone()))
+            .map(Into::into)
+            .collect();
+        ribbon
+            .set_quick_access_catalog(ui, Some(catalog))
+            .map_err(err)?;
+    }
+    Ok(())
 }
 
 fn size(size: RibbonItemSize) -> RuntimeSize {
@@ -178,6 +244,12 @@ pub(crate) fn commands(definition: &RibbonDefinition) -> Vec<String> {
         commands.push(item.command.clone());
         collect(&item.menu, &mut commands);
     }
+    if let Some(backstage) = &definition.backstage {
+        commands.extend(backstage.items.iter().filter_map(|item| match item {
+            RibbonBackstageItemDefinition::Command { command, .. } => Some(command.clone()),
+            _ => None,
+        }));
+    }
     commands
 }
 
@@ -190,12 +262,20 @@ pub(crate) fn nested_size(definition: &RibbonDefinition) -> (usize, usize) {
         count += 1;
         for group in &tab.groups {
             count += 1;
+            count += group.contents.len();
+            if !group.contents.is_empty() {
+                depth = depth.max(4);
+            }
             for item in &group.items {
                 count += 1;
                 depth = depth.max(4);
                 count_menu(&item.menu, 5, &mut count, &mut depth);
             }
         }
+    }
+    if let Some(backstage) = &definition.backstage {
+        count += 2 + backstage.items.len();
+        depth = depth.max(4);
     }
     (count, depth)
 }

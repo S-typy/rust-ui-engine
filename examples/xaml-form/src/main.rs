@@ -28,6 +28,7 @@ mod layout_adapter_tests;
 mod popup_diagnostics;
 #[cfg(test)]
 mod ribbon_tests;
+mod ribbon_workspace_model;
 #[cfg(test)]
 mod status_adapter_tests;
 #[cfg(test)]
@@ -76,6 +77,9 @@ mod generated_data {
 mod generated_data_editors {
     include!(concat!(env!("OUT_DIR"), "/data_editors_window.rs"));
 }
+mod generated_ribbon_workspace {
+    include!(concat!(env!("OUT_DIR"), "/ribbon_workspace_window.rs"));
+}
 mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
 }
@@ -102,6 +106,7 @@ fn start() -> Result<(), String> {
     let mut status = false;
     let mut data = false;
     let mut data_editors = false;
+    let mut ribbon_workspace = false;
     let mut visuals = false;
     let mut batch = false;
     let mut workspace = false;
@@ -145,6 +150,7 @@ fn start() -> Result<(), String> {
             "--status" => status = true,
             "--data" => data = true,
             "--data-editors" => data_editors = true,
+            "--ribbon-workspace" => ribbon_workspace = true,
             "--docking" => docking = true,
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
@@ -191,6 +197,9 @@ fn start() -> Result<(), String> {
                     "--data opens DataWindow.xaml with typed Rust collection and in-memory SQLite tables."
                 );
                 println!(
+                    "--data-editors opens the transactional source and editor examples. --ribbon-workspace opens retained Ribbon editors, Backstage and explicit QAT preferences."
+                );
+                println!(
                     "--diagnostics logs input, values and validation for automated input tests."
                 );
                 println!(
@@ -212,6 +221,7 @@ fn start() -> Result<(), String> {
         batch,
         workspace,
         data_editors,
+        ribbon_workspace,
     ]
     .into_iter()
     .filter(|v| *v)
@@ -231,7 +241,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if data_editors {
+    let mut definition = if ribbon_workspace {
+        generated_ribbon_workspace::window_definition()
+    } else if data_editors {
         generated_data_editors::window_definition()
     } else if workspace {
         generated_workspace::window_definition()
@@ -304,7 +316,13 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if data_editors {
+    let app = if ribbon_workspace {
+        form::Form::new_with_model(
+            definition,
+            diagnostics,
+            Some(ribbon_workspace_model::model()?),
+        )?
+    } else if data_editors {
         let (context, sources) = data_editors_model::model()?;
         form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
     } else if batch {

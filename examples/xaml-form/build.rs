@@ -9,6 +9,7 @@ fn main() {
         ("StatusWindow.xaml", "status_window.rs"),
         ("DataWindow.xaml", "data_window.rs"),
         ("DataEditorsWindow.xaml", "data_editors_window.rs"),
+        ("RibbonWorkspaceWindow.xaml", "ribbon_workspace_window.rs"),
         ("VisualsWindow.xaml", "visuals_window.rs"),
         ("BatchWindow.xaml", "batch_window.rs"),
         ("WorkspaceWindow.xaml", "workspace_window.rs"),

@@ -17,6 +17,7 @@ pub(super) struct MeasuredGroup {
     pub collapsed: f32,
     pub items: Vec<f32>,
     pub sizes: Vec<RibbonItemSize>,
+    pub contents: Vec<(String, f32)>,
 }
 
 pub(super) struct RibbonWidths {
@@ -184,6 +185,7 @@ impl RibbonWidths {
                         collapsed: collapsed.min(width),
                         items,
                         sizes,
+                        contents: Vec::new(),
                     });
                 }
                 groups.insert((tab.id.clone(), group.id.clone()), profiles);
@@ -211,6 +213,25 @@ impl RibbonWidths {
             groups,
             selected: HashMap::new(),
         })
+    }
+    pub(super) fn include_content(&mut self, slots: &[RibbonContentSpec]) {
+        for slot in slots {
+            if let Some(profiles) = self
+                .groups
+                .get_mut(&(slot.tab_id.clone(), slot.group_id.clone()))
+            {
+                for (tier, profile) in profiles.iter_mut().enumerate() {
+                    let width = if tier == 0 {
+                        slot.preferred_width
+                    } else {
+                        slot.minimum_width
+                    };
+                    profile.width += width + 4.0;
+                    profile.collapsed = profile.collapsed.max(COLLAPSED).min(profile.width);
+                    profile.contents.push((slot.id.clone(), width));
+                }
+            }
+        }
     }
     pub fn profiles(&self, tab: &str, group: &str) -> &[MeasuredGroup] {
         &self.groups[&(tab.to_owned(), group.to_owned())]

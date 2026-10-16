@@ -33,6 +33,130 @@ fn definition(content: &str) -> RibbonDefinition {
     ribbon
 }
 
+#[test]
+fn retained_ribbon_content_backstage_and_qat_compile_with_shared_names_and_resources() {
+    let source = form(
+        r#"
+      <StackPanel>
+        <Ribbon CustomizeQuickAccess="True">
+          <Ribbon.Resources>
+            <Style x:Key="Entry" TargetType="TextBox"><Setter Property="Width" Value="160"/></Style>
+          </Ribbon.Resources>
+          <Ribbon.Backstage><Backstage Header="Файл" KeyTip="F">
+            <BackstagePage Id="Info" Header="Сведения" KeyTip="I">
+              <TextBox x:Name="DocumentTitle" Style="{StaticResource Entry}" Text="{Binding Title}"/>
+            </BackstagePage>
+            <BackstageCommand Command="Save" KeyTip="S"/>
+          </Backstage></Ribbon.Backstage>
+          <RibbonTab Id="Home" Header="Главная" KeyTip="H"><RibbonGroup Id="Font" Header="Шрифт">
+            <Button Command="Save" KeyTip="S"/>
+            <RibbonContent Id="font.entry" Header="Шрифт" KeyTip="FF" Width="180" MinWidth="120" Height="84">
+              <StackPanel><TextBox x:Name="Font" Style="{StaticResource Entry}" Text="{Binding Font}"/>
+              <TextBlock Text="{Binding Text, ElementName=DocumentTitle}"/></StackPanel>
+            </RibbonContent>
+          </RibbonGroup></RibbonTab>
+        </Ribbon>
+        <TextBlock Text="{Binding Text, ElementName=Font}"/>
+      </StackPanel>"#,
+    );
+    let parsed = parse(&source).unwrap();
+    let ribbon_element = parsed.content.children()[0];
+    let ElementKind::Ribbon(definition) = &ribbon_element.kind else {
+        panic!("Ribbon")
+    };
+    assert!(definition.customize_quick_access);
+    assert_eq!(definition.content_elements().len(), 2);
+    assert_eq!(definition.tabs[0].groups[0].contents[0].id, "font.entry");
+    assert_eq!(
+        definition.content_elements()[0].children()[0].common.width,
+        Some(160.0)
+    );
+    let output = compile(&source).unwrap();
+    for marker in [
+        "customize_quick_access: true",
+        "RibbonContentDefinition",
+        "RibbonBackstageItemDefinition::Page",
+        "RibbonBackstageItemDefinition::Command",
+        "DocumentTitle",
+        "BindingDefinition",
+    ] {
+        assert!(output.contains(marker), "{marker}");
+    }
+    let content_only =
+        ribbon("<RibbonContent Id='only' Header='Only' KeyTip='E'><TextBox/></RibbonContent>");
+    assert!(parse(&form(&content_only)).is_ok());
+}
+
+#[test]
+fn retained_ribbon_profiles_reject_ambiguous_names_structure_and_geometry() {
+    let slot = "<RibbonContent Id='slot' Header='Editor' KeyTip='E'><TextBox x:Name='Value'/></RibbonContent>";
+    for content in [
+        slot.replace("Id='slot'", "Id='bad id'"),
+        slot.replace("Header='Editor'", "Header=''"),
+        slot.replace("KeyTip='E'", "KeyTip=''"),
+        slot.replace("KeyTip='E'", "KeyTip='é'"),
+        slot.replace("<TextBox x:Name='Value'/>", ""),
+        slot.replace("<TextBox x:Name='Value'/>", "<TextBox/><TextBox/>"),
+        slot.replace("Header='Editor'", "Header='Editor' Width='23'"),
+        slot.replace("Header='Editor'", "Header='Editor' Width='4097'"),
+        slot.replace("Header='Editor'", "Header='Editor' MinWidth='181'"),
+        slot.replace("Header='Editor'", "Header='Editor' Height='513'"),
+        format!("{slot}<Button Command='Save' KeyTip='S'/>"),
+        format!("<Button Command='Save' KeyTip='EF'/>{slot}"),
+        format!("{slot}{slot}"),
+        format!(
+            "{slot}{}",
+            slot.replace("Id='slot'", "Id='other'")
+                .replace("KeyTip='E'", "KeyTip='O'")
+        ),
+        slot.replace(
+            "<TextBox x:Name='Value'/>",
+            &ribbon("<Button Command='Save' KeyTip='S'/>"),
+        ),
+    ] {
+        assert!(parse(&form(&ribbon(&content))).is_err(), "{content}");
+    }
+    let backstage = "<Ribbon.Backstage><Backstage Header='File' KeyTip='F'><BackstagePage Id='Info' Header='Info' KeyTip='I'><TextBox/></BackstagePage><BackstageCommand Command='Save' KeyTip='S'/></Backstage></Ribbon.Backstage>";
+    let base = ribbon("<Button Command='Save' KeyTip='S'/>");
+    for invalid in [
+        backstage.replace("KeyTip='F'", "KeyTip='H'"),
+        backstage.replace("KeyTip='F'", "KeyTip='1'"),
+        backstage.replace("KeyTip='S'", "KeyTip='IX'"),
+        backstage.replace("Command='Save'", "Command='Save' Header='Override'"),
+        backstage.replace("<TextBox/>", ""),
+        backstage.replace("<TextBox/>", "<TextBox/><TextBox/>"),
+        backstage.replace("</Backstage>", "<BackstagePage Id='Info' Header='Other' KeyTip='O'><TextBox/></BackstagePage></Backstage>"),
+        format!("{backstage}{backstage}"),
+    ] {
+        assert!(parse(&form(&base.replacen("<Ribbon>", &format!("<Ribbon>{invalid}"), 1))).is_err(), "{invalid}");
+    }
+}
+
+#[test]
+fn retained_ribbon_limits_include_nested_control_depth_and_slot_count() {
+    let slot = |i| {
+        format!(
+            "<RibbonContent Id='slot{i}' Header='Editor' KeyTip='E{i:02}'><TextBox/></RibbonContent>"
+        )
+    };
+    let slots = (0..64).map(slot).collect::<String>();
+    assert!(parse(&form(&ribbon(&slots))).is_ok());
+    assert!(parse(&form(&ribbon(&(slots + &slot(64))))).is_err());
+    let nested =
+        |depth: usize| "<StackPanel>".repeat(depth) + "<TextBox/>" + &"</StackPanel>".repeat(depth);
+    let content = |depth| {
+        format!(
+            "<RibbonContent Id='slot' Header='Editor' KeyTip='E'>{}</RibbonContent>",
+            nested(depth)
+        )
+    };
+    assert!(parse(&form(&ribbon(&content(MAX_ELEMENT_DEPTH - 5)))).is_ok());
+    assert!(parse(&form(&ribbon(&content(MAX_ELEMENT_DEPTH - 4)))).is_err());
+    let mut model = definition(&ribbon(&slot(0)));
+    model.tabs[0].groups[0].contents[0].height = f32::NAN;
+    assert!(validate_ribbon(&model).is_err());
+}
+
 fn chrome_form(window_attributes: &str, content: &str) -> String {
     format!("<Window xmlns='{UI_NAMESPACE}' {window_attributes}>{content}</Window>")
 }
