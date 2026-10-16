@@ -152,6 +152,41 @@ pub struct MenuBar {
     pub items: Vec<WidgetId>,
 }
 
+#[derive(Clone, Copy)]
+enum HostHeight {
+    Auto(f32),
+    Explicit(Length),
+}
+impl HostHeight {
+    fn new(height: Length, automatic: f32) -> Self {
+        if height == Length::Auto {
+            Self::Auto(automatic)
+        } else {
+            Self::Explicit(height)
+        }
+    }
+    fn resolve(&mut self, automatic: f32) -> Length {
+        match self {
+            Self::Auto(previous) => {
+                *previous = automatic;
+                Length::Px(automatic)
+            }
+            Self::Explicit(height) => *height,
+        }
+    }
+    fn observe(&mut self, current: Length) {
+        if !matches!(self, Self::Auto(previous) if current == Length::Px(*previous)) {
+            *self = Self::Explicit(current);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct MenuStrip {
+    handle: MenuBar,
+    height: HostHeight,
+}
+
 #[derive(Clone)]
 struct Item {
     definition: ToolBarItem,
@@ -167,6 +202,9 @@ struct Bar {
     overflow_viewer: ScrollViewer,
     manager: Option<WidgetId>,
     placement: BarPlacement,
+    // Floating geometry temporarily owns height; retain the docked policy so
+    // viewport clamping and density changes cannot overwrite it.
+    docked_height: HostHeight,
     visible: bool,
     owner_hidden: bool,
     force_order: bool,
@@ -179,7 +217,7 @@ struct Manager {
 pub(super) struct BarsState {
     bars: HashMap<WidgetId, Bar>,
     managers: HashMap<WidgetId, Manager>,
-    menus: HashMap<WidgetId, MenuBar>,
+    menus: HashMap<WidgetId, MenuStrip>,
 }
 fn invalid(text: &str) -> ControlError {
     ControlError::Invalid(text.into())
@@ -324,9 +362,8 @@ impl Controls {
         }
         style.validate().map_err(invalid)?;
         style.kind = LayoutKind::Flex(Axis::Horizontal);
-        if style.height == Length::Auto {
-            style.height = Length::Px(self.theme.tokens().control_height);
-        }
+        let mut height = HostHeight::new(style.height, self.theme.tokens().control_height);
+        style.height = height.resolve(self.theme.tokens().control_height);
         let container = self.transparent_panel(parent, style)?;
         self.set_role(container, Role::MenuBar);
         let mut buttons = Vec::new();
@@ -361,7 +398,13 @@ impl Controls {
             container,
             items: buttons,
         };
-        self.bars.menus.insert(container, handle.clone());
+        self.bars.menus.insert(
+            container,
+            MenuStrip {
+                handle: handle.clone(),
+                height,
+            },
+        );
         Ok(handle)
     }
     /// Builds a command bar. Existing Editor subtrees are reparented, never
@@ -435,9 +478,9 @@ impl Controls {
         }
         style.kind = LayoutKind::Flex(Axis::Horizontal);
         style.gap = 2.0;
-        if style.height == Length::Auto {
-            style.height = Length::Px(self.theme.tokens().control_height + 8.0);
-        }
+        let mut docked_height =
+            HostHeight::new(style.height, self.theme.tokens().control_height + 8.0);
+        style.height = docked_height.resolve(self.theme.tokens().control_height + 8.0);
         let container = self.panel(parent, style)?;
         self.set_role(container, Role::ToolBar);
         self.set_automation_name(container, &key)?;
@@ -553,6 +596,7 @@ impl Controls {
                 overflow_viewer,
                 manager: None,
                 placement: BarPlacement::Top,
+                docked_height,
                 visible: true,
                 owner_hidden: false,
                 force_order: true,
@@ -744,6 +788,10 @@ impl Controls {
             .props
             .style
             .clone();
+        let mut docked_height = state.docked_height;
+        if !matches!(state.placement, BarPlacement::Floating { .. }) {
+            docked_height.observe(style.height);
+        }
         style.offset = Point::ZERO;
         match placement {
             BarPlacement::Floating {
@@ -758,11 +806,11 @@ impl Controls {
             }
             BarPlacement::Left | BarPlacement::Right => {
                 style.width = Length::Px(240.0);
-                style.height = Length::Px(self.theme.tokens().control_height + 8.0);
+                style.height = docked_height.resolve(self.theme.tokens().control_height + 8.0);
             }
             _ => {
                 style.width = Length::Percent(1.0);
-                style.height = Length::Px(self.theme.tokens().control_height + 8.0);
+                style.height = docked_height.resolve(self.theme.tokens().control_height + 8.0);
             }
         }
         self.runtime.apply(Mutation::Batch(vec![
@@ -785,6 +833,7 @@ impl Controls {
         let state = self.bars.bars.get_mut(&bar.container).unwrap();
         state.manager = Some(manager.container);
         state.placement = placement;
+        state.docked_height = docked_height;
         let owner = self.bars.managers.get_mut(&manager.container).unwrap();
         if !owner.bars.contains(&bar.container) {
             owner.bars.push(bar.container);
@@ -868,11 +917,28 @@ impl Controls {
         Ok(())
     }
     pub(super) fn sync_bars(&mut self) -> Result<(), ControlError> {
+        let menus: Vec<_> = self.bars.menus.values().cloned().collect();
+        for menu in menus {
+            let Some(node) = self.runtime.tree().node(menu.handle.container) else {
+                continue;
+            };
+            let mut height = menu.height;
+            height.observe(node.props.style.height);
+            let desired = height.resolve(self.theme.tokens().control_height);
+            if node.props.style.height != desired {
+                self.edit_props(menu.handle.container, |props| props.style.height = desired)?;
+            }
+            self.bars
+                .menus
+                .get_mut(&menu.handle.container)
+                .unwrap()
+                .height = height;
+        }
         let headers: Vec<_> = self
             .bars
             .menus
             .values()
-            .flat_map(|bar| bar.items.iter().copied())
+            .flat_map(|bar| bar.handle.items.iter().copied())
             .collect();
         for id in headers {
             let Some(control) = self.controls.get(&id) else {
@@ -915,7 +981,29 @@ impl Controls {
         }
         self.prune_bars();
         let bars: Vec<_> = self.bars.bars.values().cloned().collect();
-        for bar in bars {
+        for mut bar in bars {
+            if !matches!(bar.placement, BarPlacement::Floating { .. }) {
+                let current = self
+                    .runtime
+                    .tree()
+                    .node(bar.handle.container)
+                    .unwrap()
+                    .props
+                    .style
+                    .height;
+                bar.docked_height.observe(current);
+                let desired = bar
+                    .docked_height
+                    .resolve(self.theme.tokens().control_height + 8.0);
+                if current != desired {
+                    self.edit_props(bar.handle.container, |props| props.style.height = desired)?;
+                }
+                self.bars
+                    .bars
+                    .get_mut(&bar.handle.container)
+                    .unwrap()
+                    .docked_height = bar.docked_height;
+            }
             if let Some(manager) = bar.manager
                 && !self.bar_owner_visible(manager)
             {
@@ -1103,6 +1191,7 @@ impl Controls {
             .bars
             .menus
             .values()
+            .map(|bar| &bar.handle)
             .find(|bar| {
                 bar.items.contains(&focus)
                     || anchor.is_some_and(|anchor| bar.items.contains(&anchor))
@@ -1181,7 +1270,244 @@ fn validate_item_order(bar: &Bar, items: &[BarItemSnapshot]) -> Result<(), Contr
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{ThemeConfig, ThemeDensity, ThemeMode};
     use rust_desktop_ui_core::Modifiers;
+    fn density_theme(density: ThemeDensity) -> Theme {
+        Theme::Configured(ThemeConfig::new(ThemeMode::Light).with_density(density))
+    }
+    fn simple_menu(ui: &mut Controls, height: Length) -> MenuBar {
+        ui.menu_bar(
+            ui.root(),
+            &[MenuBarItem {
+                label: "Язык".into(),
+                entries: vec![MenuEntry::Item(MenuItem::new("Save", "save"))],
+                enabled: true,
+            }],
+            LayoutStyle {
+                height,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+    fn assert_unclipped(ui: &Controls, id: WidgetId) {
+        let bounds = ui.runtime.bounds(id).unwrap();
+        let clip = ui.runtime.clip(id).unwrap();
+        let visible = bounds.intersection(clip).unwrap();
+        assert!(
+            (visible.width - bounds.width).abs() < 0.001
+                && (visible.height - bounds.height).abs() < 0.001,
+            "{id:?}: bounds {bounds:?}, clip {clip:?}"
+        );
+    }
+
+    #[test]
+    fn automatic_bar_heights_follow_live_density_without_clipping_focus_or_replacing_items() {
+        let mut ui = Controls::new(density_theme(ThemeDensity::Comfortable)).unwrap();
+        ui.commands_mut().register("save", "Save");
+        let menu = simple_menu(&mut ui, Length::Auto);
+        let editor = ui
+            .edit_box(ui.root(), "Query", "retained", LayoutStyle::default())
+            .unwrap();
+        let bar = ui
+            .tool_bar(
+                ui.root(),
+                "commands",
+                &[
+                    ToolBarItem::command("save", "save"),
+                    ToolBarItem::editor("query", editor, 180.0),
+                ],
+                LayoutStyle::default(),
+            )
+            .unwrap();
+        let save = ui.tool_bar_item(bar, "save").unwrap();
+        for density in [
+            ThemeDensity::Comfortable,
+            ThemeDensity::Touch,
+            ThemeDensity::Compact,
+            ThemeDensity::Comfortable,
+        ] {
+            ui.set_theme(density_theme(density)).unwrap();
+            ui.runtime
+                .apply(Mutation::Focus(Some(menu.items[0])))
+                .unwrap();
+            ui.update(Size::new(900.0, 500.0)).unwrap();
+            let height = ui.theme.tokens().control_height;
+            assert_eq!(ui.runtime.bounds(menu.container).unwrap().height, height);
+            assert_eq!(
+                ui.runtime.bounds(bar.container).unwrap().height,
+                height + 8.0
+            );
+            assert_eq!(ui.tool_bar_item(bar, "save"), Some(save));
+            assert_eq!(ui.tool_bar_item(bar, "query"), Some(editor));
+            assert_eq!(ui.document(editor).unwrap().text(), "retained");
+            for id in [menu.items[0], save, editor] {
+                assert_unclipped(&ui, id);
+            }
+            let bounds = ui.runtime.bounds(menu.items[0]).unwrap();
+            let focus_bounds = Rect::new(
+                bounds.x + 2.0,
+                bounds.y + 2.0,
+                bounds.width - 4.0,
+                bounds.height - 4.0,
+            );
+            let focus = ui
+                .scene()
+                .rounded_rectangles
+                .iter()
+                .find(|shape| {
+                    shape.bounds == focus_bounds
+                        && shape.stroke_width == Some(2.0)
+                        && shape.color == ui.theme.tokens().focus
+                })
+                .unwrap();
+            assert_eq!(focus.bounds.intersection(focus.clip), Some(focus.bounds));
+            assert_eq!(ui.update(Size::new(900.0, 500.0)).unwrap().layout_passes, 0);
+        }
+        ui.update(Size::new(160.0, 500.0)).unwrap();
+        ui.activate(bar.overflow).unwrap();
+        ui.set_theme(density_theme(ThemeDensity::Touch)).unwrap();
+        ui.update(Size::new(160.0, 500.0)).unwrap();
+        assert!(ui.popup_open());
+        assert_eq!(ui.document(editor).unwrap().text(), "retained");
+        ui.close_popup().unwrap();
+        ui.set_tool_bar_visible(bar, false).unwrap();
+        ui.set_theme(density_theme(ThemeDensity::Compact)).unwrap();
+        ui.update(Size::new(900.0, 500.0)).unwrap();
+        ui.set_tool_bar_visible(bar, true).unwrap();
+        ui.update(Size::new(900.0, 500.0)).unwrap();
+        assert_eq!(ui.runtime.bounds(bar.container).unwrap().height, 36.0);
+        assert_unclipped(&ui, save);
+    }
+
+    #[test]
+    fn explicit_and_runtime_bar_heights_survive_density_and_keep_intentional_clipping() {
+        let mut ui = Controls::new(density_theme(ThemeDensity::Comfortable)).unwrap();
+        ui.commands_mut().register("save", "Save");
+        let explicit_menu = simple_menu(&mut ui, Length::Px(36.0));
+        let auto_menu = simple_menu(&mut ui, Length::Auto);
+        let explicit_bar = ui
+            .tool_bar(
+                ui.root(),
+                "explicit",
+                &[ToolBarItem::command("save", "save")],
+                LayoutStyle {
+                    height: Length::Px(20.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let auto_bar = ui
+            .tool_bar(
+                ui.root(),
+                "auto",
+                &[ToolBarItem::command("save", "save")],
+                LayoutStyle::default(),
+            )
+            .unwrap();
+        ui.update(Size::new(900.0, 500.0)).unwrap();
+        ui.edit_props(auto_menu.container, |props| {
+            props.style.height = Length::Px(71.0)
+        })
+        .unwrap();
+        ui.edit_props(auto_bar.container, |props| {
+            props.style.height = Length::Px(79.0)
+        })
+        .unwrap();
+        for density in [
+            ThemeDensity::Touch,
+            ThemeDensity::Compact,
+            ThemeDensity::Comfortable,
+        ] {
+            ui.set_theme(density_theme(density)).unwrap();
+            ui.update(Size::new(900.0, 500.0)).unwrap();
+            for (id, expected) in [
+                (explicit_menu.container, 36.0),
+                (auto_menu.container, 71.0),
+                (explicit_bar.container, 20.0),
+                (auto_bar.container, 79.0),
+            ] {
+                assert_eq!(ui.runtime.bounds(id).unwrap().height, expected);
+            }
+            let command = ui.tool_bar_item(explicit_bar, "save").unwrap();
+            let bounds = ui.runtime.bounds(command).unwrap();
+            let clip = ui.runtime.clip(command).unwrap();
+            assert_eq!(bounds.intersection(clip).unwrap().height, 20.0);
+            assert!(bounds.height > 20.0);
+        }
+    }
+
+    #[test]
+    fn floating_height_preserves_docked_auto_or_explicit_policy_through_clamping() {
+        let (mut ui, manager, bar, editor) = fixture();
+        ui.set_theme(density_theme(ThemeDensity::Comfortable))
+            .unwrap();
+        let explicit = ui
+            .tool_bar(
+                manager.top,
+                "explicit",
+                &[ToolBarItem::command("save", "save")],
+                LayoutStyle {
+                    height: Length::Px(63.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        ui.place_tool_bar(manager, explicit, BarPlacement::Top)
+            .unwrap();
+        for candidate in [bar, explicit] {
+            ui.place_tool_bar(
+                manager,
+                candidate,
+                BarPlacement::Floating {
+                    x: 0.0,
+                    y: 0.0,
+                    width: 240.0,
+                    height: 91.0,
+                },
+            )
+            .unwrap();
+        }
+        ui.set_theme(density_theme(ThemeDensity::Touch)).unwrap();
+        ui.update(Size::new(900.0, 80.0)).unwrap();
+        for candidate in [bar, explicit] {
+            assert_eq!(ui.runtime.bounds(candidate.container).unwrap().height, 80.0);
+        }
+        ui.update(Size::new(900.0, 500.0)).unwrap();
+        for candidate in [bar, explicit] {
+            assert_eq!(ui.runtime.bounds(candidate.container).unwrap().height, 91.0);
+        }
+        for placement in [
+            BarPlacement::Top,
+            BarPlacement::Bottom,
+            BarPlacement::Left,
+            BarPlacement::Right,
+        ] {
+            ui.place_tool_bar(manager, bar, placement).unwrap();
+            ui.place_tool_bar(manager, explicit, placement).unwrap();
+            ui.update(Size::new(900.0, 500.0)).unwrap();
+            assert_eq!(ui.runtime.bounds(bar.container).unwrap().height, 52.0);
+            assert_eq!(ui.runtime.bounds(explicit.container).unwrap().height, 63.0);
+            assert_eq!(ui.tool_bar_item(bar, "query"), Some(editor));
+        }
+        ui.edit_props(bar.container, |props| props.style.height = Length::Px(73.0))
+            .unwrap();
+        ui.place_tool_bar(
+            manager,
+            bar,
+            BarPlacement::Floating {
+                x: 0.0,
+                y: 0.0,
+                width: 240.0,
+                height: 91.0,
+            },
+        )
+        .unwrap();
+        ui.set_theme(density_theme(ThemeDensity::Compact)).unwrap();
+        ui.place_tool_bar(manager, bar, BarPlacement::Top).unwrap();
+        ui.update(Size::new(900.0, 500.0)).unwrap();
+        assert_eq!(ui.runtime.bounds(bar.container).unwrap().height, 73.0);
+    }
     fn fixture() -> (Controls, BarManager, ToolBar, WidgetId) {
         let mut ui = Controls::new(Theme::FluentLight).unwrap();
         ui.commands_mut().register("save", "Save");

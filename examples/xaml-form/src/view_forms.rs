@@ -200,7 +200,9 @@ impl MountedView {
             | ElementKind::ToggleButton(_)
             | ElementKind::DropDownButton(_)
             | ElementKind::SplitButton(_)
+            | ElementKind::MenuBar(_)
             | ElementKind::RibbonStatusBar(_) => 0.0,
+            ElementKind::ToolBar(_) => 8.0,
             ElementKind::CheckBox(_) | ElementKind::RadioButton(_) | ElementKind::StatusBar(_) => {
                 -4.0
             }

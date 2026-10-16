@@ -133,3 +133,115 @@ fn image_dimension_bindings_own_axes_even_when_initial_values_equal_intrinsic_si
     let rect = form.ui.runtime.bounds(id).unwrap();
     assert_eq!((rect.width, rect.height), (64.0, 64.0));
 }
+
+#[test]
+fn xaml_bar_density_changes_keep_buttons_and_focus_ring_inside_ancestor_clips() {
+    use rust_desktop_ui_core::Rect;
+    let content = r#"<StackPanel Spacing="12">
+        <MenuBar x:Name="Menu"><DropDownButton x:Name="Language" Content="Язык"><MenuItem Header="Светлая" Command="Light"/></DropDownButton></MenuBar>
+        <ToolBar x:Name="Tools" Key="document"><Button x:Name="ConfirmButton" Content="Подтвердить" Command="Confirm" Width="150"/><TextBox x:Name="Message" Text="Draft" Width="200"/></ToolBar>
+    </StackPanel>"#;
+    for density in [
+        ThemeDensity::Comfortable,
+        ThemeDensity::Touch,
+        ThemeDensity::Compact,
+    ] {
+        let mut definition = definition(content);
+        definition.density = density;
+        let mut form = Form::new(definition, false).unwrap();
+        frame(&mut form);
+        let editor = form.find_name("Message").unwrap();
+        let menu = form.find_name("Language").unwrap();
+        form.ui.set_text(editor, "Retained draft").unwrap();
+        form.ui.runtime.apply(Mutation::Focus(Some(menu))).unwrap();
+        for command in ["Touch", "Compact", "Comfortable", "Touch"] {
+            assert!(form.ui.commands_mut().activate(&command.into()));
+            frame(&mut form);
+            let expected = form.ui.theme().tokens().control_height;
+            assert_eq!(height(&form, "Menu"), expected, "{command}");
+            assert_eq!(height(&form, "Tools"), expected + 8.0, "{command}");
+            for name in ["Language", "ConfirmButton", "Message"] {
+                let id = form.find_name(name).unwrap();
+                let bounds = form.ui.runtime.bounds(id).unwrap();
+                let clip = form.ui.runtime.clip(id).unwrap();
+                assert_eq!(bounds.intersection(clip), Some(bounds), "{name}: {command}");
+                assert_eq!(bounds.height, expected, "{name}: {command}");
+            }
+            let bounds = form.ui.runtime.bounds(menu).unwrap();
+            let focus = Rect::new(
+                bounds.x + 2.0,
+                bounds.y + 2.0,
+                bounds.width - 4.0,
+                bounds.height - 4.0,
+            );
+            let ring = form
+                .ui
+                .scene()
+                .rounded_rectangles
+                .iter()
+                .find(|shape| shape.bounds == focus && shape.stroke_width == Some(2.0))
+                .expect("focused menu header must paint its complete focus ring");
+            assert_eq!(ring.bounds.intersection(ring.clip), Some(ring.bounds));
+            assert_eq!(form.ui.runtime.focused(), Some(menu));
+            assert_eq!(form.find_name("Message"), Some(editor));
+            assert_eq!(form.ui.document(editor).unwrap().text(), "Retained draft");
+        }
+    }
+}
+
+#[test]
+fn xaml_bars_preserve_explicit_bound_and_runtime_heights_when_density_changes() {
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([("BarHeight", 58.0.into())])).unwrap(),
+    ));
+    let content = r#"<StackPanel>
+        <MenuBar x:Name="ExplicitMenu" Height="20"><DropDownButton x:Name="ClippedHeader" Content="Меню"><MenuItem Header="Светлая" Command="Light"/></DropDownButton></MenuBar>
+        <MenuBar x:Name="RuntimeMenu"><DropDownButton Content="Меню"><MenuItem Header="Светлая" Command="Light"/></DropDownButton></MenuBar>
+        <MenuBar x:Name="BoundMenu" Height="{Binding BarHeight}"><DropDownButton Content="Меню"><MenuItem Header="Светлая" Command="Light"/></DropDownButton></MenuBar>
+        <ToolBar x:Name="ExplicitTools" Key="explicit" Height="62"><Button Content="Светлая" Command="Light" Width="100"/></ToolBar>
+        <ToolBar x:Name="RuntimeTools" Key="runtime"><Button Content="Светлая" Command="Light" Width="100"/></ToolBar>
+        <ToolBar x:Name="BoundTools" Key="bound" Height="{Binding BarHeight}"><Button Content="Светлая" Command="Light" Width="100"/></ToolBar>
+        <TextBox x:Name="Message"/>
+    </StackPanel>"#;
+    let mut form = Form::new_with_model(definition(content), false, Some(context.clone())).unwrap();
+    frame(&mut form);
+    for name in ["RuntimeMenu", "RuntimeTools"] {
+        let node = form.find_name(name).unwrap();
+        let mut style = form
+            .ui
+            .runtime
+            .tree()
+            .node(node)
+            .unwrap()
+            .props
+            .style
+            .clone();
+        style.height = Length::Px(73.0);
+        form.ui
+            .runtime
+            .apply(Mutation::SetStyle { node, style })
+            .unwrap();
+    }
+    for command in ["Touch", "Compact", "Comfortable"] {
+        form.ui.commands_mut().activate(&command.into());
+        frame(&mut form);
+        for (name, expected) in [
+            ("ExplicitMenu", 20.0),
+            ("ExplicitTools", 62.0),
+            ("BoundMenu", 58.0),
+            ("BoundTools", 58.0),
+            ("RuntimeMenu", 73.0),
+            ("RuntimeTools", 73.0),
+        ] {
+            assert_eq!(height(&form, name), expected, "{name}: {command}");
+        }
+        let header = form.find_name("ClippedHeader").unwrap();
+        let bounds = form.ui.runtime.bounds(header).unwrap();
+        let clip = form.ui.runtime.clip(header).unwrap();
+        assert!(bounds.intersection(clip).unwrap().height < bounds.height);
+    }
+    context.borrow_mut().set("BarHeight", 68.0.into()).unwrap();
+    frame(&mut form);
+    assert_eq!(height(&form, "BoundMenu"), 68.0);
+    assert_eq!(height(&form, "BoundTools"), 68.0);
+}
