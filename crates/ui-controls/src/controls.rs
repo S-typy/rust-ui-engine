@@ -352,6 +352,7 @@ struct Tabs {
 pub struct Controls {
     grids: HashMap<WidgetId, grid::GridState>,
     data_sources: HashMap<String, DataSourceHandle>,
+    data_wake: grid::DataWake,
     pub runtime: UiRuntime,
     layout: TaffyLayout,
     engine: TextEngine,
@@ -364,6 +365,7 @@ pub struct Controls {
     commands: CommandRegistry,
     pressed: Option<WidgetId>,
     keyboard_pressed: bool,
+    suppressed_key_text: Option<String>,
     selecting: Option<WidgetId>,
     popup: Option<popup::Popup>,
     window_focused: bool,
@@ -421,6 +423,7 @@ impl Controls {
         Ok(Self {
             grids: HashMap::new(),
             data_sources: HashMap::new(),
+            data_wake: grid::DataWake::default(),
             runtime,
             layout: TaffyLayout::new(),
             engine: TextEngine::new(),
@@ -433,6 +436,7 @@ impl Controls {
             commands: CommandRegistry::default(),
             pressed: None,
             keyboard_pressed: false,
+            suppressed_key_text: None,
             selecting: None,
             popup: None,
             window_focused: true,
@@ -1572,12 +1576,26 @@ impl Controls {
         self.preflight_tab_removal(id)?;
         self.preflight_rich_removal(id)?;
         self.runtime.apply(Mutation::Remove(id))?;
+        self.prune_removed_controls()
+    }
+    // Runtime handlers can remove subtrees through deferred commands without
+    // going through Controls::remove. Keep sidecars only for live IDs; detached
+    // controls remain live and retain their sessions for a later reparent.
+    fn prune_removed_controls(&mut self) -> Result<(), ControlError> {
+        if self
+            .controls
+            .keys()
+            .all(|id| self.runtime.tree().contains(*id))
+        {
+            return Ok(());
+        }
         self.controls
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.tabs
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.retain_rich_controls();
         self.grids.retain(|id, _| self.controls.contains_key(id));
+        self.sync_data_wakes()?;
         self.groups.retain(|id, _| self.controls.contains_key(id));
         self.retain_status_controls()?;
         if self.rich.popup.as_ref().is_some_and(|popup| {
@@ -1588,6 +1606,24 @@ impl Controls {
         }
         self.custom_scenes
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
+        self.text_layouts
+            .retain(|id, _| self.runtime.tree().contains(*id));
+        if self
+            .pressed
+            .is_some_and(|id| !self.runtime.tree().contains(id))
+        {
+            self.pressed = None;
+            self.keyboard_pressed = false;
+        }
+        self.selecting = self
+            .selecting
+            .filter(|id| self.runtime.tree().contains(*id));
+        self.observed_editor_focus = self
+            .observed_editor_focus
+            .filter(|id| self.runtime.tree().contains(*id));
+        self.scroll_drag = self
+            .scroll_drag
+            .filter(|drag| self.runtime.tree().contains(drag.id));
         self.text_changes
             .retain(|event| self.runtime.tree().node(event.id).is_some());
         self.edit_events.retain(|event| {
@@ -1626,6 +1662,9 @@ impl Controls {
         self.controls.contains_key(&id) && self.effective_enabled(id)
     }
     fn activation_available(&self, id: WidgetId) -> bool {
+        if !self.runtime.tree().is_attached(id) {
+            return false;
+        }
         let Some(control) = self.controls.get(&id) else {
             return false;
         };
@@ -1648,6 +1687,9 @@ impl Controls {
                 .is_none_or(|parent| self.effective_enabled(parent))
     }
     fn effective_enabled(&self, mut id: WidgetId) -> bool {
+        if !self.runtime.tree().is_attached(id) {
+            return false;
+        }
         loop {
             let Some(node) = self.runtime.tree().node(id) else {
                 return false;
@@ -1750,7 +1792,7 @@ impl Controls {
         // Focus may be on a nonselected member. Exclude this group for one
         // ordinary routed Tab event so either direction leaves it. If no other
         // stop exists, preserve the group's normal wrap destination.
-        let outside = self.runtime.tree().preorder().into_iter().any(|id| {
+        let outside = self.runtime.navigation_order().into_iter().any(|id| {
             self.radio_group_of(id) != Some(group)
                 && self.effective_enabled(id)
                 && self
@@ -1878,6 +1920,7 @@ impl Controls {
         self.refresh_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
+        self.prune_removed_controls()?;
         self.refresh_paints()?;
         self.sync_zoom_gesture()?;
         self.synchronize_editor_focus()?;
@@ -1935,6 +1978,7 @@ impl Controls {
         }
         self.runtime.apply(Mutation::CapturePointer(None))?;
         let report = self.runtime.dispatch(InputEvent::PointerLeft);
+        self.prune_removed_controls()?;
         self.dismiss_tooltip();
         self.scene_dirty = true;
         if let Some(error) = report.errors.into_iter().next() {
@@ -1944,12 +1988,58 @@ impl Controls {
     }
 
     pub fn dispatch(&mut self, event: InputEvent) -> Result<(), ControlError> {
+        self.suppressed_key_text = None;
         self.tooltip_before_input(&event);
         if let InputEvent::WindowFocused(focused) = &event {
             self.window_focused = *focused;
         }
         self.update(self.viewport)?;
         self.caret_visible = true;
+        // A generic drag owns this gesture. Do not also select editor text,
+        // commit/cancel its draft, or activate the source on pointer release.
+        if self.runtime.drag_session().is_some() {
+            self.pressed = None;
+            self.keyboard_pressed = false;
+            self.selecting = None;
+            self.scroll_drag = None;
+            let report = self.runtime.dispatch(event.clone());
+            self.prune_removed_controls()?;
+            if let Some(error) = report.errors.into_iter().next() {
+                return Err(error.into());
+            }
+            if matches!(event, InputEvent::WindowFocused(false)) {
+                self.cancel_preedit();
+                self.close_popup_from(0, popup::CloseReason::Unavailable)?;
+            }
+            self.synchronize_editor_focus()?;
+            self.scene_dirty = true;
+            return Ok(());
+        }
+        // Registered scopes take precedence over composite controls' local
+        // keyboard navigation, just as they do over a plain editor's defaults.
+        if self.runtime.has_shortcut(&event) {
+            let report = self.runtime.dispatch(event.clone());
+            self.prune_removed_controls()?;
+            if let Some(error) = report.errors.into_iter().next() {
+                return Err(error.into());
+            }
+            if report.default_prevented
+                && let InputEvent::KeyDown {
+                    key: Key::Character(text),
+                    modifiers,
+                    ..
+                } = &event
+                && !modifiers.control
+                && !modifiers.super_key
+                && !modifiers.alt
+            {
+                self.suppressed_key_text = Some(text.clone());
+            }
+            self.synchronize_editor_focus()?;
+            self.cancel_inactive_preedit();
+            self.scene_dirty = true;
+            return Ok(());
+        }
         if self.grid_before_input(&event)? {
             return Ok(());
         }
@@ -2010,6 +2100,19 @@ impl Controls {
         let restore_radio_stops = self.prepare_radio_tab_exit(&event)?;
         let restore_tab_stops = self.prepare_tab_exit(&event)?;
         let report = self.runtime.dispatch(event.clone());
+        self.prune_removed_controls()?;
+        if report.default_prevented
+            && let InputEvent::KeyDown {
+                key: Key::Character(text),
+                modifiers,
+                ..
+            } = &event
+            && !modifiers.control
+            && !modifiers.super_key
+            && !modifiers.alt
+        {
+            self.suppressed_key_text = Some(text.clone());
+        }
         if restore_radio_stops {
             self.refresh_radio_tab_stops()?;
         }
@@ -2080,7 +2183,8 @@ impl Controls {
                     if matches!(
                         self.controls.get(&id).map(|c| &c.kind),
                         Some(Kind::TextBox(_))
-                    ) {
+                    ) && !report.default_prevented
+                    {
                         self.edit_key(id, &key, modifiers, repeat)?;
                     } else if self.controls.get(&id).is_some_and(|c| c.kind.clickable()) {
                         if matches!(key, Key::ArrowDown | Key::ArrowUp)
@@ -2476,6 +2580,13 @@ impl Controls {
     }
     /// Insert user text or paste. Over-limit input is rejected as a whole.
     pub fn text_input(&mut self, text: &str) -> Result<(), ControlError> {
+        if self.runtime.drag_session().is_some() {
+            self.suppressed_key_text = None;
+            return Ok(());
+        }
+        if self.suppressed_key_text.take().as_deref() == Some(text) {
+            return Ok(());
+        }
         self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
@@ -2517,6 +2628,10 @@ impl Controls {
         text: &str,
         cursor: Option<(usize, usize)>,
     ) -> Result<(), ControlError> {
+        if self.runtime.drag_session().is_some() {
+            self.cancel_preedit();
+            return Ok(());
+        }
         self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
@@ -2543,6 +2658,10 @@ impl Controls {
         Ok(())
     }
     pub fn ime_commit(&mut self, text: &str) -> Result<(), ControlError> {
+        if self.runtime.drag_session().is_some() {
+            self.cancel_preedit();
+            return Ok(());
+        }
         self.dismiss_tooltip();
         self.synchronize_editor_focus()?;
         self.caret_visible = true;
@@ -2639,6 +2758,9 @@ impl Controls {
         }
     }
     pub fn caret_bounds(&self) -> Option<Rect> {
+        if self.runtime.drag_session().is_some() {
+            return None;
+        }
         let id = self.runtime.focused()?;
         if !self.is_enabled(id) {
             return None;
@@ -3564,6 +3686,49 @@ impl Controls {
         value: Option<&str>,
     ) -> Result<(), ControlError> {
         self.synchronize_editor_focus()?;
+        // Native requests may outlive the projected node or its enabled state.
+        // Validate capabilities without requiring a painted frame: applications
+        // may focus a newly mounted control before its first layout. The native
+        // projection separately checks advertised nodes and action payloads.
+        if matches!(action, SemanticAction::Activate | SemanticAction::Toggle) {
+            // The final CommandRegistry gate must run exactly once, inside
+            // activate. Building all semantics here would evaluate can_execute
+            // a second time and could change that result.
+            if !self.runtime.tree().is_attached(id)
+                || self.controls.get(&id).is_none_or(|control| {
+                    !control.kind.clickable()
+                        || (action == SemanticAction::Toggle
+                            && (control.check_state(&self.commands).is_none()
+                                || matches!(control.kind, Kind::Radio { .. })))
+                })
+                || self.rich_read_only(id)
+            {
+                return Ok(());
+            }
+        } else {
+            let supported = match action {
+                SemanticAction::Focus => self
+                    .runtime
+                    .tree()
+                    .node(id)
+                    .is_some_and(|node| node.props.focusable),
+                SemanticAction::SetValue => {
+                    self.is_text_editable(id) || self.zoom_settings(id).is_some()
+                }
+                SemanticAction::Expand | SemanticAction::Collapse => {
+                    self.expander_expanded(id).is_some()
+                        || (self.popup_expanded(id).is_some() && !self.rich_read_only(id))
+                }
+                SemanticAction::Scroll => self
+                    .controls
+                    .get(&id)
+                    .is_some_and(|control| matches!(control.kind, Kind::Scroll { .. })),
+                _ => false,
+            };
+            if !supported {
+                return Ok(());
+            }
+        }
         if !matches!(action, SemanticAction::Activate | SemanticAction::Toggle)
             && !self.is_enabled(id)
         {
@@ -3598,13 +3763,13 @@ impl Controls {
                     }
                 }
             }
-            SemanticAction::Scroll => self.scroll_to(
-                id,
-                value
-                    .unwrap_or("0")
-                    .parse()
-                    .map_err(|_| ControlError::Invalid("Invalid accessible scroll value".into()))?,
-            )?,
+            SemanticAction::Scroll => {
+                if let Ok(position) = value.unwrap_or("0").parse::<f32>()
+                    && position.is_finite()
+                {
+                    self.scroll_to(id, position)?;
+                }
+            }
         }
         self.synchronize_editor_focus()?;
         Ok(())

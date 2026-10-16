@@ -16,6 +16,97 @@ fn row(key: i64, name: &str) -> DataRow {
     )
 }
 
+#[test]
+fn collection_wakes_follow_dynamic_registration_and_independent_view_lifetimes() {
+    let source = ObservableCollection::new(
+        DataTable::new(
+            TableSchema::new(vec![FieldSchema::new("Name", FieldType::Text)]).unwrap(),
+            vec![DataRow::new(1, vec![CellValue::Text("first".into())])],
+        )
+        .unwrap(),
+    );
+    let mut context =
+        BindingContext::new(DataValue::object([("Rows", DataValue::List(vec![]))])).unwrap();
+    let counts = Rc::new(RefCell::new([0, 0]));
+    let first = counts.clone();
+    let one = context
+        .subscribe_collection_wake(move || first.borrow_mut()[0] += 1)
+        .unwrap();
+    let second = counts.clone();
+    let two = context
+        .subscribe_collection_wake(move || second.borrow_mut()[1] += 1)
+        .unwrap();
+    context
+        .register_collection("Rows", source.clone(), "Id")
+        .unwrap();
+    source
+        .update_cell(1, "Name", CellValue::Text("next".into()))
+        .unwrap();
+    assert_eq!(*counts.borrow(), [2, 2]);
+    assert_eq!(context.get("Rows[0].Name").unwrap().as_str(), Some("first"));
+    context.synchronize_collections().unwrap();
+    assert_eq!(context.get("Rows[0].Name").unwrap().as_str(), Some("next"));
+    drop(one);
+    source
+        .update_cell(1, "Name", CellValue::Text("third".into()))
+        .unwrap();
+    assert_eq!(*counts.borrow(), [2, 3]);
+    context.unregister_collection("Rows").unwrap();
+    source
+        .update_cell(1, "Name", CellValue::Text("fourth".into()))
+        .unwrap();
+    assert_eq!(*counts.borrow(), [2, 3]);
+    context
+        .register_collection("Rows", source.clone(), "Id")
+        .unwrap();
+    source
+        .update_cell(1, "Name", CellValue::Text("fifth".into()))
+        .unwrap();
+    assert_eq!(*counts.borrow(), [2, 5]);
+    drop(two);
+}
+
+#[test]
+fn exact_scalar_projections_preserve_decimal_date_time_and_binary_without_float() {
+    let schema = TableSchema::new(vec![
+        FieldSchema::new("Amount", FieldType::Decimal),
+        FieldSchema::new("Day", FieldType::Date),
+        FieldSchema::new("Time", FieldType::Time),
+        FieldSchema::new("Payload", FieldType::Binary),
+    ])
+    .unwrap();
+    let source = ObservableCollection::new(
+        DataTable::new(
+            schema,
+            vec![DataRow::new(
+                i64::MAX,
+                vec![
+                    CellValue::Decimal("9007199254740993.0000000000001".parse().unwrap()),
+                    CellValue::Date("2024-02-29".parse().unwrap()),
+                    CellValue::Time("23:59:59.123456789".parse().unwrap()),
+                    CellValue::Binary(vec![0, 128, 255]),
+                ],
+            )],
+        )
+        .unwrap(),
+    );
+    let mut context =
+        BindingContext::new(DataValue::object([("Rows", DataValue::List(vec![]))])).unwrap();
+    context.register_collection("Rows", source, "Id").unwrap();
+    for (field, expected) in [
+        ("Amount", "9007199254740993.0000000000001"),
+        ("Day", "2024-02-29"),
+        ("Time", "23:59:59.123456789"),
+        ("Payload", "0x0080FF"),
+        ("Id", "9223372036854775807"),
+    ] {
+        assert_eq!(
+            context.get(&format!("Rows[0].{field}")).unwrap().as_str(),
+            Some(expected)
+        );
+    }
+}
+
 fn setup(
     rows: Vec<DataRow>,
 ) -> (

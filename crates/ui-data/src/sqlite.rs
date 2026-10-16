@@ -140,6 +140,11 @@ impl DataAdapter for SqliteAdapter {
         {
             return Err(DataError::Capacity("cell text limit exceeded".into()));
         }
+        if let CellValue::Binary(bytes) = value
+            && bytes.len() > self.limits.max_binary_bytes
+        {
+            return Err(DataError::Capacity("cell binary limit exceeded".into()));
+        }
         let sql = format!(
             "UPDATE {} SET {} = ?1 WHERE {} = ?2 AND {} IS ?3",
             quote(&self.config.table),
@@ -196,6 +201,10 @@ fn sql_value(value: &CellValue) -> Value {
         CellValue::Integer(value) => Value::Integer(*value),
         CellValue::Real(value) => Value::Real(*value),
         CellValue::Text(value) => Value::Text(value.clone()),
+        CellValue::Decimal(value) => Value::Text(value.to_string()),
+        CellValue::Date(value) => Value::Text(value.to_string()),
+        CellValue::Time(value) => Value::Text(value.to_string()),
+        CellValue::Binary(value) => Value::Blob(value.clone()),
     }
 }
 
@@ -256,24 +265,74 @@ fn read_value(
         (FieldType::Bool, ValueRef::Integer(value @ (0 | 1))) => CellValue::Bool(value != 0),
         (FieldType::Integer, ValueRef::Integer(value)) => CellValue::Integer(value),
         (FieldType::Real, ValueRef::Real(value)) if value.is_finite() => CellValue::Real(value),
+        (FieldType::Binary, ValueRef::Blob(value)) => {
+            charge_payload(
+                bytes,
+                value.len(),
+                limits.max_binary_bytes,
+                limits.max_bytes,
+            )?;
+            CellValue::Binary(value.to_vec())
+        }
+        (FieldType::Decimal | FieldType::Date | FieldType::Time, ValueRef::Text(value)) => {
+            // Canonical ASCII storage avoids both affinity rounding and ambiguity
+            // in the SQL expected-value predicate (e.g. "1.00" versus "1").
+            // All supported scalar encodings fit in 70 bytes.
+            if value.len() > 70 {
+                return Err(invalid());
+            }
+            let text = std::str::from_utf8(value).map_err(|_| invalid())?;
+            let (value, canonical) = match field.kind {
+                FieldType::Decimal => {
+                    let value: crate::DecimalValue = text.parse()?;
+                    (CellValue::Decimal(value), value.to_string())
+                }
+                FieldType::Date => {
+                    let value: crate::DateValue = text.parse()?;
+                    (CellValue::Date(value), value.to_string())
+                }
+                FieldType::Time => {
+                    let value: crate::TimeValue = text.parse()?;
+                    (CellValue::Time(value), value.to_string())
+                }
+                _ => unreachable!(),
+            };
+            if canonical != text {
+                return Err(DataError::Validation(format!(
+                    "SQLite field {} requires canonical scalar text",
+                    field.name
+                )));
+            }
+            value
+        }
         (FieldType::Text, ValueRef::Text(value)) => {
-            if value.len() > limits.max_text_bytes {
-                return Err(DataError::Capacity(
-                    "SQLite text byte limit exceeded".into(),
-                ));
-            }
-            *bytes = bytes
-                .checked_add(value.len())
-                .ok_or_else(|| DataError::Capacity("size overflow".into()))?;
-            if *bytes > limits.max_bytes {
-                return Err(DataError::Capacity(
-                    "SQLite snapshot byte limit exceeded".into(),
-                ));
-            }
+            charge_payload(bytes, value.len(), limits.max_text_bytes, limits.max_bytes)?;
             CellValue::Text(std::str::from_utf8(value).map_err(|_| invalid())?.into())
         }
         _ => return Err(invalid()),
     })
+}
+
+fn charge_payload(
+    bytes: &mut usize,
+    size: usize,
+    cell_limit: usize,
+    table_limit: usize,
+) -> Result<(), DataError> {
+    if size > cell_limit {
+        return Err(DataError::Capacity(
+            "SQLite cell byte limit exceeded".into(),
+        ));
+    }
+    *bytes = bytes
+        .checked_add(size)
+        .ok_or_else(|| DataError::Capacity("size overflow".into()))?;
+    if *bytes > table_limit {
+        return Err(DataError::Capacity(
+            "SQLite snapshot byte limit exceeded".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn read_table(

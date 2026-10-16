@@ -1,10 +1,15 @@
 use std::{
-    cell::RefCell,
-    collections::{HashSet, VecDeque},
-    rc::Rc,
+    cell::{Cell, RefCell},
+    collections::{BTreeMap, HashSet, VecDeque},
+    fmt,
+    rc::{Rc, Weak},
 };
 
-use crate::{CellValue, DataError, DataRow, DataTable};
+use crate::{CellValue, DataError, DataRow, DataTable, TableSchema};
+
+#[path = "observable_list.rs"]
+mod observable_list;
+pub use observable_list::*;
 
 /// Maximum number of operations in one atomic collection mutation.
 pub const MAX_COLLECTION_BATCH_OPERATIONS: usize = 1024;
@@ -14,6 +19,162 @@ pub const MAX_COLLECTION_BATCH_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_CHANGE_REVISIONS: usize = 256;
 /// Retained change records, without copies of row or cell values.
 pub const MAX_CHANGE_RECORDS: usize = 4096;
+/// Maximum simultaneously registered wake callbacks per collection.
+pub const MAX_COLLECTION_SUBSCRIPTIONS: usize = 1024;
+/// Bound callback-triggered commits in one synchronous notification delivery.
+pub const MAX_REENTRANT_COLLECTION_COMMITS: usize = 1024;
+
+struct Observer {
+    active: Cell<bool>,
+    callback: Box<dyn Fn(u64)>,
+}
+
+/// A wake hint is separate from the journal: each consumer owns its cursor.
+/// Callbacks are never invoked with a collection or registry borrow held.
+#[derive(Default)]
+pub(crate) struct NotificationHub {
+    observers: RefCell<BTreeMap<u64, Rc<Observer>>>,
+    next_id: Cell<u64>,
+    dispatching: Cell<bool>,
+    pending: Cell<Option<u64>>,
+    reentrant_commits: Cell<usize>,
+}
+
+impl fmt::Debug for NotificationHub {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NotificationHub")
+            .field("observers", &self.observers.borrow().len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl NotificationHub {
+    /// A deferred-update consumer already has a pending update once called.
+    /// Reentrant wake hints can merge into that update without another callback
+    /// round. Do not use this delivery mode for collection change callbacks,
+    /// whose consumers may synchronously advance their own journal cursors.
+    pub(crate) fn notify_coalesced(&self, revision: u64) {
+        if !self.dispatching.get() {
+            self.notify(revision);
+        }
+    }
+
+    fn before_commit(&self) -> Result<(), DataError> {
+        if self.dispatching.get() {
+            let count = self.reentrant_commits.get();
+            if count >= MAX_REENTRANT_COLLECTION_COMMITS {
+                return Err(DataError::Capacity(
+                    "reentrant collection commit count exceeded".into(),
+                ));
+            }
+            self.reentrant_commits.set(count + 1);
+        }
+        Ok(())
+    }
+    pub(crate) fn subscribe(
+        self: &Rc<Self>,
+        callback: impl Fn(u64) + 'static,
+    ) -> Result<CollectionSubscription, DataError> {
+        let mut observers = self.observers.borrow_mut();
+        if observers.len() >= MAX_COLLECTION_SUBSCRIPTIONS {
+            return Err(DataError::Capacity(
+                "collection subscription count exceeded".into(),
+            ));
+        }
+        let id = self
+            .next_id
+            .get()
+            .checked_add(1)
+            .ok_or(DataError::RevisionOverflow)?;
+        self.next_id.set(id);
+        observers.insert(
+            id,
+            Rc::new(Observer {
+                active: Cell::new(true),
+                callback: Box::new(callback),
+            }),
+        );
+        Ok(CollectionSubscription {
+            hub: Rc::downgrade(self),
+            id: Cell::new(Some(id)),
+        })
+    }
+
+    fn unsubscribe(&self, id: u64) {
+        // Drop the closure outside the borrow, including its captured tokens.
+        let observer = self.observers.borrow_mut().remove(&id);
+        if let Some(observer) = &observer {
+            observer.active.set(false);
+        }
+        drop(observer);
+    }
+
+    pub(crate) fn notify(&self, revision: u64) {
+        self.pending
+            .set(Some(self.pending.get().unwrap_or(revision).max(revision)));
+        if self.dispatching.replace(true) {
+            return;
+        }
+        self.reentrant_commits.set(0);
+        struct DispatchGuard<'a>(&'a Cell<bool>);
+        impl Drop for DispatchGuard<'_> {
+            fn drop(&mut self) {
+                self.0.set(false);
+            }
+        }
+        let _guard = DispatchGuard(&self.dispatching);
+        let mut first_panic = None;
+        while let Some(revision) = self.pending.take() {
+            let observers: Vec<_> = self.observers.borrow().values().cloned().collect();
+            for observer in observers {
+                if observer.active.get() {
+                    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        (observer.callback)(revision)
+                    }));
+                    if let Err(payload) = result
+                        && first_panic.is_none()
+                    {
+                        first_panic = Some(payload);
+                    }
+                }
+            }
+        }
+        if let Some(payload) = first_panic {
+            std::panic::resume_unwind(payload);
+        }
+    }
+}
+
+/// An owning registration, not an owning collection reference. Dropping this
+/// token or calling `unsubscribe` immediately stops future callbacks. Keep it
+/// alive for as long as its consumer needs wake notifications.
+#[must_use = "dropping the subscription immediately unsubscribes its callback"]
+#[derive(Debug)]
+pub struct CollectionSubscription {
+    hub: Weak<NotificationHub>,
+    id: Cell<Option<u64>>,
+}
+
+impl CollectionSubscription {
+    pub fn unsubscribe(&self) {
+        if let (Some(id), Some(hub)) = (self.id.take(), self.hub.upgrade()) {
+            hub.unsubscribe(id);
+        }
+    }
+    pub fn is_active(&self) -> bool {
+        self.id.get().is_some_and(|id| {
+            self.hub
+                .upgrade()
+                .is_some_and(|hub| hub.observers.borrow().contains_key(&id))
+        })
+    }
+}
+
+impl Drop for CollectionSubscription {
+    fn drop(&mut self) {
+        self.unsubscribe();
+    }
+}
 
 /// Metadata describing a committed change. Collection indices describe the
 /// sequential operations in that batch. Source indices describe its query view.
@@ -130,11 +291,29 @@ struct CollectionState {
 }
 
 /// Cloneable application-owned collection with atomic, bounded notifications.
-/// Mutations and polling run on the owning thread; no callbacks, worker or I/O
-/// run from getters. The schema and capacity limits are fixed at construction.
+/// Mutations, cursors and callbacks run on the owning thread. Reads do not run
+/// callbacks, workers or I/O. Capacity limits are fixed at construction; schema
+/// changes require the explicit atomic `replace_schema` operation.
 #[derive(Clone, Debug)]
 pub struct ObservableCollection {
     state: Rc<RefCell<CollectionState>>,
+    notifications: Rc<NotificationHub>,
+}
+
+/// Non-owning handle suitable for capture by a collection's own callback.
+#[derive(Clone, Debug)]
+pub struct WeakObservableCollection {
+    state: Weak<RefCell<CollectionState>>,
+    notifications: Weak<NotificationHub>,
+}
+
+impl WeakObservableCollection {
+    pub fn upgrade(&self) -> Option<ObservableCollection> {
+        Some(ObservableCollection {
+            state: self.state.upgrade()?,
+            notifications: self.notifications.upgrade()?,
+        })
+    }
 }
 
 /// Compatibility name for the application-owned observable collection handle.
@@ -148,7 +327,31 @@ impl ObservableCollection {
                 revision: 0,
                 journal: ChangeJournal::default(),
             })),
+            notifications: Rc::new(NotificationHub::default()),
         }
+    }
+    pub fn downgrade(&self) -> WeakObservableCollection {
+        WeakObservableCollection {
+            state: Rc::downgrade(&self.state),
+            notifications: Rc::downgrade(&self.notifications),
+        }
+    }
+    /// Subscribe to committed revisions. There is no initial callback. The
+    /// callback is a wake hint; use `changes_since` with your own cursor for
+    /// changes. Reentrant mutations commit immediately and queue another round
+    /// after the current observer round; multiple such commits coalesce into
+    /// the latest revision. Subscriptions added during a round start with the
+    /// next round, and removal takes effect immediately. Callback-triggered
+    /// writes are limited to `MAX_REENTRANT_COLLECTION_COMMITS` per delivery;
+    /// further writes fail atomically with `DataError::Capacity`, preventing
+    /// unbounded feedback loops. Handle mutation errors inside callbacks.
+    /// A callback panic is resumed after notifying other observers; the data
+    /// remains committed and subsequent notifications remain usable.
+    pub fn subscribe(
+        &self,
+        callback: impl Fn(u64) + 'static,
+    ) -> Result<CollectionSubscription, DataError> {
+        self.notifications.subscribe(callback)
     }
     pub fn snapshot(&self) -> DataTable {
         self.state.borrow().table.clone()
@@ -196,6 +399,29 @@ impl ObservableCollection {
             value,
         }])
     }
+    /// Adapter writes return their own accepted snapshot/cursor even when a
+    /// subscriber immediately performs another mutation during notification.
+    pub(crate) fn update_cell_expected_snapshot(
+        &self,
+        key: i64,
+        field: &str,
+        expected: &CellValue,
+        value: CellValue,
+    ) -> Result<(DataTable, u64), DataError> {
+        let (_, snapshot, revision) = self.batch_inner(
+            vec![CollectionMutation::UpdateCellExpected {
+                key,
+                field: field.into(),
+                expected: expected.clone(),
+                value,
+            }],
+            true,
+        )?;
+        Ok((
+            snapshot.expect("adapter write requested a snapshot"),
+            revision,
+        ))
+    }
     pub fn clear(&self) -> Result<bool, DataError> {
         self.batch(vec![CollectionMutation::Clear])
     }
@@ -212,22 +438,69 @@ impl ObservableCollection {
         self.reset(table.rows().to_vec())
     }
 
+    /// Replace schema and rows as one validated reset, preserving this
+    /// collection's limits. No implicit conversion or partial migration occurs.
+    pub fn replace_schema(
+        &self,
+        schema: TableSchema,
+        rows: Vec<DataRow>,
+    ) -> Result<bool, DataError> {
+        let mut state = self.state.borrow_mut();
+        let table = DataTable::with_limits(schema, rows, state.table.limits())?;
+        if state.table == table {
+            return Ok(false);
+        }
+        let revision = state
+            .revision
+            .checked_add(1)
+            .ok_or(DataError::RevisionOverflow)?;
+        self.notifications.before_commit()?;
+        state.table = table;
+        state.revision = revision;
+        state.journal.push(revision, vec![DataChange::Reset]);
+        drop(state);
+        self.notifications.notify(revision);
+        Ok(true)
+    }
+
     /// Publishes all operations or none. Empty and net-unchanged batches do not
     /// increment the revision. Each intermediate row count and incoming payload
     /// are bounded; the final candidate validates types, keys and total bytes.
     pub fn batch(&self, operations: Vec<CollectionMutation>) -> Result<bool, DataError> {
+        self.batch_inner(operations, false)
+            .map(|(changed, _, _)| changed)
+    }
+
+    fn batch_inner(
+        &self,
+        operations: Vec<CollectionMutation>,
+        capture: bool,
+    ) -> Result<(bool, Option<DataTable>, u64), DataError> {
         if operations.len() > MAX_COLLECTION_BATCH_OPERATIONS {
             return Err(DataError::Capacity(
                 "collection batch operation count exceeded".into(),
             ));
         }
         if operations.is_empty() {
-            return Ok(false);
+            let state = self.state.borrow();
+            return Ok((false, capture.then(|| state.table.clone()), state.revision));
         }
         let mut state = self.state.borrow_mut();
         validate_payload(&state.table, &operations)?;
-        let mut rows = state.table.rows().to_vec();
+        // A leading replacement discards the original content; do not clone it.
+        let replaces_all = matches!(
+            operations.first(),
+            Some(CollectionMutation::Clear | CollectionMutation::Reset(_))
+        );
+        let mut rows = if replaces_all {
+            Vec::new()
+        } else {
+            state.table.rows().to_vec()
+        };
         let mut changes = Vec::new();
+        if replaces_all && !state.table.rows().is_empty() {
+            changes.push(DataChange::Reset);
+        }
         for operation in operations {
             match operation {
                 CollectionMutation::Add(row) => {
@@ -312,19 +585,24 @@ impl ObservableCollection {
                 }
             }
         }
+        // No-op batches do not rebuild the table index or revalidate every cell.
+        if state.table.rows() == rows {
+            return Ok((false, capture.then(|| state.table.clone()), state.revision));
+        }
         let table =
             DataTable::with_limits(state.table.schema().clone(), rows, state.table.limits())?;
-        if state.table == table {
-            return Ok(false);
-        }
         let revision = state
             .revision
             .checked_add(1)
             .ok_or(DataError::RevisionOverflow)?;
+        self.notifications.before_commit()?;
         state.table = table;
         state.revision = revision;
         state.journal.push(revision, changes);
-        Ok(true)
+        let snapshot = capture.then(|| state.table.clone());
+        drop(state);
+        self.notifications.notify(revision);
+        Ok((true, snapshot, revision))
     }
 }
 
@@ -461,15 +739,24 @@ fn charge_payload(bytes: &mut usize, amount: usize) -> Result<(), DataError> {
 }
 
 fn charge_value(table: &DataTable, bytes: &mut usize, value: &CellValue) -> Result<(), DataError> {
-    let text_bytes = if let CellValue::Text(text) = value {
-        text.len()
-    } else {
-        0
+    let payload_bytes = match value {
+        CellValue::Text(text) => {
+            if text.len() > table.limits().max_text_bytes {
+                return Err(DataError::Capacity("collection cell text exceeded".into()));
+            }
+            text.len()
+        }
+        CellValue::Binary(value) => {
+            if value.len() > table.limits().max_binary_bytes {
+                return Err(DataError::Capacity(
+                    "collection cell binary exceeded".into(),
+                ));
+            }
+            value.len()
+        }
+        _ => 0,
     };
-    if text_bytes > table.limits().max_text_bytes {
-        return Err(DataError::Capacity("collection cell text exceeded".into()));
-    }
-    charge_payload(bytes, size_of::<CellValue>().saturating_add(text_bytes))
+    charge_payload(bytes, size_of::<CellValue>().saturating_add(payload_bytes))
 }
 
 fn validate_row(table: &DataTable, row: &DataRow) -> Result<(), DataError> {

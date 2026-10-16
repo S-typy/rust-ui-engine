@@ -247,7 +247,10 @@ impl GridAccessibility {
                 if let Some(editor) = ui.grid_editor(key.widget) {
                     match ui.set_text(editor, value) {
                         Ok(()) => {}
-                        Err(ControlError::Invalid(_)) => {
+                        // Whole-value requests can exceed the editor's byte or
+                        // grapheme limits. They are rejected input, not a host
+                        // failure; discard the temporary cell session.
+                        Err(ControlError::Invalid(_) | ControlError::Edit(_)) => {
                             ignore_invalid(ui.cancel_grid_edit(key.widget))?;
                             return Ok(true);
                         }

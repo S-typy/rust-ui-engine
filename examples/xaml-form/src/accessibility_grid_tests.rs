@@ -124,6 +124,86 @@ fn node(tree: &accesskit::TreeUpdate, id: NodeId) -> &Node {
 }
 
 #[test]
+fn set_value_limit_rejection_cancels_session_without_failing_the_host() {
+    let mut fixture = Fixture::new(2);
+    fixture.tree();
+    fixture
+        .ui
+        .begin_grid_edit(fixture.grid, key(0), "Amount")
+        .unwrap();
+    let editor = fixture.ui.grid_editor(fixture.grid).unwrap();
+    fixture.ui.cancel_grid_edit(fixture.grid).unwrap();
+    fixture.ui.set_max_length(editor, Some(3)).unwrap();
+    fixture.tree();
+    let cell = fixture.id(key(0), Some(1));
+    let revision = fixture.source.borrow().revision();
+    fixture.action(
+        cell,
+        Action::SetValue,
+        Some(ActionData::Value("1234".into())),
+    );
+    assert_eq!(fixture.ui.grid_editor(fixture.grid), None);
+    assert_eq!(fixture.ui.document(editor).unwrap().text(), "0");
+    assert_eq!(fixture.source.borrow().revision(), revision);
+    assert_eq!(
+        fixture.source.borrow().value(key(0), "Amount"),
+        Some(&CellValue::Integer(0))
+    );
+    fixture.action(
+        cell,
+        Action::SetValue,
+        Some(ActionData::Value("123".into())),
+    );
+    assert_eq!(
+        fixture.source.borrow().value(key(0), "Amount"),
+        Some(&CellValue::Integer(123))
+    );
+    assert_eq!(fixture.ui.grid_editor(fixture.grid), None);
+}
+
+#[test]
+fn stale_set_value_cannot_open_an_oversized_binary_editor() {
+    let mut fixture = Fixture::new(2);
+    fixture.tree();
+    let cell = fixture.id(key(0), Some(0));
+    let payload = vec![0xab; 600 * 1024];
+    let table = DataTable::new(
+        TableSchema::new(vec![
+            FieldSchema::new("Name", FieldType::Binary),
+            FieldSchema::new("Amount", FieldType::Integer),
+            FieldSchema::new("Locked", FieldType::Text),
+        ])
+        .unwrap(),
+        vec![DataRow::new(
+            key(0),
+            vec![
+                CellValue::Binary(payload.clone()),
+                CellValue::Integer(0),
+                CellValue::Text("Fixed".into()),
+            ],
+        )],
+    )
+    .unwrap();
+    fixture
+        .source
+        .borrow_mut()
+        .replace_adapter(CollectionAdapter::new(table), DataQuery::default())
+        .unwrap();
+    let revision = fixture.source.borrow().revision();
+    fixture.action(
+        cell,
+        Action::SetValue,
+        Some(ActionData::Value("0x00".into())),
+    );
+    assert_eq!(fixture.ui.grid_editor(fixture.grid), None);
+    assert_eq!(fixture.source.borrow().revision(), revision);
+    assert_eq!(
+        fixture.source.borrow().value(key(0), "Name"),
+        Some(&CellValue::Binary(payload))
+    );
+}
+
+#[test]
 fn grid_projects_headers_visible_rows_typed_text_and_read_only_cells() {
     let mut fixture = Fixture::new(10_000);
     let tree = fixture.tree();

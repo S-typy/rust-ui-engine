@@ -1,5 +1,7 @@
 use std::{collections::HashMap, error::Error, fmt};
 
+use crate::{DateValue, DecimalValue, TimeValue};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DataError {
     Schema(String),
@@ -39,6 +41,10 @@ pub enum CellValue {
     Integer(i64),
     Real(f64),
     Text(String),
+    Decimal(DecimalValue),
+    Date(DateValue),
+    Time(TimeValue),
+    Binary(Vec<u8>),
 }
 
 impl CellValue {
@@ -49,6 +55,18 @@ impl CellValue {
             Self::Integer(value) => value.to_string(),
             Self::Real(value) => value.to_string(),
             Self::Text(value) => value.clone(),
+            Self::Decimal(value) => value.to_string(),
+            Self::Date(value) => value.display(),
+            Self::Time(value) => value.display(),
+            Self::Binary(value) => {
+                use std::fmt::Write;
+                let mut text = String::with_capacity(2 + value.len() * 2);
+                text.push_str("0x");
+                for byte in value {
+                    write!(text, "{byte:02X}").expect("writing to String cannot fail");
+                }
+                text
+            }
         }
     }
 }
@@ -59,6 +77,10 @@ pub enum FieldType {
     Integer,
     Real,
     Text,
+    Decimal,
+    Date,
+    Time,
+    Binary,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -88,6 +110,10 @@ impl FieldSchema {
             (FieldType::Bool, CellValue::Bool(_))
             | (FieldType::Integer, CellValue::Integer(_))
             | (FieldType::Text, CellValue::Text(_)) => true,
+            (FieldType::Decimal, CellValue::Decimal(_))
+            | (FieldType::Date, CellValue::Date(_))
+            | (FieldType::Time, CellValue::Time(_))
+            | (FieldType::Binary, CellValue::Binary(_)) => true,
             (FieldType::Real, CellValue::Real(value)) => value.is_finite(),
             _ => false,
         };
@@ -117,6 +143,41 @@ impl FieldSchema {
                 FieldType::Text => CellValue::Text(text.into()),
                 FieldType::Integer => CellValue::Integer(trimmed.parse().map_err(|_| invalid())?),
                 FieldType::Real => CellValue::Real(trimmed.parse().map_err(|_| invalid())?),
+                FieldType::Decimal => CellValue::Decimal(trimmed.parse()?),
+                FieldType::Date => CellValue::Date(DateValue::parse_display(trimmed)?),
+                FieldType::Time => CellValue::Time(trimmed.parse()?),
+                FieldType::Binary => {
+                    let digits = trimmed
+                        .strip_prefix("0x")
+                        .or_else(|| trimmed.strip_prefix("0X"))
+                        .ok_or_else(invalid)?;
+                    if !digits.len().is_multiple_of(2)
+                        || !digits.bytes().all(|b| b.is_ascii_hexdigit())
+                    {
+                        return Err(invalid());
+                    }
+                    if digits.len() / 2 > DataLimits::default().max_binary_bytes {
+                        return Err(DataError::Capacity(
+                            "binary cell byte limit exceeded".into(),
+                        ));
+                    }
+                    CellValue::Binary(
+                        digits
+                            .as_bytes()
+                            .chunks_exact(2)
+                            .map(|pair| {
+                                fn digit(byte: u8) -> u8 {
+                                    if byte.is_ascii_digit() {
+                                        byte - b'0'
+                                    } else {
+                                        byte.to_ascii_lowercase() - b'a' + 10
+                                    }
+                                }
+                                digit(pair[0]) * 16 + digit(pair[1])
+                            })
+                            .collect(),
+                    )
+                }
                 FieldType::Bool => CellValue::Bool(match trimmed.to_lowercase().as_str() {
                     "true" | "1" | "да" => true,
                     "false" | "0" | "нет" => false,
@@ -130,13 +191,14 @@ impl FieldSchema {
 }
 
 /// Limits may be lowered, not raised above the implementation's hard bounds.
-/// `max_bytes` counts UTF-8 payloads, cells, keys and source row indices. It is
+/// `max_bytes` counts UTF-8/binary payloads, cells, keys and source row indices. It is
 /// not a measurement of allocator overhead or temporary candidate snapshots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DataLimits {
     pub max_rows: usize,
     pub max_fields: usize,
     pub max_text_bytes: usize,
+    pub max_binary_bytes: usize,
     pub max_bytes: usize,
 }
 
@@ -146,6 +208,7 @@ impl Default for DataLimits {
             max_rows: 100_000,
             max_fields: 128,
             max_text_bytes: 1024 * 1024,
+            max_binary_bytes: 1024 * 1024,
             max_bytes: 64 * 1024 * 1024,
         }
     }
@@ -158,6 +221,7 @@ impl DataLimits {
             || self.max_fields == 0
             || self.max_fields > max.max_fields
             || self.max_text_bytes > max.max_text_bytes
+            || self.max_binary_bytes > max.max_binary_bytes
             || self.max_bytes > max.max_bytes
         {
             return Err(DataError::Capacity("limits exceed hard bounds".into()));
@@ -265,15 +329,24 @@ impl DataTable {
                 bytes = bytes
                     .checked_add(std::mem::size_of::<CellValue>())
                     .ok_or_else(|| DataError::Capacity("size overflow".into()))?;
-                if let CellValue::Text(text) = value {
-                    if text.len() > limits.max_text_bytes {
+                let payload = match value {
+                    CellValue::Text(text) => {
+                        Some((text.len(), limits.max_text_bytes, "UTF-8 text"))
+                    }
+                    CellValue::Binary(bytes) => {
+                        Some((bytes.len(), limits.max_binary_bytes, "binary"))
+                    }
+                    _ => None,
+                };
+                if let Some((size, limit, kind)) = payload {
+                    if size > limit {
                         return Err(DataError::Capacity(format!(
-                            "text in {} exceeds UTF-8 byte limit",
+                            "{kind} in {} exceeds byte limit",
                             field.name
                         )));
                     }
                     bytes = bytes
-                        .checked_add(text.len())
+                        .checked_add(size)
                         .ok_or_else(|| DataError::Capacity("size overflow".into()))?;
                 }
             }

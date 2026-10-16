@@ -1,15 +1,12 @@
 use crate::{
-    ClipboardRequest, DesktopApp, EventResponse, PlatformEvent, RunOptions, WindowChrome,
-    chrome::NativeChrome, desktop, input,
+    AccessibilitySnapshot, AppWaker, ClipboardRequest, DesktopApp, EventResponse, PlatformEvent,
+    RunOptions, WindowChrome, chrome::NativeChrome, desktop, input, wake::HostEvent,
 };
-use accesskit::{Node, NodeId, TreeId};
-use accesskit_winit::{
-    Adapter, Event as AccessibilityEvent, WindowEvent as AccessibilityWindowEvent,
-};
+use accesskit_winit::{Adapter, WindowEvent as AccessibilityWindowEvent};
 use rust_desktop_ui_core::{InputEvent, Modifiers, Point, Size};
 use rust_desktop_ui_render_wgpu::{GpuRenderer, RenderOutcome, SkipReason};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::VecDeque,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -44,7 +41,7 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
     if options.min_size.is_some_and(|size| !size.is_valid()) {
         return Err("Minimum window dimensions must be finite and nonnegative".into());
     }
-    let event_loop = EventLoop::<AccessibilityEvent>::with_user_event()
+    let event_loop = EventLoop::<HostEvent>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
     let proxy = event_loop.create_proxy();
@@ -54,11 +51,12 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
         options,
         proxy,
         window: None,
+        app_waker: None,
         chrome: None,
         capture: None,
         renderer: None,
         adapter: None,
-        accessible_nodes: HashMap::new(),
+        accessible_nodes: AccessibilitySnapshot::default(),
         clipboard: None,
         modifiers: Modifiers::default(),
         cursor: (0.0, 0.0),
@@ -75,19 +73,20 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
         failure: None,
     };
     event_loop.run_app(&mut host).map_err(|e| e.to_string())?;
-    host.failure.map_or(Ok(()), Err)
+    host.failure.take().map_or(Ok(()), Err)
 }
 
 struct Host<A> {
     app: A,
     options: RunOptions,
-    proxy: EventLoopProxy<AccessibilityEvent>,
+    proxy: EventLoopProxy<HostEvent>,
+    app_waker: Option<AppWaker>,
     window: Option<Arc<Window>>,
     chrome: Option<NativeChrome>,
     capture: Option<desktop::CaptureObserver>,
     renderer: Option<GpuRenderer>,
     adapter: Option<Adapter>,
-    accessible_nodes: HashMap<NodeId, Node>,
+    accessible_nodes: AccessibilitySnapshot,
     clipboard: Option<arboard::Clipboard>,
     modifiers: Modifiers,
     cursor: (f64, f64),
@@ -102,6 +101,14 @@ struct Host<A> {
     frames: u64,
     recoveries: u8,
     failure: Option<String>,
+}
+
+impl<A> Drop for Host<A> {
+    fn drop(&mut self) {
+        if let Some(waker) = &self.app_waker {
+            waker.deactivate();
+        }
+    }
 }
 
 impl<A: DesktopApp> Host<A> {
@@ -271,7 +278,10 @@ impl<A: DesktopApp> Host<A> {
             self.fail(event_loop, error);
             return;
         }
-        self.publish_accessibility(scale as f32);
+        if let Err(error) = self.publish_accessibility(scale as f32) {
+            self.fail(event_loop, error);
+            return;
+        }
         self.sync_ime(event_loop);
         let caret = self.app.ime_cursor();
         if let Some(caret) = caret {
@@ -298,6 +308,7 @@ impl<A: DesktopApp> Host<A> {
                 self.recoveries = 0;
                 self.retry_at = None;
                 let stats = renderer.stats();
+                self.app.frame_presented(stats);
                 let title = if self.options.show_render_stats {
                     format!(
                         "{} | frames={} glyphs={} missing={}",
@@ -380,30 +391,31 @@ impl<A: DesktopApp> Host<A> {
             .map(|delay| Instant::now() + delay.max(Duration::from_millis(1)));
     }
 
-    fn publish_accessibility(&mut self, scale: f32) {
+    fn publish_accessibility(&mut self, scale: f32) -> Result<(), String> {
         let Some(adapter) = &mut self.adapter else {
-            return;
+            return Ok(());
         };
         let app = &mut self.app;
         let previous = &mut self.accessible_nodes;
-        adapter.update_if_active(|| {
-            let mut update = app.accessibility(scale);
-            let complete: HashMap<_, _> = update.nodes.iter().cloned().collect();
-            update
-                .nodes
-                .retain(|(id, node)| previous.get(id) != Some(node));
-            *previous = complete;
-            update
+        let mut error = None;
+        adapter.update_if_active(|| match previous.update(app.accessibility(scale)) {
+            Ok(update) => update,
+            Err(message) => {
+                error = Some(message);
+                previous.unchanged()
+            }
         });
+        error.map_or(Ok(()), Err)
     }
 }
 
-impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
+impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
         let mut attributes = Window::default_attributes()
+            .with_active(self.options.activate)
             .with_title(self.app.title())
             .with_inner_size(LogicalSize::new(self.options.width, self.options.height))
             .with_visible(false);
@@ -431,20 +443,30 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
             }
         }
         // AccessKit requires creating its adapter before the native window becomes visible.
-        self.adapter = Some(Adapter::with_event_loop_proxy(
+        let waker = AppWaker::for_window(self.proxy.clone(), window.id());
+        self.adapter = Some(crate::wake::accessibility_adapter(
             event_loop,
             &window,
             self.proxy.clone(),
+            &waker,
         ));
         self.accessible_nodes.clear();
+        self.app.set_waker(Some(waker.clone()));
+        self.app_waker = Some(waker);
         window.set_visible(true);
+        self.focused = window.has_focus();
         self.window = Some(window);
+        dispatch_focus_transition(self.focused, |event| self.dispatch(event_loop, event));
         self.app.window_placement_applied(0);
         self.geometry_changed();
         self.initialize_renderer(event_loop);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(waker) = self.app_waker.take() {
+            waker.deactivate();
+        }
+        self.app.set_waker(None);
         dispatch_focus_transition(false, |event| self.dispatch(event_loop, event));
         self.ime = crate::ime::ImeSession::default();
         self.wake_at = None;
@@ -456,12 +478,32 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
         self.window = None;
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AccessibilityEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HostEvent) {
+        let (event, token) = match event {
+            HostEvent::Accessibility(event, token) => (event, token),
+            HostEvent::Wake(id, token) => {
+                if self.window.as_ref().map(|window| window.id()) == Some(id)
+                    && self
+                        .app_waker
+                        .as_ref()
+                        .is_some_and(|waker| waker.acknowledge(&token))
+                {
+                    self.dispatch(event_loop, PlatformEvent::Tick);
+                    self.redraw();
+                }
+                return;
+            }
+        };
         self.drain_capture_loss(event_loop);
         if self.failure.is_some() {
             return;
         }
-        if self.window.as_ref().map(|w| w.id()) != Some(event.window_id) {
+        if self.window.as_ref().map(|w| w.id()) != Some(event.window_id)
+            || !self
+                .app_waker
+                .as_ref()
+                .is_some_and(|waker| waker.matches(&token))
+        {
             return;
         }
         match event.window_event {
@@ -470,13 +512,20 @@ impl<A: DesktopApp> ApplicationHandler<AccessibilityEvent> for Host<A> {
                 self.redraw();
             }
             AccessibilityWindowEvent::ActionRequested(request)
-                if request.target_tree == TreeId::ROOT =>
+                if self.accessible_nodes.permits(&request) =>
             {
                 self.dispatch(event_loop, PlatformEvent::Accessibility(request));
             }
             AccessibilityWindowEvent::AccessibilityDeactivated => self.accessible_nodes.clear(),
             _ => {}
         }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(waker) = self.app_waker.take() {
+            waker.deactivate();
+        }
+        self.app.set_waker(None);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {

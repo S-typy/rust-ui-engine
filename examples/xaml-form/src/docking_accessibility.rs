@@ -1,7 +1,10 @@
 //! Combine retained pane projections into the native window's connected tree.
 use rust_desktop_ui_controls::DockPaneId;
 use rust_desktop_ui_core::{Point, Rect};
-use rust_desktop_ui_platform_winit::accesskit::{self, NodeId, Role, TreeUpdate};
+use rust_desktop_ui_platform_winit::{
+    AccessibilitySnapshot,
+    accesskit::{self, NodeId, Role, TreeUpdate},
+};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) struct PaneAccessibility {
@@ -73,12 +76,31 @@ pub(crate) fn merge_accessibility(
                     node.set_hidden();
                 }
             }
-            if *id == pane.tree.focus && !node.is_hidden() {
-                visible_focus = *id;
+        }
+        // Flattened physical bounds do not remove semantic ancestry. A child
+        // of a clipped/hidden container cannot retain actions or native focus
+        // merely because its own rectangle happens to overlap the pane clip.
+        let positions: HashMap<_, _> = pane
+            .tree
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, (id, _))| (*id, index))
+            .collect();
+        let mut pending = vec![(pane.root, false)];
+        while let Some((id, inherited_hidden)) = pending.pop() {
+            let node = &mut pane.tree.nodes[positions[&id]].1;
+            if inherited_hidden {
+                node.set_hidden();
             }
-            used.insert(*id);
-            if !node.is_hidden() {
-                owners.insert(*id, pane.id.clone());
+            let hidden = node.is_hidden();
+            pending.extend(node.children().iter().map(|child| (*child, hidden)));
+            used.insert(id);
+            if !hidden {
+                owners.insert(id, pane.id.clone());
+                if id == pane.tree.focus {
+                    visible_focus = id;
+                }
             }
         }
         if focused {
@@ -95,17 +117,12 @@ pub(crate) fn merge_accessibility(
 }
 
 fn valid_pane(pane: &PaneAccessibility, used: &HashSet<NodeId>) -> bool {
-    if pane
-        .tree
-        .tree
-        .as_ref()
-        .is_some_and(|tree| tree.root != pane.root)
-    {
+    if pane.tree.tree.as_ref().map(|tree| tree.root) != Some(pane.root) {
         return false;
     }
-    let mut ids = HashSet::new();
     for (id, node) in &pane.tree.nodes {
-        if used.contains(id) || !ids.insert(*id) || node.transform().is_some() {
+        if used.contains(id) || node.transform().is_some() || (*id == pane.root && node.is_hidden())
+        {
             return false;
         }
         if let Some(bounds) = node.bounds()
@@ -118,27 +135,11 @@ fn valid_pane(pane: &PaneAccessibility, used: &HashSet<NodeId>) -> bool {
             return false;
         }
     }
-    if !ids.contains(&pane.root) || !ids.contains(&pane.tree.focus) {
-        return false;
-    }
-    let nodes: HashMap<_, _> = pane
-        .tree
-        .nodes
-        .iter()
-        .map(|(id, node)| (*id, node))
-        .collect();
-    let mut visited = HashSet::new();
-    let mut pending = vec![pane.root];
-    while let Some(id) = pending.pop() {
-        if !visited.insert(id) {
-            return false;
-        }
-        let Some(node) = nodes.get(&id) else {
-            return false;
-        };
-        pending.extend(node.children());
-    }
-    visited.len() == ids.len()
+    // Validate the entire pane before merging. A dangling relation or text
+    // selection must omit only that pane, not invalidate the host's next tree.
+    AccessibilitySnapshot::default()
+        .update(pane.tree.clone())
+        .is_ok()
 }
 
 #[cfg(test)]

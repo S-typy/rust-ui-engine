@@ -30,7 +30,7 @@ impl Default for ScrollSettings {
 
 #[derive(Clone, Copy)]
 pub(super) struct ScrollDrag {
-    id: WidgetId,
+    pub(super) id: WidgetId,
     horizontal: bool,
     grab: f32,
 }

@@ -1,11 +1,9 @@
 use crate::{
-    ClipboardRequest, DesktopApp, DesktopApplication, EventResponse, PlatformEvent, WindowChrome,
-    WindowKey, WindowSpec, chrome::NativeChrome, desktop, input, multi::validate_specs,
+    AccessibilitySnapshot, AppWaker, ClipboardRequest, DesktopApp, DesktopApplication,
+    EventResponse, PlatformEvent, WindowChrome, WindowKey, WindowSpec, chrome::NativeChrome,
+    desktop, input, multi::validate_specs, wake::HostEvent,
 };
-use accesskit::{Node, NodeId, TreeId};
-use accesskit_winit::{
-    Adapter, Event as AccessibilityEvent, WindowEvent as AccessibilityWindowEvent,
-};
+use accesskit_winit::{Adapter, WindowEvent as AccessibilityWindowEvent};
 use rust_desktop_ui_core::{InputEvent, Modifiers, Point, Size};
 use rust_desktop_ui_render_wgpu::{GpuRenderer, RenderOutcome, SkipReason};
 use std::{
@@ -25,7 +23,7 @@ const RETRY: Duration = Duration::from_millis(16);
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) fn run(app: impl DesktopApplication + 'static) -> Result<(), String> {
-    let event_loop = EventLoop::<AccessibilityEvent>::with_user_event()
+    let event_loop = EventLoop::<HostEvent>::with_user_event()
         .build()
         .map_err(|error| error.to_string())?;
     let mut host = MultiHost {
@@ -45,7 +43,7 @@ pub(crate) fn run(app: impl DesktopApplication + 'static) -> Result<(), String> 
 
 struct MultiHost<A> {
     app: A,
-    proxy: EventLoopProxy<AccessibilityEvent>,
+    proxy: EventLoopProxy<HostEvent>,
     windows: HashMap<WindowKey, WindowState>,
     native_keys: HashMap<WindowId, WindowKey>,
     clipboard: Option<arboard::Clipboard>,
@@ -55,13 +53,14 @@ struct MultiHost<A> {
 
 // Drop GPU surfaces and native adapters before their corresponding Window.
 struct WindowState {
+    app_waker: AppWaker,
     renderer: Option<GpuRenderer>,
     adapter: Adapter,
     capture: desktop::CaptureObserver,
     chrome: Option<NativeChrome>,
     window: Arc<Window>,
     spec: WindowSpec,
-    accessible_nodes: HashMap<NodeId, Node>,
+    accessible_nodes: AccessibilitySnapshot,
     modifiers: Modifiers,
     cursor: (f64, f64),
     ime: crate::ime::ImeSession,
@@ -75,6 +74,12 @@ struct WindowState {
     smoke_done: bool,
     frames: u64,
     recoveries: u8,
+}
+
+impl Drop for WindowState {
+    fn drop(&mut self) {
+        self.app_waker.deactivate();
+    }
 }
 
 /// A retiring view is still available here. The blur observes an active
@@ -203,6 +208,8 @@ impl<A: DesktopApplication> MultiHost<A> {
                 .app
                 .window_mut(key)
                 .ok_or("Retiring view disappeared")?;
+            state.app_waker.deactivate();
+            app.set_waker(None);
             for response in retire_view(app, state.focused)? {
                 state.effects(app, &mut self.clipboard, response)?;
             }
@@ -280,14 +287,22 @@ impl<A: DesktopApplication> MultiHost<A> {
             desktop::apply_placement(&window, &spec, true)?;
             app.window_placement_applied(spec.placement_revision);
             let capture = desktop::CaptureObserver::attach(window.clone())?;
-            let adapter = Adapter::with_event_loop_proxy(event_loop, &window, self.proxy.clone());
+            let app_waker = AppWaker::for_window(self.proxy.clone(), window.id());
+            let adapter = crate::wake::accessibility_adapter(
+                event_loop,
+                &window,
+                self.proxy.clone(),
+                &app_waker,
+            );
+            app.set_waker(Some(app_waker.clone()));
             let mut state = WindowState {
+                app_waker,
                 renderer: None,
                 adapter,
                 capture,
                 chrome,
                 window,
-                accessible_nodes: HashMap::new(),
+                accessible_nodes: AccessibilitySnapshot::default(),
                 modifiers: Modifiers::default(),
                 cursor: (0.0, 0.0),
                 ime: crate::ime::ImeSession::default(),
@@ -475,15 +490,18 @@ impl WindowState {
         app.window_chrome_changed(chrome);
         app.update(Size::new(logical.width, logical.height), scale as f32)?;
         let previous = &mut self.accessible_nodes;
-        self.adapter.update_if_active(|| {
-            let mut update = app.accessibility(scale as f32);
-            let complete = update.nodes.iter().cloned().collect();
-            update
-                .nodes
-                .retain(|(id, node)| previous.get(id) != Some(node));
-            *previous = complete;
-            update
-        });
+        let mut error = None;
+        self.adapter
+            .update_if_active(|| match previous.update(app.accessibility(scale as f32)) {
+                Ok(update) => update,
+                Err(message) => {
+                    error = Some(message);
+                    previous.unchanged()
+                }
+            });
+        if let Some(error) = error {
+            return Err(error);
+        }
         let redraw = self.sync_ime(app, clipboard)?;
         if let Some(caret) = app.ime_cursor() {
             self.window.set_ime_cursor_area(
@@ -510,6 +528,7 @@ impl WindowState {
                 self.recoveries = 0;
                 self.retry_at = None;
                 let stats = renderer.stats();
+                app.frame_presented(stats);
                 let title = if self.spec.options.show_render_stats {
                     format!(
                         "{} | frames={} glyphs={} missing={}",
@@ -761,7 +780,7 @@ impl WindowState {
     }
 }
 
-impl<A: DesktopApplication> ApplicationHandler<AccessibilityEvent> for MultiHost<A> {
+impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         self.suspended = false;
         if let Err(error) = self.reconcile(event_loop) {
@@ -776,6 +795,8 @@ impl<A: DesktopApplication> ApplicationHandler<AccessibilityEvent> for MultiHost
                 self.fail(event_loop, "Suspended window view is absent");
                 return;
             };
+            state.app_waker.deactivate();
+            app.set_waker(None);
             let result = retire_view(app, state.focused).and_then(|responses| {
                 for response in responses {
                     state.effects(app, &mut self.clipboard, response)?;
@@ -791,7 +812,25 @@ impl<A: DesktopApplication> ApplicationHandler<AccessibilityEvent> for MultiHost
         self.windows.clear();
     }
 
-    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: AccessibilityEvent) {
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: HostEvent) {
+        let (event, token) = match event {
+            HostEvent::Accessibility(event, token) => (event, token),
+            HostEvent::Wake(id, token) => {
+                if let Some(key) = self.native_keys.get(&id).copied() {
+                    let result = self.with_view(key, |state, app, clipboard| {
+                        if !state.app_waker.acknowledge(&token) {
+                            return Ok(false);
+                        }
+                        state.window.request_redraw();
+                        state.dispatch(app, clipboard, PlatformEvent::Tick)
+                    });
+                    if let Err(error) = result {
+                        self.fail(event_loop, error);
+                    }
+                }
+                return;
+            }
+        };
         if let Err(error) = self.drain_capture_loss() {
             self.fail(event_loop, error);
             return;
@@ -799,25 +838,39 @@ impl<A: DesktopApplication> ApplicationHandler<AccessibilityEvent> for MultiHost
         let Some(key) = self.native_keys.get(&event.window_id).copied() else {
             return;
         };
-        let result = self.with_view(key, |state, app, clipboard| match event.window_event {
-            AccessibilityWindowEvent::InitialTreeRequested => {
-                state.accessible_nodes.clear();
-                state.window.request_redraw();
-                Ok(false)
+        let result = self.with_view(key, |state, app, clipboard| {
+            if !state.app_waker.matches(&token) {
+                return Ok(false);
             }
-            AccessibilityWindowEvent::ActionRequested(request)
-                if request.target_tree == TreeId::ROOT =>
-            {
-                state.dispatch(app, clipboard, PlatformEvent::Accessibility(request))
+            match event.window_event {
+                AccessibilityWindowEvent::InitialTreeRequested => {
+                    state.accessible_nodes.clear();
+                    state.window.request_redraw();
+                    Ok(false)
+                }
+                AccessibilityWindowEvent::ActionRequested(request)
+                    if state.accessible_nodes.permits(&request) =>
+                {
+                    state.dispatch(app, clipboard, PlatformEvent::Accessibility(request))
+                }
+                AccessibilityWindowEvent::AccessibilityDeactivated => {
+                    state.accessible_nodes.clear();
+                    Ok(false)
+                }
+                _ => Ok(false),
             }
-            AccessibilityWindowEvent::AccessibilityDeactivated => {
-                state.accessible_nodes.clear();
-                Ok(false)
-            }
-            _ => Ok(false),
         });
         if let Err(error) = result {
             self.fail(event_loop, error)
+        }
+    }
+
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        for (key, state) in &self.windows {
+            state.app_waker.deactivate();
+            if let Some(app) = self.app.window_mut(*key) {
+                app.set_waker(None);
+            }
         }
     }
 

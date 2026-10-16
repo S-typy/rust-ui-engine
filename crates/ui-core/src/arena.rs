@@ -14,11 +14,13 @@ pub struct WidgetId {
     generation: u64,
 }
 
+#[derive(Clone)]
 struct Slot<T> {
     generation: u64,
     value: Option<T>,
 }
 
+#[derive(Clone)]
 pub(crate) struct Arena<T> {
     identity: u64,
     slots: Vec<Slot<T>>,
@@ -107,6 +109,20 @@ impl<T> Arena<T> {
 
     pub(crate) fn len(&self) -> usize {
         self.len
+    }
+
+    pub(crate) fn ids(&self) -> Vec<WidgetId> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, value)| {
+                value.value.as_ref().map(|_| WidgetId {
+                    arena: self.identity,
+                    slot,
+                    generation: value.generation,
+                })
+            })
+            .collect()
     }
 }
 

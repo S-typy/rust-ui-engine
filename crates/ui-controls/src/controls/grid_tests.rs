@@ -31,6 +31,66 @@ fn source(count: usize) -> DataSourceHandle {
         .unwrap(),
     ))
 }
+
+#[test]
+fn data_wake_follows_shared_grid_source_adapter_replacement_and_disconnect() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let table = source(2).borrow().table().clone();
+    let adapter = CollectionAdapter::new(table.clone());
+    let original = adapter.handle();
+    let source = Rc::new(RefCell::new(DataSource::new(adapter).unwrap()));
+    let wakes = Rc::new(std::cell::Cell::new(0));
+    let count = wakes.clone();
+    ui.set_data_waker(Some(Rc::new(move || count.set(count.get() + 1))))
+        .unwrap();
+    ui.register_data_source("Rows", source.clone()).unwrap();
+    for _ in 0..2 {
+        ui.grid_control(
+            ui.root(),
+            source.clone(),
+            GridControlSettings::default(),
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    }
+    frame(&mut ui);
+    wakes.set(0);
+    original
+        .update_cell(-10, "amount", CellValue::Integer(42))
+        .unwrap();
+    assert_eq!(wakes.get(), 1, "one subscription per shared source");
+    assert_eq!(
+        source.borrow().table().value(-10, "amount"),
+        Some(&CellValue::Integer(0))
+    );
+    frame(&mut ui);
+    assert_eq!(
+        source.borrow().table().value(-10, "amount"),
+        Some(&CellValue::Integer(42))
+    );
+    let replacement = CollectionAdapter::new(table);
+    let next = replacement.handle();
+    source
+        .borrow_mut()
+        .replace_adapter(replacement, Default::default())
+        .unwrap();
+    wakes.set(0);
+    original
+        .update_cell(-10, "amount", CellValue::Integer(43))
+        .unwrap();
+    assert_eq!(wakes.get(), 0, "old adapter bridge is disconnected");
+    next.update_cell(-10, "amount", CellValue::Integer(44))
+        .unwrap();
+    assert_eq!(
+        wakes.get(),
+        1,
+        "source subscription survives adapter replacement"
+    );
+    ui.set_data_waker(None).unwrap();
+    next.update_cell(-10, "amount", CellValue::Integer(45))
+        .unwrap();
+    assert_eq!(wakes.get(), 1, "closed view has no wake subscription");
+}
 fn setup(count: usize) -> (Controls, WidgetId, DataSourceHandle) {
     let mut ui = Controls::new(Theme::FluentLight).unwrap();
     let source = source(count);
@@ -474,6 +534,177 @@ fn grid_null_text_unchanged_commit_and_multiline_rejection_are_lossless() {
         source.borrow().value(i64::MIN, "Text field"),
         Some(&CellValue::Text("first\nsecond".into()))
     );
+}
+
+#[test]
+fn oversized_binary_display_rejects_before_edit_selection_focus_or_events_change() {
+    let schema = TableSchema::new(vec![
+        FieldSchema::new("name", FieldType::Text),
+        FieldSchema::new("payload", FieldType::Binary),
+    ])
+    .unwrap();
+    let payload = vec![0xab; 600 * 1024];
+    let source = Rc::new(RefCell::new(
+        DataSource::new(CollectionAdapter::new(
+            DataTable::new(
+                schema,
+                vec![
+                    DataRow::new(
+                        1,
+                        vec![CellValue::Text("one".into()), CellValue::Binary(vec![])],
+                    ),
+                    DataRow::new(
+                        2,
+                        vec![
+                            CellValue::Text("two".into()),
+                            CellValue::Binary(payload.clone()),
+                        ],
+                    ),
+                ],
+            )
+            .unwrap(),
+        ))
+        .unwrap(),
+    ));
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .grid_control(
+            ui.root(),
+            source.clone(),
+            GridControlSettings::default(),
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    ui.begin_grid_edit(id, 1, "name").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.cancel_grid_edit(id).unwrap();
+    ui.drain_text_changes();
+    ui.drain_edit_events();
+    let focused = ui.runtime.focused();
+    let focused_column = ui.grid_focused_column(id);
+    let revision = source.borrow().revision();
+
+    assert!(matches!(
+        ui.begin_grid_edit(id, 2, "payload"),
+        Err(ControlError::Invalid(_))
+    ));
+    assert_eq!(ui.grid_editor(id), None);
+    assert_eq!(ui.grid_selected_key(id), Some(1));
+    assert_eq!(ui.grid_focused_column(id), focused_column);
+    assert_eq!(ui.runtime.focused(), focused);
+    assert_eq!(ui.document(editor).unwrap().text(), "one");
+    assert_eq!(ui.accepted_value(editor), Some("one"));
+    assert!(ui.runtime.tree().node(editor).unwrap().props.collapsed);
+    assert!(ui.drain_text_changes().is_empty());
+    assert!(ui.drain_edit_events().is_empty());
+    assert_eq!(source.borrow().revision(), revision);
+    assert_eq!(
+        source.borrow().value(2, "payload"),
+        Some(&CellValue::Binary(payload))
+    );
+    ui.begin_grid_edit(id, 1, "payload").unwrap();
+    assert_eq!(ui.document(editor).unwrap().text(), "0x");
+    ui.cancel_grid_edit(id).unwrap();
+}
+
+#[test]
+fn cell_editor_grapheme_limit_is_checked_before_selecting_another_cell() {
+    let (mut ui, id, _) = setup(3);
+    ui.begin_grid_edit(id, -10, "amount").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.cancel_grid_edit(id).unwrap();
+    ui.set_max_length(editor, Some(3)).unwrap();
+    let focused = ui.runtime.focused();
+    assert!(matches!(
+        ui.begin_grid_edit(id, -9, "name"),
+        Err(ControlError::Invalid(_))
+    ));
+    assert_eq!(ui.grid_editor(id), None);
+    assert_eq!(ui.grid_selected_key(id), Some(-10));
+    assert_eq!(ui.grid_focused_column(id), Some(ColumnId(1)));
+    assert_eq!(ui.runtime.focused(), focused);
+    assert_eq!(ui.document(editor).unwrap().text(), "0");
+    ui.begin_grid_edit(id, -9, "amount").unwrap();
+    ui.cancel_grid_edit(id).unwrap();
+}
+
+#[test]
+fn cell_editor_validation_rejection_preserves_previous_session_state() {
+    let (mut ui, id, source) = setup(3);
+    ui.begin_grid_edit(id, -10, "amount").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.cancel_grid_edit(id).unwrap();
+    let validations = Rc::new(std::cell::Cell::new(0));
+    let count = validations.clone();
+    ui.set_editor_validator(
+        editor,
+        Some(EditorValidator::new(move |value| {
+            count.set(count.get() + 1);
+            if value.starts_with("Row") {
+                Err("Rejected baseline".into())
+            } else {
+                Ok(())
+            }
+        })),
+    )
+    .unwrap();
+    ui.drain_text_changes();
+    ui.drain_edit_events();
+    let focus = ui.runtime.focused();
+    assert!(
+        matches!(ui.begin_grid_edit(id, -9, "name"), Err(ControlError::Invalid(message)) if message == "Rejected baseline")
+    );
+    assert_eq!(validations.get(), 1);
+    assert_eq!(ui.grid_editor(id), None);
+    assert_eq!(ui.grid_selected_key(id), Some(-10));
+    assert_eq!(ui.grid_focused_column(id), Some(ColumnId(1)));
+    assert_eq!(ui.runtime.focused(), focus);
+    assert_eq!(ui.document(editor).unwrap().text(), "0");
+    assert_eq!(ui.accepted_value(editor), Some("0"));
+    assert!(ui.drain_text_changes().is_empty());
+    assert!(ui.drain_edit_events().is_empty());
+    assert_eq!(source.borrow().revision(), 0);
+    ui.begin_grid_edit(id, -9, "amount").unwrap();
+    assert_eq!(validations.get(), 2, "validation runs once for each load");
+    assert_eq!(ui.document(editor).unwrap().text(), "1");
+    ui.cancel_grid_edit(id).unwrap();
+}
+
+#[test]
+fn live_schema_read_only_rejection_preserves_selection_and_editor_baseline() {
+    let (mut ui, id, source) = setup(3);
+    ui.begin_grid_edit(id, -10, "amount").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.cancel_grid_edit(id).unwrap();
+    let previous = source.borrow().table().clone();
+    let mut fields = previous.schema().fields().to_vec();
+    fields[0].read_only = true;
+    let table =
+        DataTable::new(TableSchema::new(fields).unwrap(), previous.rows().to_vec()).unwrap();
+    source
+        .borrow_mut()
+        .replace_adapter(CollectionAdapter::new(table), Default::default())
+        .unwrap();
+    frame(&mut ui);
+    ui.drain_text_changes();
+    ui.drain_edit_events();
+    let focus = ui.runtime.focused();
+    let revision = source.borrow().revision();
+    assert!(matches!(
+        ui.begin_grid_edit(id, -9, "name"),
+        Err(ControlError::Invalid(_))
+    ));
+    assert_eq!(ui.grid_editor(id), None);
+    assert_eq!(ui.grid_selected_key(id), Some(-10));
+    assert_eq!(ui.grid_focused_column(id), Some(ColumnId(1)));
+    assert_eq!(ui.runtime.focused(), focus);
+    assert_eq!(ui.document(editor).unwrap().text(), "0");
+    assert_eq!(ui.accepted_value(editor), Some("0"));
+    assert!(ui.drain_text_changes().is_empty());
+    assert!(ui.drain_edit_events().is_empty());
+    assert_eq!(source.borrow().revision(), revision);
+    ui.begin_grid_edit(id, -9, "amount").unwrap();
+    ui.cancel_grid_edit(id).unwrap();
 }
 
 #[test]

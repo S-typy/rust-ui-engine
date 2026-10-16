@@ -1,16 +1,82 @@
 //! Bounded projections of a shared typed collection into binding paths.
 use super::*;
-use rust_desktop_ui_data::{CellValue, DataChange, DataTable, ObservableCollection};
+use rust_desktop_ui_data::{
+    CellValue, CollectionSubscription, DataChange, DataTable, ObservableCollection,
+};
 use std::collections::BTreeSet;
+use std::{cell::RefCell, rc::Weak};
+
+type WakeCallback = dyn Fn();
+#[derive(Default)]
+pub(super) struct CollectionWakeHub(RefCell<Vec<Weak<WakeCallback>>>);
+impl fmt::Debug for CollectionWakeHub {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CollectionWakeHub")
+    }
+}
+impl CollectionWakeHub {
+    fn notify(&self) {
+        let callbacks = {
+            let mut listeners = self.0.borrow_mut();
+            listeners.retain(|listener| listener.strong_count() > 0);
+            listeners.clone()
+        };
+        let mut panic = None;
+        for callback in callbacks {
+            if let Some(callback) = callback.upgrade()
+                && let Err(error) =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
+                && panic.is_none()
+            {
+                panic = Some(error);
+            }
+        }
+        if let Some(panic) = panic {
+            std::panic::resume_unwind(panic);
+        }
+    }
+}
+
+/// Keep this guard alive while a view observes a binding context's collections.
+/// Dropping it disconnects the wake callback, including future registrations.
+/// Callbacks only schedule work; they must not borrow or mutate the context.
+pub struct CollectionWakeSubscription {
+    _callback: Rc<WakeCallback>,
+}
+impl fmt::Debug for CollectionWakeSubscription {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("CollectionWakeSubscription")
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(super) struct RegisteredCollection {
     source: ObservableCollection,
     key_member: String,
     revision: u64,
+    _subscription: Rc<CollectionSubscription>,
 }
 
 impl BindingContext {
+    /// Observe all current and future collection registrations. Notifications
+    /// are wake hints after a collection commit, not consumed change records.
+    /// Several views may subscribe independently. Cloned contexts share wake
+    /// hints but retain their own accepted values and revision cursors.
+    pub fn subscribe_collection_wake(
+        &self,
+        callback: impl Fn() + 'static,
+    ) -> Result<CollectionWakeSubscription, BindingError> {
+        let mut listeners = self.collection_wakes.0.borrow_mut();
+        listeners.retain(|listener| listener.strong_count() > 0);
+        if listeners.len() >= MAX_BINDING_UPDATES {
+            return Err(invalid("Too many collection wake subscribers"));
+        }
+        let callback: Rc<WakeCallback> = Rc::new(callback);
+        listeners.push(Rc::downgrade(&callback));
+        Ok(CollectionWakeSubscription {
+            _callback: callback,
+        })
+    }
     /// Register a live collection at an existing list path, publishing its
     /// initial contents atomically. Row keys and integer fields become exact
     /// decimal strings; bool, real, text and null retain their value kinds.
@@ -44,6 +110,14 @@ impl BindingContext {
         }
         let revision = source.revision();
         let projected = project(&source.snapshot(), key_member)?;
+        let hub = Rc::downgrade(&self.collection_wakes);
+        let subscription = source
+            .subscribe(move |_| {
+                if let Some(hub) = hub.upgrade() {
+                    hub.notify();
+                }
+            })
+            .map_err(|error| invalid(&error.to_string()))?;
         self.set_many_impl([(path.as_str(), projected)], true)?;
         self.collections.insert(
             path,
@@ -51,8 +125,10 @@ impl BindingContext {
                 source,
                 key_member: key_member.into(),
                 revision,
+                _subscription: Rc::new(subscription),
             },
         );
+        self.collection_wakes.notify();
         Ok(())
     }
 
@@ -197,6 +273,10 @@ fn projection_size(table: &DataTable, key_member: &str) -> Result<ProjectionSize
             bytes = bytes.saturating_add(match value {
                 CellValue::Integer(value) => value.to_string().len(),
                 CellValue::Text(value) => value.len(),
+                CellValue::Decimal(value) => value.to_string().len(),
+                CellValue::Date(value) => value.to_string().len(),
+                CellValue::Time(value) => value.to_string().len(),
+                CellValue::Binary(value) => value.len().saturating_mul(2).saturating_add(2),
                 _ => 0,
             });
         }
@@ -234,6 +314,10 @@ fn project_cell(value: &CellValue) -> DataValue {
         CellValue::Integer(value) => DataValue::String(value.to_string()),
         CellValue::Real(value) => DataValue::Number(*value),
         CellValue::Text(value) => DataValue::String(value.clone()),
+        CellValue::Decimal(value) => DataValue::String(value.to_string()),
+        CellValue::Date(value) => DataValue::String(value.to_string()),
+        CellValue::Time(value) => DataValue::String(value.to_string()),
+        CellValue::Binary(_) => DataValue::String(value.display()),
     }
 }
 

@@ -1,6 +1,7 @@
 //! Native desktop host. UI and application models remain independent of the window system.
 //! Accessibility bounds and IME anchors are updated on every rendered frame and DPI change.
 
+mod accessibility;
 mod chrome;
 mod desktop;
 mod host;
@@ -8,7 +9,9 @@ mod ime;
 mod input;
 mod multi;
 mod multi_host;
+mod wake;
 
+pub use accessibility::AccessibilitySnapshot;
 pub use accesskit;
 pub use chrome::{TitleBar, WindowChrome};
 pub use desktop::{DesktopPointer, WindowGeometry};
@@ -17,6 +20,7 @@ pub use multi::{DesktopApplication, WindowKey, WindowSpec, run_multi};
 use rust_desktop_ui_core::{InputEvent, Rect, Scene, Size};
 pub use rust_desktop_ui_render_wgpu::RendererStats;
 use std::time::Duration;
+pub use wake::AppWaker;
 
 /// Committed text is deliberately separate from logical shortcut keys.
 #[derive(Debug, Clone)]
@@ -55,8 +59,20 @@ impl EventResponse {
 /// Implement this trait to run a retained scene in a native GPU window.
 /// `accessibility` supplies a complete connected tree; the host sends only changed nodes.
 pub trait DesktopApp {
+    /// Install the native window's notification handle. Keep collection
+    /// subscriptions alive for this view and call `wake` after publishing data.
+    /// None disconnects a closing/suspended window. Timers remain independent.
+    fn set_waker(&mut self, waker: Option<AppWaker>) {
+        let _ = waker;
+    }
     fn update(&mut self, viewport: Size, scale: f32) -> Result<(), String>;
     fn scene(&self) -> &Scene;
+    /// Called only after the GPU successfully presents a frame. Skipped,
+    /// occluded and failed renders do not trigger this lifecycle notification.
+    /// Use a waker if this callback changes application state needing a frame.
+    fn frame_presented(&mut self, stats: RendererStats) {
+        let _ = stats;
+    }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String>;
     fn title(&self) -> String;
     /// Opt into an integrated Windows title bar at window creation. Other
@@ -148,6 +164,9 @@ pub struct RunOptions {
     pub show_render_stats: bool,
     /// Developer smoke: render, resize, render again, then exit with diagnostics.
     pub smoke_test: bool,
+    /// Allow initial native activation. False is useful for passive previews
+    /// and accessibility inspection while another application keeps focus.
+    pub activate: bool,
 }
 
 impl Default for RunOptions {
@@ -158,6 +177,7 @@ impl Default for RunOptions {
             min_size: Some(Size::new(480.0, 320.0)),
             show_render_stats: true,
             smoke_test: false,
+            activate: true,
         }
     }
 }

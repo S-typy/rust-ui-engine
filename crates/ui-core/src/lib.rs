@@ -3,21 +3,27 @@
 
 mod arena;
 mod dirty;
+mod drag_drop;
 mod input;
 mod model;
 mod runtime;
 mod scene_stroke;
 mod scene_text;
 mod scene_view;
+mod shortcuts;
+mod subtree;
 mod tree;
 
 pub use arena::WidgetId;
 pub use dirty::DirtyFlags;
+pub use drag_drop::*;
 pub use input::*;
 pub use model::*;
 pub use runtime::*;
 pub use scene_stroke::*;
 pub use scene_text::*;
+pub use shortcuts::*;
+pub use subtree::*;
 pub use tree::{Node, TreeError, UiTree};
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -1,5 +1,6 @@
 [package]
 name = "xaml-form"
+default-run = "xaml-form"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

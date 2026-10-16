@@ -1,5 +1,40 @@
 # Runtime matrix и протокол проверки alpha
 
+## Runtime и данные — Windows, 2026-10-16
+
+1114 workspace tests и 2 doctests PASS; два hardware tests ignored.
+fmt, clippy all-targets, release и rustdoc с warnings-as-errors PASS.
+Проверены reusable subtree lifecycle, atomic mutations, scopes/shortcuts,
+drag/drop cancellation, connected accessibility snapshots, точные scalar types,
+смена схемы и независимые подписки коллекций. ui-data без SQLite: 66 tests PASS.
+Новых зависимостей нет.
+
+Vulkan на NVIDIA GeForce RTX 3090: `wake-smoke` подтвердил worker notification,
+обновление Observable → Bindings/Grid, два GPU Present и освобождение подписок
+после закрытия окна, без polling timer. Пассивные UI Automation проверки
+Controls/Groups/Data и три снимка прошли; missing glyphs=0, scale=1.5.
+Снимки просмотрены. Native Grid предоставляет SelectionPattern, но текущий
+AccessKit adapter не предоставляет GridPattern/GridItemPattern.
+
+Настоящий системный ввод Windows через SendInput: 32 проверки PASS.
+Подтверждены click/focus, Unicode, Enter/Escape, Ctrl+A/Z/Y, Tab/Shift+Tab,
+корректный commit при blur без удержания фокуса на ошибке, UIA focus/value,
+popup Escape/blur, native capture cancellation и удаление captured/focused
+retained node с последующим Tab. Generic drag/drop и shortcut scopes проверены
+unit/integration тестами; отдельный native пример этих API не запускался.
+Unicode SendInput не является проверкой IME composition.
+
+Windows Narrator: в Speech Recap визуально подтверждены имя, роль и значение
+TextBox, required state, переход CheckBox из unchecked в checked и имя/роль
+Button после реального focus/Tab/Space. Снимок истории проверен; акустический
+выход не измерялся. UIA reader не смог прочитать текст WinUI-окна самого Narrator,
+поэтому этот результат получен из видимой истории, отдельно от UIA tree tests.
+Это базовые сценарии формы, а не приёмка доступности всех сложных controls.
+
+Linux/macOS runtime, native CJK IME и mixed-DPI этим срезом не проверены.
+Контракты — [runtime](retained-ui.md), [platform](platform.md),
+[данные](data.md), [наблюдаемые коллекции](observable-collections.md).
+
 ## Наблюдаемые коллекции — Windows, 2026-10-16
 
 1011 workspace tests и 2 doctests PASS; два hardware tests ignored.

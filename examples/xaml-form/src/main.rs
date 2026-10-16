@@ -13,6 +13,8 @@ mod forms_model;
 #[cfg(test)]
 mod forms_tests;
 #[cfg(test)]
+mod foundation_accessibility_tests;
+#[cfg(test)]
 mod group_adapter_tests;
 #[cfg(test)]
 mod layout_adapter_tests;
@@ -76,6 +78,7 @@ fn start() -> Result<(), String> {
     let mut diagnostics = false;
     let mut ribbon_minimized = false;
     let mut native_title_bar = false;
+    let mut activate = true;
     let mut arguments = std::env::args().skip(1);
     while let Some(argument) = arguments.next() {
         match argument.as_str() {
@@ -99,9 +102,10 @@ fn start() -> Result<(), String> {
             "--diagnostics" => diagnostics = true,
             "--ribbon-minimized" => ribbon_minimized = true,
             "--native-title-bar" => native_title_bar = true,
+            "--no-activate" => activate = false,
             "--help" | "-h" => {
                 println!(
-                    "xaml-form [--controls | --editors | --groups | --status | --data | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics]"
+                    "xaml-form [--controls | --editors | --groups | --status | --data | --docking [--float-pane ID] [--layout-file PATH]] [--ribbon-minimized] [--native-title-bar] [--light | --dark] [--smoke-test] [--diagnostics] [--no-activate]"
                 );
                 println!(
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
@@ -185,6 +189,7 @@ fn start() -> Result<(), String> {
             .then_some(rust_desktop_ui_core::Size::new(240.0, 240.0)),
         show_render_stats: diagnostics,
         smoke_test,
+        activate,
     };
     if docking {
         let mut app = docking_app::DockApplication::new(

@@ -372,7 +372,7 @@ impl Controls {
         else {
             return Ok(false);
         };
-        let outside = self.runtime.tree().preorder().into_iter().any(|id| {
+        let outside = self.runtime.navigation_order().into_iter().any(|id| {
             self.tab_owner(id) != Some(owner)
                 && self.is_enabled(id)
                 && self

@@ -11,6 +11,16 @@ use std::{cell::RefCell, rc::Rc};
 
 pub type DataSourceHandle = Rc<RefCell<DataSource>>;
 
+#[derive(Default)]
+pub(super) struct DataWake {
+    callback: Option<Rc<dyn Fn()>>,
+    subscriptions: HashMap<*const RefCell<DataSource>, DataWakeSubscription>,
+}
+struct DataWakeSubscription {
+    _source: std::rc::Weak<RefCell<DataSource>>,
+    _subscription: rust_desktop_ui_data::CollectionSubscription,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct GridControlColumn {
     pub field: String,
@@ -535,6 +545,64 @@ fn valid_name(name: &str) -> bool {
 }
 
 impl Controls {
+    /// Wake this view after published changes to its data sources. The callback
+    /// only schedules an update (for example AppWaker::wake); it must not borrow
+    /// Controls or a DataSource. Passing None drops all subscription guards.
+    /// Sources added later and adapters replaced in place remain observed.
+    pub fn set_data_waker(&mut self, callback: Option<Rc<dyn Fn()>>) -> Result<(), ControlError> {
+        let previous = std::mem::replace(
+            &mut self.data_wake,
+            DataWake {
+                callback,
+                subscriptions: HashMap::new(),
+            },
+        );
+        if let Err(error) = self.sync_data_wakes() {
+            self.data_wake = previous;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    pub(super) fn sync_data_wakes(&mut self) -> Result<(), ControlError> {
+        let Some(callback) = &self.data_wake.callback else {
+            return Ok(());
+        };
+        let mut sources = HashMap::new();
+        for source in self
+            .data_sources
+            .values()
+            .chain(self.grids.values().map(|grid| &grid.source.handle))
+        {
+            sources
+                .entry(Rc::as_ptr(source))
+                .or_insert_with(|| source.clone());
+        }
+        let mut added = Vec::new();
+        for (&key, source) in &sources {
+            if !self.data_wake.subscriptions.contains_key(&key) {
+                let callback = callback.clone();
+                if let Some(subscription) = source
+                    .borrow()
+                    .subscribe_notifications(Box::new(move |_| callback()))
+                    .map_err(error)?
+                {
+                    added.push((
+                        key,
+                        DataWakeSubscription {
+                            _source: Rc::downgrade(source),
+                            _subscription: subscription,
+                        },
+                    ));
+                }
+            }
+        }
+        self.data_wake
+            .subscriptions
+            .retain(|key, _| sources.contains_key(key));
+        self.data_wake.subscriptions.extend(added);
+        Ok(())
+    }
     pub fn register_data_source(
         &mut self,
         name: impl Into<String>,
@@ -544,7 +612,11 @@ impl Controls {
         if !valid_name(&name) || self.data_sources.contains_key(&name) {
             return Err(error("Data source name must be nonempty and unique"));
         }
-        self.data_sources.insert(name, source);
+        self.data_sources.insert(name.clone(), source);
+        if let Err(error) = self.sync_data_wakes() {
+            self.data_sources.remove(&name);
+            return Err(error);
+        }
         Ok(())
     }
     pub fn data_source(&self, name: &str) -> Option<DataSourceHandle> {
@@ -911,7 +983,7 @@ impl Controls {
         self.sync_grids()?;
         let grid = self
             .grids
-            .get_mut(&id)
+            .get(&id)
             .ok_or_else(|| error("Unknown GridControl"))?;
         let index = grid
             .settings
@@ -919,8 +991,14 @@ impl Controls {
             .iter()
             .position(|c| c.field == field)
             .ok_or_else(|| error("Unknown grid field"))?;
-        if grid.settings.is_read_only || grid.settings.columns[index].read_only {
+        if grid.settings.is_read_only
+            || grid.settings.columns[index].read_only
+            || !grid.source.editable(row_key(key), ColumnId(index as u64))
+        {
             return Err(error("Grid cell is read-only"));
+        }
+        if grid.source.position(row_key(key)).is_none() {
+            return Err(error("Grid row is not visible"));
         }
         let expected = grid
             .source
@@ -928,12 +1006,33 @@ impl Controls {
             .value(key, field)
             .cloned()
             .ok_or_else(|| error("Unknown row or field"))?;
-        if expected.display().chars().any(single_line_separator) {
+        let display = expected.display();
+        if display.chars().any(single_line_separator) {
             return Err(error(
                 "The cell contains multiline text; use the typed data source to edit it losslessly",
             ));
         }
+        let editor = grid.editor;
+        let editor_settings = &self
+            .controls
+            .get(&editor)
+            .ok_or_else(|| error("Missing grid cell editor"))?
+            .editor;
+        // A valid data payload can expand beyond the editor capacity, notably
+        // binary values displayed as hex. Reject before selection or session
+        // changes; the typed source remains available for lossless writes.
+        editor_limits(editor_settings.max_length)
+            .validate(&display)
+            .map_err(|_| {
+                error("The cell exceeds editor limits; use the typed data source to edit it losslessly")
+            })?;
         grid.validate_selection(Some(key))?;
+        // Loading validates the application rules exactly once and is atomic
+        // on rejection. Do it before opening or moving the cell session.
+        if let CommitOutcome::Invalid(message) = self.set_editor_value(editor, &display)? {
+            return Err(error(message));
+        }
+        let grid = self.grids.get_mut(&id).unwrap();
         grid.model
             .focus_cell(
                 &grid.source,
@@ -946,14 +1045,12 @@ impl Controls {
         grid.model
             .begin_edit(&grid.source, row_key(key), ColumnId(index as u64))
             .map_err(error)?;
-        let editor = grid.editor;
         grid.session = Some(CellSession {
             row: key,
             field: field.to_owned(),
             expected: expected.clone(),
         });
         grid.error = None;
-        self.set_editor_value(editor, &expected.display())?;
         self.set_read_only(editor, false)?;
         self.edit_props(editor, |props| {
             props.visible = true;
@@ -1089,6 +1186,7 @@ impl Controls {
     }
 
     pub(super) fn sync_grids(&mut self) -> Result<(), ControlError> {
+        self.sync_data_wakes()?;
         let ids: Vec<_> = self.grids.keys().copied().collect();
         let theme = self.theme.tokens();
         let chrome = self.theme.chrome();

@@ -8,14 +8,36 @@ use crate::{
     Size, TreeError, UiTree, WidgetId,
 };
 
+#[cfg(test)]
+mod service_tests;
+mod services;
+use crate::{DragDropService, DragError, FocusScope, MountedSubtree, SubtreeTemplate};
+use services::{DropHandler, ShortcutBinding};
+
 /// An operation accepted from either the host or a deferred event callback.
 #[derive(Debug, Clone)]
 pub enum Mutation {
     Remove(WidgetId),
-    Reparent { node: WidgetId, parent: WidgetId },
-    SetProps { node: WidgetId, props: NodeProps },
-    SetStyle { node: WidgetId, style: LayoutStyle },
-    SetPaint { node: WidgetId, paint: Paint },
+    Detach(WidgetId),
+    /// All operations commit together or none do. Callbacks may enqueue this
+    /// as one operation while retaining the surrounding FIFO queue behavior.
+    Batch(Vec<Mutation>),
+    Reparent {
+        node: WidgetId,
+        parent: WidgetId,
+    },
+    SetProps {
+        node: WidgetId,
+        props: NodeProps,
+    },
+    SetStyle {
+        node: WidgetId,
+        style: LayoutStyle,
+    },
+    SetPaint {
+        node: WidgetId,
+        paint: Paint,
+    },
     Focus(Option<WidgetId>),
     CapturePointer(Option<WidgetId>),
 }
@@ -29,6 +51,7 @@ pub enum RuntimeError {
     InvalidInput(&'static str),
     IneligibleFocus(WidgetId),
     IneligibleCapture(WidgetId),
+    Drag(DragError),
 }
 
 impl fmt::Display for RuntimeError {
@@ -43,6 +66,7 @@ impl fmt::Display for RuntimeError {
             Self::InvalidInput(message) => write!(f, "invalid input: {message}"),
             Self::IneligibleFocus(id) => write!(f, "node {id:?} cannot receive focus"),
             Self::IneligibleCapture(id) => write!(f, "node {id:?} cannot capture the pointer"),
+            Self::Drag(error) => write!(f, "{error}"),
         }
     }
 }
@@ -58,6 +82,11 @@ impl From<TreeError> for RuntimeError {
 impl From<LayoutError> for RuntimeError {
     fn from(value: LayoutError) -> Self {
         Self::Layout(value)
+    }
+}
+impl From<DragError> for RuntimeError {
+    fn from(value: DragError) -> Self {
+        Self::Drag(value)
     }
 }
 
@@ -89,6 +118,8 @@ pub struct DispatchReport {
     pub deliveries: usize,
     pub default_prevented: bool,
     pub propagation_stopped: bool,
+    /// Owner of the one shortcut invoked after unhandled key routing.
+    pub shortcut: Option<WidgetId>,
     /// Deferred operations run in FIFO order; a rejected operation does not
     /// prevent the following independent operations from being attempted.
     pub errors: Vec<RuntimeError>,
@@ -123,6 +154,10 @@ pub struct UiRuntime {
     pointer: Option<Point>,
     window_focused: bool,
     stats: FrameStats,
+    scopes: HashMap<WidgetId, FocusScope>,
+    shortcuts: Vec<ShortcutBinding>,
+    drop_handlers: HashMap<WidgetId, DropHandler>,
+    drag: DragDropService,
 }
 
 impl UiRuntime {
@@ -141,6 +176,10 @@ impl UiRuntime {
             pointer: None,
             window_focused: true,
             stats: FrameStats::default(),
+            scopes: HashMap::new(),
+            shortcuts: Vec::new(),
+            drop_handlers: HashMap::new(),
+            drag: DragDropService::default(),
         }
     }
 
@@ -167,7 +206,9 @@ impl UiRuntime {
     /// Collapsed nodes. Call `update` after mutations before using it to measure
     /// content; unlike [`Self::bounds`], this ignores visual scroll/translation.
     pub fn layout_bounds(&self, id: WidgetId) -> Option<Rect> {
-        self.tree.node(id)?;
+        if !self.tree.is_attached(id) {
+            return None;
+        }
         self.snapshot.as_ref()?.boxes.get(&id).copied()
     }
 
@@ -178,6 +219,9 @@ impl UiRuntime {
 
     /// Last resolved global border box. Hidden nodes have no visual box.
     pub fn bounds(&self, id: WidgetId) -> Option<Rect> {
+        if !self.tree.is_attached(id) {
+            return None;
+        }
         self.visual
             .iter()
             .find(|node| node.id == id)
@@ -186,6 +230,9 @@ impl UiRuntime {
 
     /// Last resolved ancestor clip in logical global coordinates.
     pub fn clip(&self, id: WidgetId) -> Option<Rect> {
+        if !self.tree.is_attached(id) {
+            return None;
+        }
         self.visual
             .iter()
             .find(|node| node.id == id)
@@ -199,6 +246,7 @@ impl UiRuntime {
             .rev()
             .find(|visual| {
                 visual.enabled
+                    && self.effective_enabled(visual.id)
                     && visual.bounds.contains(point.x, point.y)
                     && visual.clip.contains(point.x, point.y)
                     && self
@@ -223,22 +271,72 @@ impl UiRuntime {
 
     pub fn insert(&mut self, parent: WidgetId, props: NodeProps) -> Result<WidgetId, RuntimeError> {
         let id = self.tree.insert(parent, props)?;
-        self.geometry_dirty = true;
+        self.geometry_dirty |= self.tree.is_attached(parent);
         Ok(id)
     }
 
+    pub fn instantiate(
+        &mut self,
+        parent: WidgetId,
+        template: &SubtreeTemplate,
+    ) -> Result<MountedSubtree, RuntimeError> {
+        let instance = self.tree.instantiate(parent, template)?;
+        self.geometry_dirty |= self.tree.is_attached(parent);
+        Ok(instance)
+    }
+
+    /// Validate on an isolated snapshot, then commit tree and interaction state
+    /// together. Handlers never run during preflight. Failures leave IDs, dirty
+    /// state, handlers, focus, capture and active gestures unchanged.
+    pub fn apply_batch(&mut self, mutations: &[Mutation]) -> Result<(), RuntimeError> {
+        let mut staged = Self::new(self.tree.snapshot());
+        staged.focus = self.focus;
+        staged.capture = self.capture;
+        staged.hover = self.hover;
+        staged.window_focused = self.window_focused;
+        staged.geometry_dirty = self.geometry_dirty;
+        let mut pending = mutations.iter().rev().collect::<Vec<_>>();
+        while let Some(mutation) = pending.pop() {
+            if let Mutation::Batch(nested) = mutation {
+                pending.extend(nested.iter().rev());
+            } else {
+                staged.apply(mutation.clone())?;
+            }
+        }
+        self.tree = staged.tree;
+        self.focus = staged.focus;
+        self.capture = staged.capture;
+        self.hover = staged.hover;
+        self.geometry_dirty = staged.geometry_dirty;
+        self.handlers.retain(|id, _| self.tree.contains(*id));
+        self.clean_interaction_state();
+        self.prune_services();
+        Ok(())
+    }
+
     pub fn apply(&mut self, mutation: Mutation) -> Result<(), RuntimeError> {
+        let removing = matches!(&mutation, Mutation::Remove(_));
         match mutation {
+            Mutation::Batch(mutations) => return self.apply_batch(&mutations),
+            Mutation::Detach(id) => {
+                let attached = self.tree.is_attached(id);
+                self.tree.detach(id)?;
+                self.geometry_dirty |= attached;
+            }
             Mutation::Remove(id) => {
+                let attached = self.tree.is_attached(id);
                 let removed = self.tree.remove(id)?;
                 for id in removed {
                     self.handlers.remove(&id);
                 }
-                self.geometry_dirty = true;
+                self.geometry_dirty |= attached;
             }
             Mutation::Reparent { node, parent } => {
+                let changed = self.tree.parent(node) != Some(parent)
+                    || self.tree.children(parent).and_then(|nodes| nodes.last()) != Some(&node);
+                let attached = self.tree.is_attached(node) || self.tree.is_attached(parent);
                 self.tree.reparent(node, parent)?;
-                self.geometry_dirty = true;
+                self.geometry_dirty |= changed && attached;
             }
             Mutation::SetProps { node, props } => {
                 let changed = self
@@ -246,7 +344,7 @@ impl UiRuntime {
                     .node(node)
                     .is_none_or(|current| current.props != props);
                 self.tree.set_props(node, props)?;
-                self.geometry_dirty |= changed;
+                self.geometry_dirty |= changed && self.tree.is_attached(node);
             }
             Mutation::SetStyle { node, style } => {
                 let changed = self
@@ -254,7 +352,7 @@ impl UiRuntime {
                     .node(node)
                     .is_none_or(|current| current.props.style != style);
                 self.tree.set_style(node, style)?;
-                self.geometry_dirty |= changed;
+                self.geometry_dirty |= changed && self.tree.is_attached(node);
             }
             Mutation::SetPaint { node, paint } => self.tree.set_paint(node, paint)?,
             Mutation::Focus(id) => {
@@ -275,6 +373,9 @@ impl UiRuntime {
             }
         }
         self.clean_interaction_state();
+        if removing {
+            self.prune_services();
+        }
         Ok(())
     }
 
@@ -316,6 +417,7 @@ impl UiRuntime {
         if paint_needed {
             if self.geometry_dirty {
                 self.resolve_geometry()?;
+                self.refresh_drag_geometry();
             }
             self.refresh_hover();
             self.rebuild_scene();
@@ -402,6 +504,9 @@ impl UiRuntime {
                 }
             }
         }
+        if !context.default_prevented {
+            report.shortcut = self.dispatch_shortcut(&input, &mut context);
+        }
         report.default_prevented = context.default_prevented;
         report.propagation_stopped = context.propagation_stopped;
         // Default actions are settled first; explicit callback commands then
@@ -436,6 +541,10 @@ impl UiRuntime {
                 report.errors.push(error);
             }
         }
+        if let Err(error) = self.prepare_drag_dispatch(&input) {
+            report.errors.push(error);
+        }
+        self.dispatch_drag(&input);
         match input {
             InputEvent::PointerUp {
                 button: PointerButton::Primary,
@@ -457,6 +566,9 @@ impl UiRuntime {
     }
 
     fn effective_enabled(&self, id: WidgetId) -> bool {
+        if !self.tree.is_attached(id) {
+            return false;
+        }
         let mut current = Some(id);
         while let Some(id) = current {
             let Some(node) = self.tree.node(id) else {
@@ -489,6 +601,7 @@ impl UiRuntime {
         if self.hover.is_some_and(|id| !self.effective_enabled(id)) {
             self.set_hover(None);
         }
+        self.clean_drag_state();
     }
 
     fn set_focus(&mut self, next: Option<WidgetId>) {
@@ -527,7 +640,7 @@ impl UiRuntime {
     fn advance_focus(&mut self, backwards: bool) {
         // The focused node may intentionally not be a Tab stop. Keep its
         // position in the full logical order instead of restarting at an end.
-        let order = self.tree.preorder();
+        let order = self.navigation_order();
         let anchor = self
             .focus
             .and_then(|id| order.iter().position(|node| *node == id));

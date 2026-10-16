@@ -30,6 +30,7 @@ pub(crate) struct Form {
     last_popup_diagnostic: String,
     last_ribbon_diagnostic: String,
     suppress_text: bool,
+    collection_wake: Option<rust_desktop_ui_controls::CollectionWakeSubscription>,
 }
 
 impl Form {
@@ -188,6 +189,7 @@ impl Form {
             last_popup_diagnostic: String::new(),
             last_ribbon_diagnostic: String::new(),
             suppress_text: false,
+            collection_wake: None,
         })
     }
     pub(crate) fn find_name(&self, name: &str) -> Option<WidgetId> {
@@ -446,6 +448,28 @@ impl Form {
 }
 
 impl DesktopApp for Form {
+    fn set_waker(&mut self, waker: Option<rust_desktop_ui_platform_winit::AppWaker>) {
+        self.collection_wake = None;
+        let data_wake = waker.clone().map(|waker| {
+            std::rc::Rc::new(move || {
+                waker.wake();
+            }) as std::rc::Rc<dyn Fn()>
+        });
+        if let Err(error) = self.ui.set_data_waker(data_wake) {
+            eprintln!("Data wake subscription: {error}");
+        }
+        if let (Some(waker), Some(bindings)) = (waker, &self.view.bindings) {
+            match bindings
+                .context()
+                .borrow()
+                .subscribe_collection_wake(move || {
+                    waker.wake();
+                }) {
+                Ok(subscription) => self.collection_wake = Some(subscription),
+                Err(error) => eprintln!("Collection wake subscription: {error}"),
+            }
+        }
+    }
     fn update(&mut self, viewport: Size, _scale: f32) -> Result<(), String> {
         self.view.sync_bindings(&mut self.ui);
         // This demo applies the document's zoom to its editor typography. The

@@ -14,6 +14,7 @@ use std::{
 
 #[path = "binding_collection.rs"]
 mod collection;
+pub use collection::CollectionWakeSubscription;
 use collection::RegisteredCollection;
 
 pub const MAX_BINDING_DEPTH: usize = 64;
@@ -344,6 +345,7 @@ pub struct BindingContext {
     history_floor: u64,
     history: VecDeque<BindingChange>,
     collections: BTreeMap<BindingPath, RegisteredCollection>,
+    collection_wakes: Rc<collection::CollectionWakeHub>,
 }
 
 impl Default for BindingContext {
@@ -357,6 +359,7 @@ impl Default for BindingContext {
             history_floor: 0,
             history: VecDeque::new(),
             collections: BTreeMap::new(),
+            collection_wakes: Rc::default(),
         }
     }
 }

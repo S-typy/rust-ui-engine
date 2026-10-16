@@ -8,7 +8,7 @@ use crate::{DirtyFlags, LayoutStyle, NodeProps, Paint, WidgetId};
 ///
 /// The tree returns shared references only. Mutations must go through its
 /// setters so validation and invalidation cannot be bypassed.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Node {
     pub props: NodeProps,
     parent: Option<WidgetId>,
@@ -23,6 +23,7 @@ pub enum TreeError {
     RootProtected,
     Cycle,
     InvalidProps(&'static str),
+    InvalidTemplate(&'static str),
 }
 
 impl fmt::Display for TreeError {
@@ -32,6 +33,9 @@ impl fmt::Display for TreeError {
             Self::RootProtected => formatter.write_str("the tree root cannot be removed or moved"),
             Self::Cycle => formatter.write_str("reparenting would introduce a tree cycle"),
             Self::InvalidProps(reason) => write!(formatter, "invalid node properties: {reason}"),
+            Self::InvalidTemplate(reason) => {
+                write!(formatter, "invalid subtree template: {reason}")
+            }
         }
     }
 }
@@ -84,6 +88,29 @@ impl UiTree {
         self.node(id).is_some()
     }
 
+    /// Whether a live node belongs to the mounted root subtree. Detached nodes
+    /// retain identity and properties but do not participate in layout or input.
+    pub fn is_attached(&self, id: WidgetId) -> bool {
+        if !self.contains(id) {
+            return false;
+        }
+        let mut current = id;
+        while let Some(parent) = self.parent(current) {
+            current = parent;
+        }
+        current == self.root
+    }
+
+    /// Internal transaction snapshot. Never expose two independently mutable
+    /// trees with the same arena identity to callers.
+    pub(crate) fn snapshot(&self) -> Self {
+        Self {
+            nodes: self.nodes.clone(),
+            root: self.root,
+            pending: self.pending,
+        }
+    }
+
     /// Returns ordered children, or `None` for an invalid ID.
     pub fn children(&self, id: WidgetId) -> Option<&[WidgetId]> {
         self.node(id).map(|node| node.children.as_slice())
@@ -94,7 +121,8 @@ impl UiTree {
         self.node(id).and_then(|node| node.parent)
     }
 
-    /// Includes the permanent root.
+    /// Includes the permanent root and live detached subtrees. Use
+    /// `preorder().len()` to count only currently mounted nodes.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
@@ -131,18 +159,41 @@ impl UiTree {
         if id == self.root {
             return Err(TreeError::RootProtected);
         }
-        let parent = self.parent(id).expect("non-root has a parent");
+        let parent = self.parent(id);
         let removed = self.subtree_preorder(id);
-        self.nodes
-            .get_mut(parent)
-            .expect("live parent")
-            .children
-            .retain(|child| *child != id);
+        if let Some(parent) = parent {
+            self.nodes
+                .get_mut(parent)
+                .expect("live parent")
+                .children
+                .retain(|child| *child != id);
+        }
         for &removed_id in &removed {
             self.nodes.remove(removed_id);
         }
-        self.mark_valid_dirty(parent, DirtyFlags::ALL);
+        if let Some(parent) = parent {
+            self.mark_valid_dirty(parent, DirtyFlags::ALL);
+        }
         Ok(removed)
+    }
+
+    /// Disconnect a subtree without destroying its IDs or state. Reparenting
+    /// its root attaches it again; removing it disposes every descendant.
+    pub fn detach(&mut self, id: WidgetId) -> Result<(), TreeError> {
+        self.require(id)?;
+        if id == self.root {
+            return Err(TreeError::RootProtected);
+        }
+        if let Some(parent) = self.parent(id) {
+            self.nodes
+                .get_mut(parent)
+                .expect("live parent")
+                .children
+                .retain(|child| *child != id);
+            self.nodes.get_mut(id).expect("live node").parent = None;
+            self.mark_valid_dirty(parent, DirtyFlags::ALL);
+        }
+        Ok(())
     }
 
     pub fn reparent(&mut self, id: WidgetId, parent: WidgetId) -> Result<(), TreeError> {
@@ -158,22 +209,28 @@ impl UiTree {
             }
             ancestor = self.parent(candidate);
         }
-        let previous = self.parent(id).expect("non-root has a parent");
-        if previous == parent && self.children(parent).and_then(|items| items.last()) == Some(&id) {
+        let previous = self.parent(id);
+        if previous == Some(parent)
+            && self.children(parent).and_then(|items| items.last()) == Some(&id)
+        {
             return Ok(());
         }
-        self.nodes
-            .get_mut(previous)
-            .expect("live previous parent")
-            .children
-            .retain(|child| *child != id);
+        if let Some(previous) = previous {
+            self.nodes
+                .get_mut(previous)
+                .expect("live previous parent")
+                .children
+                .retain(|child| *child != id);
+        }
         self.nodes
             .get_mut(parent)
             .expect("validated parent")
             .children
             .push(id);
         self.nodes.get_mut(id).expect("validated node").parent = Some(parent);
-        self.mark_valid_dirty(previous, DirtyFlags::ALL);
+        if let Some(previous) = previous {
+            self.mark_valid_dirty(previous, DirtyFlags::ALL);
+        }
         self.mark_valid_dirty(parent, DirtyFlags::ALL);
         self.mark_valid_dirty(id, DirtyFlags::ALL);
         Ok(())
@@ -243,7 +300,7 @@ impl UiTree {
         if self.pending.is_empty() {
             return;
         }
-        for id in self.preorder() {
+        for id in self.nodes.ids() {
             self.nodes.get_mut(id).expect("live traversal ID").dirty = DirtyFlags::NONE;
         }
         self.pending = DirtyFlags::NONE;
@@ -258,7 +315,7 @@ impl UiTree {
         self.node(id).ok_or(TreeError::InvalidId(id))
     }
 
-    fn subtree_preorder(&self, root: WidgetId) -> Vec<WidgetId> {
+    pub(crate) fn subtree_preorder(&self, root: WidgetId) -> Vec<WidgetId> {
         let mut result = Vec::new();
         let mut pending = vec![root];
         while let Some(id) = pending.pop() {
@@ -277,7 +334,9 @@ impl UiTree {
         } else {
             DirtyFlags::NONE
         };
-        self.pending |= flags | geometry;
+        if self.is_attached(id) {
+            self.pending |= flags | geometry;
+        }
         let node = self.nodes.get_mut(id).expect("validated node");
         node.dirty |= flags | geometry;
         if geometry.is_empty() {

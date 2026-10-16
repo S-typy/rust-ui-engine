@@ -1,12 +1,15 @@
-use std::{cmp::Ordering, collections::HashMap};
+use std::{cmp::Ordering, collections::HashMap, rc::Rc};
 
 use crate::{
-    CellValue, CollectionHandle, DataChange, DataChangeSet, DataError, DataRow, DataTable,
-    MAX_CHANGE_RECORDS, ObservableCollection, observable::ChangeJournal,
+    CellValue, CollectionHandle, CollectionSubscription, DataChange, DataChangeSet, DataError,
+    DataRow, DataTable, MAX_CHANGE_RECORDS, ObservableCollection,
+    observable::{ChangeJournal, NotificationHub},
 };
 
 /// A synchronous adapter returns complete, validated, bounded snapshots.
-/// Schema and limits are stable for the adapter lifetime. A failed write leaves
+/// Limits are stable for the adapter lifetime. Schema changes arrive as complete
+/// validated snapshots from `load`, never as a side effect of `write_cell`.
+/// A failed write leaves
 /// the backing store unchanged; a successful write returns the committed snapshot.
 /// Reads and writes are explicit operations, never called from cell getters.
 pub trait DataAdapter {
@@ -23,6 +26,19 @@ pub trait DataAdapter {
     fn notification_revision(&self) -> Option<u64> {
         None
     }
+    /// Cursor associated with the last returned load/write snapshot. Adapters
+    /// with reentrant notifications must retain it separately from the latest
+    /// notification revision so a subsequent synchronize cannot miss a change.
+    fn snapshot_revision(&self) -> Option<u64> {
+        self.notification_revision()
+    }
+    /// Optional owning-thread wake subscription; callbacks are hints, not I/O.
+    fn subscribe_notifications(
+        &self,
+        _callback: Box<dyn Fn(u64)>,
+    ) -> Result<Option<CollectionSubscription>, DataError> {
+        Ok(None)
+    }
     /// Non-consuming bounded metadata for independent readers, without I/O.
     fn notification_changes_since(&self, _cursor: u64) -> Option<DataChangeSet> {
         None
@@ -32,6 +48,7 @@ pub trait DataAdapter {
 /// Adapter over an application-owned observable Rust collection.
 pub struct CollectionAdapter {
     handle: CollectionHandle,
+    snapshot_revision: u64,
 }
 
 impl CollectionAdapter {
@@ -39,7 +56,11 @@ impl CollectionAdapter {
         Self::from_collection(ObservableCollection::new(table))
     }
     pub fn from_collection(handle: ObservableCollection) -> Self {
-        Self { handle }
+        let snapshot_revision = handle.revision();
+        Self {
+            handle,
+            snapshot_revision,
+        }
     }
     pub fn handle(&self) -> CollectionHandle {
         self.handle.clone()
@@ -48,6 +69,7 @@ impl CollectionAdapter {
 
 impl DataAdapter for CollectionAdapter {
     fn load(&mut self) -> Result<DataTable, DataError> {
+        self.snapshot_revision = self.handle.revision();
         Ok(self.handle.snapshot())
     }
     fn write_cell(
@@ -57,12 +79,23 @@ impl DataAdapter for CollectionAdapter {
         expected: &CellValue,
         value: &CellValue,
     ) -> Result<DataTable, DataError> {
-        self.handle
-            .update_cell_expected(key, field, expected, value.clone())?;
-        Ok(self.handle.snapshot())
+        let (snapshot, revision) =
+            self.handle
+                .update_cell_expected_snapshot(key, field, expected, value.clone())?;
+        self.snapshot_revision = revision;
+        Ok(snapshot)
     }
     fn notification_revision(&self) -> Option<u64> {
         Some(self.handle.revision())
+    }
+    fn snapshot_revision(&self) -> Option<u64> {
+        Some(self.snapshot_revision)
+    }
+    fn subscribe_notifications(
+        &self,
+        callback: Box<dyn Fn(u64)>,
+    ) -> Result<Option<CollectionSubscription>, DataError> {
+        self.handle.subscribe(callback).map(Some)
     }
     fn notification_changes_since(&self, cursor: u64) -> Option<DataChangeSet> {
         Some(self.handle.changes_since(cursor))
@@ -93,6 +126,8 @@ pub struct DataQuery {
 /// Queries execute outside paint and never interpolate expressions into SQL.
 pub struct DataSource {
     adapter: Box<dyn DataAdapter>,
+    notifications: Rc<NotificationHub>,
+    adapter_subscription: Option<CollectionSubscription>,
     table: DataTable,
     query: DataQuery,
     visible: Vec<usize>,
@@ -108,9 +143,13 @@ impl DataSource {
         let table = adapter.load()?;
         let query = DataQuery::default();
         let (visible, positions) = query_index(&table, &query)?;
-        let adapter_revision = adapter.notification_revision();
+        let adapter_revision = adapter.snapshot_revision();
+        let notifications = Rc::new(NotificationHub::default());
+        let adapter_subscription = bridge_notifications(&adapter, &notifications)?;
         Ok(Self {
             adapter: Box::new(adapter),
+            notifications,
+            adapter_subscription,
             table,
             query,
             visible,
@@ -136,6 +175,17 @@ impl DataSource {
     pub fn last_error(&self) -> Option<&DataError> {
         self.last_error.as_ref()
     }
+    /// Subscribe to wake hints for this source, including future replacements
+    /// of its adapter. The callback must schedule work rather than borrowing
+    /// this source: a notification may occur during a mutable source operation.
+    /// The hint number is not a source journal cursor; read `revision()` at the
+    /// scheduled update boundary. Non-notifying storage still needs refresh.
+    pub fn subscribe_notifications(
+        &self,
+        callback: Box<dyn Fn(u64)>,
+    ) -> Result<Option<CollectionSubscription>, DataError> {
+        self.notifications.subscribe(callback).map(Some)
+    }
     pub fn len(&self) -> usize {
         self.visible.len()
     }
@@ -157,7 +207,53 @@ impl DataSource {
         self.table.value(key, field)
     }
     pub fn refresh(&mut self) -> Result<bool, DataError> {
-        let result = self.refresh_inner();
+        let result = self.refresh_inner(self.query.clone());
+        self.record(result)
+    }
+    /// Atomically accepts a refreshed snapshot and a replacement local query.
+    /// Use this when a changed schema removes a previously sorted field.
+    /// A failed load or query leaves the accepted schema, rows and query intact.
+    pub fn refresh_with_query(&mut self, query: DataQuery) -> Result<bool, DataError> {
+        let result = self.refresh_inner(query);
+        self.record(result)
+    }
+    /// Replace a live adapter after the application prepares its schema/storage.
+    /// The new adapter is loaded and queried before replacing the current one.
+    /// This performs no DDL, automatic conversion or migration of stored rows.
+    pub fn replace_adapter(
+        &mut self,
+        mut adapter: impl DataAdapter + 'static,
+        query: DataQuery,
+    ) -> Result<bool, DataError> {
+        let result = (|| {
+            let table = adapter.load()?;
+            let (visible, positions) = query_index(&table, &query)?;
+            let changed = table != self.table || query != self.query;
+            let revision = if changed {
+                self.revision
+                    .checked_add(1)
+                    .ok_or(DataError::RevisionOverflow)?
+            } else {
+                self.revision
+            };
+            let adapter_revision = adapter.snapshot_revision();
+            // Reserve the bridge before replacing any accepted state. Failure
+            // (e.g. the new collection's subscriber limit) keeps the old source.
+            let adapter_subscription = bridge_notifications(&adapter, &self.notifications)?;
+            self.adapter = Box::new(adapter);
+            self.adapter_subscription = adapter_subscription;
+            self.table = table;
+            self.query = query;
+            self.visible = visible;
+            self.positions = positions;
+            self.revision = revision;
+            self.adapter_revision = adapter_revision;
+            if changed {
+                self.journal.push(revision, vec![DataChange::Reset]);
+                self.notifications.notify_coalesced(revision);
+            }
+            Ok(changed)
+        })();
         self.record(result)
     }
     /// Adopts a changed in-memory collection at an explicit update boundary.
@@ -168,28 +264,34 @@ impl DataSource {
         if revision.is_none() || revision == self.adapter_revision {
             return Ok(false);
         }
-        let result = self.refresh_inner();
+        let result = self.refresh_inner(self.query.clone());
         self.record(result)
     }
-    fn refresh_inner(&mut self) -> Result<bool, DataError> {
+    fn refresh_inner(&mut self, query: DataQuery) -> Result<bool, DataError> {
         let table = self.adapter.load()?;
-        self.check_schema(&table)?;
-        let (visible, positions) = query_index(&table, &self.query)?;
-        if table == self.table {
-            self.adapter_revision = self.adapter.notification_revision();
+        self.check_limits(&table)?;
+        let (visible, positions) = query_index(&table, &query)?;
+        if table == self.table && query == self.query {
+            self.adapter_revision = self.adapter.snapshot_revision();
             return Ok(false);
         }
         let revision = self
             .revision
             .checked_add(1)
             .ok_or(DataError::RevisionOverflow)?;
-        let changes = accepted_changes(&self.table, &table, &self.visible, &visible);
+        let changes = if query == self.query {
+            accepted_changes(&self.table, &table, &self.visible, &visible)
+        } else {
+            vec![DataChange::Reset]
+        };
         self.table = table;
+        self.query = query;
         self.visible = visible;
         self.positions = positions;
         self.revision = revision;
-        self.adapter_revision = self.adapter.notification_revision();
+        self.adapter_revision = self.adapter.snapshot_revision();
         self.journal.push(revision, changes);
+        self.notifications.notify_coalesced(revision);
         Ok(true)
     }
     pub fn set_query(&mut self, query: DataQuery) -> Result<bool, DataError> {
@@ -210,6 +312,7 @@ impl DataSource {
         self.positions = positions;
         self.revision = revision;
         self.journal.push(revision, vec![DataChange::Query]);
+        self.notifications.notify_coalesced(revision);
         Ok(true)
     }
     /// Assigns against the latest observable row. Use `set_cell_expected` for
@@ -240,7 +343,12 @@ impl DataSource {
         let notification = self.adapter.notification_revision();
         let pending = if notification.is_some() && notification != self.adapter_revision {
             let table = self.adapter.load()?;
-            self.check_schema(&table)?;
+            self.check_limits(&table)?;
+            if table.schema() != self.table.schema() {
+                return Err(DataError::Conflict(
+                    "source schema changed; refresh before editing".into(),
+                ));
+            }
             Some(table)
         } else {
             None
@@ -273,22 +381,26 @@ impl DataSource {
         } else {
             self.adapter.write_cell(key, field, &expected, &value)?
         };
-        self.check_schema(&table)?;
+        self.check_limits(&table)?;
+        if table.schema() != self.table.schema() {
+            return Err(DataError::Schema(
+                "adapter changed schema during a cell write".into(),
+            ));
+        }
         let (visible, positions) = query_index(&table, &self.query)?;
         let changes = accepted_changes(&self.table, &table, &self.visible, &visible);
         self.table = table;
         self.visible = visible;
         self.positions = positions;
         self.revision = revision;
-        self.adapter_revision = self.adapter.notification_revision();
+        self.adapter_revision = self.adapter.snapshot_revision();
         self.journal.push(revision, changes);
+        self.notifications.notify_coalesced(revision);
         Ok(true)
     }
-    fn check_schema(&self, table: &DataTable) -> Result<(), DataError> {
-        if table.schema() != self.table.schema() || table.limits() != self.table.limits() {
-            Err(DataError::Schema(
-                "adapter changed its schema or limits".into(),
-            ))
+    fn check_limits(&self, table: &DataTable) -> Result<(), DataError> {
+        if table.limits() != self.table.limits() {
+            Err(DataError::Schema("adapter changed its limits".into()))
         } else {
             Ok(())
         }
@@ -299,6 +411,18 @@ impl DataSource {
     }
 }
 
+fn bridge_notifications(
+    adapter: &dyn DataAdapter,
+    notifications: &Rc<NotificationHub>,
+) -> Result<Option<CollectionSubscription>, DataError> {
+    let weak = Rc::downgrade(notifications);
+    adapter.subscribe_notifications(Box::new(move |revision| {
+        if let Some(hub) = weak.upgrade() {
+            hub.notify_coalesced(revision);
+        }
+    }))
+}
+
 fn accepted_changes(
     before: &DataTable,
     after: &DataTable,
@@ -307,11 +431,12 @@ fn accepted_changes(
 ) -> Vec<DataChange> {
     // Membership/order changes require a new view. The source's revision space
     // is independent of adapter revisions and includes query-only changes.
-    if before
-        .rows()
-        .iter()
-        .map(|row| row.key)
-        .ne(after.rows().iter().map(|row| row.key))
+    if before.schema() != after.schema()
+        || before
+            .rows()
+            .iter()
+            .map(|row| row.key)
+            .ne(after.rows().iter().map(|row| row.key))
         || before_visible
             .iter()
             .map(|index| before.rows()[*index].key)
@@ -407,6 +532,10 @@ fn compare(left: &CellValue, right: &CellValue) -> Ordering {
             left.partial_cmp(right).unwrap_or(Ordering::Equal)
         }
         (CellValue::Text(left), CellValue::Text(right)) => left.cmp(right),
+        (CellValue::Decimal(left), CellValue::Decimal(right)) => left.cmp(right),
+        (CellValue::Date(left), CellValue::Date(right)) => left.cmp(right),
+        (CellValue::Time(left), CellValue::Time(right)) => left.cmp(right),
+        (CellValue::Binary(left), CellValue::Binary(right)) => left.cmp(right),
         _ => Ordering::Equal, // Validated columns have exactly one non-null type.
     }
 }
