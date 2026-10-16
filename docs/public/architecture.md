@@ -71,8 +71,8 @@ flex-wrap, baseline alignment и произвольные intrinsic callbacks н
 
 ## Scene и GPU
 
-Scene хранит отдельные массивы `SolidRect`, `RoundedRect`, `StrokePath` и `TextRun` с единым списком
-`DrawCommand`. `fill`, `rounded_fill`, `rounded_stroke`, `stroke_path`, `text` и `append` сохраняют последовательность рисования.
+Scene хранит отдельные массивы `SolidRect`, `RoundedRect`, `StrokePath`, `ImagePrimitive` и `TextRun` с единым списком
+`DrawCommand`. `fill`, `rounded_fill`, `rounded_stroke`, `stroke_path`, `image`, `text` и `append` сохраняют последовательность рисования.
 Смешение прямоугольников и текста не перегруппировывается поверх пользовательского
 порядка: это важно для выделения, текста, caret и перекрывающих popup.
 
@@ -108,11 +108,14 @@ atlas и surface используют sRGB-форматы. Альфа остаё
 Atlas имеет размер 2048×2048 и padding между glyph slots.
 При заполнении atlas очищается до построения UV текущего кадра; набор видимых
 глифов, который не помещается после повторной загрузки, возвращает явную ошибку.
-Текущие лимиты кадра — 16 384 solid/rounded rectangles и stroke paths вместе, 16 384 text runs, суммарно 1 MiB
+Текущие лимиты кадра — 16 384 solid/rounded rectangles, stroke paths и images вместе, 16 384 text runs, суммарно 1 MiB
 входного UTF-8 и 65 536 glyph instances. Удерживаемые bitmap allocations
-кадра ограничены 64 MiB с учётом общих Arc. Произвольные paths,
-произвольные изображения, сложные clip masks, rotations и opacity layers не входят
-в этот renderer.
+кадра ограничены 64 MiB с учётом общих Arc. Bitmap images имеют отдельный bounded
+GPU cache, premultiplied linear sampling, source crop и explicit clip;
+подробный контракт — [Scene и GPU-отрисовка](rendering.md).
+Произвольные paths, сложные clip masks, rotations и isolated opacity layers
+не входят в этот renderer. `append_transformed_view` поддерживает перенос
+и равномерное масштабирование всех доступных примитивов.
 
 `GpuRenderer::render` возвращает `Presented`, `Skipped` или `RecoveryRequired`.
 Host учитывает нулевой размер, occlusion, resize, DPI, timeout и ограниченное

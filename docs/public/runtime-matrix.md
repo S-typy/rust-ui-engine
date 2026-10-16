@@ -1,5 +1,32 @@
 # Runtime matrix и протокол проверки alpha
 
+## Команды, текст, темы и изображения — Windows, 2026-10-16
+
+1185 workspace tests и 2 doctests PASS; fmt, clippy all-targets, release и
+rustdoc с warnings-as-errors PASS. Три ignored hardware tests отдельно
+прошли на DX12 и Vulkan: GPU pixel readback, alpha, clipping, bitmap sampling,
+painter order и controlled device recovery. License inventory проверен.
+
+Галерея `--visuals` и Ribbon: 20 оконных сценариев Light/Dark/HighContrast,
+Compact/Touch, DX12/Vulkan на RTX3090, scale1.5. Missing glyphs=0, exit0,
+снимки просмотрены; десять пар backend имеют одинаковые пиксели.
+UI Automation видит Image roles и описания. Strict text matrix: 40 случаев
+сложных письменностей/bidi/графем/emoji при scale1/1.25/1.5/2,
+проверены реальные glyph rasters, fallback и согласованность caret/hit testing.
+
+`command-smoke` подтвердил native wake, typed result, busy rejection, cancellation,
+grouped undo/redo и disposal на обоих backend. `recovery_smoke` проверил single/
+multi host: шесть окон сохранили Scene и восстановили image upload после
+контролируемого `device.destroy()`. Это не физический сброс драйвера.
+Галерея `--visuals --recovery-smoke` также прошла на обоих backend:
+по4frames,610glyphs,missing0,6images после восстановления renderer.
+
+Нативные проверки этого среза выполнялись без ввода и активации окон.
+Native CJK IME, screen reader, mixed-monitor DPI и Linux/macOS отдельно не
+проверялись. SVG и Scene имеют ограниченные профили, описанные в контрактах
+[изображений](images.md) и [рендерера](rendering.md). Поведение новых команд и
+тем — [commands](commands.md), [themes](themes.md).
+
 ## Runtime и данные — Windows, 2026-10-16
 
 1114 workspace tests и 2 doctests PASS; два hardware tests ignored.

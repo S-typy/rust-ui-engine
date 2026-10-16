@@ -213,6 +213,13 @@ accessibility cache сбрасывается. Удаление узла отра
 ## Пределы проверки
 
 Host учитывает resize, нулевой размер, occlusion, DPI и ограниченное GPU recovery.
+`RunOptions::smoke_device_recovery` вместе с `smoke_test` включает контролируемое
+уничтожение GPU device после resize. Single/multi-window host использует обычную
+ветку восстановления и требует новый успешный Present перед завершением.
+Состояние приложения и исходные bitmap остаются у владельца Scene. Пример
+`cargo run -p rust-desktop-ui-platform-winit --example recovery_smoke -- --multi`
+проверяет два неактивируемых окна; без `--multi` — одно. Это проверка lifecycle,
+а не имитация физического сбоя драйвера. Подробности — [отрисовка](rendering.md).
 Состояние app сохраняется при пересоздании renderer. `RunOptions::smoke_test`
 проверяет кадры и native resize с ограниченным временем выполнения; это не
 тест реального IME, clipboard, screen reader или hardware device loss.

@@ -231,17 +231,17 @@ impl ButtonStyle {
             corner_radius: self
                 .corner_radius
                 .unwrap_or(if theme.is_fluent() { 4.0 } else { 0.0 }),
-            border_width: self.border_width.unwrap_or(1.0),
+            border_width: self.border_width.unwrap_or(if theme.is_high_contrast() {
+                2.0
+            } else {
+                1.0
+            }),
             background: colors.control_fill,
             foreground: tokens.text,
             border: colors.control_border,
             bottom_border: colors.control_bottom_border,
             accent: tokens.focus,
-            checkmark: if matches!(theme, Theme::Dark | Theme::FluentDark) {
-                tokens.canvas
-            } else {
-                Color::rgb(255, 255, 255)
-            },
+            checkmark: theme.on_accent(),
             focus_visible: state.focused,
         };
         result.apply(self.normal);

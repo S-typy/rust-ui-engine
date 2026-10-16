@@ -74,6 +74,8 @@ struct WindowState {
     smoke_done: bool,
     frames: u64,
     recoveries: u8,
+    recovery_requested: bool,
+    recovery_observed: bool,
 }
 
 impl Drop for WindowState {
@@ -319,6 +321,8 @@ impl<A: DesktopApplication> MultiHost<A> {
                 smoke_done: false,
                 frames: 0,
                 recoveries: 0,
+                recovery_requested: false,
+                recovery_observed: false,
                 spec,
             };
             state.initialize_renderer()?;
@@ -573,12 +577,33 @@ impl WindowState {
                         }
                         self.window.request_redraw();
                     } else if self.frames >= 3 && self.smoke_resized {
-                        self.smoke_done = true;
-                        self.smoke_deadline = None;
-                        eprintln!(
-                            "WINDOW {:?} SMOKE PASS: GPU frame, native resize, redraw",
-                            self.spec.key
-                        );
+                        if self.spec.options.smoke_device_recovery && !self.recovery_requested {
+                            self.recovery_requested = true;
+                            self.renderer
+                                .as_mut()
+                                .expect("renderer initialized")
+                                .request_device_recovery();
+                            eprintln!(
+                                "WINDOW {:?} RECOVERY: controlled device destruction requested after resize",
+                                self.spec.key
+                            );
+                            self.window.request_redraw();
+                        } else if !self.spec.options.smoke_device_recovery || self.recovery_observed
+                        {
+                            self.smoke_done = true;
+                            self.smoke_deadline = None;
+                            eprintln!(
+                                "WINDOW {:?} SMOKE PASS: GPU frame, native resize, redraw; recovery={} images={} uploads={}",
+                                self.spec.key,
+                                self.recovery_observed,
+                                stats.images,
+                                stats.uploaded_images
+                            );
+                        } else {
+                            return Err(
+                                "Recovery diagnostic did not traverse renderer recreation".into()
+                            );
+                        }
                     } else {
                         self.retry_at = Some(Instant::now() + RETRY)
                     }
@@ -594,6 +619,15 @@ impl WindowState {
                     return Err(format!("GPU recovery limit reached: {reason:?}"));
                 }
                 self.recoveries += 1;
+                if self.recovery_requested
+                    && reason == rust_desktop_ui_render_wgpu::RecoveryReason::DeviceLost
+                {
+                    self.recovery_observed = true;
+                    eprintln!(
+                        "WINDOW {:?} RECOVERY: ordinary host renderer recreation",
+                        self.spec.key
+                    );
+                }
                 self.renderer = None;
                 self.initialize_renderer()?;
             }

@@ -40,11 +40,21 @@ size, variation coordinates and quarter-pixel subposition; they are process-loca
 identities, not persistent font identifiers.
 
 `TextEngine` caches up to 1,024 shaped layouts and 4,096 glyph entries with a 64 MiB
-bitmap budget. Layout keys exclude position, color and clipping, allowing scrolling
+bitmap budget. Layout caching additionally limits retained key text to 8 MiB and
+shaping clusters to 262,144; eviction observes all three layout budgets. These
+counts bound retained data, not total allocator usage. Oversized glyph output is
+rejected before the layout enters the cache. Layout keys exclude position, color and clipping, allowing scrolling
 without reshaping unchanged text. Fractional motion may require another raster
 subposition. `TextStats` distinguishes cache hits from layout and raster work;
 `clear_caches` releases the engine's cached layouts and bitmaps. Callers retaining
 prepared text also retain its shared resources.
+
+`PreparedText::font_runs()` reports the actual system-font names, UTF-8 ranges,
+line indices, direction, physical font size and shaped glyph counts, including
+fallback. `line_metrics()` returns physical line bounds and baselines from that
+same layout. `shaped_glyphs`, `rasterized_glyphs` and `color_glyphs` are counted
+before clipping; spaces can have empty raster images. They supplement
+`missing_glyphs` and are not claims of visible ink for every glyph.
 
 One `PreparedText` additionally limits its retained unique glyph bitmap data to
 64 MiB, independently of cache eviction. Instances sharing the same bitmap Arc
@@ -82,6 +92,13 @@ to `move_caret_visual` and `caret_geometry`. Its affinity distinguishes two visu
 positions at a bidi or soft-wrap junction. The simpler byte-index convenience
 methods do not preserve that affinity. `selection_rects` returns individual visual
 fragments for a logical byte range.
+
+Visual navigation skips internal shaping-cluster positions inside a complete
+extended grapheme. Hit testing inside such a grapheme chooses its nearest visual
+edge, including Indic conjuncts and regional-indicator pairs. Grapheme boundaries
+are cached with the layout. Font advances remain fractional; line block coordinates
+are quantized to physical pixels by the shaper, so DPI comparisons must allow that
+rounding. Raster positions use the same layout with quarter-pixel subpositions.
 
 Preedit text replaces the original selection only for display. Its optional
 cursor range uses UTF-8 boundaries within the preedit string, as supplied by the
@@ -151,10 +168,21 @@ are not provided. `TextDocument` is a plain UTF-8 string editor, not a large-fil
 rope. OS IME events, clipboard access, caret blinking and accessibility belong to
 the host/control layer. Shaping tests do not replace interactive IME or GPU tests.
 
-Run `cargo run -p rust-desktop-ui-text --example font_probe` to inspect local
-Latin, Cyrillic, Arabic, Hebrew, CJK and emoji coverage. Unit tests exercise real
-glyph coverage pixels, cache reuse, bidi caret geometry, wrapping and Unicode
-editing. Font availability and resulting metrics vary by machine.
+Run `cargo run -p rust-desktop-ui-text --example font_probe -- --strict` to inspect
+Latin, Cyrillic, combining marks, Arabic, Hebrew, mixed bidi, Devanagari, Thai, CJK
+and emoji at scales 1, 1.25, 1.5 and 2. The probe reports actual selected fonts,
+checks missing glyphs, nonempty ink for every nonblank grapheme and caret/hit
+geometry. Strict mode returns an error if any check fails; without it, failures
+are reported as `UNVERIFIED`. Font availability and resulting metrics vary by
+machine. Unit tests also cover complex grapheme traversal, fallback/DPI metrics,
+bidi selections, clipping diagnostics and layout/cache limits.
+
+The Windows matrix uses locally installed Arial, Nirmala UI, Leelawadee UI,
+Yu Gothic UI and Segoe UI Emoji. Emoji ZWJ and skin-tone sequences produce color
+glyphs. Regional-indicator flags can remain two letter glyphs with this font;
+the pair remains one grapheme for editing and hit testing. This is a font
+presentation choice, not a missing-glyph error. Other platform font matrices and
+interactive OS IME remain separate checks.
 
 Implementation references: [Parley](https://docs.rs/parley/0.11.1/parley/),
 [Swash](https://docs.rs/swash/0.2.10/swash/), and

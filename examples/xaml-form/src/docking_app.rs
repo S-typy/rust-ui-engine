@@ -290,6 +290,8 @@ impl DockApplication {
                     width: 640.0,
                     height: 440.0,
                     theme: definition.theme,
+                    density: definition.density,
+                    accent_color: definition.accent_color,
                     title_bar: xaml::TitleBar::Native,
                     padding: [0.0; 4],
                     content: (*pane.content).clone(),
@@ -313,10 +315,11 @@ impl DockApplication {
                 )
                 .map_err(err)?;
         }
-        let theme = match definition.theme {
-            xaml::Theme::Light => Theme::FluentLight,
-            xaml::Theme::Dark => Theme::FluentDark,
-        };
+        let theme = crate::visual_model::theme(
+            definition.theme,
+            definition.density,
+            definition.accent_color,
+        )?;
         Ok(Self {
             state: Rc::new(RefCell::new(Workspace {
                 layout,

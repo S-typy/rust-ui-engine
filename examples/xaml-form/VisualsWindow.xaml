@@ -1,0 +1,78 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Текст, темы и изображения · Rust UI" Width="1180" Height="820" Padding="24">
+  <Grid Spacing="16">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+    <StackPanel Spacing="4">
+      <TextBlock Text="Текст, темы и изображения" FontSize="26" FontWeight="SemiBold"/>
+      <TextBlock Text="Живое переключение палитры и плотности сохраняет значения формы." TextTone="Secondary"/>
+    </StackPanel>
+    <StackPanel Grid.Row="1" Spacing="8">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="Светлая" Command="Light" Width="112"/>
+        <Button Content="Тёмная" Command="Dark" Width="112"/>
+        <Button Content="Контрастная светлая" Command="HighContrastLight" Width="200"/>
+        <Button Content="Контрастная тёмная" Command="HighContrastDark" Width="200"/>
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button Content="Компактно" Command="Compact" Width="112"/>
+        <Button Content="Обычно" Command="Comfortable" Width="112"/>
+        <Button Content="Крупно" Command="Touch" Width="112"/>
+      </StackPanel>
+    </StackPanel>
+    <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled">
+      <Grid Spacing="16">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <GroupBox Header="Состояния элементов" Appearance="Card">
+          <StackPanel Spacing="10">
+            <TextBlock Text="Редактируемое значение" TextTone="Secondary"/>
+            <TextBox x:Name="Message" Text="Привет, мир!" IsRequired="True"/>
+            <TextBox Text="Только чтение" IsReadOnly="True"/>
+            <TextBox Text="Недоступное поле" IsEnabled="False"/>
+            <CheckBox Content="Выбранный флажок" IsChecked="True"/>
+            <RadioButton Content="Первый вариант" GroupName="VisualChoice" IsChecked="True"/>
+            <RadioButton Content="Второй вариант" GroupName="VisualChoice"/>
+            <ToggleButton x:Name="Pin" Content="Закрепить" Command="Pin" Icon="Pin"/>
+            <Button Content="Подтвердить" Command="Confirm" Icon="Check"/>
+            <Button Content="Недоступная команда" Command="Disabled"/>
+            <TextBlock x:Name="Status" Text="Изменений нет." TextTone="Secondary"/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Grid.Column="1" Header="Изображения" Appearance="Card">
+          <StackPanel Spacing="8">
+            <Image x:Name="Landscape" Source="Landscape" Height="128" Stretch="Uniform" AutomationName="Горный пейзаж"/>
+            <TextBlock Text="Uniform · сохранение пропорций" FontSize="12" TextTone="Secondary"/>
+            <StackPanel Orientation="Horizontal" Spacing="12" Height="86">
+              <Image x:Name="Crop" Source="Landscape" Width="82" Height="82" Stretch="UniformToFill" AutomationName="Кадрированный пейзаж"/>
+              <Image x:Name="Compass" Source="Compass" Width="64" Height="64" AutomationName="Компас"/>
+              <Image Source="Compass" Width="48" Height="48" Opacity="0.45" AutomationName="Полупрозрачный компас"/>
+            </StackPanel>
+            <TextBlock Text="Crop · currentColor · прозрачность" FontSize="12" TextTone="Secondary"/>
+            <StackPanel Orientation="Horizontal" Spacing="12" Height="64">
+              <Image x:Name="RasterNearest" Source="Checker" Width="64" Height="64" Sampling="Nearest" AutomationName="Растр без сглаживания"/>
+              <Image x:Name="RasterLinear" Source="Checker" Width="64" Height="64" Sampling="Linear" AutomationName="Растр со сглаживанием"/>
+              <Image x:Name="Broken" Source="Broken" Width="48" Height="48" AutomationName="Повреждённое изображение"/>
+            </StackPanel>
+            <TextBlock Text="PNG · nearest / linear · ошибка ресурса" FontSize="12" TextTone="Secondary"/>
+            <StackPanel Orientation="Horizontal" Spacing="12" Height="32">
+              <Icon Symbol="Save" Width="28"/><Icon Symbol="Edit" Width="28"/><Icon Symbol="Check" Width="28"/><Icon Symbol="Pin" Width="28"/>
+            </StackPanel>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Grid.Column="2" Header="Письменности и графемы" Appearance="Card">
+          <StackPanel Spacing="8">
+            <TextBlock Text="Hello world · Привет мир" FontSize="18"/>
+            <TextBlock Text="Café Å ẹ́" FontSize="24"/>
+            <TextBlock Text="العَرَبِيَّة · שלום עולם" FontSize="22"/>
+            <TextBlock Text="Invoice אבג 123 العربية 42 руб." FontSize="17"/>
+            <TextBlock Text="नमस्ते क्षि क्‍ष" FontSize="24"/>
+            <TextBlock Text="สวัสดี กำ" FontSize="24"/>
+            <TextBlock Text="中文 日本語" FontSize="24"/>
+            <TextBlock Text="👩‍💻 👍🏽 🇷🇺 😀" FontSize="26"/>
+            <TextBox x:Name="ComplexEditor" Text="aक्षिb · 👩‍💻 · אבג"/>
+            <TextBlock Text="Составные символы редактируются целыми графемами." FontSize="12" TextTone="Secondary"/>
+          </StackPanel>
+        </GroupBox>
+      </Grid>
+    </ScrollViewer>
+  </Grid>
+</Window>

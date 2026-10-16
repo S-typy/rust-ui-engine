@@ -5,6 +5,8 @@ mod binding_adapter_tests;
 #[cfg(test)]
 mod data_adapter_tests;
 mod data_model;
+#[cfg(test)]
+mod density_adapter_tests;
 mod docking_accessibility;
 mod docking_app;
 mod form;
@@ -27,6 +29,13 @@ mod status_adapter_tests;
 mod tests;
 mod view;
 mod view_ribbon;
+mod visual_model;
+#[cfg(test)]
+mod visual_tests;
+
+mod generated_visuals {
+    include!(concat!(env!("OUT_DIR"), "/visuals_window.rs"));
+}
 
 mod generated {
     include!(concat!(env!("OUT_DIR"), "/main_window.rs"));
@@ -71,6 +80,9 @@ fn start() -> Result<(), String> {
     let mut groups = false;
     let mut status = false;
     let mut data = false;
+    let mut visuals = false;
+    let mut density = None;
+    let mut recovery = false;
     let mut docking = false;
     let mut float_pane = None;
     let mut layout_file = None;
@@ -84,6 +96,15 @@ fn start() -> Result<(), String> {
         match argument.as_str() {
             "--dark" => theme = Some(Theme::Dark),
             "--light" => theme = Some(Theme::Light),
+            "--high-contrast-light" => theme = Some(Theme::HighContrastLight),
+            "--high-contrast-dark" => theme = Some(Theme::HighContrastDark),
+            "--compact" => density = Some(rust_desktop_ui_xaml::ThemeDensity::Compact),
+            "--touch" => density = Some(rust_desktop_ui_xaml::ThemeDensity::Touch),
+            "--visuals" => visuals = true,
+            "--recovery-smoke" => {
+                recovery = true;
+                smoke_test = true;
+            }
             "--controls" => controls = true,
             "--editors" => editors = true,
             "--groups" => groups = true,
@@ -111,6 +132,9 @@ fn start() -> Result<(), String> {
                     "--controls opens ControlsWindow.xaml; the default is MainWindow.xaml with Ribbon."
                 );
                 println!(
+                    "--visuals opens VisualsWindow.xaml with images, complex text and themes. --high-contrast-light / --high-contrast-dark select contrast themes; --compact / --touch select density. --recovery-smoke exercises device recovery and exits."
+                );
+                println!(
                     "--editors opens EditorsWindow.xaml with selection, typed values and data bindings."
                 );
                 println!(
@@ -133,14 +157,14 @@ fn start() -> Result<(), String> {
             _ => return Err(format!("Unknown argument: {argument}")),
         }
     }
-    if [controls, docking, editors, groups, status, data]
+    if [controls, docking, editors, groups, status, data, visuals]
         .into_iter()
         .filter(|v| *v)
         .count()
         > 1
     {
         return Err(
-            "--controls, --editors, --groups, --status, --data and --docking are mutually exclusive".into(),
+            "--controls, --editors, --groups, --status, --data, --visuals and --docking are mutually exclusive".into(),
         );
     }
     if float_pane.is_some() && !docking {
@@ -149,7 +173,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if docking {
+    let mut definition = if visuals {
+        generated_visuals::window_definition()
+    } else if docking {
         generated_docking::window_definition()
     } else if editors {
         generated_editors::window_definition()
@@ -166,6 +192,9 @@ fn start() -> Result<(), String> {
     };
     if let Some(theme) = theme {
         definition.theme = theme;
+    }
+    if let Some(density) = density {
+        definition.density = density;
     }
     if native_title_bar {
         definition.title_bar = rust_desktop_ui_xaml::TitleBar::Native;
@@ -189,6 +218,7 @@ fn start() -> Result<(), String> {
             .then_some(rust_desktop_ui_core::Size::new(240.0, 240.0)),
         show_render_stats: diagnostics,
         smoke_test,
+        smoke_device_recovery: recovery,
         activate,
     };
     if docking {

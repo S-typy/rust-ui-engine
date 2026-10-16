@@ -875,6 +875,9 @@ impl DesktopApp for Gallery {
             Theme::Compact => "Компактная",
             Theme::FluentLight => "Fluent Light",
             Theme::FluentDark => "Fluent Dark",
+            Theme::HighContrastLight => "High Contrast Light",
+            Theme::HighContrastDark => "High Contrast Dark",
+            Theme::Configured(_) => "Custom",
         };
         format!(
             "Rust UI Engine · {page} · {theme} · {} / {} строк{}",

@@ -1,0 +1,14 @@
+[package]
+name = "rust-desktop-ui-images"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Bounded static image decoding and caching for retained desktop UI"
+
+[dependencies]
+rust-desktop-ui-core = { version = "0.1.0", path = "../ui-core" }
+image.workspace = true
+resvg.workspace = true
+roxmltree.workspace = true

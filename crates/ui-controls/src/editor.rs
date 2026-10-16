@@ -283,7 +283,11 @@ impl EditBoxStyle {
             corner_radius: self
                 .corner_radius
                 .unwrap_or(if theme.is_fluent() { 4.0 } else { 0.0 }),
-            border_width: self.border_width.unwrap_or(1.0),
+            border_width: self.border_width.unwrap_or(if theme.is_high_contrast() {
+                2.0
+            } else {
+                1.0
+            }),
             background: colors.editor_fill,
             foreground: tokens.text,
             placeholder: tokens.muted,

@@ -13,6 +13,8 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         height: {height:?},
         padding: {padding:?},
         theme: rust_desktop_ui_xaml::Theme::{theme:?},
+        density: rust_desktop_ui_xaml::ThemeDensity::{density:?},
+        accent_color: {accent_color:?},
         title_bar: rust_desktop_ui_xaml::TitleBar::{title_bar:?},
         content: {content},
     }}
@@ -23,6 +25,8 @@ pub fn window_definition() -> rust_desktop_ui_xaml::WindowDefinition {{
         height = window.height,
         padding = window.padding,
         theme = window.theme,
+        density = window.density,
+        accent_color = window.accent_color,
         title_bar = window.title_bar,
         content = element(&window.content),
     )
@@ -113,6 +117,10 @@ fn element(element: &ElementDefinition) -> String {
         ElementKind::Icon(icon) => format!(
             "rust_desktop_ui_xaml::ElementKind::Icon(rust_desktop_ui_xaml::IconDefinition {{ symbol: rust_desktop_ui_xaml::IconSymbol::{:?}, foreground: {:?} }})",
             icon.symbol, icon.foreground,
+        ),
+        ElementKind::Image(image) => format!(
+            "rust_desktop_ui_xaml::ElementKind::Image(rust_desktop_ui_xaml::ImageDefinition {{ source: {:?}.into(), stretch: rust_desktop_ui_xaml::ImageStretchDefinition::{:?}, sampling: rust_desktop_ui_xaml::ImageSamplingDefinition::{:?}, opacity: {:?}, foreground: {:?} }})",
+            image.source, image.stretch, image.sampling, image.opacity, image.foreground,
         ),
         ElementKind::Separator(separator) => format!(
             "rust_desktop_ui_xaml::ElementKind::Separator(rust_desktop_ui_xaml::SeparatorDefinition {{ orientation: rust_desktop_ui_xaml::Orientation::{:?}, thickness: {:?}, foreground: {:?} }})",

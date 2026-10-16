@@ -107,6 +107,9 @@ impl Diagnostics {
             Theme::Compact => "compact",
             Theme::FluentLight => "fluent-light",
             Theme::FluentDark => "fluent-dark",
+            Theme::HighContrastLight => "high-contrast-light",
+            Theme::HighContrastDark => "high-contrast-dark",
+            Theme::Configured(_) => "configured",
         };
         format!(
             "{{\"sequence\":{},\"checked\":{},\"theme\":{},\"viewport\":[{},{}],\"placements\":[{}],\"popup_open\":{},\"popup_bounds\":[{}],\"items\":[{}],\"ribbon\":[{}],\"controls\":[{}]}}",

@@ -1,5 +1,8 @@
 use rust_desktop_ui_core::Color;
 
+mod config;
+pub use config::*;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Theme {
     #[default]
@@ -8,6 +11,9 @@ pub enum Theme {
     Compact,
     FluentLight,
     FluentDark,
+    HighContrastLight,
+    HighContrastDark,
+    Configured(ThemeConfig),
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -62,6 +68,9 @@ impl Theme {
     /// the original token colors; Fluent themes distinguish cards, editors,
     /// ordinary controls and floating menus.
     pub fn chrome(self) -> ChromeTokens {
+        if let Some(config) = self.configuration() {
+            return config.chrome();
+        }
         let tokens = self.tokens();
         let translucent = |color: Color, a| Color { a, ..color };
         if self == Self::FluentLight {
@@ -136,9 +145,64 @@ impl Theme {
         }
     }
     pub fn is_fluent(self) -> bool {
-        matches!(self, Self::FluentLight | Self::FluentDark)
+        matches!(
+            self,
+            Self::FluentLight
+                | Self::FluentDark
+                | Self::HighContrastLight
+                | Self::HighContrastDark
+                | Self::Configured(_)
+        )
+    }
+    pub fn is_dark(self) -> bool {
+        self.configuration()
+            .map_or(matches!(self, Self::Dark | Self::FluentDark), |config| {
+                let [r, g, b] = config.palette().canvas;
+                let canvas = Color::rgb(r, g, b);
+                config::contrast(Color::rgb(255, 255, 255), canvas)
+                    > config::contrast(Color::rgb(0, 0, 0), canvas)
+            })
+    }
+    pub fn is_high_contrast(self) -> bool {
+        self.configuration()
+            .is_some_and(|config| config.mode().is_high_contrast())
+    }
+    pub fn density(self) -> ThemeDensity {
+        self.configuration().map_or(
+            if self == Self::Compact {
+                ThemeDensity::Compact
+            } else {
+                ThemeDensity::Comfortable
+            },
+            |config| config.density(),
+        )
+    }
+    pub fn is_compact(self) -> bool {
+        self.density() == ThemeDensity::Compact
+    }
+    /// Highest-contrast monochrome foreground for the current accent fill.
+    pub fn on_accent(self) -> Color {
+        let accent = self.tokens().focus;
+        let black = Color::rgb(0, 0, 0);
+        let white = Color::rgb(255, 255, 255);
+        if config::contrast(black, accent) >= config::contrast(white, accent) {
+            black
+        } else {
+            white
+        }
+    }
+    pub fn configuration(self) -> Option<ThemeConfig> {
+        match self {
+            Self::Configured(config) => Some(config),
+            Self::HighContrastLight => Some(ThemeConfig::new(ThemeMode::HighContrastLight)),
+            Self::HighContrastDark => Some(ThemeConfig::new(ThemeMode::HighContrastDark)),
+            _ => None,
+        }
     }
     pub fn tokens(self) -> ThemeTokens {
+        if let Some(config) = self.configuration() {
+            return config.tokens();
+        }
         if self.is_fluent() {
             let dark = self == Self::FluentDark;
             return ThemeTokens {

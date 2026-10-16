@@ -238,6 +238,7 @@ impl DesktopApplication for App {
         Ok(vec![WindowSpec::new(
             WindowKey::MAIN,
             RunOptions {
+                smoke_device_recovery: false,
                 width: 520.0,
                 height: 240.0,
                 min_size: None,

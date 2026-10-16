@@ -53,6 +53,7 @@ impl TextRun {
 /// References the corresponding typed array in a Scene, in painter's order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DrawCommand {
+    Image(usize),
     Rectangle(usize),
     RoundedRectangle(usize),
     StrokePath(usize),

@@ -9,8 +9,12 @@
 
 use bytemuck::{Pod, Zeroable};
 mod glyphs;
+#[cfg(test)]
+mod image_gpu_tests;
+mod images;
 mod strokes;
 use glyphs::GlyphRenderer;
+use images::ImageRenderer;
 use rust_desktop_ui_core::{Color, DrawCommand, Rect, RoundedRect, Scene};
 use std::{
     fmt,
@@ -263,6 +267,7 @@ pub enum GpuError {
     Backend(String),
     SurfaceValidation,
     Text(String),
+    Image(String),
     InvalidScene,
 }
 
@@ -297,6 +302,7 @@ impl fmt::Display for GpuError {
             Self::Backend(message) => write!(f, "GPU backend error: {message}"),
             Self::SurfaceValidation => f.write_str("GPU surface validation failed"),
             Self::Text(message) => write!(f, "Text rendering failed: {message}"),
+            Self::Image(message) => write!(f, "Image rendering failed: {message}"),
             Self::InvalidScene => f.write_str("Scene has invalid geometry, color or painter order"),
         }
     }
@@ -416,6 +422,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
         .len()
         .checked_add(scene.rounded_rectangles.len())
         .and_then(|count| count.checked_add(scene.stroke_paths.len()))
+        .and_then(|count| count.checked_add(scene.images.len()))
         .ok_or(GpuError::InvalidScene)?;
     check_frame_inputs(rectangle_count, scale)?;
     if scene.texts.len() > MAX_TEXT_RUNS {
@@ -424,7 +431,8 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
     if scene.commands().len() != rectangle_count + scene.texts.len() {
         return Err(GpuError::InvalidScene);
     }
-    let (mut rectangle, mut rounded_rectangle, mut stroke_path, mut text) = (0, 0, 0, 0);
+    let (mut rectangle, mut rounded_rectangle, mut stroke_path, mut text, mut image) =
+        (0, 0, 0, 0, 0);
     for command in scene.commands() {
         match *command {
             DrawCommand::Rectangle(index) if index == rectangle => rectangle += 1,
@@ -433,6 +441,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
             }
             DrawCommand::Text(index) if index == text => text += 1,
             DrawCommand::StrokePath(index) if index == stroke_path => stroke_path += 1,
+            DrawCommand::Image(index) if index == image => image += 1,
             _ => return Err(GpuError::InvalidScene),
         }
     }
@@ -440,6 +449,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
         || rounded_rectangle != scene.rounded_rectangles.len()
         || stroke_path != scene.stroke_paths.len()
         || text != scene.texts.len()
+        || image != scene.images.len()
     {
         return Err(GpuError::InvalidScene);
     }
@@ -477,6 +487,14 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
         return Err(GpuError::InvalidScene);
     }
     let mut text_bytes = 0usize;
+    for image in &scene.images {
+        if !image.is_valid()
+            || physical_rect(image.bounds, scale).is_none()
+            || physical_rect(image.clip, scale).is_none()
+        {
+            return Err(GpuError::InvalidScene);
+        }
+    }
     for text in &scene.texts {
         if !text.is_valid()
             || physical_rect(text.bounds, scale).is_none()
@@ -496,6 +514,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
 
 #[derive(Debug, PartialEq, Eq)]
 enum DrawBatch {
+    Image(u32),
     Rectangles(Range<u32>),
     RoundedRectangles(Range<u32>),
     StrokePaths(Range<u32>),
@@ -512,6 +531,9 @@ fn next_batch(
         return Ok(None);
     };
     Ok(Some(match command {
+        DrawCommand::Image(index) => {
+            DrawBatch::Image(u32::try_from(index).map_err(|_| GpuError::InvalidScene)?)
+        }
         DrawCommand::Rectangle(start) => {
             let mut end = start.checked_add(1).ok_or(GpuError::InvalidScene)?;
             while commands.peek() == Some(&DrawCommand::Rectangle(end)) {
@@ -586,11 +608,15 @@ pub struct GpuRenderer {
     health: Arc<Mutex<DeviceHealth>>,
     glyphs: GlyphRenderer,
     strokes: StrokeRenderer,
+    images: ImageRenderer,
     stats: RendererStats,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RendererStats {
+    pub images: usize,
+    pub cached_images: usize,
+    pub uploaded_images: usize,
     pub rectangles: usize,
     pub stroke_paths: usize,
     pub glyphs: usize,
@@ -693,6 +719,7 @@ impl GpuRenderer {
         });
         let glyphs = GlyphRenderer::new(&device, config.format, &viewport_layout);
         let strokes = StrokeRenderer::new(&device, config.format, &viewport_layout);
+        let images = ImageRenderer::new(&device, config.format, &viewport_layout);
         let renderer = Self {
             window,
             surface,
@@ -708,6 +735,7 @@ impl GpuRenderer {
             health,
             glyphs,
             strokes,
+            images,
             stats: RendererStats::default(),
         };
         renderer.check_device()?;
@@ -720,6 +748,15 @@ impl GpuRenderer {
 
     pub fn stats(&self) -> RendererStats {
         self.stats
+    }
+
+    /// Destroy this device and enter the ordinary host recovery path. This is
+    /// useful for controlled lifecycle diagnostics; it does not simulate a
+    /// physical driver failure. The next render returns `RecoveryRequired` and
+    /// the host must recreate the renderer while retaining its application Scene.
+    pub fn request_device_recovery(&mut self) {
+        self.device.destroy();
+        self.state.recovery = Some(RecoveryReason::DeviceLost);
     }
 
     /// Records the latest size. The next render configures a nonzero surface.
@@ -787,6 +824,13 @@ impl GpuRenderer {
             .prepare(&scene.texts, scale_factor, viewport, &self.queue)?;
         self.strokes
             .prepare(&scene.stroke_paths, scale_factor, viewport, &self.queue)?;
+        self.images.prepare(
+            &scene.images,
+            scale_factor,
+            viewport,
+            &self.device,
+            &self.queue,
+        )?;
         let (frame, suboptimal) = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame) => (frame, false),
             wgpu::CurrentSurfaceTexture::Suboptimal(frame) => (frame, true),
@@ -873,6 +917,11 @@ impl GpuRenderer {
             let mut draw_calls = 0;
             while let Some(batch) = next_batch(&mut commands, |index| self.glyphs.range(index))? {
                 match batch {
+                    DrawBatch::Image(index) => {
+                        if self.images.draw(&mut pass, index) {
+                            draw_calls += 1;
+                        }
+                    }
                     DrawBatch::Rectangles(range) => {
                         pass.set_pipeline(&self.pipeline);
                         pass.set_vertex_buffer(0, self.rectangles_buffer.slice(..));
@@ -899,6 +948,9 @@ impl GpuRenderer {
                 }
             }
             self.stats = RendererStats {
+                images: scene.images.len(),
+                cached_images: self.images.cached(),
+                uploaded_images: self.images.uploaded,
                 rectangles: instances.len(),
                 stroke_paths: scene.stroke_paths.len(),
                 glyphs: self.glyphs.len(),
@@ -925,6 +977,52 @@ impl GpuRenderer {
 mod tests {
     use super::*;
     use rust_desktop_ui_core::{Color, TextRun};
+
+    #[test]
+    fn corrupted_images_and_order_are_rejected_before_upload() {
+        use rust_desktop_ui_core::{Bitmap, ImagePrimitive};
+        let mut scene = Scene::default();
+        scene.image(ImagePrimitive::new(
+            Bitmap::new_rgba8(1, 1, vec![255; 4]).unwrap(),
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+        ));
+        check_scene(&scene, 2.0).unwrap();
+        for mutation in 0..5 {
+            let mut invalid = scene.clone();
+            match mutation {
+                0 => invalid.images[0].source.width = 2.0,
+                1 => invalid.images[0].opacity = f32::NAN,
+                2 => invalid.images[0].bounds.width = f32::MAX,
+                3 => invalid.images[0].clip.x = f32::INFINITY,
+                _ => invalid.images.clear(),
+            }
+            assert!(check_scene(&invalid, 2.0).is_err());
+        }
+        let mut commands = [
+            DrawCommand::Rectangle(0),
+            DrawCommand::Image(0),
+            DrawCommand::Rectangle(1),
+            DrawCommand::Image(1),
+        ]
+        .into_iter()
+        .peekable();
+        assert_eq!(
+            next_batch(&mut commands, |_| None).unwrap(),
+            Some(DrawBatch::Rectangles(0..1))
+        );
+        assert_eq!(
+            next_batch(&mut commands, |_| None).unwrap(),
+            Some(DrawBatch::Image(0))
+        );
+        assert_eq!(
+            next_batch(&mut commands, |_| None).unwrap(),
+            Some(DrawBatch::Rectangles(1..2))
+        );
+        assert_eq!(
+            next_batch(&mut commands, |_| None).unwrap(),
+            Some(DrawBatch::Image(1))
+        );
+    }
 
     #[test]
     fn srgb_colors_round_trip_without_gamma_changing_alpha() {

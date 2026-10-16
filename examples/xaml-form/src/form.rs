@@ -2,7 +2,7 @@ use crate::{
     accessibility::Accessibility,
     view::{MountedView, edges},
 };
-use rust_desktop_ui_controls::{CommitOutcome, Controls, EditEvent, Role, Theme};
+use rust_desktop_ui_controls::{CommitOutcome, Controls, EditEvent, Role};
 use rust_desktop_ui_core::{
     Axis, InputEvent, LayoutKind, LayoutStyle, Length, Mutation, Rect, Scene, Size, WidgetId,
 };
@@ -31,6 +31,9 @@ pub(crate) struct Form {
     last_ribbon_diagnostic: String,
     suppress_text: bool,
     collection_wake: Option<rust_desktop_ui_controls::CollectionWakeSubscription>,
+    theme_mode: rust_desktop_ui_xaml::Theme,
+    theme_density: rust_desktop_ui_xaml::ThemeDensity,
+    theme_accent: Option<[u8; 3]>,
 }
 
 impl Form {
@@ -51,11 +54,13 @@ impl Form {
         sources: Vec<(String, crate::data_model::SharedSource)>,
     ) -> Result<Self, String> {
         rust_desktop_ui_xaml::validate_window_chrome(&definition)?;
-        let theme = match definition.theme {
-            rust_desktop_ui_xaml::Theme::Light => Theme::FluentLight,
-            rust_desktop_ui_xaml::Theme::Dark => Theme::FluentDark,
-        };
+        let theme = crate::visual_model::theme(
+            definition.theme,
+            definition.density,
+            definition.accent_color,
+        )?;
         let mut ui = Controls::new(theme).map_err(err)?;
+        crate::visual_model::register_images(&mut ui)?;
         for (name, source) in sources {
             ui.register_data_source(name, source).map_err(err)?;
         }
@@ -66,6 +71,11 @@ impl Form {
             ("Clear", "Очистить"),
             ("Light", "Светлая"),
             ("Dark", "Тёмная"),
+            ("HighContrastLight", "Контрастная светлая"),
+            ("HighContrastDark", "Контрастная тёмная"),
+            ("Compact", "Компактно"),
+            ("Comfortable", "Обычно"),
+            ("Touch", "Крупно"),
             ("Disabled", "Недоступно"),
             ("Actions", "Действия"),
             ("ReloadForm", "Обновить данные"),
@@ -190,6 +200,9 @@ impl Form {
             last_ribbon_diagnostic: String::new(),
             suppress_text: false,
             collection_wake: None,
+            theme_mode: definition.theme,
+            theme_density: definition.density,
+            theme_accent: definition.accent_color,
         })
     }
     pub(crate) fn find_name(&self, name: &str) -> Option<WidgetId> {
@@ -378,10 +391,34 @@ impl Form {
                         .set("Status", message.into())
                         .map_err(err)?;
                 }
-            } else if invocation.id.0 == "Light" {
-                self.ui.set_theme(Theme::FluentLight).map_err(err)?;
-            } else if invocation.id.0 == "Dark" {
-                self.ui.set_theme(Theme::FluentDark).map_err(err)?;
+            } else {
+                use rust_desktop_ui_xaml::{Theme, ThemeDensity};
+                let mut mode = self.theme_mode;
+                let mut density = self.theme_density;
+                match invocation.id.0.as_str() {
+                    "Light" => mode = Theme::Light,
+                    "Dark" => mode = Theme::Dark,
+                    "HighContrastLight" => mode = Theme::HighContrastLight,
+                    "HighContrastDark" => mode = Theme::HighContrastDark,
+                    "Compact" => density = ThemeDensity::Compact,
+                    "Comfortable" => density = ThemeDensity::Comfortable,
+                    "Touch" => density = ThemeDensity::Touch,
+                    _ => continue,
+                }
+                let theme = match crate::visual_model::theme(mode, density, self.theme_accent) {
+                    Ok(theme) => theme,
+                    Err(error) => {
+                        self.last_notice =
+                            "Тема не изменена: цвет акцента недостаточно контрастен.";
+                        if self.diagnostics {
+                            eprintln!("Theme rejected: {error}");
+                        }
+                        continue;
+                    }
+                };
+                self.ui.set_theme(theme).map_err(err)?;
+                self.theme_mode = mode;
+                self.theme_density = density;
             }
         }
         for id in self
@@ -450,6 +487,11 @@ impl Form {
 impl DesktopApp for Form {
     fn set_waker(&mut self, waker: Option<rust_desktop_ui_platform_winit::AppWaker>) {
         self.collection_wake = None;
+        self.ui.commands_mut().set_waker(waker.clone().map(|waker| {
+            std::sync::Arc::new(move || {
+                waker.wake();
+            }) as std::sync::Arc<dyn Fn() + Send + Sync>
+        }));
         let data_wake = waker.clone().map(|waker| {
             std::rc::Rc::new(move || {
                 waker.wake();
@@ -470,7 +512,8 @@ impl DesktopApp for Form {
             }
         }
     }
-    fn update(&mut self, viewport: Size, _scale: f32) -> Result<(), String> {
+    fn update(&mut self, viewport: Size, scale: f32) -> Result<(), String> {
+        self.ui.set_image_scale(scale).map_err(err)?;
         self.view.sync_bindings(&mut self.ui);
         // This demo applies the document's zoom to its editor typography. The
         // reusable ZoomControl owns only the numeric value and interaction.

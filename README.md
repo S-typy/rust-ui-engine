@@ -57,10 +57,23 @@ cargo run --release --locked -p xaml-form -- --ribbon-minimized
 cargo run --release --locked -p xaml-form -- --controls
 cargo run --release --locked -p xaml-form -- --editors
 cargo run --release --locked -p xaml-form -- --groups
+cargo run --release --locked -p xaml-form -- --visuals
+cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
 
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
 the separate example of individual controls and popup menus.
+
+`--visuals` opens [VisualsWindow.xaml](examples/xaml-form/VisualsWindow.xaml) with
+complex text, raster/SVG images and live theme switching. Choose light, dark or
+high-contrast palettes and comfortable, compact or touch density. Explicit
+control overrides and editor values survive theme changes. See
+[themes](docs/public/themes.md) and [images](docs/public/images.md).
+
+[Commands](docs/public/commands.md) support typed parameters, cancellable
+background work with UI-thread completion, and grouped document undo/redo.
+[Rendering](docs/public/rendering.md) includes immutable bitmap resources,
+GPU sampling and device recovery with retained application state.
 
 The build validates the markup and generates a Rust window definition.
 The profile supports observable data bindings and form layouts;

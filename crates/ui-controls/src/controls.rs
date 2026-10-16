@@ -21,7 +21,12 @@ use std::{
 
 mod appearance;
 mod grid;
+mod images;
 pub use grid::{DataSourceHandle, GridControlColumn, GridControlSettings};
+pub use images::{ImageSettings, ImageStretch};
+pub use rust_desktop_ui_images::{
+    ImageAsset, ImageCacheStats, ImageError, ImageFormat, ImageSource,
+};
 #[cfg(test)]
 mod appearance_tests;
 mod button_presentation;
@@ -350,6 +355,7 @@ struct Tabs {
 /// For registered controls, enabled state belongs to `set_enabled` and the command
 /// registry; runtime node properties are refreshed from those sources on update.
 pub struct Controls {
+    images: images::ImageControls,
     grids: HashMap<WidgetId, grid::GridState>,
     data_sources: HashMap<String, DataSourceHandle>,
     data_wake: grid::DataWake,
@@ -421,6 +427,7 @@ impl Controls {
             },
         )?;
         Ok(Self {
+            images: Default::default(),
             grids: HashMap::new(),
             data_sources: HashMap::new(),
             data_wake: grid::DataWake::default(),
@@ -473,6 +480,11 @@ impl Controls {
     pub fn commands_mut(&mut self) -> &mut CommandRegistry {
         self.scene_dirty = true;
         &mut self.commands
+    }
+    /// Schedule a host update when a background command finishes. The callback
+    /// can run off the UI thread; completion itself is delivered by `update`.
+    pub fn set_command_waker(&mut self, wake: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) {
+        self.commands.set_waker(wake);
     }
     /// Consume command notifications without invalidating otherwise idle paint.
     pub fn drain_command_invocations(&mut self) -> Vec<crate::CommandInvocation> {
@@ -1002,10 +1014,11 @@ impl Controls {
         self.set_editor_settings(id, settings)
     }
     pub fn set_theme(&mut self, theme: Theme) -> Result<(), ControlError> {
+        self.prune_removed_controls()?;
         if self.theme == theme {
             return Ok(());
         }
-        self.theme = theme;
+        let previous_height = Length::Px(self.theme.tokens().control_height);
         let height = theme.tokens().control_height;
         let ids: Vec<_> = self
             .controls
@@ -1013,20 +1026,35 @@ impl Controls {
             .filter(|(_, c)| c.default_height)
             .map(|(&id, _)| id)
             .collect();
+        let mut explicit_heights = Vec::new();
+        let mut mutations = Vec::new();
         for id in ids {
             if let Some(node) = self.runtime.tree().node(id) {
+                // A runtime SetStyle can turn an initially automatic height
+                // into an explicit application value. Relinquish ownership.
+                if node.props.style.height != previous_height {
+                    explicit_heights.push(id);
+                    continue;
+                }
                 let mut style = node.props.style.clone();
                 style.height = Length::Px(height);
-                self.runtime.apply(Mutation::SetStyle { node: id, style })?;
+                mutations.push(Mutation::SetStyle { node: id, style });
             }
         }
-        self.runtime.apply(Mutation::SetPaint {
+        mutations.push(Mutation::SetPaint {
             node: self.root,
             paint: Paint {
                 background: Some(theme.tokens().canvas),
                 ..Default::default()
             },
-        })?;
+        });
+        self.runtime.apply_batch(&mutations)?;
+        for id in explicit_heights {
+            if let Some(control) = self.controls.get_mut(&id) {
+                control.default_height = false;
+            }
+        }
+        self.theme = theme;
         self.scene_dirty = true;
         self.refresh_paints()
     }
@@ -1594,6 +1622,7 @@ impl Controls {
         self.tabs
             .retain(|id, _| self.runtime.tree().node(*id).is_some());
         self.retain_rich_controls();
+        self.retain_images();
         self.grids.retain(|id, _| self.controls.contains_key(id));
         self.sync_data_wakes()?;
         self.groups.retain(|id, _| self.controls.contains_key(id));
@@ -1920,7 +1949,11 @@ impl Controls {
         self.refresh_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
+        if self.commands.poll_async() > 0 {
+            self.scene_dirty = true;
+        }
         self.prune_removed_controls()?;
+        self.refresh_images()?;
         self.refresh_paints()?;
         self.sync_zoom_gesture()?;
         self.synchronize_editor_focus()?;
@@ -2861,6 +2894,9 @@ impl Controls {
                 continue;
             };
             let paint = node.props.paint;
+            if self.paint_image(id, bounds, clip) {
+                continue;
+            }
             if self.paint_status_control(id, bounds, clip)? {
                 continue;
             }
@@ -4126,6 +4162,15 @@ fn append_clipped(target: &mut Scene, source: &Scene, clip: Rect) {
                     && let Some(effective) = path.clip.intersection(clip)
                 {
                     target.stroke_path(&path.segments, effective, path.width, path.color);
+                }
+            }
+            rust_desktop_ui_core::DrawCommand::Image(index) => {
+                if let Some(image) = source.images.get(index)
+                    && let Some(effective) = image.clip.intersection(clip)
+                {
+                    let mut image = image.clone();
+                    image.clip = effective;
+                    target.image(image);
                 }
             }
         }

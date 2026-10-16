@@ -7,6 +7,7 @@ mod drag_drop;
 mod input;
 mod model;
 mod runtime;
+mod scene_image;
 mod scene_stroke;
 mod scene_text;
 mod scene_view;
@@ -20,6 +21,7 @@ pub use drag_drop::*;
 pub use input::*;
 pub use model::*;
 pub use runtime::*;
+pub use scene_image::*;
 pub use scene_stroke::*;
 pub use scene_text::*;
 pub use shortcuts::*;
@@ -139,6 +141,7 @@ pub struct Scene {
     pub rounded_rectangles: Vec<RoundedRect>,
     pub stroke_paths: Vec<StrokePath>,
     pub texts: Vec<TextRun>,
+    pub images: Vec<ImagePrimitive>,
     commands: Vec<DrawCommand>,
 }
 
@@ -255,6 +258,7 @@ impl Scene {
         self.rounded_rectangles.clear();
         self.stroke_paths.clear();
         self.texts.clear();
+        self.images.clear();
         self.commands.clear();
     }
 
@@ -263,11 +267,13 @@ impl Scene {
         let rounded_rectangles = self.rounded_rectangles.len();
         let stroke_paths = self.stroke_paths.len();
         let texts = self.texts.len();
+        let images = self.images.len();
         self.rectangles.extend_from_slice(&other.rectangles);
         self.rounded_rectangles
             .extend_from_slice(&other.rounded_rectangles);
         self.stroke_paths.extend_from_slice(&other.stroke_paths);
         self.texts.extend_from_slice(&other.texts);
+        self.images.extend_from_slice(&other.images);
         self.commands
             .extend(other.commands.iter().map(|command| match command {
                 DrawCommand::Rectangle(index) => DrawCommand::Rectangle(rectangles + index),
@@ -276,6 +282,7 @@ impl Scene {
                 }
                 DrawCommand::StrokePath(index) => DrawCommand::StrokePath(stroke_paths + index),
                 DrawCommand::Text(index) => DrawCommand::Text(texts + index),
+                DrawCommand::Image(index) => DrawCommand::Image(images + index),
             }));
     }
 }

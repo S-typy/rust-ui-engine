@@ -1,7 +1,7 @@
 //! Command-oriented Ribbon with adaptive group collapse and keyboard KeyTips.
 use crate::{
     ButtonChrome, ButtonContentLayout, ButtonIcon, ButtonStyle, CommandId, ControlError, Controls,
-    MenuEntry, MenuItem, Role, SeparatorSettings, SplitButton, Theme,
+    MenuEntry, MenuItem, Role, SeparatorSettings, SplitButton, Theme, ThemeDensity,
 };
 use rust_desktop_ui_core::{
     Axis, Edges, InputEvent, Key, LayoutKind, LayoutStyle, Length, Mutation, WidgetId,
@@ -168,12 +168,16 @@ impl RibbonMetrics {
         widths: &RibbonWidths,
         appearances: &HashMap<CommandId, RibbonCommandAppearance>,
     ) -> Result<Self, ControlError> {
-        let compact = ui.theme() == Theme::Compact;
+        let (small_min, qat_min, tab_min): (f32, f32, f32) = match ui.theme().density() {
+            ThemeDensity::Compact => (26.0, 28.0, 30.0),
+            ThemeDensity::Comfortable => (28.0, 32.0, 34.0),
+            ThemeDensity::Touch => (36.0, 40.0, 42.0),
+        };
         let text_height = ui.measure_text("Ag", 4096.0, false)?.height.ceil();
-        let mut small = (if compact { 26.0_f32 } else { 28.0 }).max(text_height + 8.0);
+        let mut small = small_min.max(text_height + 8.0);
         let mut large = 0.0_f32;
-        let mut qat = 32.0_f32.max(text_height + 8.0);
-        let mut tab_height = 34.0_f32.max(text_height + 8.0);
+        let mut qat = qat_min.max(text_height + 8.0);
+        let mut tab_height = tab_min.max(text_height + 8.0);
         // Measure the whole model so tab/context/overflow switches keep a stable
         // height for this theme. Measure each actual content arrangement: an
         // Above caption is limited to two lines and cannot inflate other rows.

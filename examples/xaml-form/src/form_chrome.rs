@@ -1,6 +1,8 @@
 //! Join the retained Ribbon header to the host's native window frame.
 use crate::view_ribbon::MountedRibbon;
-use rust_desktop_ui_controls::{Controls, Ribbon, RibbonHeader, Theme};
+#[cfg(test)]
+use rust_desktop_ui_controls::Theme;
+use rust_desktop_ui_controls::{Controls, Ribbon, RibbonHeader};
 use rust_desktop_ui_core::{Rect, Size};
 use rust_desktop_ui_platform_winit::{TitleBar, WindowChrome};
 
@@ -108,7 +110,7 @@ impl FormChrome {
         Some(TitleBar {
             height,
             drag_regions,
-            dark: ui.theme() == Theme::FluentDark,
+            dark: ui.theme().is_dark(),
         })
     }
 }

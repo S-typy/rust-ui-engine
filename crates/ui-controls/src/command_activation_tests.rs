@@ -460,3 +460,74 @@ fn pointer_keyboard_and_semantic_routes_each_invert_a_bound_button_once() {
         [Some(true), Some(false), Some(true), Some(false)]
     );
 }
+
+#[test]
+fn typed_async_command_updates_every_placement_and_completes_during_update() {
+    use std::{
+        cell::RefCell,
+        sync::{Mutex, mpsc},
+        time::{Duration, Instant},
+    };
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = CommandId::from("calculate");
+    ui.commands_mut()
+        .register_toggle(id.clone(), "Calculate", false);
+    ui.commands_mut()
+        .set_parameter(&id, CommandParameter::new(21_u32));
+    let (release, wait) = mpsc::channel();
+    let wait = Mutex::new(wait);
+    let completed = Rc::new(RefCell::new(Vec::new()));
+    let out = completed.clone();
+    ui.commands_mut().on_async_execute(
+        &id,
+        move |value: &u32, cancel| {
+            wait.lock().unwrap().recv().unwrap();
+            cancel.check()?;
+            Ok(value * 2)
+        },
+        move |result| out.borrow_mut().push(result),
+    );
+    let button = ui
+        .button(ui.root(), "Calculate", Some(id.clone()), style())
+        .unwrap();
+    let toggle = ui
+        .toggle(ui.root(), "Calculate", Some(id.clone()), false, style())
+        .unwrap();
+    let anchor = ui.button(ui.root(), "Menu", None, style()).unwrap();
+    frame(&mut ui);
+    ui.activate(button).unwrap();
+    assert_eq!(ui.commands().checked(&id), Some(true));
+    for placement in [button, toggle] {
+        assert!(!ui.is_enabled(placement));
+        ui.activate(placement).unwrap();
+        assert_eq!(semantic(&ui, placement).checked, Some(true));
+    }
+    ui.popup_menu(anchor, &[MenuItem::new("Calculate menu", id.clone())])
+        .unwrap();
+    let menu = ui
+        .semantics()
+        .into_iter()
+        .find(|node| node.label == "Calculate menu")
+        .unwrap()
+        .id;
+    assert!(!ui.is_enabled(menu));
+    ui.activate(menu).unwrap();
+    assert!(ui.popup_open());
+    assert_eq!(ui.drain_command_invocations().len(), 1);
+    release.send(()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while completed.borrow().is_empty() {
+        frame(&mut ui);
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(&*completed.borrow(), &[Ok(42)]);
+    for placement in [button, toggle, menu] {
+        assert!(ui.is_enabled(placement));
+    }
+    assert_eq!(
+        ui.commands_mut().drain_async_events()[0].outcome,
+        CommandAsyncOutcome::Succeeded
+    );
+    assert!(ui.drain_command_invocations().is_empty());
+}

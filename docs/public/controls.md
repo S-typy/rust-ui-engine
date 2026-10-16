@@ -390,6 +390,9 @@ semantics; собственный визуальный hover для них по�
 
 ## Команды
 
+Типизированные параметры, асинхронное выполнение, отмена и составные undo/redo
+описаны в [контракте команд и истории действий](commands.md).
+
 `CommandId` — принадлежащее приложению строковое имя, не WidgetId. Один
 `CommandRegistry` используется обычными buttons, Ribbon, QAT и popup items.
 `register(id, label)` создаёт обычную команду, а
@@ -678,6 +681,11 @@ Light, Dark, Compact, FluentLight и FluentDark задают собственн�
 controls. `set_theme`
 меняет оформление без пересоздания control IDs и checked/document state.
 Compact уменьшает default heights; явные размеры приложения сохраняются.
+
+`HighContrastLight`/`HighContrastDark` добавляют контрастные поверхности и
+монохромные значки. `Theme::Configured(ThemeConfig)` независимо настраивает
+режим, accent, проверяемую RGB-палитру и плотность Comfortable/Compact/Touch.
+Контракт, примеры и проверки контраста — [темы и плотность](themes.md).
 
 `Theme::chrome()` возвращает дополнительный `ChromeTokens` для оформления
 поверхностей и состояний. `ThemeTokens` сохраняет прежние поля и размеры.

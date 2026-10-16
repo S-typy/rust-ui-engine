@@ -18,6 +18,12 @@ pub(super) struct ScrollLayout {
     vertical: x::ScrollBarVisibility,
 }
 
+pub(super) struct AutomaticHeight {
+    id: WidgetId,
+    offset: f32,
+    applied: f32,
+}
+
 pub(super) fn alignment(value: x::Alignment) -> Align {
     match value {
         x::Alignment::Start => Align::Start,
@@ -169,6 +175,70 @@ fn configure_editor(
 }
 
 impl MountedView {
+    pub(super) fn record_automatic_height(
+        &mut self,
+        ui: &Controls,
+        id: WidgetId,
+        kind: &ElementKind,
+    ) {
+        let offset = match kind {
+            ElementKind::TextBox(_)
+            | ElementKind::ComboBox(_)
+            | ElementKind::LookupEdit(_)
+            | ElementKind::ButtonEdit(_)
+            | ElementKind::SpinBox(_)
+            | ElementKind::DateEdit(_)
+            | ElementKind::TimeEdit(_)
+            | ElementKind::Button(_)
+            | ElementKind::ToggleButton(_)
+            | ElementKind::DropDownButton(_)
+            | ElementKind::SplitButton(_)
+            | ElementKind::RibbonStatusBar(_) => 0.0,
+            ElementKind::CheckBox(_) | ElementKind::RadioButton(_) | ElementKind::StatusBar(_) => {
+                -4.0
+            }
+            ElementKind::ZoomControl(_) => -8.0,
+            _ => return,
+        };
+        self.automatic_heights.push(AutomaticHeight {
+            id,
+            offset,
+            applied: ui.theme().tokens().control_height + offset,
+        });
+    }
+
+    fn sync_automatic_heights(&mut self, ui: &mut Controls) -> Result<bool, String> {
+        let mut mutations = Vec::new();
+        let height = ui.theme().tokens().control_height;
+        self.automatic_heights.retain_mut(|entry| {
+            let Some(node) = ui.runtime.tree().node(entry.id) else {
+                return false;
+            };
+            // Explicit runtime overrides acquire the axis. Equal values have
+            // no observable provenance, matching the Controls builder contract.
+            if node.props.style.height != Length::Px(entry.applied) {
+                return false;
+            }
+            let desired = height + entry.offset;
+            if desired != entry.applied {
+                let mut style = node.props.style.clone();
+                style.height = Length::Px(desired);
+                mutations.push(Mutation::SetStyle {
+                    node: entry.id,
+                    style,
+                });
+            }
+            true
+        });
+        if mutations.is_empty() {
+            return Ok(false);
+        }
+        ui.runtime.apply_batch(&mutations).map_err(err)?;
+        for entry in &mut self.automatic_heights {
+            entry.applied = height + entry.offset;
+        }
+        Ok(true)
+    }
     pub(super) fn mount_form_element(
         &mut self,
         ui: &mut Controls,
@@ -758,6 +828,9 @@ impl MountedView {
         ui: &mut Controls,
         viewport: Size,
     ) -> Result<(), String> {
+        if self.sync_automatic_heights(ui)? {
+            ui.update(viewport).map_err(err)?;
+        }
         for scroll in &self.scrolls {
             let Some(bounds) = ui.runtime.bounds(scroll.viewport) else {
                 continue;

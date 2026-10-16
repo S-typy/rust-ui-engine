@@ -29,6 +29,8 @@ cargo run -p xaml-form --locked -- --editors
 cargo run -p xaml-form --locked -- --groups
 cargo run -p xaml-form --locked -- --status
 cargo run -p xaml-form --locked -- --data
+cargo run -p xaml-form --locked -- --visuals
+cargo run -p xaml-form --locked -- --visuals --high-contrast-dark --touch
 ```
 
 По умолчанию открывается [MainWindow.xaml](../../examples/xaml-form/MainWindow.xaml)
@@ -43,6 +45,30 @@ cargo run -p xaml-form --locked -- --data
 В режиме Native они видны в стандартном заголовке; название внутри Ribbon
 остаётся без счётчиков. Без этого флага
 введённый текст не журналируется, заголовок соответствует `Window.Title`.
+
+`--visuals` открывает [VisualsWindow.xaml](../../examples/xaml-form/VisualsWindow.xaml):
+изображения, сложные письменности и переключение темы/плотности. В `Window`
+`Theme` принимает `Light`, `Dark`, `HighContrastLight`, `HighContrastDark`,
+`Density` — `Comfortable` (по умолчанию), `Compact`, `Touch`.
+`AccentColor` — непрозрачный `#RRGGBB` или `#FFRRGGBB`; при монтаже проверяется
+контраст относительно выбранной темы. CLI `--compact`, `--touch` и варианты
+`--high-contrast-light`, `--high-contrast-dark` переопределяют разметку.
+Палитры и поведение явных переопределений описаны в [контракте тем](themes.md).
+
+`Image Source="Landscape" Stretch="Uniform" Sampling="Linear" Opacity="1"`
+размещает ресурс, зарегистрированный приложением в `Controls` до монтажа.
+`Source` — имя из 1–256 ASCII букв, цифр, `_`, `-`, `.`, без URL и путей.
+`Stretch`: `None`, `Fill`, `Uniform` (по умолчанию), `UniformToFill`;
+`Sampling`: `Nearest` или `Linear` (по умолчанию). `Opacity` лежит в `[0,1]`.
+Необязательный непрозрачный `Foreground` задаёт SVG `currentColor`;
+без него используется цвет текста текущей темы. `AutomationName` задаёт
+доступное описание. Отсутствующий или повреждённый ресурс отображает placeholder
+и диагностируется через `image_error`, не прерывая монтаж остальных контролов.
+Размер, DPI и допустимый SVG-профиль — в [контракте изображений](images.md).
+
+`--recovery-smoke` запускает ограниченную проверку resize и пересоздания GPU
+device с автоматическим завершением. Это контролируемый сценарий восстановления,
+а не симуляция физического сбоя драйвера.
 
 ## Заголовок окна и Ribbon
 

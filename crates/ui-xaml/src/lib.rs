@@ -91,7 +91,20 @@ pub enum Theme {
     #[default]
     Light,
     Dark,
+    HighContrastLight,
+    HighContrastDark,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ThemeDensity {
+    #[default]
+    Comfortable,
+    Compact,
+    Touch,
+}
+
+mod images;
+pub use images::*;
 
 /// Placement of the native window title bar.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -115,6 +128,8 @@ pub struct WindowDefinition {
     /// Left, top, right, bottom padding in logical pixels.
     pub padding: [f32; 4],
     pub theme: Theme,
+    pub density: ThemeDensity,
+    pub accent_color: Option<[u8; 3]>,
     pub title_bar: TitleBar,
     pub content: ElementDefinition,
 }
@@ -127,6 +142,8 @@ impl Default for WindowDefinition {
             height: 360.0,
             padding: [32.0; 4],
             theme: Theme::Light,
+            density: ThemeDensity::Comfortable,
+            accent_color: None,
             title_bar: TitleBar::Native,
             content: ElementDefinition::default(),
         }
@@ -451,6 +468,7 @@ pub enum ElementKind {
     CheckBox(CheckBoxDefinition),
     RadioButton(RadioButtonDefinition),
     Icon(IconDefinition),
+    Image(ImageDefinition),
     Separator(SeparatorDefinition),
 }
 
@@ -837,14 +855,41 @@ pub fn parse(source: &str) -> Result<WindowDefinition, Diagnostic> {
                 definition.theme = match attribute.value() {
                     "Light" => Theme::Light,
                     "Dark" => Theme::Dark,
+                    "HighContrastLight" => Theme::HighContrastLight,
+                    "HighContrastDark" => Theme::HighContrastDark,
                     _ => {
                         return Err(at_attribute(
                             &document,
                             attribute,
-                            "Theme must be Light or Dark",
+                            "Theme must be Light, Dark, HighContrastLight or HighContrastDark",
                         ));
                     }
                 };
+            }
+            "Density" => {
+                definition.density = match attribute.value() {
+                    "Comfortable" => ThemeDensity::Comfortable,
+                    "Compact" => ThemeDensity::Compact,
+                    "Touch" => ThemeDensity::Touch,
+                    _ => {
+                        return Err(at_attribute(
+                            &document,
+                            attribute,
+                            "Density must be Comfortable, Compact or Touch",
+                        ));
+                    }
+                };
+            }
+            "AccentColor" => {
+                let [r, g, b, a] = color(&document, attribute)?;
+                if a != 255 {
+                    return Err(at_attribute(
+                        &document,
+                        attribute,
+                        "AccentColor must be opaque",
+                    ));
+                }
+                definition.accent_color = Some([r, g, b]);
             }
             property => {
                 return Err(at_attribute(
@@ -931,6 +976,7 @@ fn parse_element(
         "CheckBox" => ElementKind::CheckBox(CheckBoxDefinition::default()),
         "RadioButton" => ElementKind::RadioButton(RadioButtonDefinition::default()),
         "Icon" => ElementKind::Icon(IconDefinition::default()),
+        "Image" => ElementKind::Image(ImageDefinition::default()),
         "Separator" => ElementKind::Separator(SeparatorDefinition::default()),
         name if form_parse::new_kind(name).is_some() => form_parse::new_kind(name).unwrap(),
         name => {
@@ -1199,6 +1245,51 @@ fn parse_element(
                         }
                         _ => false,
                     },
+                    ElementKind::Image(image) => match property {
+                        "Source" => {
+                            image.source = attribute.value().into();
+                            true
+                        }
+                        "Stretch" => {
+                            image.stretch = match attribute.value() {
+                                "None" => ImageStretchDefinition::None,
+                                "Fill" => ImageStretchDefinition::Fill,
+                                "Uniform" => ImageStretchDefinition::Uniform,
+                                "UniformToFill" => ImageStretchDefinition::UniformToFill,
+                                _ => {
+                                    return Err(at_attribute(
+                                        document,
+                                        attribute,
+                                        "Image Stretch must be None, Fill, Uniform or UniformToFill",
+                                    ));
+                                }
+                            };
+                            true
+                        }
+                        "Sampling" => {
+                            image.sampling = match attribute.value() {
+                                "Nearest" => ImageSamplingDefinition::Nearest,
+                                "Linear" => ImageSamplingDefinition::Linear,
+                                _ => {
+                                    return Err(at_attribute(
+                                        document,
+                                        attribute,
+                                        "Image Sampling must be Nearest or Linear",
+                                    ));
+                                }
+                            };
+                            true
+                        }
+                        "Opacity" => {
+                            image.opacity = editor_metric(document, attribute, 1.0, true)?;
+                            true
+                        }
+                        "Foreground" => {
+                            image.foreground = Some(color(document, attribute)?);
+                            true
+                        }
+                        _ => false,
+                    },
                     ElementKind::Separator(separator) => match property {
                         "Orientation" => {
                             separator.orientation = match attribute.value() {
@@ -1324,6 +1415,9 @@ fn parse_element(
     form_parse::validate(node, &kind, &common)?;
     if let ElementKind::TextBox(editor) = &kind {
         validate_initial_text(node, editor)?;
+    }
+    if let ElementKind::Image(image) = &kind {
+        validate_image(image).map_err(|error| at_node(node, error))?;
     }
     if matches!(kind, ElementKind::Icon(_)) && node.attribute("Symbol").is_none() {
         return Err(at_node(node, "Icon requires a Symbol attribute"));
@@ -2013,3 +2107,5 @@ mod ribbon_tests;
 mod status_bar_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod visual_tests;

@@ -32,6 +32,7 @@ pub(crate) struct MountedView {
     pending_bindings: Vec<bindings::PendingBindings>,
     decorations: Vec<forms::BorderSurface>,
     scrolls: Vec<forms::ScrollLayout>,
+    automatic_heights: Vec<forms::AutomaticHeight>,
     radio_groups: HashMap<RadioGroupKey<WidgetId>, RadioGroupId>,
 }
 
@@ -140,6 +141,13 @@ impl MountedView {
         let context = bindings::context_path(inherited_context, common.data_context.as_deref());
         let width = match (common.width, &element.kind) {
             (Some(width), _) => Length::Px(width),
+            (None, ElementKind::Image(image)) if common.bindings.contains_key("Width") => {
+                Length::Px(
+                    ui.image_resource_size(&image.source)
+                        .map_or(32.0, |size| size.width),
+                )
+            }
+            (None, ElementKind::Image(_)) => Length::Auto,
             (None, ElementKind::Icon(_)) => Length::Px(16.0),
             (None, ElementKind::Separator(separator))
                 if separator.orientation == Orientation::Vertical =>
@@ -162,11 +170,11 @@ impl MountedView {
                 | ElementKind::DockPanel(_)
                 | ElementKind::DockWorkspace(_)
                 | ElementKind::Ribbon(_) => Length::Auto,
-                ElementKind::StatusBar(_) => Length::Px(32.0),
-                ElementKind::RibbonStatusBar(_) => Length::Px(36.0),
+                ElementKind::StatusBar(_) => Length::Px(ui.theme().tokens().control_height - 4.0),
+                ElementKind::RibbonStatusBar(_) => Length::Px(ui.theme().tokens().control_height),
                 ElementKind::StatusBarItem(_) => Length::Auto,
                 ElementKind::ProgressBar(_) => Length::Px(16.0),
-                ElementKind::ZoomControl(_) => Length::Px(28.0),
+                ElementKind::ZoomControl(_) => Length::Px(ui.theme().tokens().control_height - 8.0),
                 ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::GridControl(_) => Length::Auto,
                 ElementKind::TextBox(_)
@@ -179,10 +187,17 @@ impl MountedView {
                 | ElementKind::Button(_)
                 | ElementKind::ToggleButton(_)
                 | ElementKind::DropDownButton(_)
-                | ElementKind::SplitButton(_) => Length::Px(36.0),
-                ElementKind::CheckBox(_) | ElementKind::RadioButton(_) => Length::Px(32.0),
+                | ElementKind::SplitButton(_) => Length::Px(ui.theme().tokens().control_height),
+                ElementKind::CheckBox(_) | ElementKind::RadioButton(_) => {
+                    Length::Px(ui.theme().tokens().control_height - 4.0)
+                }
                 ElementKind::TextBlock(_) => Length::Px(24.0),
                 ElementKind::Icon(_) => Length::Px(16.0),
+                ElementKind::Image(image) if common.bindings.contains_key("Height") => Length::Px(
+                    ui.image_resource_size(&image.source)
+                        .map_or(32.0, |size| size.height),
+                ),
+                ElementKind::Image(_) => Length::Auto,
                 ElementKind::Separator(separator) => match separator.orientation {
                     Orientation::Horizontal => Length::Auto,
                     Orientation::Vertical if parent_axis == Axis::Horizontal => Length::Auto,
@@ -354,6 +369,17 @@ impl MountedView {
                     .map_err(err)?;
                 id
             }
+            ElementKind::Image(image) => {
+                let settings = image_settings(image);
+                ui.image_from_resource(
+                    parent,
+                    image.source.clone(),
+                    settings,
+                    style,
+                    common.automation_name.clone().unwrap_or_default(),
+                )
+                .map_err(err)?
+            }
             ElementKind::Icon(icon) => {
                 let id = ui
                     .icon(parent, icon_symbol(icon.symbol), style)
@@ -516,6 +542,9 @@ impl MountedView {
                 id
             }
         };
+        if common.height.is_none() && !common.bindings.contains_key("Height") {
+            self.record_automatic_height(ui, id, &element.kind);
+        }
         ui.set_enabled(id, common.is_enabled).map_err(err)?;
         if common.visibility != rust_desktop_ui_xaml::Visibility::Visible {
             let mut props = ui.runtime.tree().node(id).unwrap().props.clone();
@@ -562,7 +591,7 @@ impl MountedView {
                 ElementKind::SplitButton(_) => Role::Group,
                 ElementKind::CheckBox(_) => Role::CheckBox,
                 ElementKind::RadioButton(_) => Role::RadioButton,
-                ElementKind::Icon(_) => Role::Image,
+                ElementKind::Icon(_) | ElementKind::Image(_) => Role::Image,
                 ElementKind::Separator(_) => Role::Separator,
             },
         );
@@ -715,6 +744,9 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         ElementKind::CheckBox(check) => button_width(ui, &check.content, &check.style, true),
         ElementKind::RadioButton(radio) => button_width(ui, &radio.content, &radio.style, true),
         ElementKind::Icon(_) => Ok(16.0),
+        ElementKind::Image(image) => Ok(ui
+            .image_resource_size(&image.source)
+            .map_or(32.0, |s| s.width)),
         ElementKind::Separator(separator) => {
             Ok(if separator.orientation == Orientation::Vertical {
                 separator.thickness
@@ -916,6 +948,7 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         match &element.kind {
+            ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
             ElementKind::GridControl(grid) => {
                 rust_desktop_ui_xaml::validate_grid_control_bindings(&element.common)?;
                 grid::validate_source(ui, grid)?;
@@ -1336,6 +1369,30 @@ pub(crate) fn edges([left, top, right, bottom]: [f32; 4]) -> Edges {
         top,
         right,
         bottom,
+    }
+}
+
+fn image_settings(
+    image: &rust_desktop_ui_xaml::ImageDefinition,
+) -> rust_desktop_ui_controls::ImageSettings {
+    use rust_desktop_ui_controls::ImageStretch;
+    use rust_desktop_ui_core::ImageSampling;
+    use rust_desktop_ui_xaml::{
+        ImageSamplingDefinition as Sampling, ImageStretchDefinition as Stretch,
+    };
+    rust_desktop_ui_controls::ImageSettings {
+        stretch: match image.stretch {
+            Stretch::None => ImageStretch::None,
+            Stretch::Fill => ImageStretch::Fill,
+            Stretch::Uniform => ImageStretch::Uniform,
+            Stretch::UniformToFill => ImageStretch::UniformToFill,
+        },
+        sampling: match image.sampling {
+            Sampling::Nearest => ImageSampling::Nearest,
+            Sampling::Linear => ImageSampling::Linear,
+        },
+        opacity: image.opacity,
+        current_color: image.foreground.map(color),
     }
 }
 

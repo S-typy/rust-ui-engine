@@ -164,6 +164,10 @@ pub struct RunOptions {
     pub show_render_stats: bool,
     /// Developer smoke: render, resize, render again, then exit with diagnostics.
     pub smoke_test: bool,
+    /// During `smoke_test`, destroy the device after resize, then require a
+    /// successful frame through the ordinary renderer recreation path.
+    /// This is controlled device destruction, not a physical driver failure.
+    pub smoke_device_recovery: bool,
     /// Allow initial native activation. False is useful for passive previews
     /// and accessibility inspection while another application keeps focus.
     pub activate: bool,
@@ -177,6 +181,7 @@ impl Default for RunOptions {
             min_size: Some(Size::new(480.0, 320.0)),
             show_render_stats: true,
             smoke_test: false,
+            smoke_device_recovery: false,
             activate: true,
         }
     }

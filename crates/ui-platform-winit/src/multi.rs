@@ -78,6 +78,9 @@ pub(crate) fn validate_specs(specs: &[WindowSpec]) -> Result<(), String> {
             return Err(format!("Duplicate native window key {:?}", spec.key));
         }
         let options = &spec.options;
+        if options.smoke_device_recovery && !options.smoke_test {
+            return Err("Device recovery diagnostic requires smoke_test".into());
+        }
         if !options.width.is_finite()
             || !options.height.is_finite()
             || options.width <= 0.0

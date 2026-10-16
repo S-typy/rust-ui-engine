@@ -7,6 +7,41 @@ use std::{cell::Cell, rc::Rc};
 // thousandth of a logical pixel; actual visible glyph clipping still fails.
 const TEXT_GEOMETRY_EPSILON: f32 = 0.001;
 
+#[test]
+fn configured_density_and_palette_remeasure_ribbon_without_command_state_loss() {
+    use crate::{ThemeConfig, ThemeDensity, ThemeMode};
+    let (mut ui, mut ribbon, callbacks) = fixture();
+    ui.commands_mut().set_checked(&"flag".into(), Some(true));
+    let mut heights = Vec::new();
+    for density in [
+        ThemeDensity::Compact,
+        ThemeDensity::Comfortable,
+        ThemeDensity::Touch,
+    ] {
+        let config = ThemeConfig::new(ThemeMode::Dark)
+            .with_density(density)
+            .with_accent([180, 160, 255])
+            .unwrap();
+        ui.set_theme(Theme::Configured(config)).unwrap();
+        frame(&mut ui, &mut ribbon, 900.0);
+        heights.push(
+            ui.runtime
+                .bounds(ribbon.container().unwrap())
+                .unwrap()
+                .height,
+        );
+        assert_eq!(ui.commands().checked(&"flag".into()), Some(true));
+        for width in [300.0, 100.0, 900.0] {
+            frame(&mut ui, &mut ribbon, width);
+            assert_eq!(ui.commands().checked(&"flag".into()), Some(true));
+        }
+    }
+    assert!(heights[0] < heights[1], "{heights:?}");
+    assert!(heights[1] < heights[2], "{heights:?}");
+    assert_eq!(callbacks.get(), 0);
+    assert!(ui.commands_mut().drain_invocations().is_empty());
+}
+
 fn header(title: &str) -> RibbonHeader {
     RibbonHeader {
         title: title.into(),

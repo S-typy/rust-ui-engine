@@ -41,6 +41,9 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
     if options.min_size.is_some_and(|size| !size.is_valid()) {
         return Err("Minimum window dimensions must be finite and nonnegative".into());
     }
+    if options.smoke_device_recovery && !options.smoke_test {
+        return Err("Device recovery diagnostic requires smoke_test".into());
+    }
     let event_loop = EventLoop::<HostEvent>::with_user_event()
         .build()
         .map_err(|e| e.to_string())?;
@@ -70,6 +73,8 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
         smoke_resized: false,
         frames: 0,
         recoveries: 0,
+        recovery_requested: false,
+        recovery_observed: false,
         failure: None,
     };
     event_loop.run_app(&mut host).map_err(|e| e.to_string())?;
@@ -100,6 +105,8 @@ struct Host<A> {
     smoke_resized: bool,
     frames: u64,
     recoveries: u8,
+    recovery_requested: bool,
+    recovery_observed: bool,
     failure: Option<String>,
 }
 
@@ -356,8 +363,28 @@ impl<A: DesktopApp> Host<A> {
                         }
                         self.redraw();
                     } else if self.frames >= 3 && self.smoke_resized {
-                        eprintln!("SMOKE PASS: hardware text frame, native resize, redraw");
-                        event_loop.exit();
+                        if self.options.smoke_device_recovery && !self.recovery_requested {
+                            self.recovery_requested = true;
+                            self.renderer
+                                .as_mut()
+                                .expect("renderer exists")
+                                .request_device_recovery();
+                            eprintln!(
+                                "RECOVERY: controlled device destruction requested after resize"
+                            );
+                            self.redraw();
+                        } else if !self.options.smoke_device_recovery || self.recovery_observed {
+                            eprintln!(
+                                "SMOKE PASS: hardware frame, native resize, redraw; recovery={} images={} uploads={}",
+                                self.recovery_observed, stats.images, stats.uploaded_images
+                            );
+                            event_loop.exit();
+                        } else {
+                            self.fail(
+                                event_loop,
+                                "Recovery diagnostic did not traverse renderer recreation",
+                            );
+                        }
                     } else {
                         self.retry_at = Some(Instant::now() + RETRY);
                     }
@@ -377,6 +404,12 @@ impl<A: DesktopApp> Host<A> {
                     return;
                 }
                 self.recoveries += 1;
+                if self.recovery_requested
+                    && reason == rust_desktop_ui_render_wgpu::RecoveryReason::DeviceLost
+                {
+                    self.recovery_observed = true;
+                    eprintln!("RECOVERY: ordinary host renderer recreation");
+                }
                 self.renderer = None;
                 self.initialize_renderer(event_loop);
             }

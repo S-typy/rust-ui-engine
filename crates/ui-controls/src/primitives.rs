@@ -323,7 +323,7 @@ pub(crate) fn paint_icon_themed(
     foreground: Color,
     theme: Theme,
 ) {
-    if !theme.is_fluent() {
+    if !theme.is_fluent() || theme.is_high_contrast() {
         paint_icon(scene, symbol, bounds, clip, foreground);
         return;
     }
@@ -338,7 +338,9 @@ pub(crate) fn paint_icon_themed(
     // palette. Preserve opacity, including a fully transparent foreground.
     let tone = |light: Color, dark: Color| Color {
         a: foreground.a,
-        ..if theme == Theme::FluentDark {
+        ..if matches!(theme, Theme::Configured(_)) {
+            theme.tokens().focus
+        } else if theme.is_dark() {
             dark
         } else {
             light

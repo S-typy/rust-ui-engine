@@ -21,6 +21,10 @@
 | windows-sys | `=0.61.2`, только Windows | Системные DWM/Win32 API заголовка, окон, мониторов и захвата указателя | MIT OR Apache-2.0 |
 | serde | `=1.0.229`, `derive` | Типизированное представление файла расположения docking | MIT OR Apache-2.0 |
 | serde_json | `=1.0.154`, `float_roundtrip` | Чтение и запись versioned JSON расположения docking | MIT OR Apache-2.0 |
+| rusqlite | `=0.40.2`, `bundled` | Опциональный SQLite adapter | MIT |
+| image | `=0.25.10`, `png/jpeg/bmp/ico` | Декодирование статических raster assets | MIT OR Apache-2.0 |
+| resvg | `=0.48.1`, без default features | Подготовка статического SVG в bitmap | Apache-2.0 OR MIT |
+| roxmltree | `=0.21.1` | XML-разбор и предварительная проверка XAML/SVG | MIT OR Apache-2.0 |
 
 Версии и лицензии сверены с опубликованными пакетами:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/source/Cargo.toml),
@@ -36,7 +40,11 @@
 [arboard](https://docs.rs/crate/arboard/3.6.1/source/Cargo.toml),
 [windows-sys](https://docs.rs/crate/windows-sys/0.61.2/source/Cargo.toml),
 [serde](https://docs.rs/crate/serde/1.0.229/source/Cargo.toml),
-[serde_json](https://docs.rs/crate/serde_json/1.0.154/source/Cargo.toml).
+[serde_json](https://docs.rs/crate/serde_json/1.0.154/source/Cargo.toml),
+[rusqlite](https://docs.rs/crate/rusqlite/0.40.2/source/Cargo.toml),
+[image](https://docs.rs/crate/image/0.25.10/source/LICENSE-MIT),
+[resvg](https://docs.rs/crate/resvg/0.48.1/source/LICENSE-MIT),
+[roxmltree](https://docs.rs/crate/roxmltree/0.21.1/source/LICENSE-MIT).
 `pollster` использует старую запись `Apache-2.0/MIT`, эквивалентную выбору одной
 из двух лицензий. Это преобразование отмечено отдельно в inventory.
 
@@ -51,8 +59,8 @@ OpenGL, WebGPU, ANGLE, MoltenVK и статическая поставка DXC �
 `wayland-dlopen`. Adwaita client-side decorations не поставляются. На Wayland
 compositor без server-side decorations возможен запуск без рамки и кнопок
 заголовка; собственная реализация декораций остаётся отдельной задачей.
-Необязательная Adwaita-рамка winit и её зависимость `tiny-skia` отключены
-в выбранной конфигурации. Описание feature flags:
+Необязательная Adwaita-рамка winit отключена. `tiny-skia` теперь используется
+отдельной веткой подготовки SVG assets, описанной ниже. Описание feature flags:
 [winit](https://docs.rs/crate/winit/0.30.13/source/Cargo.toml),
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/features).
 
@@ -81,6 +89,26 @@ default features обеих библиотек отключены. Shaping/font 
 системный font discovery использует платформенные API. Parley не является
 GPU renderer: bitmap glyphs загружаются собственным wgpu atlas. Шрифты не
 копируются в репозиторий и не входят в binary package.
+
+`ui-images` включает у `image` только `png`, `jpeg`, `bmp`, `ico`, без default
+formats/rayon. `resvg` и `usvg` работают без default features: SVG text, системные
+fonts, memmap fonts и embedded raster decoding отключены. Приложение дополнительно
+отклоняет text/image/use/scripts/animation/filters и внешние ресурсы до обработки.
+SVG paths, gradients, clips и masks проходят структурные и ресурсные ограничения
+перед подготовкой bitmap. Подготовленные immutable RGBA8 передаются собственному
+GPU renderer; CPU-композиция окна не вводится. Граница описана в
+[ADR-011](adr/ADR-011-image-assets.md).
+
+Ветка SVG использует Rust-библиотеки `tiny-skia` и `tiny-skia-path` под
+[BSD-3-Clause](https://docs.rs/crate/tiny-skia/0.12.0/source/LICENSE).
+Их license files содержат attribution Google Inc. и Yevhenii Reizner;
+эти уведомления сохраняются при соответствующей поставке. C/C++-файлы, native
+archives и build scripts у новых image/SVG пакетов не обнаружены, кроме Rust
+`crc32fast/build.rs`, который проверяет версию Rust и объявляет cfg для
+стабилизированных ARM CRC32/x86 VPCLMULQDQ intrinsics.
+PNG использует Rust DEFLATE implementations; `zlib-rs` не подключает C zlib.
+Наличие `moxcms` в графе `image` не означает включённый управляемый цветовой
+конвейер UI: выход трактуется как sRGB, автоматическая ICC-конверсия не заявляется.
 
 `accesskit_winit` включает `rwh_06`, `accesskit_unix`, `async-io`, без default
 features. На Linux accessibility использует AT-SPI через D-Bus; Windows/macOS
@@ -164,14 +192,18 @@ metadata не доказывает компиляцию этой зависим�
 заменяет проверку назначения новой библиотеки; успешная автоматическая проверка
 не равна проверке всех исходников и условий бинарной поставки.
 
-Инвентаризация от 2026-10-15 соответствует текущему Cargo.lock: **352**
-сторонних registry packages и 11 workspace packages. Для 306 пакетов
+Инвентаризация от 2026-10-16 соответствует текущему Cargo.lock: **388**
+сторонних registry packages и 13 workspace packages. Для 342 пакетов
 найдены и хешированы license/notice files в архиве; для ещё 45 проверены
 материалы точного upstream revision. Единственный прежний manifest-only случай —
 `dispatch 0.2.0` с декларацией MIT. Его attribution packaging и условия Apple SDK,
 перечисленные upstream objc2, остаются открытыми перед поставкой macOS binaries.
 AccessKit evidence включает LICENSE.chromium и AUTHORS наряду с MIT/Apache
 текстами: одной SPDX-декларации manifest недостаточно для упаковки notices.
+Image/SVG pipeline добавил31 registry package; для каждого найден и хеширован
+license text в crate archive. Локальная проверка `cargo deny --locked check licenses`
+на этом lockfile завершилась с exit code0. Это проверка лицензий; новый полный
+аудит advisories этим результатом не заявляется.
 
 Историческая проверка `cargo deny --locked --log-level error check`
 349-package snapshot завершилась 2026-10-09 с exit code 0 после проверки и

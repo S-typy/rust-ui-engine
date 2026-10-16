@@ -20,6 +20,9 @@ const MAX_LAYOUTS: usize = 1024;
 const MAX_GLYPHS: usize = 4096;
 const MAX_RASTER_BYTES: usize = 64 * 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 1024 * 1024;
+const MAX_LAYOUT_TEXT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_LAYOUT_CLUSTERS: usize = 262_144;
+const MAX_PREPARED_GLYPHS: usize = 65_536;
 
 /// Prepared outputs hold bitmap Arcs independently of the engine cache.
 #[derive(Default)]
@@ -93,6 +96,28 @@ pub struct TextCaret {
     pub affinity: CaretAffinity,
 }
 
+/// The system font actually selected for a shaped range, including fallback.
+/// Names are diagnostic strings from the font, not persistent resource keys.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextFontRun {
+    pub text_range: Range<usize>,
+    pub line_index: usize,
+    pub font_name: String,
+    pub font_size: f32,
+    pub is_rtl: bool,
+    pub glyph_count: usize,
+}
+
+/// A shaped line in global physical pixels, before clipping.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextLineMetrics {
+    pub text_range: Range<usize>,
+    pub bounds: Rect,
+    pub baseline: f32,
+    pub ascent: f32,
+    pub descent: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct PreparedText {
     pub glyphs: Vec<RasterGlyph>,
@@ -101,8 +126,15 @@ pub struct PreparedText {
     pub height: f32,
     /// Actual shaped .notdef glyphs; nonzero means system-font coverage is incomplete.
     pub missing_glyphs: usize,
+    /// Includes spaces, nonpainting glyphs and glyphs outside the clip.
+    pub shaped_glyphs: usize,
+    /// Glyphs with a bitmap, before clipping. Whitespace need not have one.
+    pub rasterized_glyphs: usize,
+    /// Color bitmaps, before clipping; these retain their font palette colors.
+    pub color_glyphs: usize,
     layout: Arc<Layout<()>>,
     text: Arc<str>,
+    graphemes: Arc<[usize]>,
     origin: Point,
     scale: f32,
 }
@@ -113,11 +145,36 @@ impl PreparedText {
         if !position.is_finite() {
             return TextCaret::default();
         }
-        self.owned_cursor(Cursor::from_point(
+        let cursor = Cursor::from_point(
             &self.layout,
             position.x - self.origin.x,
             position.y - self.origin.y,
-        ))
+        );
+        if self.graphemes.binary_search(&cursor.index()).is_ok() {
+            return self.owned_cursor(cursor);
+        }
+        // Shaping clusters can split an extended grapheme (Indic conjuncts,
+        // regional indicators without a flag ligature). Choose its nearest
+        // visual edge, rather than always snapping to its logical start.
+        let before = self.snap(cursor.index());
+        let after = self.graphemes[self.graphemes.partition_point(|&i| i <= cursor.index())];
+        let candidates = [
+            TextCaret {
+                index: before,
+                affinity: CaretAffinity::Downstream,
+            },
+            TextCaret {
+                index: after,
+                affinity: CaretAffinity::Upstream,
+            },
+        ];
+        candidates
+            .into_iter()
+            .min_by(|&a, &b| {
+                caret_distance(self.caret_geometry(a), position)
+                    .total_cmp(&caret_distance(self.caret_geometry(b), position))
+            })
+            .unwrap_or_default()
     }
 
     pub fn caret_geometry(&self, caret: TextCaret) -> Rect {
@@ -128,25 +185,27 @@ impl PreparedText {
     }
 
     pub fn move_caret_visual(&self, caret: TextCaret, right: bool) -> TextCaret {
-        let cursor = self.parley_cursor(caret);
-        self.owned_cursor(if right {
-            cursor.next_visual(&self.layout)
-        } else {
-            cursor.previous_visual(&self.layout)
-        })
+        let mut cursor = self.parley_cursor(caret);
+        // Advance through shaping clusters until a complete grapheme edge is
+        // reached. Rounding each intermediate index down would repeatedly return
+        // the same position when a single grapheme contains multiple clusters.
+        for _ in 0..self.text.len().saturating_add(2) {
+            let next = if right {
+                cursor.next_visual(&self.layout)
+            } else {
+                cursor.previous_visual(&self.layout)
+            };
+            if next == cursor || self.graphemes.binary_search(&next.index()).is_ok() {
+                return self.owned_cursor(next);
+            }
+            cursor = next;
+        }
+        caret
     }
 
     /// Nearest extended-grapheme byte boundary for a global physical point.
     pub fn hit_test(&self, position: Point) -> usize {
-        if !position.is_finite() {
-            return 0;
-        }
-        let cursor = Cursor::from_point(
-            &self.layout,
-            position.x - self.origin.x,
-            position.y - self.origin.y,
-        );
-        self.snap(cursor.index())
+        self.hit_test_caret(position).index
     }
 
     /// Global physical caret geometry. An invalid byte index is clamped down.
@@ -171,14 +230,14 @@ impl PreparedText {
 
     /// A visual arrow movement, unlike TextDocument's logical grapheme movement.
     pub fn move_visual(&self, byte_index: usize, right: bool) -> usize {
-        let cursor =
-            Cursor::from_byte_index(&self.layout, self.snap(byte_index), Affinity::Downstream);
-        let next = if right {
-            cursor.next_visual(&self.layout)
-        } else {
-            cursor.previous_visual(&self.layout)
-        };
-        self.snap(next.index())
+        self.move_caret_visual(
+            TextCaret {
+                index: byte_index,
+                affinity: CaretAffinity::Downstream,
+            },
+            right,
+        )
+        .index
     }
 
     pub fn line_count(&self) -> usize {
@@ -186,6 +245,55 @@ impl PreparedText {
     }
     pub fn is_rtl(&self) -> bool {
         self.layout.is_rtl()
+    }
+
+    /// Inspect the fonts used by shaping; no font bytes or file paths are exposed.
+    pub fn font_runs(&self) -> Vec<TextFontRun> {
+        self.layout
+            .lines()
+            .enumerate()
+            .flat_map(|(line_index, line)| {
+                line.runs().map(move |run| {
+                    let font = run.font();
+                    let font_name = FontRef::from_index(font.data.data(), font.index as usize)
+                        .and_then(|font| {
+                            font.localized_strings()
+                                .find_by_id(swash::StringId::Full, Some("en"))
+                        })
+                        .map(|name| name.to_string())
+                        .unwrap_or_else(|| "Unnamed font".into());
+                    TextFontRun {
+                        text_range: run.text_range(),
+                        line_index,
+                        font_name,
+                        font_size: run.font_size(),
+                        is_rtl: run.is_rtl(),
+                        glyph_count: run.clusters().map(|cluster| cluster.glyphs().count()).sum(),
+                    }
+                })
+            })
+            .collect()
+    }
+
+    pub fn line_metrics(&self) -> Vec<TextLineMetrics> {
+        self.layout
+            .lines()
+            .map(|line| {
+                let metrics = line.metrics();
+                TextLineMetrics {
+                    text_range: line.text_range(),
+                    bounds: Rect::new(
+                        self.origin.x + metrics.inline_min_coord,
+                        self.origin.y + metrics.block_min_coord,
+                        metrics.inline_max_coord - metrics.inline_min_coord,
+                        metrics.block_max_coord - metrics.block_min_coord,
+                    ),
+                    baseline: self.origin.y + metrics.baseline,
+                    ascent: metrics.ascent,
+                    descent: metrics.descent,
+                }
+            })
+            .collect()
     }
 
     fn parley_cursor(&self, caret: TextCaret) -> Cursor {
@@ -210,13 +318,10 @@ impl PreparedText {
     }
 
     fn snap(&self, index: usize) -> usize {
-        self.text
-            .grapheme_indices(true)
-            .map(|(i, _)| i)
-            .chain(std::iter::once(self.text.len()))
-            .take_while(|&i| i <= index)
-            .last()
-            .unwrap_or(0)
+        self.graphemes[self
+            .graphemes
+            .partition_point(|&i| i <= index)
+            .saturating_sub(1)]
     }
     fn global(&self, rect: parley::BoundingBox) -> Rect {
         Rect::new(
@@ -262,6 +367,15 @@ pub struct TextStats {
     pub cached_layouts: usize,
     pub cached_glyphs: usize,
     pub cached_raster_bytes: usize,
+    /// UTF-8 bytes retained as layout cache keys (not total allocator usage).
+    pub cached_layout_text_bytes: usize,
+    pub cached_layout_clusters: usize,
+}
+
+struct CachedLayout {
+    layout: Arc<Layout<()>>,
+    graphemes: Arc<[usize]>,
+    clusters: usize,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -288,7 +402,7 @@ pub struct TextEngine {
     fonts: FontContext,
     layout_context: LayoutContext<()>,
     scale_context: ScaleContext,
-    layouts: HashMap<LayoutKey, Arc<Layout<()>>>,
+    layouts: HashMap<LayoutKey, Arc<CachedLayout>>,
     layout_order: VecDeque<LayoutKey>,
     glyphs: HashMap<GlyphKey, Option<CachedGlyph>>,
     glyph_order: VecDeque<GlyphKey>,
@@ -330,6 +444,8 @@ impl TextEngine {
         self.stats.cached_layouts = 0;
         self.stats.cached_glyphs = 0;
         self.stats.cached_raster_bytes = 0;
+        self.stats.cached_layout_text_bytes = 0;
+        self.stats.cached_layout_clusters = 0;
     }
 
     pub fn prepare(&mut self, run: &TextRun, scale: f32) -> Result<PreparedText, TextError> {
@@ -389,22 +505,57 @@ impl TextEngine {
             if !layout.width().is_finite() || !layout.height().is_finite() {
                 return Err(TextError::InvalidRun);
             }
-            let layout = Arc::new(layout);
-            if self.layouts.len() == MAX_LAYOUTS
-                && let Some(old) = self.layout_order.pop_front()
+            let mut shaped_glyphs = 0;
+            let mut clusters = 0;
+            for line in layout.lines() {
+                for run in line.runs() {
+                    clusters += run.len();
+                    for cluster in run.clusters() {
+                        shaped_glyphs += cluster.glyphs().count();
+                        if shaped_glyphs > MAX_PREPARED_GLYPHS || clusters > MAX_LAYOUT_CLUSTERS {
+                            return Err(TextError::RasterLimit);
+                        }
+                    }
+                }
+            }
+            let layout = Arc::new(CachedLayout {
+                layout: Arc::new(layout),
+                graphemes: run
+                    .text
+                    .grapheme_indices(true)
+                    .map(|(i, _)| i)
+                    .chain(std::iter::once(run.text.len()))
+                    .collect(),
+                clusters,
+            });
+            while self.layouts.len() >= MAX_LAYOUTS
+                || self.stats.cached_layout_text_bytes + key.text.len() > MAX_LAYOUT_TEXT_BYTES
+                || self.stats.cached_layout_clusters + clusters > MAX_LAYOUT_CLUSTERS
             {
-                self.layouts.remove(&old);
+                let Some(old) = self.layout_order.pop_front() else {
+                    break;
+                };
+                if let Some(removed) = self.layouts.remove(&old) {
+                    self.stats.cached_layout_text_bytes -= old.text.len();
+                    self.stats.cached_layout_clusters -= removed.clusters;
+                }
             }
             self.layout_order.push_back(key.clone());
             self.layouts.insert(key.clone(), Arc::clone(&layout));
             self.stats.layouts += 1;
             self.stats.cached_layouts = self.layouts.len();
+            self.stats.cached_layout_text_bytes += key.text.len();
+            self.stats.cached_layout_clusters += clusters;
             layout
         };
+        let graphemes = Arc::clone(&layout.graphemes);
+        let layout = Arc::clone(&layout.layout);
         let mut glyphs = Vec::new();
         let mut raster_budget = RasterBudget::default();
         let mut missing_glyphs = 0;
         let mut shaped_glyphs = 0usize;
+        let mut rasterized_glyphs = 0;
+        let mut color_glyphs = 0;
         for line in layout.lines() {
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
@@ -415,7 +566,7 @@ impl TextEngine {
                 let coords: Arc<[i16]> = Arc::from(font_run.normalized_coords());
                 for glyph in glyph_run.positioned_glyphs() {
                     shaped_glyphs += 1;
-                    if shaped_glyphs > 65536 {
+                    if shaped_glyphs > MAX_PREPARED_GLYPHS {
                         return Err(TextError::RasterLimit);
                     }
                     if glyph.id == 0 {
@@ -438,6 +589,8 @@ impl TextEngine {
                     };
                     let image = self.raster(&key, font)?;
                     if let Some(image) = image {
+                        rasterized_glyphs += 1;
+                        color_glyphs += usize::from(image.color);
                         let position =
                             Point::new(x.floor() + image.left as f32, y.floor() - image.top as f32);
                         let glyph_bounds = Rect::new(
@@ -490,8 +643,12 @@ impl TextEngine {
             width: layout.width(),
             height: layout.height(),
             missing_glyphs,
+            shaped_glyphs,
+            rasterized_glyphs,
+            color_glyphs,
             layout,
             text: key.text,
+            graphemes,
             origin: Point::new(bounds.x, bounds.y),
             scale,
         })
@@ -613,6 +770,16 @@ impl TextEngine {
         self.stats.cached_raster_bytes += bytes;
         Ok(cached)
     }
+}
+
+fn caret_distance(rect: Rect, point: Point) -> f32 {
+    let dx = point.x - rect.x;
+    let dy = if point.y < rect.y {
+        rect.y - point.y
+    } else {
+        (point.y - rect.y - rect.height).max(0.0)
+    };
+    dx.hypot(dy)
 }
 
 fn scaled_rect(rect: Rect, scale: f32) -> Option<Rect> {
@@ -793,5 +960,217 @@ mod tests {
             // silently counted as successful script coverage.
             assert!(prepared.missing_glyphs <= source.chars().count());
         }
+    }
+
+    #[test]
+    fn visual_navigation_crosses_complete_complex_graphemes_in_both_directions() {
+        let mut engine = TextEngine::new();
+        for source in ["aक्षिb", "a👩‍💻b", "a🇷🇺b", "aक्‍षb", "a\u{301}b", "aกำb"]
+        {
+            let prepared = engine.prepare(&run(source), 1.5).unwrap();
+            for right in [true, false] {
+                let mut caret = TextCaret {
+                    index: if right { 0 } else { source.len() },
+                    affinity: CaretAffinity::Downstream,
+                };
+                let end = if right { source.len() } else { 0 };
+                let mut seen = vec![caret];
+                for _ in 0..source.len() * 4 {
+                    if caret.index == end {
+                        break;
+                    }
+                    let next = prepared.move_caret_visual(caret, right);
+                    assert!(
+                        !seen.contains(&next),
+                        "navigation stuck for {source:?}, right={right}, visited={seen:?}, next={next:?}"
+                    );
+                    seen.push(next);
+                    caret = next;
+                }
+                assert_eq!(caret.index, end, "{source:?}, right={right}");
+            }
+        }
+    }
+
+    #[test]
+    fn complex_grapheme_hit_testing_selects_the_nearest_outer_edge() {
+        let mut engine = TextEngine::new();
+        for source in ["aक्षिb", "a🇷🇺b", "aक्‍षb"] {
+            let prepared = engine.prepare(&run(source), 1.5).unwrap();
+            let bounds: Vec<_> = source.grapheme_indices(true).map(|(i, _)| i).collect();
+            let start = prepared.caret_rect(bounds[1]);
+            let end = prepared.caret_rect(bounds[2]);
+            let y = start.y + start.height * 0.5;
+            for (fraction, expected) in [(0.1, bounds[1]), (0.9, bounds[2])] {
+                let point = Point::new(start.x + (end.x - start.x) * fraction, y);
+                assert_eq!(
+                    prepared.hit_test(point),
+                    expected,
+                    "{source:?} at {fraction}"
+                );
+            }
+            for step in 0..101 {
+                let point = Point::new(start.x + (end.x - start.x) * step as f32 / 100.0, y);
+                assert!(bounds.contains(&prepared.hit_test(point)), "{source:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn fallback_metrics_hit_testing_and_selection_share_dpi_and_translation() {
+        let mut engine = TextEngine::new();
+        let source = "Aक्षि สวัสดี 中文 👩‍💻 אבגZ";
+        let mut text = run(source);
+        text.bounds.width = 1200.0;
+        text.clip = text.bounds;
+        let base = engine.prepare(&text, 1.0).unwrap();
+        let fonts = base.font_runs();
+        assert_eq!(
+            fonts.iter().map(|r| r.glyph_count).sum::<usize>(),
+            base.shaped_glyphs
+        );
+        for scale in [0.75, 1.25, 1.5, 2.0] {
+            let prepared = engine.prepare(&text, scale).unwrap();
+            assert!((prepared.width - base.width * scale).abs() < 0.1);
+            assert!((prepared.height - base.height * scale).abs() < 0.1);
+            let scaled_fonts = prepared.font_runs();
+            assert_eq!(scaled_fonts.len(), fonts.len());
+            for (a, b) in fonts.iter().zip(scaled_fonts) {
+                assert_eq!(a.font_name, b.font_name);
+                assert_eq!(a.text_range, b.text_range);
+                assert!((b.font_size - a.font_size * scale).abs() < 0.1);
+            }
+            for (index, _) in source.grapheme_indices(true) {
+                let a = base.caret_rect(index);
+                let b = prepared.caret_rect(index);
+                assert!((b.x - a.x * scale).abs() < 0.1);
+                // The shaper quantizes line block coordinates to device pixels;
+                // font advances remain fractional. Compare within that grid.
+                assert!(
+                    (b.y - a.y * scale).abs() <= scale.max(1.0),
+                    "scale={scale}, a={a:?}, b={b:?}"
+                );
+                assert!((b.height - a.height * scale).abs() <= 2.0 * scale.max(1.0));
+                let hit = prepared.hit_test_caret(Point::new(b.x, b.y + b.height / 2.0));
+                assert!((prepared.caret_geometry(hit).x - b.x).abs() < 0.1);
+            }
+            let base_selection = base.selection_rects(1..source.len() - 1);
+            let scaled_selection = prepared.selection_rects(1..source.len() - 1);
+            assert_eq!(base_selection.len(), scaled_selection.len());
+            for (a, b) in base_selection.iter().zip(scaled_selection) {
+                assert!((b.x - a.x * scale).abs() < 0.1);
+                assert!((b.width - a.width * scale).abs() < 0.1);
+            }
+            let mut translated = text.clone();
+            translated.bounds.x += 17.25;
+            translated.bounds.y += 8.75;
+            translated.clip = translated.bounds;
+            let moved = engine.prepare(&translated, scale).unwrap();
+            for (index, _) in source.grapheme_indices(true) {
+                let a = prepared.caret_rect(index);
+                let b = moved.caret_rect(index);
+                assert!((b.x - a.x - 17.25 * scale).abs() < 0.01);
+                assert!((b.y - a.y - 8.75 * scale).abs() < 0.01);
+            }
+        }
+    }
+
+    #[test]
+    fn wrapped_bidi_lines_and_selection_are_consistent_with_their_baselines() {
+        let mut engine = TextEngine::new();
+        let mut text = run("one אבג two العربية three אבג four العربية five\nsix שבע");
+        text.wrap = true;
+        text.bounds.width = 160.0;
+        text.bounds.height = 600.0;
+        text.clip = text.bounds;
+        let prepared = engine.prepare(&text, 1.5).unwrap();
+        let lines = prepared.line_metrics();
+        assert!(lines.len() >= 4);
+        assert_eq!(lines.len(), prepared.line_count());
+        for (i, line) in lines.iter().enumerate() {
+            assert!(line.bounds.is_valid());
+            assert!(line.baseline >= line.bounds.y);
+            assert!(line.baseline <= line.bounds.y + line.bounds.height);
+            assert!(line.ascent > 0.0 && line.descent >= 0.0);
+            if i > 0 {
+                assert!(line.baseline > lines[i - 1].baseline);
+            }
+        }
+        let fragments = prepared.selection_rects(0..text.text.len());
+        assert!(fragments.len() >= lines.len());
+        for rect in fragments {
+            assert!(rect.is_valid());
+            assert!(
+                lines
+                    .iter()
+                    .any(|line| (line.bounds.y - rect.y).abs() < 0.1)
+            );
+        }
+        assert!(prepared.selection_rects(3..3).is_empty());
+    }
+
+    #[test]
+    fn layout_budget_evicts_by_clusters_and_rejects_oversized_layout_before_caching() {
+        let mut engine = TextEngine::new();
+        let mut text = run(&"a".repeat(MAX_PREPARED_GLYPHS + 1));
+        text.clip = Rect::new(-10.0, -10.0, 1.0, 1.0);
+        assert!(matches!(
+            engine.prepare(&text, 1.0),
+            Err(TextError::RasterLimit)
+        ));
+        assert_eq!(engine.stats().cached_layouts, 0);
+        assert_eq!(engine.stats().rasterizations, 0);
+        for count in 0..6 {
+            text.text = format!("{count}{}", "a".repeat(59_999));
+            engine.prepare(&text, 1.0).unwrap();
+            assert!(engine.stats().cached_layout_clusters <= MAX_LAYOUT_CLUSTERS);
+            assert!(engine.stats().cached_layout_text_bytes <= MAX_LAYOUT_TEXT_BYTES);
+        }
+        assert_eq!(engine.stats().cached_layouts, 4);
+        engine.clear_caches();
+        assert_eq!(engine.stats().cached_layouts, 0);
+        assert_eq!(engine.stats().cached_layout_clusters, 0);
+        assert_eq!(engine.stats().cached_layout_text_bytes, 0);
+    }
+
+    #[test]
+    fn invalid_or_out_of_range_metrics_fail_before_caching() {
+        let mut engine = TextEngine::new();
+        for scale in [0.0, -1.0, f32::INFINITY, f32::NAN, 100.0] {
+            assert!(matches!(
+                engine.prepare(&run("test"), scale),
+                Err(TextError::InvalidScale)
+            ));
+        }
+        let mut text = run("test");
+        text.bounds.x = f32::MAX;
+        assert!(engine.prepare(&text, 2.0).is_err());
+        text = run("test");
+        text.color.r = f32::NAN;
+        assert!(matches!(
+            engine.prepare(&text, 1.0),
+            Err(TextError::InvalidRun)
+        ));
+        text = run(&"a".repeat(MAX_TEXT_BYTES + 1));
+        assert!(matches!(
+            engine.prepare(&text, 1.0),
+            Err(TextError::TextTooLong)
+        ));
+        assert_eq!(engine.stats().cached_layouts, 0);
+    }
+
+    #[test]
+    fn clipping_does_not_hide_font_coverage_and_raster_diagnostics() {
+        let mut engine = TextEngine::new();
+        let mut text = run("A👩‍💻");
+        let visible = engine.prepare(&text, 1.5).unwrap();
+        text.clip = Rect::new(-100.0, -100.0, 10.0, 10.0);
+        let hidden = engine.prepare(&text, 1.5).unwrap();
+        assert!(hidden.glyphs.is_empty());
+        assert_eq!(hidden.shaped_glyphs, visible.shaped_glyphs);
+        assert_eq!(hidden.missing_glyphs, visible.missing_glyphs);
+        assert_eq!(hidden.rasterized_glyphs, visible.rasterized_glyphs);
+        assert_eq!(hidden.color_glyphs, visible.color_glyphs);
+        assert_eq!(hidden.font_runs(), visible.font_runs());
     }
 }
