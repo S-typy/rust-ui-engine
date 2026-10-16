@@ -132,6 +132,8 @@ struct LinkState {
     target: Option<DataValue>,
     initialized: bool,
     error: Option<String>,
+    source_revision: Option<u64>,
+    converter_revision: u64,
 }
 
 /// UI-thread binding host. Call `initialize` after all widgets exist, then
@@ -219,6 +221,8 @@ impl ControlBindings {
             target: None,
             initialized: false,
             error: None,
+            source_revision: None,
+            converter_revision: 0,
         });
         if let Err(error) = self.order() {
             self.links.pop();
@@ -394,11 +398,19 @@ impl ControlBindings {
         if !self.installed {
             return false;
         }
+        let collection_result = self.context.borrow_mut().synchronize_collections();
         let order = self.evaluation_order.clone();
         let mut changed = false;
         for index in order {
             let binding = self.links[index].binding.clone();
-            let result = self.sync_link(ui, index, &binding, explicit);
+            let blocked_collection = binding.mode.reads_source()
+                && !(binding.mode == ControlBindingMode::OneTime && self.links[index].initialized)
+                && matches!(&binding.source, BindingSource::DataContext(path)
+                    if self.context.borrow().has_collection_path(path));
+            let result = match &collection_result {
+                Err(error) if blocked_collection => Err(error.clone()),
+                _ => self.sync_link(ui, index, &binding, explicit),
+            };
             match result {
                 Ok(did_change) => {
                     changed |= did_change;
@@ -432,46 +444,54 @@ impl ControlBindings {
         if self.links[index].initialized && binding.mode == ControlBindingMode::OneTime {
             return Ok(false);
         }
-        let source = if binding.mode.reads_source() {
-            self.read_source(ui, binding)
-        } else {
-            Ok(DataValue::Null)
-        };
-        let source = match source {
-            Ok(value) => value,
-            Err(error) => match &binding.fallback {
-                Some(fallback) if binding.mode.reads_source() => {
-                    if self.links[index].target.as_ref() != Some(fallback) {
-                        self.apply_target(ui, binding, fallback)?;
-                        self.links[index].target = Some(read_property(
+        if binding.mode.reads_source() && self.source_invalidated(index, binding) {
+            // Converters are application callbacks and may update another
+            // model value. Never claim to have read a revision emitted later
+            // in the callback or during target application.
+            let revisions = self.source_revisions();
+            let source = match self.read_source(ui, binding) {
+                Ok(value) => value,
+                Err(error) => match &binding.fallback {
+                    Some(fallback) if binding.mode.reads_source() => {
+                        if self.links[index].target.as_ref() != Some(fallback) {
+                            self.apply_target(ui, binding, fallback)?;
+                            self.links[index].target = Some(read_property(
+                                ui,
+                                binding.target,
+                                binding.trigger,
+                                &self.items.borrow(),
+                            )?);
+                        }
+                        if binding.mode == ControlBindingMode::OneTime {
+                            self.links[index].initialized = true;
+                        }
+                        return Err(error);
+                    }
+                    _ => return Err(error),
+                },
+            };
+            if !self.links[index].initialized || self.links[index].source.as_ref() != Some(&source)
+            {
+                self.apply_target(ui, binding, &source)?;
+                self.links[index].source = Some(source);
+                self.links[index].target =
+                    if binding.target.property == BindingProperty::ItemsSource {
+                        // ItemsSource is never reverse-bound. Avoid constructing a
+                        // second full object list just to cache an unread target.
+                        None
+                    } else {
+                        Some(read_property(
                             ui,
                             binding.target,
                             binding.trigger,
                             &self.items.borrow(),
-                        )?);
-                    }
-                    if binding.mode == ControlBindingMode::OneTime {
-                        self.links[index].initialized = true;
-                    }
-                    return Err(error);
-                }
-                _ => return Err(error),
-            },
-        };
-        if binding.mode.reads_source()
-            && (!self.links[index].initialized
-                || self.links[index].source.as_ref() != Some(&source))
-        {
-            self.apply_target(ui, binding, &source)?;
-            self.links[index].source = Some(source);
-            self.links[index].target = Some(read_property(
-                ui,
-                binding.target,
-                binding.trigger,
-                &self.items.borrow(),
-            )?);
-            self.links[index].initialized = true;
-            return Ok(true);
+                        )?)
+                    };
+                self.links[index].initialized = true;
+                self.accept_source_revision(index, revisions);
+                return Ok(true);
+            }
+            self.accept_source_revision(index, revisions);
         }
         if !binding.mode.writes_source()
             || (binding.trigger == BindingUpdateTrigger::Explicit && !explicit)
@@ -535,11 +555,54 @@ impl ControlBindings {
             accepted(outcome?)?;
         }
         if binding.mode.reads_source() {
+            let revisions = self.source_revisions();
             self.links[index].source = Some(self.read_source(ui, binding)?);
+            self.accept_source_revision(index, revisions);
         }
         self.links[index].target = Some(value);
         self.links[index].initialized = true;
         Ok(changed)
+    }
+
+    fn source_invalidated(&mut self, index: usize, binding: &ControlBinding) -> bool {
+        let link = &mut self.links[index];
+        if !link.initialized
+            || link.error.is_some()
+            || (binding.converter.is_some()
+                && link.converter_revision != self.converters.borrow().revision())
+        {
+            return true;
+        }
+        let BindingSource::DataContext(path) = &binding.source else {
+            return true;
+        };
+        let context = self.context.borrow();
+        let Some(cursor) = link.source_revision else {
+            return true;
+        };
+        if cursor == context.revision() {
+            return false;
+        }
+        let affected = context
+            .changes_since(cursor)
+            .is_none_or(|changes| changes.iter().any(|change| change.affects(path)));
+        if !affected {
+            // Advance through unrelated changes without cloning source data.
+            link.source_revision = Some(context.revision());
+        }
+        affected
+    }
+
+    fn source_revisions(&self) -> (u64, u64) {
+        (
+            self.context.borrow().revision(),
+            self.converters.borrow().revision(),
+        )
+    }
+
+    fn accept_source_revision(&mut self, index: usize, revisions: (u64, u64)) {
+        self.links[index].source_revision = Some(revisions.0);
+        self.links[index].converter_revision = revisions.1;
     }
 
     fn read_source(
@@ -1333,3 +1396,7 @@ fn control_error(error: crate::ControlError) -> BindingError {
 #[cfg(test)]
 #[path = "control_binding_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "observable_binding_tests.rs"]
+mod observable_tests;

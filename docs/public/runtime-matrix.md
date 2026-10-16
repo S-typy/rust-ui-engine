@@ -1,5 +1,21 @@
 # Runtime matrix и протокол проверки alpha
 
+## Наблюдаемые коллекции — Windows, 2026-10-16
+
+1011 workspace tests и 2 doctests PASS; два hardware tests ignored.
+48 новых регрессий: atomic batch/rollback, история и независимые наблюдатели,
+точные ключи i64, выбор и viewport, сохранение draft/IME, общие Grid/List/Combo/
+lookup, ограничение проекции и инвалидация путей. fmt, clippy all-targets,
+release и rustdoc с warnings-as-errors PASS. ui-data без SQLite: 33 tests PASS.
+Новых зависимостей нет.
+
+Галерея `--data`: DX12/Vulkan × Light/Dark — четыре capture и четыре GPU smoke
+на NVIDIA RTX 3090, scale=1.5, 1217 glyphs/missing=0, client1800×1170.
+Обе темы просмотрены; пиксели соответствующих тем совпадают между backend.
+Дополнительно MainWindow и EditorsWindow прошли DX12 smoke. Системный ввод
+и фокус не генерировались; реальное IME, screen reader, mixed-DPI и Linux/macOS
+этим срезом не проверены. Контракт — [наблюдаемые коллекции](observable-collections.md).
+
 ## Источники данных и GridControl — Windows, 2026-10-16
 
 Коллекции Rust, SQLite, GridControl и XAML-адаптеры проверены локально:

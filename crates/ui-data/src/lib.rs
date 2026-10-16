@@ -6,14 +6,18 @@
 //! application-owned worker or a separate paged source.
 
 mod model;
+mod observable;
 mod source;
 #[cfg(feature = "sqlite")]
 mod sqlite;
 
 pub use model::*;
+pub use observable::*;
 pub use source::*;
 #[cfg(feature = "sqlite")]
 pub use sqlite::*;
 
+#[cfg(test)]
+mod observable_tests;
 #[cfg(test)]
 mod tests;

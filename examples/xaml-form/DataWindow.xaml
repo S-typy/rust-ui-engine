@@ -7,16 +7,25 @@
     </Grid.RowDefinitions>
     <StackPanel Margin="24,20,24,16" Spacing="6">
       <TextBlock Text="Данные и таблицы" FontSize="28" FontWeight="SemiBold"/>
-      <TextBlock Text="Типизированные источники · сортировка · фильтр · редактирование ячеек" TextTone="Secondary"/>
+      <TextBlock Text="Наблюдаемая коллекция · общие привязки · SQLite · редактирование ячеек" TextTone="Secondary"/>
     </StackPanel>
-    <Grid Grid.Row="1" Margin="24,0,24,16" Spacing="12">
+    <StackPanel Grid.Row="1" Margin="24,0,24,16" Spacing="10">
+    <Grid Spacing="12">
       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
       <TextBox x:Name="DataFilter" Text="{Binding Filter, UpdateSourceTrigger=PropertyChanged}" PlaceholderText="Поиск по обеим таблицам…" AutomationName="Фильтр таблиц"/>
       <CheckBox Grid.Column="1" Content="Только чтение" IsChecked="{Binding ReadOnly}" Width="156"/>
       <Button Grid.Column="2" Content="Обновить" Command="ReloadData" Width="134"/>
     </Grid>
+    <StackPanel Orientation="Horizontal" Spacing="8">
+      <Button Content="Добавить" Command="AddProduct" Icon="Add" Width="128"/>
+      <Button Content="Удалить" Command="RemoveProduct" Width="120"/>
+      <Button Content="В начало" Command="MoveProduct" Width="120"/>
+      <Button Content="Изменить поля" Command="UpdateProduct" Width="156"/>
+      <TextBlock Text="Изменения сразу видны в связанных контролах" TextTone="Secondary" FontSize="12" Margin="8,7,0,0"/>
+    </StackPanel>
+    </StackPanel>
     <Grid Grid.Row="2" Margin="24,0,24,0" Spacing="16">
-      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="240"/></Grid.ColumnDefinitions>
       <GroupBox Header="Коллекция Rust" HeaderIcon="FolderOpen" Padding="0">
         <Grid>
           <Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
@@ -29,7 +38,30 @@
             <GridColumn FieldName="Available" Header="В наличии" Width="104"/>
             <GridColumn FieldName="Note" Header="Примечание" Width="180"/>
           </GridControl>
-          <TextBlock Grid.Row="1" Margin="12,8" Text="{Binding CollectionKey}" FontSize="12" TextTone="Secondary" AutomationName="Ключ строки коллекции"/>
+          <TextBlock Grid.Row="1" Margin="12,8" Text="{Binding CollectionKey, Converter=SelectedKeyText}" FontSize="12" TextTone="Secondary" AutomationName="Ключ строки коллекции"/>
+        </Grid>
+      </GroupBox>
+      <GroupBox Grid.Column="2" Header="Та же коллекция" Padding="12">
+        <Grid Spacing="8">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <TextBlock Text="ListBox" TextTone="Secondary" FontSize="12"/>
+          <ListBox Grid.Row="1" x:Name="ProductList" ItemsSource="{Binding Products}"
+                   DisplayMemberPath="Product" ValueMemberPath="Id" SelectedValue="{Binding CollectionKey}"/>
+          <TextBlock Grid.Row="2" Text="ComboBox" TextTone="Secondary" FontSize="12"/>
+          <ComboBox Grid.Row="3" x:Name="ProductCombo" ItemsSource="{Binding Products}"
+                    DisplayMemberPath="Product" ValueMemberPath="Id" SelectedValue="{Binding CollectionKey}"/>
+          <TextBlock Grid.Row="4" Text="LookupEdit" TextTone="Secondary" FontSize="12"/>
+          <LookupEdit Grid.Row="5" x:Name="ProductLookup" ItemsSource="{Binding Products}"
+                      DisplayMemberPath="Product" ValueMemberPath="Id" SelectedValue="{Binding CollectionKey}" IsEditable="True">
+            <LookupEdit.Columns>
+              <LookupColumn Field="Product" Header="Наименование" Width="220"/>
+              <LookupColumn Field="Code" Header="Артикул" Width="100"/>
+            </LookupEdit.Columns>
+          </LookupEdit>
         </Grid>
       </GroupBox>
       <GroupBox Grid.Column="1" Header="SQLite · в памяти" HeaderIcon="Save" Padding="0">
@@ -46,7 +78,7 @@
               <GridColumn FieldName="Note" Header="Примечание" Width="180"/>
             </GridControl.Columns>
           </GridControl>
-          <TextBlock Grid.Row="1" Margin="12,8" Text="{Binding SqliteKey}" FontSize="12" TextTone="Secondary" AutomationName="Ключ строки SQLite"/>
+          <TextBlock Grid.Row="1" Margin="12,8" Text="{Binding SqliteKey, Converter=SelectedKeyText}" FontSize="12" TextTone="Secondary" AutomationName="Ключ строки SQLite"/>
         </Grid>
       </GroupBox>
     </Grid>

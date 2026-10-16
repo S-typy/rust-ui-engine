@@ -508,10 +508,9 @@ impl Controls {
             let editor = previous_composite.parts.editor;
             let same_selection = previous == kept;
             let same_caption = self.accepted_value(editor) == Some(text.as_str());
-            let preserve_document = same_selection
-                && self.document(editor).is_some_and(|d| {
-                    self.is_edit_dirty(editor) == Some(true) || d.composition().is_some()
-                });
+            let preserve_document = self.document(editor).is_some_and(|d| {
+                self.is_edit_dirty(editor) == Some(true) || d.composition().is_some()
+            });
             let result = if same_selection && same_caption {
                 Ok(CommitOutcome::Unchanged)
             } else if preserve_document {

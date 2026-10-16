@@ -16,6 +16,132 @@ fn form() -> Form {
 }
 
 #[test]
+fn one_observable_collection_updates_grid_list_combo_and_lookup_without_reload() {
+    use rust_desktop_ui_data::DataRow;
+    let mut form = form();
+    let size = Size::new(1200.0, 780.0);
+    form.update(size, 1.0).unwrap();
+    let context = form.view.bindings.as_ref().unwrap().context();
+    let collection = context.borrow().observable_collection("Products").unwrap();
+    let grid = form.find_name("CollectionGrid").unwrap();
+    let sqlite = form.find_name("SqliteGrid").unwrap();
+    let sql_revision = form.ui.grid_source(sqlite).unwrap().borrow().revision();
+    let key = i64::MAX;
+    collection
+        .insert(
+            1,
+            DataRow::new(
+                key,
+                vec![
+                    CellValue::Text("NEW".into()),
+                    CellValue::Text("Наблюдаемая строка".into()),
+                    CellValue::Integer(3),
+                    CellValue::Real(12.5),
+                    CellValue::Bool(true),
+                    CellValue::Null,
+                ],
+            ),
+        )
+        .unwrap();
+    // Publish a selection before the source/grid has adopted the new row.
+    context
+        .borrow_mut()
+        .set("CollectionKey", key.to_string().into())
+        .unwrap();
+    form.update(size, 1.0).unwrap();
+    assert_eq!(form.ui.grid_selected_key(grid), Some(key));
+    for name in ["ProductList", "ProductCombo", "ProductLookup"] {
+        let id = form.find_name(name).unwrap();
+        assert_eq!(form.ui.selection_items(id).unwrap().len(), 5001);
+        assert_eq!(form.ui.selected_keys(id).unwrap(), &[key.to_string()]);
+    }
+    collection
+        .update_cell(key, "Product", CellValue::Text("Новое имя".into()))
+        .unwrap();
+    collection.move_row(key, 0).unwrap();
+    form.update(size, 1.0).unwrap();
+    for name in ["ProductList", "ProductCombo", "ProductLookup"] {
+        let id = form.find_name(name).unwrap();
+        let item = &form.ui.selection_items(id).unwrap()[0];
+        assert_eq!(item.key, key.to_string());
+        assert_eq!(item.text, "Новое имя");
+        assert_eq!(form.ui.selected_keys(id).unwrap(), &[key.to_string()]);
+    }
+    assert_eq!(
+        form.ui
+            .grid_source(grid)
+            .unwrap()
+            .borrow()
+            .value(key, "Product"),
+        Some(&CellValue::Text("Новое имя".into()))
+    );
+    collection.remove(key).unwrap();
+    form.update(size, 1.0).unwrap();
+    assert_eq!(form.ui.grid_selected_key(grid), None);
+    assert_eq!(
+        context.borrow().get("CollectionKey").unwrap(),
+        &DataValue::Null
+    );
+    for name in ["ProductList", "ProductCombo", "ProductLookup"] {
+        let id = form.find_name(name).unwrap();
+        assert_eq!(form.ui.selection_items(id).unwrap().len(), 5000);
+        assert!(form.ui.selected_keys(id).unwrap().is_empty());
+    }
+    assert_eq!(
+        form.ui.grid_source(sqlite).unwrap().borrow().revision(),
+        sql_revision
+    );
+    assert!(
+        form.view
+            .bindings
+            .as_ref()
+            .unwrap()
+            .diagnostics()
+            .is_empty(),
+        "{:?}",
+        form.view.bindings.as_ref().unwrap().diagnostics()
+    );
+}
+
+#[test]
+fn collection_demo_commands_publish_one_batch_and_honor_read_only() {
+    let (context, _) = data_model::model().unwrap();
+    let collection = context.borrow().observable_collection("Products").unwrap();
+    let revision = collection.revision();
+    data_model::apply_command(&mut context.borrow_mut(), "UpdateProduct").unwrap();
+    assert_eq!(collection.revision(), revision + 1);
+    assert_eq!(
+        collection
+            .snapshot()
+            .value(data_model::FIRST_KEY, "Quantity"),
+        Some(&CellValue::Integer(2))
+    );
+    data_model::apply_command(&mut context.borrow_mut(), "AddProduct").unwrap();
+    assert_eq!(collection.snapshot().rows().len(), 5001);
+    let new_key = data_model::FIRST_KEY + 5000;
+    context
+        .borrow_mut()
+        .set("CollectionKey", new_key.to_string().into())
+        .unwrap();
+    data_model::apply_command(&mut context.borrow_mut(), "MoveProduct").unwrap();
+    assert_eq!(collection.snapshot().rows()[0].key, new_key);
+    let accepted = collection.revision();
+    context.borrow_mut().set("ReadOnly", true.into()).unwrap();
+    for command in [
+        "AddProduct",
+        "RemoveProduct",
+        "MoveProduct",
+        "UpdateProduct",
+    ] {
+        data_model::apply_command(&mut context.borrow_mut(), command).unwrap();
+        assert_eq!(collection.revision(), accepted);
+    }
+    context.borrow_mut().set("ReadOnly", false.into()).unwrap();
+    data_model::apply_command(&mut context.borrow_mut(), "RemoveProduct").unwrap();
+    assert!(collection.snapshot().row(new_key).is_none());
+}
+
+#[test]
 fn compiled_grids_fill_available_space_and_keep_virtual_frames_small() {
     let mut form = form();
     for size in [Size::new(1200.0, 780.0), Size::new(960.0, 640.0)] {

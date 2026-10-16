@@ -71,6 +71,10 @@ impl Form {
             ("SaveForm", "Сохранить заметку"),
             ("ChooseReference", "Выбрать документ"),
             ("ReloadData", "Обновить таблицы"),
+            ("AddProduct", "Добавить товар"),
+            ("RemoveProduct", "Удалить товар"),
+            ("MoveProduct", "Переместить товар в начало"),
+            ("UpdateProduct", "Изменить поля товара"),
         ] {
             ui.commands_mut().register(id, label);
         }
@@ -93,7 +97,27 @@ impl Form {
             .map_err(err)?;
         let root = ui.root();
         let view = if let Some(context) = context {
-            MountedView::mount_with_context(&mut ui, root, &definition.content, context)?
+            let mut converters = rust_desktop_ui_controls::BindingConverterRegistry::default();
+            converters
+                .register(
+                    "SelectedKeyText",
+                    rust_desktop_ui_controls::BindingConverter::new(|value| {
+                        use rust_desktop_ui_controls::DataValue;
+                        match value {
+                            DataValue::Null => Ok("Строка не выбрана".into()),
+                            DataValue::String(key) => Ok(format!("Ключ: {key}").into()),
+                            _ => Err("Selected key must be a decimal string or null".into()),
+                        }
+                    }),
+                )
+                .map_err(err)?;
+            MountedView::mount_with_converters(
+                &mut ui,
+                root,
+                &definition.content,
+                context,
+                std::rc::Rc::new(std::cell::RefCell::new(converters)),
+            )?
         } else {
             MountedView::mount(&mut ui, root, &definition.content)?
         };
@@ -290,6 +314,16 @@ impl Form {
                             ("Status", "Модель обновлена — поля синхронизированы".into()),
                         ])
                         .map_err(err)?;
+                }
+            } else if matches!(
+                invocation.id.0.as_str(),
+                "AddProduct" | "RemoveProduct" | "MoveProduct" | "UpdateProduct"
+            ) {
+                if let Some(engine) = &self.view.bindings {
+                    crate::data_model::apply_command(
+                        &mut engine.context().borrow_mut(),
+                        &invocation.id.0,
+                    )?;
                 }
             } else if invocation.id.0 == "ReloadData" {
                 let grids: Vec<_> = self

@@ -233,9 +233,16 @@ fn collection_handle_refreshes_external_replacement_and_detects_stale_edits() {
         .unwrap();
     assert_eq!(source.len(), 3);
     assert!(matches!(
-        source.set_cell(20, "Name", CellValue::Text("Overwrite".into())),
+        source.set_cell_expected(
+            20,
+            "Name",
+            &CellValue::Text("Груша".into()),
+            CellValue::Text("Overwrite".into())
+        ),
         Err(DataError::Conflict(_))
     ));
+    assert_eq!(source.len(), 3);
+    assert_eq!(source.revision(), 0);
     assert!(source.refresh().unwrap());
     assert_eq!(source.len(), 2);
     assert!(source.row(-10).is_none());

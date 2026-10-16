@@ -1,6 +1,8 @@
 //! Retained flat grid: a virtual TreeGrid view over a typed, snapshot data source.
 use super::*;
-use rust_desktop_ui_data::{CellValue, DataQuery, DataSource, DataTable, SortDescriptor};
+use rust_desktop_ui_data::{
+    CellValue, DataChange, DataQuery, DataSource, DataTable, SortDescriptor,
+};
 use rust_desktop_ui_treegrid::{
     ColumnId, GridColumn, GridFrame, GridKey, GridPalette, GridQuery, RowKey, SelectionModifiers,
     SortDirection, SortOrder, TreeDataSource, TreeGrid,
@@ -48,6 +50,7 @@ struct SnapshotSource {
     positions: HashMap<i64, usize>,
     fields: Vec<String>,
     revision: u64,
+    data_query: DataQuery,
 }
 
 impl SnapshotSource {
@@ -60,6 +63,7 @@ impl SnapshotSource {
             keys,
             fields,
             revision: data.revision(),
+            data_query: data.query().clone(),
             handle: Rc::clone(&handle),
         };
         drop(data);
@@ -198,6 +202,51 @@ struct GridScrollDrag {
 }
 
 impl GridState {
+    /// Preserve the first visible surviving row rather than a numeric index
+    /// when collection inserts, removals, moves or field changes reorder rows.
+    fn refresh_source(&mut self) -> Result<(), ControlError> {
+        let (scroll_x, scroll_y) = self.model.scroll_offset();
+        let row_height = f64::from(self.model.config().row_height);
+        let old_index = (scroll_y / row_height).floor() as usize;
+        let remainder = scroll_y % row_height;
+        let anchor = {
+            let source = self.source.handle.borrow();
+            let query_changed = source
+                .changes_since(self.source.revision)
+                .changes
+                .iter()
+                .any(|change| matches!(change, DataChange::Query));
+            if !query_changed && self.source.data_query == *source.query() {
+                self.source
+                    .keys
+                    .iter()
+                    .skip(old_index)
+                    .find_map(|key| source.position(*key))
+                    .or_else(|| {
+                        self.source
+                            .keys
+                            .iter()
+                            .take(old_index)
+                            .rev()
+                            .find_map(|key| source.position(*key))
+                    })
+            } else {
+                None
+            }
+        };
+        self.source.reload();
+        self.cancel_pointer();
+        self.model.refresh(&mut self.source).map_err(error)?;
+        self.model.set_query_presentation(self.source.query());
+        self.restore_selection()?;
+        if let Some(index) = anchor {
+            self.model
+                .scroll_to(scroll_x, index as f64 * row_height + remainder)
+                .map_err(error)?;
+            self.reveal_selected = false;
+        }
+        Ok(())
+    }
     fn restore_selection(&mut self) -> Result<(), ControlError> {
         if let Some(key) = self.selected_key {
             if self.source.table.row(key).is_none() {
@@ -509,6 +558,7 @@ impl Controls {
         mut settings: GridControlSettings,
         mut style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
+        let _ = source.borrow_mut().synchronize();
         {
             let data = source.borrow();
             if settings.columns.is_empty() {
@@ -723,6 +773,7 @@ impl Controls {
         if self.grid_editor(id).is_some() {
             return Err(error("Finish the active cell edit before filtering"));
         }
+        self.sync_grids()?;
         let grid = self
             .grids
             .get_mut(&id)
@@ -1041,33 +1092,38 @@ impl Controls {
         let ids: Vec<_> = self.grids.keys().copied().collect();
         let theme = self.theme.tokens();
         let chrome = self.theme.chrome();
+        let mut synchronized = HashSet::new();
         for id in ids {
+            let source = &self.grids[&id].source.handle;
+            if synchronized.insert(Rc::as_ptr(source)) {
+                // Only adapters with notifications participate. SQL and default
+                // custom adapters keep explicit refresh; idle polling never loads data.
+                // The source retains a failed synchronization diagnostic and
+                // its previous accepted snapshot for every observing grid.
+                let _ = source.borrow_mut().synchronize();
+            }
             let available = self.is_enabled(id);
-            let Some(bounds) = self.runtime.bounds(id) else {
-                continue;
-            };
+            let bounds = self.runtime.bounds(id);
             let grid = self.grids.get_mut(&id).unwrap();
             let was_captured = grid.pointer_captured();
-            if grid.bounds.is_some_and(|previous| previous != bounds) {
+            if grid.bounds.is_some_and(|previous| Some(previous) != bounds) {
                 grid.cancel_pointer();
             }
-            grid.bounds = Some(bounds);
+            grid.bounds = bounds;
             if !available {
                 grid.cancel_pointer();
             }
             if grid.session.is_none()
                 && grid.source.revision != grid.source.handle.borrow().revision()
             {
-                grid.source.reload();
-                grid.cancel_pointer();
-                grid.model.refresh(&mut grid.source).map_err(error)?;
-                // Reconcile sort indicators without issuing a query from an update.
-                grid.model.set_query_presentation(grid.source.query());
-                grid.restore_selection()?;
+                grid.refresh_source()?;
             }
             if was_captured && !grid.pointer_captured() && self.runtime.captured() == Some(id) {
                 self.runtime.apply(Mutation::CapturePointer(None))?;
             }
+            let Some(bounds) = bounds else {
+                continue;
+            };
             grid.model.palette = GridPalette {
                 background: chrome.card_surface,
                 alternate_row: theme.canvas,

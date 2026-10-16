@@ -12,6 +12,10 @@ use std::{
     rc::Rc,
 };
 
+#[path = "binding_collection.rs"]
+mod collection;
+use collection::RegisteredCollection;
+
 pub const MAX_BINDING_DEPTH: usize = 64;
 pub const MAX_BINDING_NODES: usize = 100_000;
 pub const MAX_BINDING_BYTES: usize = 4 * 1024 * 1024;
@@ -339,6 +343,7 @@ pub struct BindingContext {
     revision: u64,
     history_floor: u64,
     history: VecDeque<BindingChange>,
+    collections: BTreeMap<BindingPath, RegisteredCollection>,
 }
 
 impl Default for BindingContext {
@@ -351,6 +356,7 @@ impl Default for BindingContext {
             revision: 0,
             history_floor: 0,
             history: VecDeque::new(),
+            collections: BTreeMap::new(),
         }
     }
 }
@@ -444,6 +450,18 @@ impl BindingContext {
         I: IntoIterator<Item = (P, DataValue)>,
         P: AsRef<str>,
     {
+        self.set_many_impl(updates, false)
+    }
+
+    fn set_many_impl<I, P>(
+        &mut self,
+        updates: I,
+        collection_publication: bool,
+    ) -> Result<bool, BindingError>
+    where
+        I: IntoIterator<Item = (P, DataValue)>,
+        P: AsRef<str>,
+    {
         let mut candidate = self.root.clone();
         let mut paths = Vec::new();
         for (path, value) in updates {
@@ -453,6 +471,9 @@ impl BindingContext {
                 ));
             }
             let path = BindingPath::parse(path.as_ref())?;
+            if !collection_publication {
+                self.validate_collection_write(&path)?;
+            }
             value.validate()?;
             let slot = lookup_mut(&mut candidate, &path)
                 .ok_or_else(|| BindingError::MissingPath(path.to_string()))?;
@@ -535,6 +556,7 @@ impl BindingContext {
                 ));
             }
             let path = BindingPath::parse(path.as_ref())?;
+            self.validate_collection_write(&path)?;
             value.validate()?;
             let slot = lookup_mut(&mut candidate, &path)
                 .ok_or_else(|| BindingError::MissingPath(path.to_string()))?;
@@ -616,6 +638,7 @@ impl fmt::Debug for BindingConverter {
 #[derive(Clone, Debug, Default)]
 pub struct BindingConverterRegistry {
     converters: BTreeMap<String, BindingConverter>,
+    revision: u64,
 }
 
 impl BindingConverterRegistry {
@@ -632,8 +655,18 @@ impl BindingConverterRegistry {
         {
             return Err(BindingError::InvalidConverterName);
         }
+        let revision = self
+            .revision
+            .checked_add(1)
+            .ok_or(BindingError::RevisionOverflow)?;
         self.converters.insert(name, converter);
+        self.revision = revision;
         Ok(())
+    }
+
+    /// Changes when a converter is registered or replaced, invalidating hosts.
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn contains(&self, name: &str) -> bool {

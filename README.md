@@ -92,6 +92,10 @@ one data source contract. See [data adapters](docs/public/data.md) and
 [GridControl](docs/public/grid-control.md). The SQLite demo is disposable;
 applications can connect an existing database file explicitly.
 
+The Rust collection also drives a ListBox, ComboBox and LookupEdit. Insert,
+remove, move and batched field updates propagate through normal UI updates;
+selection uses stable keys. See [observable collections](docs/public/observable-collections.md).
+
 ## Run the docking workspace
 
 [DockWindow.xaml](examples/xaml-form/DockWindow.xaml) declares a document area,

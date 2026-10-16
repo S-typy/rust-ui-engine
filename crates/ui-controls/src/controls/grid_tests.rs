@@ -884,3 +884,235 @@ fn grid_source_deletion_clears_selected_key_only_after_draft_is_finished() {
     assert_eq!(ui.grid_selected_key(id), None);
     assert_eq!(ui.grid_frame(id).unwrap().stats.logical_rows, 0);
 }
+
+fn observable_grid(
+    count: usize,
+) -> (
+    Controls,
+    WidgetId,
+    DataSourceHandle,
+    rust_desktop_ui_data::CollectionHandle,
+) {
+    let table = source(count).borrow().table().clone();
+    let adapter = CollectionAdapter::new(table);
+    let collection = adapter.handle();
+    let source = Rc::new(RefCell::new(DataSource::new(adapter).unwrap()));
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .grid_control(
+            ui.root(),
+            Rc::clone(&source),
+            GridControlSettings::default(),
+            LayoutStyle {
+                width: Length::Px(420.0),
+                height: Length::Px(280.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    frame(&mut ui);
+    (ui, id, source, collection)
+}
+
+#[test]
+fn observable_grid_adopts_add_remove_move_and_field_changes_without_refresh() {
+    let (mut ui, id, source, collection) = observable_grid(8);
+    collection
+        .add(DataRow::new(
+            1000,
+            vec![CellValue::Text("Added".into()), CellValue::Integer(1000)],
+        ))
+        .unwrap();
+    frame(&mut ui);
+    assert_eq!(source.borrow().len(), 9);
+    assert_eq!(ui.grid_frame(id).unwrap().stats.logical_rows, 9);
+    collection.move_row(1000, 0).unwrap();
+    frame(&mut ui);
+    assert_eq!(source.borrow().row_key(0), Some(1000));
+    ui.grid_focus_cell(id, 1000, Some("name")).unwrap();
+    collection
+        .update_cell(1000, "name", CellValue::Text("Changed".into()))
+        .unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_selected_key(id), Some(1000));
+    assert!(
+        ui.grid_frame(id)
+            .unwrap()
+            .semantics
+            .rows
+            .iter()
+            .any(|row| row.cells.iter().any(|cell| cell.label == "Changed"))
+    );
+    collection.remove(1000).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_selected_key(id), None);
+    assert_eq!(ui.grid_frame(id).unwrap().stats.logical_rows, 8);
+}
+
+#[test]
+fn observable_grid_keeps_top_row_identity_fractional_offset_and_offscreen_selection() {
+    let (mut ui, id, _, collection) = observable_grid(1000);
+    ui.set_grid_selected_key(id, Some(-5)).unwrap();
+    frame(&mut ui);
+    ui.grid_scroll_to(id, 0.0, 500.0 * 28.0 + 7.0).unwrap();
+    frame(&mut ui);
+    let first = ui.grid_frame(id).unwrap().semantics.rows[0].clone();
+    collection
+        .add(DataRow::new(
+            1000,
+            vec![CellValue::Text("Inserted".into()), CellValue::Integer(0)],
+        ))
+        .unwrap();
+    collection.move_row(1000, 0).unwrap();
+    frame(&mut ui);
+    let current = &ui.grid_frame(id).unwrap().semantics.rows[0];
+    assert_eq!(current.key, first.key);
+    assert_eq!(current.bounds, first.bounds);
+    assert_eq!(ui.grid_selected_key(id), Some(-5));
+    collection.remove(1000).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_frame(id).unwrap().semantics.rows[0].key, first.key);
+    collection.move_row(first.key.0 as i64, 800).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_frame(id).unwrap().semantics.rows[0].key, first.key);
+    assert_eq!(
+        ui.grid_frame(id).unwrap().semantics.rows[0].bounds,
+        first.bounds
+    );
+    let following = ui.grid_frame(id).unwrap().semantics.rows[1].key;
+    collection.remove(first.key.0 as i64).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_frame(id).unwrap().semantics.rows[0].key, following);
+    assert!(ui.grid_frame(id).unwrap().stats.materialized_rows < 20);
+}
+
+#[test]
+fn observable_grid_shared_source_updates_other_view_while_draft_stays_frozen() {
+    let (mut ui, id, source, collection) = observable_grid(8);
+    let other = ui
+        .grid_control(
+            ui.root(),
+            Rc::clone(&source),
+            GridControlSettings::default(),
+            LayoutStyle {
+                width: Length::Px(420.0),
+                height: Length::Px(120.0),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    frame(&mut ui);
+    ui.begin_grid_edit(id, -10, "name").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.set_text(editor, "Draft").unwrap();
+    collection
+        .update_cell(-10, "name", CellValue::Text("External".into()))
+        .unwrap();
+    collection
+        .add(DataRow::new(
+            1000,
+            vec![CellValue::Text("Added".into()), CellValue::Integer(9)],
+        ))
+        .unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_frame(id).unwrap().stats.logical_rows, 8);
+    assert_eq!(ui.grid_frame(other).unwrap().stats.logical_rows, 9);
+    assert!(
+        ui.grid_frame(other)
+            .unwrap()
+            .semantics
+            .rows
+            .iter()
+            .any(|row| row.cells.iter().any(|cell| cell.label == "External"))
+    );
+    assert_eq!(ui.document(editor).unwrap().text(), "Draft");
+    assert!(!ui.commit_grid_edit(id).unwrap());
+    assert_eq!(ui.document(editor).unwrap().text(), "Draft");
+    ui.cancel_grid_edit(id).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_frame(id).unwrap().stats.logical_rows, 9);
+    assert!(
+        ui.grid_frame(id)
+            .unwrap()
+            .semantics
+            .rows
+            .iter()
+            .any(|row| row.cells.iter().any(|cell| cell.label == "External"))
+    );
+}
+
+#[test]
+fn observable_grid_unrelated_mutation_preserves_commit_and_move_keeps_row_identity() {
+    let (mut ui, id, source, collection) = observable_grid(20);
+    ui.begin_grid_edit(id, -10, "name").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.set_text(editor, "Accepted").unwrap();
+    collection
+        .update_cell(-9, "amount", CellValue::Integer(700))
+        .unwrap();
+    collection.move_row(-10, 12).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.document(editor).unwrap().text(), "Accepted");
+    assert!(ui.commit_grid_edit(id).unwrap());
+    frame(&mut ui);
+    assert_eq!(
+        source.borrow().value(-10, "name"),
+        Some(&CellValue::Text("Accepted".into()))
+    );
+    assert_eq!(source.borrow().position(-10), Some(12));
+    assert_eq!(
+        source.borrow().value(-9, "amount"),
+        Some(&CellValue::Integer(700))
+    );
+    assert_eq!(ui.grid_selected_key(id), Some(-10));
+}
+
+#[test]
+fn observable_grid_deleted_edit_target_keeps_draft_until_cancel_without_refresh() {
+    let (mut ui, id, _, collection) = observable_grid(8);
+    ui.begin_grid_edit(id, -10, "amount").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.set_text(editor, "77").unwrap();
+    collection.remove(-10).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_selected_key(id), Some(-10));
+    assert_eq!(ui.document(editor).unwrap().text(), "77");
+    assert!(!ui.commit_grid_edit(id).unwrap());
+    ui.cancel_grid_edit(id).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_selected_key(id), None);
+    assert_eq!(ui.grid_frame(id).unwrap().stats.logical_rows, 7);
+}
+
+#[test]
+fn observable_grid_accepts_new_selected_key_before_first_layout() {
+    let adapter = CollectionAdapter::new(source(2).borrow().table().clone());
+    let collection = adapter.handle();
+    let source = Rc::new(RefCell::new(DataSource::new(adapter).unwrap()));
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let id = ui
+        .grid_control(
+            ui.root(),
+            source,
+            GridControlSettings::default(),
+            LayoutStyle::default(),
+        )
+        .unwrap();
+    collection
+        .add(DataRow::new(
+            1000,
+            vec![CellValue::Text("Added".into()), CellValue::Integer(0)],
+        ))
+        .unwrap();
+    ui.set_grid_selected_key(id, Some(1000)).unwrap();
+    frame(&mut ui);
+    assert_eq!(ui.grid_selected_key(id), Some(1000));
+    assert!(
+        ui.grid_frame(id)
+            .unwrap()
+            .semantics
+            .rows
+            .iter()
+            .any(|row| row.selected && row.key == RowKey(1000))
+    );
+}
