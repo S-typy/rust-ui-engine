@@ -180,6 +180,11 @@ fn validate_items(items: &[SelectionItem]) -> Result<(), ControlError> {
     let mut keys = HashSet::new();
     let mut bytes = 0usize;
     for item in items {
+        if item.columns.len() > 31 {
+            return Err(ControlError::Invalid(
+                "Selection rows support at most 32 text columns".into(),
+            ));
+        }
         bytes = bytes
             .saturating_add(item.key.len())
             .saturating_add(item.text.len());
@@ -214,6 +219,7 @@ impl Controls {
             .unwrap()
             .transparent_panel = true;
         self.edit_props(scroll.content, |p| {
+            p.style.kind = LayoutKind::Overlay;
             p.style.padding = Edges::all(4.0);
             p.style.gap = 0.0;
         })?;
@@ -238,107 +244,21 @@ impl Controls {
                 typeahead_at: None,
             },
         );
-        self.rebuild_selection_rows(parts.container)?;
+        if let Err(error) = self
+            .initialize_list_virtualization(parts.container)
+            .and_then(|_| self.rebuild_selection_rows(parts.container))
+        {
+            self.remove(parts.container)?;
+            return Err(error);
+        }
         Ok(parts)
     }
     fn rebuild_selection_rows(&mut self, id: WidgetId) -> Result<(), ControlError> {
-        let state = self.rich.lists[&id].clone();
-        let (start, end) = self.selection_visible_range(id);
-        if self
-            .runtime
-            .focused()
-            .is_some_and(|id| state.rows.contains(&id))
-        {
-            self.runtime.apply(Mutation::Focus(Some(id)))?;
-        }
-        for row in state.rows {
-            if self.controls.contains_key(&row) {
-                self.remove(row)?;
-            }
-        }
-        let mut rows = Vec::with_capacity(end - start);
-        for item in &state.items[start..end] {
-            let row = self.button(
-                state.parts.content,
-                if item.columns.is_empty() {
-                    item.text.as_str()
-                } else {
-                    ""
-                },
-                None,
-                LayoutStyle {
-                    kind: LayoutKind::Flex(Axis::Horizontal),
-                    height: Length::Px(32.0),
-                    flex_shrink: 0.0,
-                    offset: Point::new(0.0, start as f32 * 32.0),
-                    ..Default::default()
-                },
-            )?;
-            self.set_automation_name(row, format!("{} {}", item.text, item.columns.join(" ")))?;
-            self.set_role(row, Role::ListItem);
-            self.edit_props(row, |p| p.tab_stop = false)?;
-            self.set_enabled(row, item.enabled)?;
-            if !item.columns.is_empty() {
-                for (column, text) in std::iter::once(&item.text)
-                    .chain(item.columns.iter())
-                    .enumerate()
-                {
-                    let width = state.column_widths.get(column).copied().flatten();
-                    self.label(
-                        row,
-                        text,
-                        LayoutStyle {
-                            width: Length::Px(width.unwrap_or(0.0)),
-                            flex_grow: if width.is_some() { 0.0 } else { 1.0 },
-                            flex_shrink: 0.0,
-                            height: Length::Px(32.0),
-                            ..Default::default()
-                        },
-                    )?;
-                }
-            }
-            self.controls.get_mut(&row).unwrap().checked =
-                if self.rich.popup.as_ref().is_some_and(|p| p.list == Some(id)) {
-                    state
-                        .cursor
-                        .and_then(|i| state.items.get(i))
-                        .is_some_and(|i| i.key == item.key)
-                } else {
-                    state.keys.contains(&item.key)
-                };
-            self.rich.actions.insert(
-                row,
-                RichAction::Select {
-                    owner: id,
-                    key: item.key.clone(),
-                },
-            );
-            rows.push(row);
-        }
-        if let Some(current) = self.rich.lists.get_mut(&id) {
-            current.rows = rows;
-            current.row_start = start;
-        }
-        self.set_scroll_extent(id, state.items.len() as f32 * 32.0 + 8.0)?;
-        self.scene_dirty = true;
-        Ok(())
+        self.materialize_list_rows(id)
     }
-    fn selection_visible_range(&self, id: WidgetId) -> (usize, usize) {
-        let state = &self.rich.lists[&id];
-        let scroll = self
-            .runtime
-            .tree()
-            .node(id)
-            .map_or(0.0, |n| n.props.scroll.y);
-        let height = self.runtime.bounds(id).map_or(320.0, |r| r.height);
-        let start = ((scroll / 32.0).max(0.0) as usize)
-            .saturating_sub(2)
-            .min(state.items.len());
-        let end = start
-            .saturating_add((height / 32.0).ceil() as usize)
-            .saturating_add(5)
-            .min(state.items.len());
-        (start, end)
+    fn selection_visible_range(&self, id: WidgetId) -> Result<(usize, usize), ControlError> {
+        let range = self.virtual_list_range(id)?.materialized;
+        Ok((range.start, range.end))
     }
     pub fn selection_items(&self, id: WidgetId) -> Option<&[SelectionItem]> {
         if let Some(list) = self.rich.lists.get(&id) {
@@ -385,6 +305,9 @@ impl Controls {
         id: WidgetId,
         keys: &[String],
     ) -> Result<bool, ControlError> {
+        if self.combo_multiple(id) {
+            return self.set_multiple_combo_keys(id, keys);
+        }
         let items = self
             .selection_items(id)
             .ok_or_else(|| ControlError::Invalid("Not a selection control".into()))?;
@@ -394,7 +317,11 @@ impl Controls {
             .get(&id)
             .is_some_and(|s| s.settings.mode == SelectionMode::Multiple);
         let requested: HashSet<_> = keys.iter().collect();
-        let available: HashSet<_> = items.iter().map(|i| &i.key).collect();
+        let available: HashSet<_> = items
+            .iter()
+            .filter(|item| !self.is_lookup(id) || item.enabled)
+            .map(|i| &i.key)
+            .collect();
         if (!multiple && keys.len() > 1)
             || requested.len() != keys.len()
             || keys.iter().any(|key| !available.contains(key))
@@ -470,13 +397,20 @@ impl Controls {
                 "Lookup row width must equal its column count".into(),
             ));
         }
+        if self.combo_multiple(id) {
+            return self.replace_multiple_combo_items(id, items);
+        }
         let previous = self
             .selected_keys(id)
             .ok_or_else(|| ControlError::Invalid("Not a selection control".into()))?
             .to_vec();
         let kept: Vec<_> = previous
             .iter()
-            .filter(|key| items.iter().any(|i| &i.key == *key))
+            .filter(|key| {
+                items
+                    .iter()
+                    .any(|i| &i.key == *key && (!self.is_lookup(id) || i.enabled))
+            })
             .cloned()
             .collect();
         if previous != kept
@@ -484,13 +418,10 @@ impl Controls {
         {
             validator.check(&kept).map_err(ControlError::Invalid)?;
         }
-        if let Some(list) = self.rich.lists.get_mut(&id) {
-            list.items = items;
-            list.keys.clone_from(&kept);
-            list.cursor = list.items.iter().position(|i| kept.contains(&i.key));
-            list.anchor = list.cursor;
-            self.rebuild_selection_rows(id)?;
+        if self.rich.lists.contains_key(&id) {
+            self.replace_virtual_list_items(id, items, kept.clone())?;
         } else {
+            self.preflight_lookup_source(id, &items, &kept)?;
             let previous_composite = self.rich.composites[&id].clone();
             let text = items.iter().find(|i| kept.contains(&i.key)).map_or_else(
                 || {
@@ -504,6 +435,13 @@ impl Controls {
                 },
                 |i| i.text.clone(),
             );
+            let text = if self.is_lookup(id) {
+                normalize_editor_text(&text, true)
+                    .map_err(edit_error)?
+                    .into_owned()
+            } else {
+                text
+            };
             if let CompositeKind::Combo { items: target, .. } =
                 &mut self.rich.composites.get_mut(&id).unwrap().kind
             {
@@ -562,13 +500,20 @@ impl Controls {
             {
                 keys.clone_from(&kept);
             }
+            if self.is_lookup(id) {
+                // A completion validated against the old reference set must
+                // not choose a replacement key with the same display caption.
+                self.invalidate_async_editor(editor);
+            }
             if self
                 .rich
                 .popup
                 .as_ref()
                 .is_some_and(|popup| popup.owner == id)
             {
-                if same_selection {
+                if self.is_lookup(id) {
+                    self.refresh_lookup_popup(id)?;
+                } else if same_selection {
                     self.open_editor_popup(id)?;
                 } else {
                     self.close_rich_popup(false)?;
@@ -588,6 +533,7 @@ impl Controls {
         id: WidgetId,
         settings: SelectionSettings,
     ) -> Result<(), ControlError> {
+        self.validate_list_presentation_mode(id, settings.mode)?;
         let list = self
             .rich
             .lists
@@ -808,6 +754,7 @@ impl Controls {
         {
             return Err(ControlError::Invalid("Lookup columns require matching row widths, bounded headers and finite positive widths <= 16384".into()));
         }
+        self.validate_lookup_search_columns(id, columns.len())?;
         if let CompositeKind::Combo {
             columns: target, ..
         } = &mut self.rich.composites.get_mut(&id).unwrap().kind
@@ -915,6 +862,7 @@ impl Controls {
         Ok(id)
     }
     pub(super) fn preflight_rich_removal(&self, id: WidgetId) -> Result<(), ControlError> {
+        self.preflight_combo_removal(id)?;
         if self.rich.composites.values().any(|c| c.parts.editor == id)
             || self
                 .rich
@@ -971,8 +919,13 @@ impl Controls {
         self.rich
             .value_baselines
             .retain(|id, _| self.controls.contains_key(id));
+        self.prune_combos();
+        self.prune_lookups();
     }
     pub(super) fn rich_owner(&self, id: WidgetId) -> Option<WidgetId> {
+        if let Some(owner) = self.combo_widget_owner(id) {
+            return Some(owner);
+        }
         if self.rich.composites.contains_key(&id) {
             return Some(id);
         }
@@ -1024,6 +977,9 @@ impl Controls {
                 .is_some_and(|c| !c.read_only)
     }
     pub(super) fn activate_rich_control(&mut self, id: WidgetId) -> Result<bool, ControlError> {
+        if self.activate_combo(id)? {
+            return Ok(true);
+        }
         let Some(action) = self.rich.actions.get(&id).cloned() else {
             return Ok(false);
         };
@@ -1036,6 +992,10 @@ impl Controls {
                     .filter(|p| p.list == Some(owner))
                     .map(|p| p.owner)
                 {
+                    if self.combo_multiple(popup_owner) {
+                        self.toggle_combo_draft(popup_owner, &key)?;
+                        return Ok(true);
+                    }
                     if self.rich_editable(popup_owner)
                         && self.user_set_selection(popup_owner, &[key])?
                     {
@@ -1047,6 +1007,14 @@ impl Controls {
             }
             RichAction::Popup(owner) => {
                 if self.rich.popup.as_ref().is_some_and(|p| p.owner == owner) {
+                    if self.combo_multiple(owner)
+                        && matches!(
+                            self.commit_combo_selection(owner)?,
+                            CommitOutcome::Invalid(_)
+                        )
+                    {
+                        return Ok(true);
+                    }
                     self.close_rich_popup(true)?;
                 } else {
                     self.open_editor_popup(owner)?;
@@ -1087,8 +1055,11 @@ impl Controls {
         &mut self,
         owner: WidgetId,
         key: &str,
-        modifiers: Modifiers,
+        mut modifiers: Modifiers,
     ) -> Result<(), ControlError> {
+        if self.list_item_presentation(owner) == Some(ListItemPresentation::CheckBox) {
+            modifiers.control = true;
+        }
         let state = self.rich.lists[&owner].clone();
         if state.settings.read_only || !self.is_enabled(owner) {
             return Ok(());
@@ -1153,19 +1124,12 @@ impl Controls {
         owner: WidgetId,
         index: usize,
     ) -> Result<(), ControlError> {
-        let Some(viewport) = self.runtime.bounds(owner) else {
-            return Ok(());
-        };
-        let current = self.runtime.tree().node(owner).unwrap().props.scroll.y;
-        let top = index as f32 * 32.0 + 4.0;
-        if top < current {
-            self.scroll_to(owner, top)?;
-        } else if top + 32.0 > current + viewport.height {
-            self.scroll_to(owner, top + 32.0 - viewport.height)?;
-        }
-        Ok(())
+        self.virtual_ensure_selection_visible(owner, index)
     }
     pub(super) fn rich_before_input(&mut self, event: &InputEvent) -> Result<bool, ControlError> {
+        if self.combo_before_input(event)? {
+            return Ok(true);
+        }
         if let InputEvent::PointerDown {
             position,
             modifiers,
@@ -1202,7 +1166,13 @@ impl Controls {
             self.close_rich_popup(true)?;
             return Ok(true);
         }
-        if *key == Key::Tab && self.rich.popup.is_some() {
+        if *key == Key::Tab
+            && self
+                .rich
+                .popup
+                .as_ref()
+                .is_some_and(|p| !self.combo_multiple(p.owner))
+        {
             self.close_rich_popup(true)?;
         }
         let Some(focused) = self.runtime.focused() else {
@@ -1311,6 +1281,12 @@ impl Controls {
             })
         };
         if let Some(list) = list {
+            if *repeat
+                && matches!(key, Key::Space | Key::Enter)
+                && self.list_item_presentation(list) == Some(ListItemPresentation::CheckBox)
+            {
+                return Ok(true);
+            }
             return self.selection_key(list, key, *modifiers, false);
         }
         Ok(false)
@@ -1338,17 +1314,24 @@ impl Controls {
         let pos = state
             .cursor
             .and_then(|i| enabled.iter().position(|n| *n == i));
-        let page = self
-            .runtime
-            .bounds(id)
-            .map_or(5, |r| (r.height / 32.0).max(1.0) as usize);
+        let page_down = self.virtual_list_page(id, state.cursor.unwrap_or(enabled[0]), true);
+        let page_up = self.virtual_list_page(id, state.cursor.unwrap_or(enabled[0]), false);
         let index = match key {
             Key::ArrowDown => enabled[pos.map_or(0, |p| (p + 1).min(enabled.len() - 1))],
             Key::ArrowUp => enabled[pos.map_or(0, |p| p.saturating_sub(1))],
             Key::Home => enabled[0],
             Key::End => *enabled.last().unwrap(),
-            Key::PageDown => enabled[pos.map_or(0, |p| (p + page).min(enabled.len() - 1))],
-            Key::PageUp => enabled[pos.map_or(0, |p| p.saturating_sub(page))],
+            Key::PageDown => enabled
+                .iter()
+                .copied()
+                .find(|i| *i >= page_down)
+                .unwrap_or(*enabled.last().unwrap()),
+            Key::PageUp => enabled
+                .iter()
+                .copied()
+                .rev()
+                .find(|i| *i <= page_up)
+                .unwrap_or(enabled[0]),
             Key::Space | Key::Enter => state.cursor.unwrap_or(enabled[0]),
             Key::Character(text)
                 if !modifiers.alt && !modifiers.super_key && !modifiers.control =>
@@ -1392,14 +1375,16 @@ impl Controls {
             _ => return Ok(false),
         };
         self.rich.lists.get_mut(&id).unwrap().cursor = Some(index);
-        if preview || (modifiers.control && !matches!(key, Key::Space | Key::Enter)) {
+        let check_list = self.list_item_presentation(id) == Some(ListItemPresentation::CheckBox);
+        if preview || ((modifiers.control || check_list) && !matches!(key, Key::Space | Key::Enter))
+        {
             for (row, item) in state
                 .rows
                 .iter()
                 .zip(state.items.iter().skip(state.row_start))
             {
                 if let Some(c) = self.controls.get_mut(row) {
-                    c.checked = if preview {
+                    c.checked = if preview && !check_list {
                         item.key == state.items[index].key
                     } else {
                         state.keys.contains(&item.key)
@@ -1409,6 +1394,15 @@ impl Controls {
             self.ensure_selection_visible(id, index)?;
         } else {
             self.user_select(id, &state.items[index].key, modifiers)?;
+        }
+        if !preview {
+            // Keep keyboard and accessibility focus on the current realized row.
+            // Popup previews intentionally retain focus in their owning editor.
+            self.ensure_selection_visible(id, index)?;
+            self.materialize_list_rows(id)?;
+            if let Some(row) = self.list_row_widget(id, &state.items[index].key) {
+                self.runtime.apply(Mutation::Focus(Some(row)))?;
+            }
         }
         self.scene_dirty = true;
         Ok(true)
@@ -1426,12 +1420,18 @@ impl Controls {
         if !self.rich_editable(owner) {
             return Ok(());
         }
-        self.close_popup_from(0, popup::CloseReason::Restore)?;
-        self.close_rich_popup(false)?;
+        let previous_cursor = self
+            .rich
+            .popup
+            .as_ref()
+            .filter(|popup| popup.owner == owner)
+            .and_then(|popup| popup.list)
+            .and_then(|list| self.rich.lists.get(&list))
+            .and_then(|state| state.cursor.and_then(|index| state.items.get(index)))
+            .map(|item| item.key.clone());
         match composite.kind {
             CompositeKind::Combo {
                 items,
-                keys,
                 editable,
                 columns,
                 ..
@@ -1445,15 +1445,22 @@ impl Controls {
                 } else {
                     String::new()
                 };
-                let filtered = filter_items(&items, &query);
+                let filtered = self.filter_editor_items(owner, &items, &query);
                 let header_height = if columns.is_empty() { 0.0 } else { 32.0 };
+                let footer_height = if self.combo_multiple(owner) {
+                    36.0
+                } else {
+                    0.0
+                };
                 let desired = Size::new(
                     self.runtime
                         .bounds(owner)
                         .map_or(240.0, |r| r.width)
                         .max(if columns.len() > 1 { 420.0 } else { 180.0 })
                         .max(columns.iter().map(|c| c.width.unwrap_or(80.0)).sum::<f32>() + 8.0),
-                    (filtered.len() as f32 * 32.0 + 8.0).clamp(40.0, 264.0) + header_height,
+                    (filtered.len() as f32 * 32.0 + 8.0).clamp(40.0, 264.0)
+                        + header_height
+                        + footer_height,
                 );
                 let surface = self.panel(
                     self.overlay,
@@ -1465,94 +1472,140 @@ impl Controls {
                     },
                 )?;
                 self.controls.get_mut(&surface).unwrap().popup_surface = true;
-                if !columns.is_empty() {
-                    let header = self.transparent_panel(
-                        surface,
-                        LayoutStyle {
-                            kind: LayoutKind::Flex(Axis::Horizontal),
-                            height: Length::Px(32.0),
-                            flex_shrink: 0.0,
-                            padding: Edges {
-                                left: 4.0,
-                                right: 4.0,
-                                ..Default::default()
-                            },
-                            ..Default::default()
-                        },
-                    )?;
-                    for column in &columns {
-                        self.label(
-                            header,
-                            &column.header,
+                // Build and validate an unpublished candidate while the
+                // current popup, cursor and key draft remain authoritative.
+                let candidate = (|| -> Result<RichPopup, ControlError> {
+                    if !columns.is_empty() {
+                        let header = self.transparent_panel(
+                            surface,
                             LayoutStyle {
-                                width: Length::Px(column.width.unwrap_or(0.0)),
-                                flex_grow: if column.width.is_some() { 0.0 } else { 1.0 },
-                                flex_shrink: 0.0,
+                                kind: LayoutKind::Flex(Axis::Horizontal),
                                 height: Length::Px(32.0),
+                                flex_shrink: 0.0,
+                                padding: Edges {
+                                    left: 4.0,
+                                    right: 4.0,
+                                    ..Default::default()
+                                },
                                 ..Default::default()
                             },
                         )?;
+                        for column in &columns {
+                            self.label(
+                                header,
+                                &column.header,
+                                LayoutStyle {
+                                    width: Length::Px(column.width.unwrap_or(0.0)),
+                                    flex_grow: if column.width.is_some() { 0.0 } else { 1.0 },
+                                    flex_shrink: 0.0,
+                                    height: Length::Px(32.0),
+                                    ..Default::default()
+                                },
+                            )?;
+                        }
                     }
-                }
-                let list = self.list_box(
-                    surface,
-                    "Варианты",
-                    filtered,
-                    SelectionSettings::default(),
-                    LayoutStyle {
-                        height: Length::Px(desired.height - header_height),
-                        ..Default::default()
-                    },
-                )?;
-                if !columns.is_empty() {
-                    self.rich
-                        .lists
-                        .get_mut(&list.container)
-                        .unwrap()
-                        .column_widths = columns.iter().map(|c| c.width).collect();
-                    self.rebuild_selection_rows(list.container)?;
-                }
-                let keys: Vec<_> = keys
-                    .into_iter()
-                    .filter(|key| {
+                    let list = self.list_box(
+                        surface,
+                        "Варианты",
+                        filtered,
+                        SelectionSettings {
+                            mode: if self.combo_multiple(owner) {
+                                SelectionMode::Multiple
+                            } else {
+                                SelectionMode::Single
+                            },
+                            read_only: false,
+                        },
+                        LayoutStyle {
+                            height: Length::Px(desired.height - header_height - footer_height),
+                            ..Default::default()
+                        },
+                    )?;
+                    if !columns.is_empty() {
+                        self.rich
+                            .lists
+                            .get_mut(&list.container)
+                            .unwrap()
+                            .column_widths = columns.iter().map(|c| c.width).collect();
+                        self.rebuild_selection_rows(list.container)?;
+                    }
+                    let keys: Vec<_> = self
+                        .combo_selection_draft(owner)
+                        .unwrap_or_default()
+                        .iter()
+                        .filter(|key| {
+                            self.rich.lists[&list.container]
+                                .items
+                                .iter()
+                                .any(|i| &i.key == *key)
+                        })
+                        .cloned()
+                        .collect();
+                    self.set_selected_keys(list.container, &keys)?;
+                    if let Some(index) = previous_cursor.as_ref().and_then(|key| {
                         self.rich.lists[&list.container]
                             .items
                             .iter()
-                            .any(|i| &i.key == key)
-                    })
-                    .collect();
-                self.set_selected_keys(list.container, &keys)?;
-                if self.rich.lists[&list.container].cursor.is_none() {
-                    let first = self.rich.lists[&list.container]
-                        .items
-                        .iter()
-                        .position(|i| i.enabled);
-                    self.rich.lists.get_mut(&list.container).unwrap().cursor = first;
-                }
-                self.rich.changes.retain(|e| e.id != list.container);
-                self.rich.popup = Some(RichPopup {
-                    owner,
-                    surface,
-                    list: Some(list.container),
-                    desired,
-                    query,
-                    month: None,
-                });
-                let state = &self.rich.lists[&list.container];
-                for (row, item) in state
-                    .rows
-                    .iter()
-                    .zip(state.items.iter().skip(state.row_start))
-                {
-                    if let Some(control) = self.controls.get_mut(row) {
-                        control.checked = state
-                            .cursor
-                            .and_then(|i| state.items.get(i))
-                            .is_some_and(|i| i.key == item.key);
+                            .position(|item| &item.key == key && item.enabled)
+                    }) {
+                        self.rich.lists.get_mut(&list.container).unwrap().cursor = Some(index);
                     }
+                    if self.rich.lists[&list.container].cursor.is_none() {
+                        let first = self.rich.lists[&list.container]
+                            .items
+                            .iter()
+                            .position(|i| i.enabled);
+                        self.rich.lists.get_mut(&list.container).unwrap().cursor = first;
+                    }
+                    self.rich.changes.retain(|e| e.id != list.container);
+                    self.mount_combo_footer(owner, surface, list.container)?;
+                    let multiple = self.combo_multiple(owner);
+                    let state = &self.rich.lists[&list.container];
+                    for (row, item) in state
+                        .rows
+                        .iter()
+                        .zip(state.items.iter().skip(state.row_start))
+                    {
+                        if let Some(control) = self.controls.get_mut(row) {
+                            control.checked = if multiple {
+                                state.keys.contains(&item.key)
+                            } else {
+                                state
+                                    .cursor
+                                    .and_then(|i| state.items.get(i))
+                                    .is_some_and(|i| i.key == item.key)
+                            };
+                        }
+                    }
+                    Ok(RichPopup {
+                        owner,
+                        surface,
+                        list: Some(list.container),
+                        desired,
+                        query,
+                        month: None,
+                    })
+                })();
+                let candidate = match candidate {
+                    Ok(candidate) => candidate,
+                    Err(error) => {
+                        self.remove(surface)?;
+                        return Err(error);
+                    }
+                };
+                if let Err(error) = self
+                    .close_popup_from(0, popup::CloseReason::Restore)
+                    .and_then(|_| self.close_rich_popup(false))
+                {
+                    self.remove(surface)?;
+                    return Err(error);
                 }
+                self.rich.popup = Some(candidate);
+                self.begin_combo_popup_draft(owner);
             }
             CompositeKind::Date(settings) => {
+                self.close_popup_from(0, popup::CloseReason::Restore)?;
+                self.close_rich_popup(false)?;
                 let month = self
                     .date_value(owner)
                     .flatten()
@@ -1604,18 +1657,15 @@ impl Controls {
     }
     pub(super) fn sync_rich_layout(&mut self) -> Result<FrameStats, ControlError> {
         self.sync_editor_buttons()?;
+        self.sync_combos()?;
         let mut delta = FrameStats::default();
-        let rebuild: Vec<_> = self
-            .rich
-            .lists
-            .iter()
-            .filter_map(|(&id, state)| {
-                let (start, end) = self.selection_visible_range(id);
-                (state.row_start != start || state.rows.len() != end - start).then_some(id)
-            })
-            .collect();
-        for id in rebuild {
-            self.rebuild_selection_rows(id)?;
+        let lists: Vec<_> = self.rich.lists.keys().copied().collect();
+        for id in lists {
+            let (start, end) = self.selection_visible_range(id)?;
+            let state = &self.rich.lists[&id];
+            if state.row_start != start || state.rows.len() != end - start {
+                self.rebuild_selection_rows(id)?;
+            }
         }
         if self.runtime.needs_update() {
             add_stats(
@@ -1636,6 +1686,7 @@ impl Controls {
             .focused()
             .is_some_and(|id| self.rich_focus_editor(id) != self.composite_editor(owner))
         {
+            self.settle_combo_blur(owner)?;
             self.close_rich_popup(false)?;
             return Ok(delta);
         }
@@ -1684,16 +1735,4 @@ impl Controls {
         }
         Ok(delta)
     }
-}
-
-fn filter_items(items: &[SelectionItem], query: &str) -> Vec<SelectionItem> {
-    let query = query.to_lowercase();
-    items
-        .iter()
-        .filter(|i| {
-            i.text.to_lowercase().contains(&query)
-                || i.columns.iter().any(|c| c.to_lowercase().contains(&query))
-        })
-        .cloned()
-        .collect()
 }

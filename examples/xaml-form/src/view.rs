@@ -1174,6 +1174,7 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         bindings::validate_definitions(element)?;
+        rust_desktop_ui_xaml::validate_selection_presentation(&element.kind, &element.common)?;
         if let Some(template) = &element.common.control_template {
             rust_desktop_ui_xaml::validate_control_template(template)?;
             let compatible = matches!(

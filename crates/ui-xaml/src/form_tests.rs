@@ -136,7 +136,7 @@ fn selection_rejects_ambiguous_sources_duplicate_values_and_invalid_initial_sele
         "<ComboBox><ListBoxItem Value='a'/><ListBoxItem Value='a'/></ComboBox>",
         "<ListBox SelectedValue='a'><ListBoxItem Value='a' IsEnabled='False'/></ListBox>",
         "<ListBox SelectedValue='missing'><ListBoxItem Value='a'/></ListBox>",
-        "<ComboBox SelectionMode='Multiple'/>",
+        "<ComboBox SelectionMode='Multiple' SelectedValue='a'/>",
         "<ListBox IsEditable='True'/>",
         "<ListBox SelectedValue='a' SelectedValues='b'/>",
         "<ListBox SelectedValues='a,b'/>",

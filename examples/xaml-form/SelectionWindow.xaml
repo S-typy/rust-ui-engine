@@ -1,0 +1,55 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Списки и выбор" Width="1200" Height="840" Padding="24">
+  <Grid Spacing="16">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6"><TextBlock Text="Списки и выбор" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Большие коллекции, варианты выбора и справочники." TextTone="Secondary"/></StackPanel>
+    <TabbedGroup x:Name="SelectionTabs" Grid.Row="1">
+      <GroupTab Header="Большой список">
+        <Grid Spacing="12" Margin="16">
+          <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+          <TextBlock Text="100 000 документов · Home, End, Page Up / Down и прокрутка" FontSize="18" FontWeight="SemiBold"/>
+          <ListBox x:Name="LargeList" Grid.Row="1" Height="440" SelectionMode="Multiple" AutomationName="Документы">
+            <ListBox.ItemTemplate><StackPanel Orientation="Horizontal" Spacing="12"><Icon Symbol="Copy" Width="18" Height="18"/><TextBlock Text="{Binding Text}" Width="260"/><TextBlock Text="{Binding Column0}" TextTone="Secondary" Width="180"/></StackPanel></ListBox.ItemTemplate>
+          </ListBox>
+          <WrapPanel Grid.Row="2" Spacing="8"><Button x:Name="ListReorder" Content="Обратный порядок" Command="SelectionReverse"/><Button x:Name="ListResizeRow" Content="Высота текущей строки" Command="SelectionResize"/><Button x:Name="ListRename" Content="Изменить подпись" Command="SelectionRename"/></WrapPanel>
+          <TextBlock x:Name="LargeListState" Grid.Row="3" Text="Готово" TextTone="Secondary"/>
+        </Grid>
+      </GroupTab>
+      <GroupTab Header="Выбор и справочники">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <Grid Spacing="20" Margin="16">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <StackPanel Spacing="12" Surface="Card" Padding="20">
+              <TextBlock Text="Варианты выбора" FontSize="20" FontWeight="SemiBold"/>
+              <TextBlock Text="Флажки · выбор без Ctrl"/>
+              <ListBox x:Name="CheckedRoles" Height="145" SelectionMode="Multiple" ItemPresentation="CheckBox" ItemsSource="{Binding Roles}" SelectedValues="{Binding SelectedRoles}" AutomationName="Роли с флажками"/>
+              <TextBlock Text="Один вариант"/>
+              <ListBox x:Name="RadioRoles" Height="112" ItemPresentation="RadioButton" ItemsSource="{Binding Roles}" SelectedValue="{Binding PrimaryRole}" AutomationName="Основная роль"/>
+              <TextBlock Text="Несколько значений в поле"/>
+              <ComboBox x:Name="RoleTokens" SelectionMode="Multiple" SelectionPresentation="Tokens" IsEditable="True" ItemsSource="{Binding Roles}" SelectedValues="{Binding SelectedRoles}" AutomationName="Роли документа" PlaceholderText="Найти роль"/>
+              <TextBlock x:Name="RolesSummary" Text="" TextTone="Secondary"/>
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="12" Surface="Card" Padding="20">
+              <TextBlock Text="Редактирование и справочник" FontSize="20" FontWeight="SemiBold"/>
+              <TextBlock Text="Город · свой текст или предложение"/>
+              <ComboBox x:Name="FreeCity" IsEditable="True" ItemsSource="{Binding Cities}" Text="{Binding City}" AutomationName="Город"/>
+              <TextBlock x:Name="AcceptedCity" Text="{Binding City}" TextTone="Secondary"/>
+              <TextBlock Text="Сотрудник · поиск по имени и отделу"/>
+              <LookupEdit x:Name="PersonLookup" ItemsSource="{Binding People}" DisplayMemberPath="Name" ValueMemberPath="Id" SelectedValue="{Binding Person}" IsEditable="True" SearchColumns="0,1" AutomationName="Сотрудник">
+                <LookupEdit.Columns><LookupColumn Field="Name" Header="Имя" Width="180"/><LookupColumn Field="Department" Header="Отдел" Width="160"/></LookupEdit.Columns>
+              </LookupEdit>
+              <TextBlock x:Name="PersonSummary" Text="{Binding Person}" TextTone="Secondary"/>
+              <TextBlock Text="Команда · множественный выбор из справочника"/>
+              <LookupEdit x:Name="TeamLookup" ItemsSource="{Binding People}" DisplayMemberPath="Name" ValueMemberPath="Id" SelectedValues="{Binding Team}" SelectionMode="Multiple" SelectionPresentation="Tokens" IsEditable="True" AutomationName="Команда">
+                <LookupEdit.Columns><LookupColumn Field="Name" Header="Имя" Width="180"/><LookupColumn Field="Department" Header="Отдел" Width="160"/></LookupEdit.Columns>
+              </LookupEdit>
+              <WrapPanel Spacing="8"><Button x:Name="PeopleReorder" Content="Переставить сотрудников" Command="SelectionPeopleReverse"/><Button x:Name="PeopleRename" Content="Изменить имя" Command="SelectionPeopleRename"/></WrapPanel>
+              <TextBlock x:Name="TeamSummary" Text="" TextTone="Secondary"/>
+            </StackPanel>
+          </Grid>
+        </ScrollViewer>
+      </GroupTab>
+    </TabbedGroup>
+    <DockPanel Grid.Row="2"><WrapPanel DockPanel.Dock="Right" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel><TextBlock x:Name="SelectionStatus" Text="Готово" VerticalAlignment="Center" TextTone="Secondary"/></DockPanel>
+  </Grid>
+</Window>

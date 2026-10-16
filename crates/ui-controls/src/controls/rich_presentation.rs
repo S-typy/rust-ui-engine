@@ -152,16 +152,19 @@ impl Controls {
         if focused && enabled {
             shape_border(&mut self.scene, bounds, clip, radius, 1.0, tokens.focus);
         }
-        if !control.label.is_empty() {
+        let label = control.label.clone();
+        let indicator_width = self.paint_list_item_indicator(id, bounds, clip);
+        if !label.is_empty() {
             let text_bounds = Rect::new(
                 bounds.x
+                    + indicator_width
                     + if calendar_cell {
                         4.0_f32.min(bounds.width)
                     } else {
                         10.0_f32.min(bounds.width)
                     },
                 bounds.y,
-                (bounds.width - if calendar_cell { 8.0 } else { 18.0 }).max(0.0),
+                (bounds.width - indicator_width - if calendar_cell { 8.0 } else { 18.0 }).max(0.0),
                 bounds.height,
             );
             let mut run = TextRun {
@@ -170,7 +173,7 @@ impl Controls {
                 clip: text_bounds
                     .intersection(clip)
                     .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0)),
-                text: control.label.clone(),
+                text: label,
                 font_size: tokens.font_size,
                 color: if enabled {
                     tokens.text

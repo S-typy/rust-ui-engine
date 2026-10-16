@@ -1451,6 +1451,18 @@ fn read_property(
     items: &HashMap<WidgetId, ItemState>,
 ) -> Result<DataValue, BindingError> {
     let id = endpoint.widget;
+    if ui
+        .combo_selection_settings(id)
+        .is_some_and(|settings| settings.mode == crate::SelectionMode::Multiple)
+        && matches!(
+            endpoint.property,
+            BindingProperty::Text | BindingProperty::Value | BindingProperty::SelectedValue
+        )
+    {
+        return Err(invalid(
+            "Multiple combo selection binds SelectedValues; its text is a search draft",
+        ));
+    }
     let props = &ui
         .runtime
         .tree()
@@ -1620,6 +1632,18 @@ fn write_property(
     items: &SharedItems,
 ) -> Result<(), BindingError> {
     let id = endpoint.widget;
+    if ui
+        .combo_selection_settings(id)
+        .is_some_and(|settings| settings.mode == crate::SelectionMode::Multiple)
+        && matches!(
+            endpoint.property,
+            BindingProperty::Text | BindingProperty::Value | BindingProperty::SelectedValue
+        )
+    {
+        return Err(invalid(
+            "Multiple combo selection binds SelectedValues; its text is a search draft",
+        ));
+    }
     value.validate()?;
     if let Some(editor) = value_editor(ui, endpoint) {
         let outcome = match editor_parser(ui, endpoint) {

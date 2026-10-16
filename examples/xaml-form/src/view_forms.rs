@@ -143,6 +143,73 @@ fn items(selection: &x::SelectionDefinition) -> Vec<SelectionItem> {
         })
         .collect()
 }
+
+fn item_template(root: &ElementDefinition) -> Result<ListItemTemplate, String> {
+    x::validate_item_template(root)?;
+    fn convert(node: &ElementDefinition) -> ListTemplateNode {
+        let c = &node.common;
+        let mut layout = LayoutStyle {
+            width: c.width.map_or(Length::Auto, Length::Px),
+            height: c.height.map_or(Length::Auto, Length::Px),
+            min_size: Size::new(c.min_width, c.min_height),
+            max_size: Size::new(
+                c.max_width.unwrap_or(f32::INFINITY),
+                c.max_height.unwrap_or(f32::INFINITY),
+            ),
+            margin: edges(c.margin),
+            horizontal_alignment: c
+                .horizontal_alignment_explicit
+                .then(|| alignment(c.horizontal_alignment)),
+            vertical_alignment: c
+                .vertical_alignment_explicit
+                .then(|| alignment(c.vertical_alignment)),
+            ..Default::default()
+        };
+        let kind = match &node.kind {
+            ElementKind::StackPanel(panel) => {
+                layout.padding = edges(panel.padding);
+                layout.gap = panel.spacing;
+                ListTemplateKind::Stack {
+                    orientation: axis(panel.orientation),
+                    children: panel.children.iter().map(convert).collect(),
+                }
+            }
+            ElementKind::TextBlock(text) => {
+                let source = c.bindings.get("Text").map_or_else(
+                    || ListItemTextSource::Literal(text.text.clone()),
+                    |binding| match binding.path.as_str() {
+                        "Text" => ListItemTextSource::Text,
+                        "Key" => ListItemTextSource::Key,
+                        column => ListItemTextSource::Column(column[6..].parse().unwrap()),
+                    },
+                );
+                ListTemplateKind::Text {
+                    source,
+                    style: text_style(text),
+                }
+            }
+            ElementKind::Icon(icon) => ListTemplateKind::Icon {
+                symbol: icon_symbol(icon.symbol),
+                style: IconStyle {
+                    foreground: icon.foreground.map(color),
+                    ..Default::default()
+                },
+            },
+            ElementKind::Separator(separator) => ListTemplateKind::Separator(SeparatorSettings {
+                orientation: axis(separator.orientation),
+                thickness: separator.thickness,
+                foreground: separator.foreground.map(color),
+            }),
+            _ => unreachable!("validated item template"),
+        };
+        ListTemplateNode { layout, kind }
+    }
+    let template = ListItemTemplate {
+        root: convert(root),
+    };
+    template.validate().map_err(err)?;
+    Ok(template)
+}
 fn configure_editor(
     ui: &mut Controls,
     parts: &EditorControl,
@@ -441,6 +508,23 @@ impl MountedView {
                     .map(|v| vec![v])
                     .unwrap_or_else(|| selection.selected_values.clone());
                 ui.set_selected_keys(list.container, &keys).map_err(err)?;
+                ui.set_list_item_presentation(
+                    list.container,
+                    match selection.item_presentation {
+                        x::ListItemPresentationDefinition::Plain => ListItemPresentation::Plain,
+                        x::ListItemPresentationDefinition::CheckBox => {
+                            ListItemPresentation::CheckBox
+                        }
+                        x::ListItemPresentationDefinition::RadioButton => {
+                            ListItemPresentation::RadioButton
+                        }
+                    },
+                )
+                .map_err(err)?;
+                if let Some(template) = &selection.item_template {
+                    ui.set_list_item_template(list.container, Some(item_template(template)?))
+                        .map_err(err)?;
+                }
                 return Ok(list.container);
             }
             ElementKind::ComboBox(selection)
@@ -487,6 +571,29 @@ impl MountedView {
                         },
                     )
                     .map_err(err)?;
+                    ui.set_lookup_search_settings(
+                        parts.container,
+                        LookupSearchSettings {
+                            columns: lookup.search_columns.clone(),
+                            mode: match lookup.search_mode {
+                                x::LookupSearchModeDefinition::Contains => {
+                                    LookupSearchMode::Contains
+                                }
+                                x::LookupSearchModeDefinition::StartsWith => {
+                                    LookupSearchMode::StartsWith
+                                }
+                            },
+                            comparison: match lookup.search_comparison {
+                                x::LookupSearchComparisonDefinition::Ordinal => {
+                                    LookupSearchComparison::Ordinal
+                                }
+                                x::LookupSearchComparisonDefinition::UnicodeLowercase => {
+                                    LookupSearchComparison::UnicodeLowercase
+                                }
+                            },
+                        },
+                    )
+                    .map_err(err)?;
                 }
                 let mut settings = ui.editor_settings(parts.editor).unwrap().clone();
                 settings.placeholder.clone_from(&selection.placeholder);
@@ -494,8 +601,37 @@ impl MountedView {
                     .map_err(err)?;
                 ui.set_composite_read_only(parts.container, selection.is_read_only)
                     .map_err(err)?;
+                ui.set_combo_selection_settings(
+                    parts.container,
+                    ComboSelectionSettings {
+                        mode: match selection.selection_mode {
+                            x::SelectionMode::Single => SelectionMode::Single,
+                            x::SelectionMode::Multiple => SelectionMode::Multiple,
+                        },
+                        presentation: match selection.selection_presentation {
+                            x::ComboSelectionPresentationDefinition::Text => {
+                                ComboSelectionPresentation::Text
+                            }
+                            x::ComboSelectionPresentationDefinition::Tokens => {
+                                ComboSelectionPresentation::Tokens
+                            }
+                        },
+                        commit_on_focus_lost: selection.commit_on_lost_focus.unwrap_or(true),
+                    },
+                )
+                .map_err(err)?;
+                if let Some(template) = &selection.item_template {
+                    ui.set_combo_item_template(parts.container, Some(item_template(template)?))
+                        .map_err(err)?;
+                }
                 if let Some(key) = &selection.selected_value {
                     ui.set_selected_keys(parts.container, std::slice::from_ref(key))
+                        .map_err(err)?;
+                } else if !selection.selected_values.is_empty() {
+                    ui.set_selected_keys(parts.container, &selection.selected_values)
+                        .map_err(err)?;
+                } else if !selection.text.is_empty() {
+                    ui.set_editor_value(parts.editor, &selection.text)
                         .map_err(err)?;
                 }
                 parts

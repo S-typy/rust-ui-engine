@@ -30,6 +30,26 @@ pub struct SelectionDefinition {
     pub is_editable: bool,
     pub selection_mode: SelectionMode,
     pub selected_values: Vec<String>,
+    pub text: String,
+    pub item_presentation: ListItemPresentationDefinition,
+    pub selection_presentation: ComboSelectionPresentationDefinition,
+    pub commit_on_lost_focus: Option<bool>,
+    pub item_template: Option<Box<ElementDefinition>>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ListItemPresentationDefinition {
+    #[default]
+    Plain,
+    CheckBox,
+    RadioButton,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ComboSelectionPresentationDefinition {
+    #[default]
+    Text,
+    Tokens,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -50,6 +70,22 @@ pub struct LookupColumnDefinition {
 pub struct LookupDefinition {
     pub selection: SelectionDefinition,
     pub columns: Vec<LookupColumnDefinition>,
+    pub search_columns: Vec<usize>,
+    pub search_mode: LookupSearchModeDefinition,
+    pub search_comparison: LookupSearchComparisonDefinition,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LookupSearchModeDefinition {
+    #[default]
+    Contains,
+    StartsWith,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LookupSearchComparisonDefinition {
+    Ordinal,
+    #[default]
+    UnicodeLowercase,
 }
 
 impl Default for LookupDefinition {
@@ -60,6 +96,9 @@ impl Default for LookupDefinition {
                 ..Default::default()
             },
             columns: Vec::new(),
+            search_columns: Vec::new(),
+            search_mode: LookupSearchModeDefinition::default(),
+            search_comparison: LookupSearchComparisonDefinition::default(),
         }
     }
 }

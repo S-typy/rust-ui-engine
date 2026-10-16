@@ -11,6 +11,29 @@ pub(super) struct ButtonContents {
     entries: HashMap<WidgetId, Content>,
 }
 impl Controls {
+    pub(super) fn preflight_button_content_replacement(
+        &self,
+        previous_owners: &[WidgetId],
+        next_count: usize,
+    ) -> Result<(), ControlError> {
+        let released = previous_owners
+            .iter()
+            .filter(|id| self.button_contents.entries.contains_key(id))
+            .count();
+        if self
+            .button_contents
+            .entries
+            .len()
+            .saturating_sub(released)
+            .saturating_add(next_count)
+            > 4096
+        {
+            return Err(ControlError::Invalid(
+                "At most 4096 button templates are supported".into(),
+            ));
+        }
+        Ok(())
+    }
     /// A live retained content subtree. The owner keeps its command, semantic
     /// label, focus, hit testing and indicator; only its default caption/icon
     /// painting is replaced. Removed or reparented templates return `None`.

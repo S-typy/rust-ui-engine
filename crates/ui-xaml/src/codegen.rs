@@ -200,14 +200,19 @@ fn selection(s: &crate::SelectionDefinition) -> String {
         .collect::<Vec<_>>()
         .join(",");
     format!(
-        "rust_desktop_ui_xaml::SelectionDefinition {{ items: vec![{items}], selected_value: {}, display_member_path: {}, value_member_path: {}, placeholder: {:?}.into(), is_read_only: {}, is_editable: {}, selection_mode: rust_desktop_ui_xaml::SelectionMode::{:?}, selected_values: vec![{selected}] }}",
+        "rust_desktop_ui_xaml::SelectionDefinition {{ items: vec![{items}], selected_value: {}, display_member_path: {}, value_member_path: {}, placeholder: {:?}.into(), is_read_only: {}, is_editable: {}, selection_mode: rust_desktop_ui_xaml::SelectionMode::{:?}, selected_values: vec![{selected}], text: {:?}.into(), item_presentation: rust_desktop_ui_xaml::ListItemPresentationDefinition::{:?}, selection_presentation: rust_desktop_ui_xaml::ComboSelectionPresentationDefinition::{:?}, commit_on_lost_focus: {:?}, item_template: {} }}",
         optional_string(&s.selected_value),
         optional_string(&s.display_member_path),
         optional_string(&s.value_member_path),
         s.placeholder,
         s.is_read_only,
         s.is_editable,
-        s.selection_mode
+        s.selection_mode,
+        s.text,
+        s.item_presentation,
+        s.selection_presentation,
+        s.commit_on_lost_focus,
+        optional_child(s.item_template.as_deref())
     )
 }
 
@@ -224,7 +229,7 @@ fn form_kind(kind: &ElementKind) -> String {
         ElementKind::RadioGroup(s) => ("RadioGroup", selection(s)),
         ElementKind::ListBox(s) => ("ListBox", selection(s)),
         ElementKind::ComboBox(s) => ("ComboBox", selection(s)),
-        ElementKind::LookupEdit(l) => ("LookupEdit", format!("rust_desktop_ui_xaml::LookupDefinition {{ selection: {}, columns: vec![{}] }}", selection(&l.selection), l.columns.iter().map(|c| format!("rust_desktop_ui_xaml::LookupColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?} }}", c.field, c.header, c.width)).collect::<Vec<_>>().join(","))),
+        ElementKind::LookupEdit(l) => ("LookupEdit", format!("rust_desktop_ui_xaml::LookupDefinition {{ selection: {}, search_columns: vec!{:?}, search_mode: rust_desktop_ui_xaml::LookupSearchModeDefinition::{:?}, search_comparison: rust_desktop_ui_xaml::LookupSearchComparisonDefinition::{:?}, columns: vec![{}] }}", selection(&l.selection), l.search_columns, l.search_mode, l.search_comparison, l.columns.iter().map(|c| format!("rust_desktop_ui_xaml::LookupColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?} }}", c.field, c.header, c.width)).collect::<Vec<_>>().join(","))),
         ElementKind::ButtonEdit(e) => ("ButtonEdit", format!("rust_desktop_ui_xaml::ButtonEditDefinition {{ editor: {}, buttons: vec![{}] }}", edit_box(&e.editor), e.buttons.iter().map(|b| format!("rust_desktop_ui_xaml::EditorButtonDefinition {{ command: {:?}.into(), icon: {}, content: {:?}.into(), tool_tip: {}, placement: rust_desktop_ui_xaml::EditorButtonPlacement::{:?}, width: {:?}, is_visible: {}, is_enabled: {}, is_enabled_when_read_only: {}, is_tab_stop: {}, content_template: {} }}", b.command, optional_icon(b.icon), b.content, optional_string(&b.tool_tip), b.placement, b.width, b.is_visible, b.is_enabled, b.is_enabled_when_read_only, b.is_tab_stop, optional_child(b.content_template.as_deref()))).collect::<Vec<_>>().join(","))),
         ElementKind::MemoEdit(e) => ("MemoEdit", format!("rust_desktop_ui_xaml::MemoEditDefinition {{ editor: {}, popup_width: {:?}, popup_height: {:?} }}", edit_box(&e.editor), e.popup_width, e.popup_height)),
         ElementKind::NumericEdit(e) => ("NumericEdit", format!("rust_desktop_ui_xaml::NumericEditDefinition {{ editor: {}, value: {}, minimum: {:?}.into(), maximum: {:?}.into(), increment: {:?}.into(), precision: {}, allow_empty: {}, culture: rust_desktop_ui_xaml::NumericCultureDefinition::{:?}, use_grouping: {}, show_calculator: {} }}", edit_box(&e.editor), optional_string(&e.value),e.minimum,e.maximum,e.increment,e.precision,e.allow_empty,e.culture,e.use_grouping,e.show_calculator)),

@@ -231,6 +231,19 @@ impl Controls {
                 keys,
                 ..
             } => {
+                if self.combo_multiple(owner) {
+                    return Ok(());
+                }
+                if *lookup {
+                    let next = self.resolve_lookup_text(owner, text)?;
+                    if self.rich.suppress_combo_commit != Some(owner)
+                        && &next != keys
+                        && let Some(validator) = self.rich.selection_validators.get(&owner)
+                    {
+                        validator.check(&next)?;
+                    }
+                    return Ok(());
+                }
                 if (!editable || *lookup)
                     && !text.is_empty()
                     && !items.iter().any(|i| {
@@ -283,15 +296,25 @@ impl Controls {
                 CompositeKind::Time(s) => Some(EditorValue::Time(
                     s.parse(&text).map_err(ControlError::Invalid)?,
                 )),
-                CompositeKind::Combo { items, keys, .. }
-                    if self.rich.suppress_combo_commit != Some(owner) =>
+                CompositeKind::Combo {
+                    items,
+                    keys,
+                    lookup,
+                    ..
+                } if self.rich.suppress_combo_commit != Some(owner)
+                    && !self.combo_multiple(owner) =>
                 {
-                    let next = items
-                        .iter()
-                        .find(|i| i.text == text && i.enabled && keys.contains(&i.key))
-                        .or_else(|| items.iter().find(|i| i.text == text && i.enabled))
-                        .map(|i| vec![i.key.clone()])
-                        .unwrap_or_default();
+                    let next = if lookup {
+                        self.resolve_lookup_text(owner, &text)
+                            .map_err(ControlError::Invalid)?
+                    } else {
+                        items
+                            .iter()
+                            .find(|i| i.text == text && i.enabled && keys.contains(&i.key))
+                            .or_else(|| items.iter().find(|i| i.text == text && i.enabled))
+                            .map(|i| vec![i.key.clone()])
+                            .unwrap_or_default()
+                    };
                     if keys != next {
                         if let CompositeKind::Combo { keys, .. } =
                             &mut self.rich.composites.get_mut(&owner).unwrap().kind

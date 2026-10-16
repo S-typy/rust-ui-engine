@@ -37,16 +37,30 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
         .into_iter()
         .map(|node| {
             format!(
-                "{{\"id\":{},\"role\":{},\"label\":{},\"bounds\":{},\"focused\":{},\"value\":{}}}",
+                "{{\"id\":{},\"role\":{},\"label\":{},\"bounds\":{},\"focused\":{},\"value\":{},\"error\":{}}}",
                 string(&format!("{:?}", node.id)),
                 string(&format!("{:?}", node.role)),
                 string(&node.label),
                 rectangle(node.bounds),
                 node.focused,
-                node.value.as_deref().map_or_else(|| "null".into(), string)
+                node.value.as_deref().map_or_else(|| "null".into(), string),
+                node.validation_error.as_deref().map_or_else(|| "null".into(), string)
             )
         })
         .collect::<Vec<_>>()
         .join(",");
-    format!("{{\"named\":[{values}],\"nodes\":[{nodes}]}}")
+    let selections = view.names.iter().filter_map(|(name, &id)| {
+        let keys = ui.selected_keys(id)?;
+        let list = |keys: &[String]| keys.iter().map(|key| string(key)).collect::<Vec<_>>().join(",");
+        let draft = ui.combo_selection_draft(id).map_or_else(|| "null".into(), |keys| format!("[{}]", list(keys)));
+        let stats = ui.list_virtualization_stats(id).map_or_else(|| "null".into(), |stats| {
+            let rows = ui.selection_items(id).unwrap_or_default()[stats.range.materialized.clone()].iter().map(|item| {
+                let row = ui.list_row_widget(id, &item.key);
+                format!("{{\"key\":{},\"id\":{},\"bounds\":{}}}", string(&item.key), row.map_or_else(|| "null".into(), |id| string(&format!("{id:?}"))), row.and_then(|id| ui.runtime.bounds(id)).map_or_else(|| "null".into(), rectangle))
+            }).collect::<Vec<_>>().join(",");
+            format!("{{\"visible\":[{},{}],\"materialized\":[{},{}],\"realized\":{},\"allocated\":{},\"measured\":{},\"created\":{},\"released\":{},\"rows\":[{}]}}", stats.range.visible.start, stats.range.visible.end, stats.range.materialized.start, stats.range.materialized.end, stats.realized_rows, stats.allocated_slots, stats.measured_rows, stats.created_rows, stats.released_rows, rows)
+        });
+        Some(format!("{{\"name\":{},\"keys\":[{}],\"draft\":{},\"stats\":{}}}", string(name), list(keys), draft, stats))
+    }).collect::<Vec<_>>().join(",");
+    format!("{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}]}}")
 }

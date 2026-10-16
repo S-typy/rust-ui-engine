@@ -14,6 +14,7 @@ mod scene_view;
 mod shortcuts;
 mod subtree;
 mod tree;
+mod virtualization;
 
 pub use arena::WidgetId;
 pub use dirty::DirtyFlags;
@@ -27,6 +28,7 @@ pub use scene_text::*;
 pub use shortcuts::*;
 pub use subtree::*;
 pub use tree::{Node, TreeError, UiTree};
+pub use virtualization::*;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Rect {

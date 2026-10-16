@@ -296,7 +296,7 @@ impl Compiler<'_> {
         values.retain(|key, _| {
             !matches!(
                 key.as_str(),
-                "Template" | "HeaderTemplate" | "ContentTemplate"
+                "Template" | "HeaderTemplate" | "ContentTemplate" | "ItemTemplate"
             )
         });
         let element = Markup {
@@ -345,12 +345,12 @@ impl Compiler<'_> {
             for (property, attr) in &node.attrs {
                 if matches!(
                     property.as_str(),
-                    "Template" | "HeaderTemplate" | "ContentTemplate"
+                    "Template" | "HeaderTemplate" | "ContentTemplate" | "ItemTemplate"
                 ) {
                     let (declaring, dependency) = self.resource(scope, &attr.value, attr.offset)?;
                     let expected = if property == "Template" {
                         "ControlTemplate"
-                    } else if property == "ContentTemplate" {
+                    } else if matches!(property.as_str(), "ContentTemplate" | "ItemTemplate") {
                         "DataTemplate"
                     } else {
                         "HeaderTemplate"
@@ -586,7 +586,10 @@ impl Compiler<'_> {
             let attr = &setter.attrs["Value"];
             values.insert(
                 property.into(),
-                if matches!(property, "Template" | "HeaderTemplate" | "ContentTemplate") {
+                if matches!(
+                    property,
+                    "Template" | "HeaderTemplate" | "ContentTemplate" | "ItemTemplate"
+                ) {
                     let mut attr = attr.clone();
                     attr.scope = Some(scope.clone());
                     attr
@@ -737,7 +740,7 @@ impl Compiler<'_> {
         for (name, attr) in &mut node.attrs {
             if !matches!(
                 name.as_str(),
-                "Template" | "HeaderTemplate" | "ContentTemplate"
+                "Template" | "HeaderTemplate" | "ContentTemplate" | "ItemTemplate"
             ) {
                 *attr = self.resolve_value(&scope, attr, &mut Vec::new())?;
             }
@@ -800,6 +803,7 @@ impl Compiler<'_> {
             ("Template", "ControlTemplate"),
             ("HeaderTemplate", "HeaderTemplate"),
             ("ContentTemplate", "DataTemplate"),
+            ("ItemTemplate", "DataTemplate"),
         ] {
             if let Some(attr) = node.attrs.remove(property) {
                 let (declaring, template) = self.resource(
@@ -829,6 +833,14 @@ impl Compiler<'_> {
                     return Err(self.error(
                         attr.offset,
                         "ContentTemplate requires ContentPresenter or EditorButton",
+                    ));
+                }
+                if property == "ItemTemplate"
+                    && !matches!(node.name.as_str(), "ListBox" | "ComboBox" | "LookupEdit")
+                {
+                    return Err(self.error(
+                        attr.offset,
+                        "ItemTemplate requires ListBox, ComboBox or LookupEdit",
                     ));
                 }
                 if chain.contains(&template.offset) || chain.len() >= 32 {
@@ -864,7 +876,8 @@ impl Compiler<'_> {
             // declaration scope, not the consumer's potentially shadowing scope.
             if child.name == format!("{}.Template", node.name)
                 || ((child.name == format!("{}.HeaderTemplate", node.name)
-                    || child.name == format!("{}.ContentTemplate", node.name))
+                    || child.name == format!("{}.ContentTemplate", node.name)
+                    || child.name == format!("{}.ItemTemplate", node.name))
                     && child.offset == node.offset)
             {
                 children.push(child);

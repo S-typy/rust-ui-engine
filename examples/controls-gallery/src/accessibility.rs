@@ -146,6 +146,21 @@ impl Gallery {
                     }
                 });
             }
+            // Semantic positions are one-based; AccessKit uses zero-based indices.
+            if let Some(index) = item
+                .position_in_set
+                .and_then(|position| position.checked_sub(1))
+            {
+                node.set_position_in_set(index);
+            }
+            if let Some(size) = item.set_size {
+                node.set_size_of_set(size);
+            }
+            if self.ui.selection_settings(item.id).is_some_and(|settings| {
+                settings.mode == rust_desktop_ui_controls::SelectionMode::Multiple
+            }) {
+                node.set_multiselectable();
+            }
             if matches!(item.role, ControlRole::Tab | ControlRole::ListItem) {
                 node.set_selected(item.selected);
             }

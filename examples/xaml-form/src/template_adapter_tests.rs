@@ -8,6 +8,99 @@ use std::{cell::RefCell, rc::Rc};
 const SIZE: Size = Size::new(640.0, 480.0);
 
 #[test]
+fn compiled_item_templates_and_multiple_combo_bind_only_accepted_keys() {
+    use rust_desktop_ui_controls::{SelectionValidator, SemanticAction};
+    let context = Rc::new(RefCell::new(
+        BindingContext::new(DataValue::object([
+            ("Tags", DataValue::List(vec!["a".into()])),
+            ("Free", "custom value".into()),
+        ]))
+        .unwrap(),
+    ));
+    let markup = parse(
+        r#"<Window.Resources><DataTemplate x:Key="Row"><StackPanel Orientation="Horizontal" Spacing="6"><Icon Symbol="Copy" Width="16"/><TextBlock Text="{Binding Text}"/><TextBlock Text="{Binding Key}"/></StackPanel></DataTemplate></Window.Resources>
+    <StackPanel><ListBox x:Name="Checked" SelectionMode="Multiple" ItemPresentation="CheckBox" ItemTemplate="{StaticResource Row}" Height="100"><ListBoxItem Value="a" Content="Alpha"/><ListBoxItem Value="b" Content="Beta"/></ListBox>
+    <ComboBox x:Name="Tags" IsEditable="True" SelectionMode="Multiple" SelectionPresentation="Tokens" SelectedValues="{Binding Tags}" ItemTemplate="{StaticResource Row}"><ListBoxItem Value="a" Content="Alpha"/><ListBoxItem Value="b" Content="Beta"/></ComboBox>
+    <ComboBox x:Name="Free" IsEditable="True" Text="{Binding Free}"/></StackPanel>"#,
+    );
+    let mut form = Form::new_with_model(markup, false, Some(context.clone())).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let tags = form.find_name("Tags").unwrap();
+    let list = form.find_name("Checked").unwrap();
+    let free = form.find_name("Free").unwrap();
+    assert!(form.ui.list_item_content(list, "a").is_some());
+    assert_eq!(form.ui.selected_keys(tags).unwrap(), ["a"]);
+    assert!(form.ui.combo_item_template(tags).is_some());
+    assert_eq!(
+        form.ui
+            .accepted_value(form.ui.composite_editor(free).unwrap()),
+        Some("custom value")
+    );
+    let token = form.ui.combo_token(tags, "a").unwrap();
+    form.ui
+        .chain_selection_validator(
+            tags,
+            SelectionValidator::new(|keys| {
+                if keys.is_empty() {
+                    Err("Select at least one".into())
+                } else {
+                    Ok(())
+                }
+            }),
+        )
+        .unwrap();
+    form.ui
+        .perform_action(token, SemanticAction::Activate, None)
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(form.ui.selected_keys(tags).unwrap(), ["a"]);
+    assert_eq!(
+        context.borrow().get("Tags").unwrap(),
+        &DataValue::List(vec!["a".into()])
+    );
+    form.ui.cancel_combo_selection(tags).unwrap();
+    context
+        .borrow_mut()
+        .set("Tags", DataValue::List(vec!["a".into(), "b".into()]))
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let token = form.ui.combo_token(tags, "b").unwrap();
+    let before = context.borrow().revision();
+    form.ui
+        .perform_action(token, SemanticAction::Activate, None)
+        .unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(
+        context.borrow().get("Tags").unwrap(),
+        &DataValue::List(vec!["a".into()])
+    );
+    assert_eq!(context.borrow().revision(), before + 1);
+    form.update(SIZE, 1.0).unwrap();
+    assert_eq!(context.borrow().revision(), before + 1);
+}
+
+#[test]
+fn lookup_compiled_search_policy_and_multiple_values_share_combo_engine() {
+    use rust_desktop_ui_controls::{LookupSearchComparison, LookupSearchMode, SelectionMode};
+    let markup = parse(
+        r#"<LookupEdit x:Name="Lookup" SearchColumns="0" SearchMode="StartsWith" SearchComparison="Ordinal" SelectionMode="Multiple" SelectionPresentation="Tokens" SelectedValues="a,b"><ListBoxItem Value="a" Content="Alpha"/><ListBoxItem Value="b" Content="Beta"/></LookupEdit>"#,
+    );
+    let mut form = Form::new_with_model(markup, false, None).unwrap();
+    form.update(SIZE, 1.0).unwrap();
+    let owner = form.find_name("Lookup").unwrap();
+    assert_eq!(
+        form.ui.combo_selection_settings(owner).unwrap().mode,
+        SelectionMode::Multiple
+    );
+    let search = form.ui.lookup_search_settings(owner).unwrap();
+    assert_eq!(search.columns, [0]);
+    assert_eq!(search.mode, LookupSearchMode::StartsWith);
+    assert_eq!(search.comparison, LookupSearchComparison::Ordinal);
+    assert_eq!(form.ui.selected_keys(owner).unwrap(), ["a", "b"]);
+    assert!(form.ui.combo_token(owner, "a").is_some());
+}
+
+#[test]
 fn ribbon_retained_xaml_editors_keep_identity_draft_and_bindings_across_presentations() {
     let context = Rc::new(RefCell::new(
         BindingContext::new(DataValue::object([

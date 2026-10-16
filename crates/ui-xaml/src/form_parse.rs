@@ -92,7 +92,7 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
                     | "SelectedValues"
                     | "IsReadOnly"
                     | "PlaceholderText"
-            )
+            ) || name == "Text" && matches!(kind, ElementKind::ComboBox(_))
         }
         _ => false,
     }
@@ -265,6 +265,35 @@ fn selection_property(
             }
         }
         "PlaceholderText" => selection.placeholder = attr.value().into(),
+        "Text" => selection.text = attr.value().into(),
+        "CommitOnLostFocus" => selection.commit_on_lost_focus = Some(boolean(document, attr)?),
+        "ItemPresentation" => {
+            selection.item_presentation = match attr.value() {
+                "Plain" => ListItemPresentationDefinition::Plain,
+                "CheckBox" => ListItemPresentationDefinition::CheckBox,
+                "RadioButton" => ListItemPresentationDefinition::RadioButton,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attr,
+                        "ItemPresentation must be Plain, CheckBox or RadioButton",
+                    ));
+                }
+            }
+        }
+        "SelectionPresentation" => {
+            selection.selection_presentation = match attr.value() {
+                "Text" => ComboSelectionPresentationDefinition::Text,
+                "Tokens" => ComboSelectionPresentationDefinition::Tokens,
+                _ => {
+                    return Err(at_attribute(
+                        document,
+                        attr,
+                        "SelectionPresentation must be Text or Tokens",
+                    ));
+                }
+            }
+        }
         "IsReadOnly" => selection.is_read_only = boolean(document, attr)?,
         "IsEditable" => selection.is_editable = boolean(document, attr)?,
         "SelectionMode" => {
@@ -525,7 +554,54 @@ pub(super) fn property(
             selection_property(document, attr, selection)
         }
         ElementKind::LookupEdit(lookup) => {
-            selection_property(document, attr, &mut lookup.selection)
+            match attr.name() {
+                "SearchColumns" => {
+                    lookup.search_columns = if attr.value().trim().is_empty() {
+                        Vec::new()
+                    } else {
+                        attr.value()
+                            .split(',')
+                            .map(|value| {
+                                value.trim().parse::<usize>().map_err(|_| {
+                                    at_attribute(
+                                        document,
+                                        attr,
+                                        "SearchColumns requires comma-separated indices 0..31",
+                                    )
+                                })
+                            })
+                            .collect::<Result<_, _>>()?
+                    };
+                }
+                "SearchMode" => {
+                    lookup.search_mode = match attr.value() {
+                        "Contains" => LookupSearchModeDefinition::Contains,
+                        "StartsWith" => LookupSearchModeDefinition::StartsWith,
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "SearchMode must be Contains or StartsWith",
+                            ));
+                        }
+                    }
+                }
+                "SearchComparison" => {
+                    lookup.search_comparison = match attr.value() {
+                        "Ordinal" => LookupSearchComparisonDefinition::Ordinal,
+                        "UnicodeLowercase" => LookupSearchComparisonDefinition::UnicodeLowercase,
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "SearchComparison must be Ordinal or UnicodeLowercase",
+                            ));
+                        }
+                    }
+                }
+                _ => return selection_property(document, attr, &mut lookup.selection),
+            }
+            Ok(true)
         }
         ElementKind::ButtonEdit(editor) => editor_property(document, attr, &mut editor.editor),
         ElementKind::MemoEdit(memo) => {
@@ -1021,6 +1097,44 @@ pub(super) fn parse_children(
             return Err(at_node(child, "unsupported child namespace"));
         }
         let name = child.tag_name().name();
+        if matches!(
+            name,
+            "ListBox.ItemTemplate" | "ComboBox.ItemTemplate" | "LookupEdit.ItemTemplate"
+        ) {
+            let selection = match (&mut *kind, name) {
+                (ElementKind::ListBox(s), "ListBox.ItemTemplate")
+                | (ElementKind::ComboBox(s), "ComboBox.ItemTemplate") => s,
+                (ElementKind::LookupEdit(s), "LookupEdit.ItemTemplate") => &mut s.selection,
+                _ => return Err(at_node(child, "ItemTemplate does not belong to this owner")),
+            };
+            if selection.item_template.is_some() || child.attributes().len() != 0 {
+                return Err(at_node(child, "Invalid or duplicate ItemTemplate"));
+            }
+            for visual in child.children() {
+                if !visual.is_element() {
+                    require_empty_content(visual)?;
+                    continue;
+                }
+                if selection.item_template.is_some() {
+                    return Err(at_node(child, "ItemTemplate requires one visual root"));
+                }
+                let definition = parse_element(
+                    visual,
+                    depth + 2,
+                    parent,
+                    count,
+                    &mut HashSet::new(),
+                    &mut HashSet::new(),
+                )?;
+                crate::validate_item_template(&definition)
+                    .map_err(|message| at_node(visual, message))?;
+                selection.item_template = Some(Box::new(definition));
+            }
+            if selection.item_template.is_none() {
+                return Err(at_node(child, "ItemTemplate requires one visual root"));
+            }
+            continue;
+        }
         if matches!(name, "GroupBox.HeaderTemplate" | "Expander.HeaderTemplate") {
             let belongs = matches!(
                 (&*kind, name),
@@ -1313,6 +1427,8 @@ pub(super) fn validate(
         _ => None,
     };
     if let Some(selection) = selection {
+        crate::validate_selection_presentation(kind, common)
+            .map_err(|message| at_node(node, message))?;
         if !selection.items.is_empty() && common.bindings.contains_key("ItemsSource") {
             return Err(at_node(
                 node,
@@ -1332,11 +1448,6 @@ pub(super) fn validate(
                 node,
                 "SelectedValue and SelectedValues are mutually exclusive",
             ));
-        }
-        if !matches!(kind, ElementKind::ListBox(_))
-            && selection.selection_mode == SelectionMode::Multiple
-        {
-            return Err(at_node(node, "only ListBox supports Multiple selection"));
         }
         if matches!(kind, ElementKind::ListBox(_)) && selection.is_editable {
             return Err(at_node(node, "ListBox does not support IsEditable=True"));

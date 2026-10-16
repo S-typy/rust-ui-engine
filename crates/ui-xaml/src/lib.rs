@@ -38,7 +38,11 @@ pub use extensions::{ComponentMarkup, ComponentRegistry};
 mod codegen;
 mod form_parse;
 mod forms;
+mod item_templates;
+pub use item_templates::{validate_item_template, validate_selection_presentation};
 mod masked;
+#[cfg(test)]
+mod selection_template_tests;
 pub use masked::{MaskEditDefinition, validate_mask_edit};
 mod temporal;
 pub use temporal::{

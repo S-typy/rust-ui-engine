@@ -42,7 +42,21 @@ pub use password::{
     MAX_PASSWORD_BYTES, MAX_PASSWORD_GRAPHEMES, PasswordBoxSettings, PasswordEvent,
     PasswordEventKind, PasswordRef, PasswordValue,
 };
+mod list_item_templates;
+mod list_items;
+#[cfg(test)]
+mod list_items_tests;
+mod list_virtualization;
+pub use list_item_templates::{
+    ListItemTemplate, ListItemTextSource, ListTemplateKind, ListTemplateNode,
+};
+pub use list_items::ListItemPresentation;
+#[cfg(test)]
+mod list_virtualization_tests;
 mod masks;
+pub use list_virtualization::{
+    ListVirtualizationSettings, ListVirtualizationStats, MAX_LIST_EXTENT,
+};
 mod masks_model;
 mod numeric;
 mod numeric_model;
@@ -101,14 +115,24 @@ pub use groups::{
 };
 use tabbed_groups::Tabs;
 pub use tabbed_groups::{GroupTab, TabbedGroup};
+mod combo_selection;
 #[cfg(test)]
 mod editor_button_tests;
 mod editor_buttons;
+mod lookup;
+#[cfg(test)]
+mod lookup_tests;
 #[cfg(test)]
 mod pointer_cancel_tests;
 mod popup;
 mod scroll;
 mod selection;
+pub use combo_selection::{
+    ComboSelectionPresentation, ComboSelectionSettings, MAX_COMBO_SELECTION,
+};
+pub use lookup::{LookupSearchComparison, LookupSearchMode, LookupSearchSettings};
+#[cfg(test)]
+mod combo_selection_tests;
 #[cfg(test)]
 mod selection_tests;
 pub use scroll::{ScrollBarVisibility, ScrollSettings};
@@ -219,6 +243,9 @@ pub struct SemanticNode {
     /// A nullable check value; independent of selected state and ordinary false.
     pub checked_mixed: bool,
     pub selected: bool,
+    /// One-based logical position, independent of the materialized viewport.
+    pub position_in_set: Option<usize>,
+    pub set_size: Option<usize>,
     pub disabled: bool,
     pub read_only: bool,
     /// Last failed business validation of the draft; not an IME error.
@@ -444,6 +471,10 @@ pub struct Controls {
     memos: memo::MemoState,
     numeric: numeric::NumericState,
     masks: masks::MasksState,
+    list_virtual: list_virtualization::ListVirtualState,
+    combos: combo_selection::ComboState,
+    lookups: lookup::LookupState,
+    list_items: list_items::ListItemsState,
     calendars: calendar_view::CalendarState,
     temporal_popups: date_time_popup::TemporalPopupState,
     bars: bars::BarsState,
@@ -536,6 +567,10 @@ impl Controls {
             memos: Default::default(),
             numeric: Default::default(),
             masks: Default::default(),
+            list_virtual: Default::default(),
+            combos: Default::default(),
+            lookups: Default::default(),
+            list_items: Default::default(),
             calendars: Default::default(),
             temporal_popups: Default::default(),
             bars: Default::default(),
@@ -1805,12 +1840,14 @@ impl Controls {
         self.retain_text_displays();
         self.retain_sliders()?;
         self.prune_button_contents();
+        self.prune_list_item_content();
         self.retain_progress_animations();
         self.layout.retain_measures(self.runtime.tree());
         self.retain_splitters()?;
         self.prune_flyouts()?;
         self.prune_memos();
         self.prune_masks();
+        self.prune_virtual_lists();
         self.prune_calendars();
         self.prune_temporal_popups();
         self.prune_bars();
@@ -3823,6 +3860,8 @@ impl Controls {
                         checked: None,
                         checked_mixed: false,
                         selected: false,
+                        position_in_set: None,
+                        set_size: None,
                         disabled: !self.effective_enabled(id),
                         read_only: false,
                         validation_error: None,
@@ -3835,7 +3874,9 @@ impl Controls {
                         children,
                     });
                 };
-                let checked = control.check_state(&self.commands);
+                let checked = self
+                    .list_item_checked(id)
+                    .or_else(|| control.check_state(&self.commands));
                 let role = control.role.unwrap_or_else(|| {
                     if control.command.is_some()
                         && matches!(control.kind, Kind::Button | Kind::Toggle)
@@ -3906,7 +3947,11 @@ impl Controls {
                     if self.split_ratio(id).is_some() {
                         actions.extend([SemanticAction::Expand, SemanticAction::Collapse]);
                     }
-                    if checked.is_some() && !matches!(control.kind, Kind::Radio { .. }) {
+                    if checked.is_some()
+                        && !matches!(control.kind, Kind::Radio { .. })
+                        && !self.list_item_is_radio(id)
+                        && !self.rich_read_only(id)
+                    {
                         actions.push(SemanticAction::Toggle);
                     }
                     if matches!(control.kind, Kind::Scroll { .. }) {
@@ -3926,6 +3971,10 @@ impl Controls {
                     checked,
                     checked_mixed: self.check_state(id) == Some(CheckState::Indeterminate),
                     selected,
+                    position_in_set: self
+                        .list_item_set_position(id)
+                        .map(|(position, _)| position),
+                    set_size: self.list_item_set_position(id).map(|(_, size)| size),
                     disabled: !enabled,
                     read_only: self
                         .password_settings(id)
@@ -3981,8 +4030,10 @@ impl Controls {
                 || self.controls.get(&id).is_none_or(|control| {
                     !control.kind.clickable()
                         || (action == SemanticAction::Toggle
-                            && (control.check_state(&self.commands).is_none()
-                                || matches!(control.kind, Kind::Radio { .. })))
+                            && ((control.check_state(&self.commands).is_none()
+                                && self.list_item_checked(id).is_none())
+                                || matches!(control.kind, Kind::Radio { .. })
+                                || self.list_item_is_radio(id)))
                 })
                 || self.rich_read_only(id)
             {

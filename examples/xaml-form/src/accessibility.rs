@@ -184,6 +184,21 @@ impl Accessibility {
             if semantic.read_only {
                 node.set_read_only();
             }
+            // Semantic positions are one-based; AccessKit uses zero-based indices.
+            if let Some(index) = semantic
+                .position_in_set
+                .and_then(|position| position.checked_sub(1))
+            {
+                node.set_position_in_set(index);
+            }
+            if let Some(size) = semantic.set_size {
+                node.set_size_of_set(size);
+            }
+            if ui.selection_settings(widget).is_some_and(|settings| {
+                settings.mode == rust_desktop_ui_controls::SelectionMode::Multiple
+            }) {
+                node.set_multiselectable();
+            }
             if matches!(semantic.role, ControlRole::Tab | ControlRole::ListItem) {
                 node.set_selected(semantic.selected);
             }
@@ -791,5 +806,132 @@ mod status_tests {
             fixture.node(&tree, editor).tooltip(),
             Some("Enter a document code")
         );
+    }
+    #[test]
+    fn virtual_list_projects_last_position_as_zero_based_accesskit_index() {
+        use rust_desktop_ui_controls::{SelectionItem, SelectionSettings};
+        let mut fixture = Fixture::new(false);
+        let list = fixture
+            .ui
+            .list_box(
+                fixture.ui.root(),
+                "Large list",
+                (0..100_000)
+                    .map(|index| SelectionItem::new(index.to_string(), format!("Row {index}")))
+                    .collect(),
+                SelectionSettings::default(),
+                LayoutStyle {
+                    width: Length::Px(300.0),
+                    height: Length::Px(160.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture.ui.update(Size::new(800.0, 600.0)).unwrap();
+        fixture.ui.scroll_to(list.container, 3_200_000.0).unwrap();
+        fixture.ui.update(Size::new(800.0, 600.0)).unwrap();
+        let last = fixture.ui.list_row_widget(list.container, "99999").unwrap();
+        let semantic = fixture
+            .ui
+            .semantics()
+            .into_iter()
+            .find(|node| node.id == last)
+            .unwrap();
+        assert_eq!(semantic.position_in_set, Some(100_000));
+        let tree = fixture.tree();
+        assert_eq!(fixture.node(&tree, last).position_in_set(), Some(99_999));
+        assert_eq!(fixture.node(&tree, last).size_of_set(), Some(100_000));
+    }
+
+    #[test]
+    fn checked_list_preserves_option_selection_and_routes_native_click_to_checked_keys() {
+        use rust_desktop_ui_controls::{
+            ListItemPresentation, SelectionItem, SelectionMode, SelectionSettings,
+        };
+        let mut fixture = Fixture::new(false);
+        let root = fixture.ui.root();
+        let mut disabled = SelectionItem::new("c", "Disabled");
+        disabled.enabled = false;
+        let list = fixture
+            .ui
+            .list_box(
+                root,
+                "Roles",
+                vec![
+                    SelectionItem::new("a", "Author"),
+                    SelectionItem::new("b", "Reviewer"),
+                    disabled,
+                ],
+                SelectionSettings {
+                    mode: SelectionMode::Multiple,
+                    read_only: false,
+                },
+                LayoutStyle {
+                    width: Length::Px(300.0),
+                    height: Length::Px(180.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture
+            .ui
+            .set_list_item_presentation(list.container, ListItemPresentation::CheckBox)
+            .unwrap();
+        fixture
+            .ui
+            .set_selected_keys(list.container, &["a".into()])
+            .unwrap();
+        fixture.ui.update(Size::new(800.0, 600.0)).unwrap();
+        let a = fixture.ui.list_row_widget(list.container, "a").unwrap();
+        let b = fixture.ui.list_row_widget(list.container, "b").unwrap();
+        let c = fixture.ui.list_row_widget(list.container, "c").unwrap();
+        let tree = fixture.tree();
+        assert!(fixture.node(&tree, list.container).is_multiselectable());
+        let node = fixture.node(&tree, a);
+        assert_eq!(node.role(), Role::ListBoxOption);
+        assert_eq!(node.is_selected(), Some(true));
+        assert_eq!(node.toggled(), Some(accesskit::Toggled::True));
+        assert_eq!(node.position_in_set(), Some(0));
+        assert_eq!(node.size_of_set(), Some(3));
+        assert_eq!(fixture.node(&tree, b).position_in_set(), Some(1));
+        assert_eq!(fixture.node(&tree, c).position_in_set(), Some(2));
+        assert!(node.supports_action(Action::Click));
+        assert!(!fixture.node(&tree, c).supports_action(Action::Click));
+        // Windows maps checked selection to SelectionItem, whose Add/Remove
+        // methods send Click only when requested selected state differs.
+        for row in [b, a, c] {
+            fixture
+                .accessibility
+                .action(
+                    &mut fixture.ui,
+                    accesskit::ActionRequest {
+                        action: Action::Click,
+                        target_tree: accesskit::TreeId::ROOT,
+                        target_node: fixture.accessibility.id(row).unwrap(),
+                        data: None,
+                    },
+                )
+                .unwrap();
+        }
+        assert_eq!(fixture.ui.selected_keys(list.container).unwrap(), ["b"]);
+        let tree = fixture.tree();
+        assert_eq!(fixture.node(&tree, a).is_selected(), Some(false));
+        assert_eq!(
+            fixture.node(&tree, b).toggled(),
+            Some(accesskit::Toggled::True)
+        );
+        fixture.ui.remove(list.container).unwrap();
+        fixture
+            .accessibility
+            .action(
+                &mut fixture.ui,
+                accesskit::ActionRequest {
+                    action: Action::Click,
+                    target_tree: accesskit::TreeId::ROOT,
+                    target_node: fixture.accessibility.id(b).unwrap(),
+                    data: None,
+                },
+            )
+            .unwrap();
     }
 }
