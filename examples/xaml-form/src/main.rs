@@ -8,6 +8,7 @@ mod batch_model;
 #[cfg(test)]
 mod binding_adapter_tests;
 mod breadcrumb_model;
+mod color_model;
 #[cfg(test)]
 mod data_adapter_tests;
 mod data_editors_model;
@@ -30,6 +31,8 @@ mod grid_workspace_model;
 mod group_adapter_tests;
 #[cfg(test)]
 mod layout_adapter_tests;
+mod navigation_diagnostics;
+mod navigation_model;
 mod popup_diagnostics;
 mod rating_model;
 #[cfg(test)]
@@ -101,6 +104,12 @@ mod generated_badges {
 mod generated_font {
     include!(concat!(env!("OUT_DIR"), "/font_window.rs"));
 }
+mod generated_navigation {
+    include!(concat!(env!("OUT_DIR"), "/navigation_window.rs"));
+}
+mod generated_color {
+    include!(concat!(env!("OUT_DIR"), "/color_window.rs"));
+}
 mod generated_rating {
     include!(concat!(env!("OUT_DIR"), "/rating_window.rs"));
 }
@@ -146,6 +155,8 @@ fn start() -> Result<(), String> {
     let mut selection = false;
     let mut search = false;
     let mut rating = false;
+    let mut color = false;
+    let mut navigation = false;
     let mut badges = false;
     let mut breadcrumb = false;
     let mut font = false;
@@ -199,6 +210,8 @@ fn start() -> Result<(), String> {
             "--selection" => selection = true,
             "--search" => search = true,
             "--rating" => rating = true,
+            "--color" => color = true,
+            "--navigation" => navigation = true,
             "--badges" => badges = true,
             "--breadcrumb" => breadcrumb = true,
             "--font" => font = true,
@@ -282,6 +295,8 @@ fn start() -> Result<(), String> {
         selection,
         search,
         rating,
+        color,
+        navigation,
         badges,
         breadcrumb,
         font,
@@ -307,7 +322,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if breadcrumb {
+    let mut definition = if navigation {
+        generated_navigation::window_definition()
+    } else if breadcrumb {
         generated_breadcrumb::window_definition()
     } else if grid_workspace {
         generated_grid_workspace::window_definition()
@@ -319,6 +336,8 @@ fn start() -> Result<(), String> {
         generated_badges::window_definition()
     } else if font {
         generated_font::window_definition()
+    } else if color {
+        generated_color::window_definition()
     } else if rating {
         generated_rating::window_definition()
     } else if search {
@@ -400,7 +419,9 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if breadcrumb {
+    let app = if navigation {
+        form::Form::new_with_model(definition, diagnostics, Some(navigation_model::model()?))?
+    } else if breadcrumb {
         form::Form::new_with_model(definition, diagnostics, Some(breadcrumb_model::model()?))?
     } else if grid_workspace {
         form::Form::new_with_model(
@@ -417,6 +438,8 @@ fn start() -> Result<(), String> {
         form::Form::new_with_model(definition, diagnostics, Some(badge_model::model()?))?
     } else if font {
         form::Form::new_with_model(definition, diagnostics, Some(font_model::model()?))?
+    } else if color {
+        form::Form::new_with_model(definition, diagnostics, Some(color_model::model()?))?
     } else if rating {
         form::Form::new_with_model(definition, diagnostics, Some(rating_model::model()?))?
     } else if search {

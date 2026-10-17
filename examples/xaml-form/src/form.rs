@@ -25,6 +25,8 @@ pub(crate) struct Form {
     search: Option<crate::search_model::State>,
     breadcrumb: Option<crate::breadcrumb_model::State>,
     rating: Option<crate::rating_model::State>,
+    color: Option<crate::color_model::State>,
+    navigation: Option<crate::navigation_model::State>,
     font: Option<crate::font_model::State>,
     badges: Option<crate::badge_model::State>,
     data_form: Option<crate::data_form_model::State>,
@@ -95,6 +97,8 @@ impl Form {
         crate::search_model::register(&mut ui);
         crate::breadcrumb_model::register(&mut ui);
         crate::rating_model::register(&mut ui);
+        crate::color_model::register(&mut ui);
+        crate::navigation_model::register(&mut ui);
         crate::font_model::register(&mut ui);
         crate::badge_model::register(&mut ui);
         crate::data_form_model::register(&mut ui);
@@ -244,6 +248,8 @@ impl Form {
         let search = crate::search_model::State::install(&mut ui, &view)?;
         let breadcrumb = crate::breadcrumb_model::State::install(&mut ui, &view)?;
         let rating = crate::rating_model::State::install(&mut ui, &view)?;
+        let color = crate::color_model::State::install(&mut ui, &view)?;
+        let navigation = crate::navigation_model::State::install(&mut ui, &view)?;
         let font = crate::font_model::State::install(&mut ui, &mut view)?;
         let badges = crate::badge_model::State::install(&mut ui, &view)?;
         let data_form = crate::data_form_model::State::install(&mut ui, &mut view)?;
@@ -261,6 +267,8 @@ impl Form {
             search,
             breadcrumb,
             rating,
+            color,
+            navigation,
             font,
             badges,
             data_form,
@@ -398,6 +406,16 @@ impl Form {
             }
             if let Some(state) = &mut self.font
                 && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.navigation
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.color
+                && state.command(&mut self.ui, &invocation.id.0)?
             {
                 continue;
             }
@@ -623,6 +641,12 @@ impl Form {
         if let Some(state) = &mut self.font {
             state.refresh(&mut self.ui)?;
         }
+        if let Some(state) = &mut self.color {
+            state.refresh(&mut self.ui)?;
+        }
+        if let Some(state) = &mut self.navigation {
+            state.sync(&mut self.ui)?;
+        }
         if let Some(state) = &mut self.rating {
             state.refresh(&mut self.ui)?;
         }
@@ -739,6 +763,9 @@ impl DesktopApp for Form {
             self.ui.update(viewport).map_err(err)?;
         }
         self.application_events()?;
+        if self.navigation.is_some() {
+            self.ui.update(viewport).map_err(err)?;
+        }
         if let Some(mounted) = &mut self.view.ribbon {
             self.chrome
                 .configure(&mut mounted.ribbon, &self.title, viewport)?;
@@ -763,6 +790,8 @@ impl DesktopApp for Form {
                 || self.search.is_some()
                 || self.breadcrumb.is_some()
                 || self.rating.is_some()
+                || self.color.is_some()
+                || self.navigation.is_some()
                 || self.font.is_some()
                 || self.badges.is_some()
                 || self.data_form.is_some()

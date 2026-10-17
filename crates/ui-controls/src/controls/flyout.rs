@@ -33,6 +33,24 @@ pub(super) struct FlyoutState {
     buttons: HashMap<WidgetId, WidgetId>,
 }
 impl Controls {
+    /// Resolves focus in nested retained overlays to their owner inside a subtree.
+    pub(super) fn flyout_focus_anchor_in(&self, root: WidgetId) -> Option<WidgetId> {
+        let mut target = self.runtime.focused()?;
+        for _ in 0..MAX_OPEN {
+            let entry = self
+                .flyouts
+                .open
+                .iter()
+                .rev()
+                .filter_map(|id| self.flyouts.entries.get(id))
+                .find(|entry| self.flyout_descendant(target, entry.handle.container))?;
+            if self.flyout_descendant(entry.anchor, root) {
+                return Some(entry.anchor);
+            }
+            target = entry.anchor;
+        }
+        None
+    }
     pub(super) fn preflight_flyout_removal(&self, id: WidgetId) -> Result<(), ControlError> {
         if self
             .flyouts

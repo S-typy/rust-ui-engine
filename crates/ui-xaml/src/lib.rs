@@ -62,8 +62,18 @@ pub use grid_extensions::{
 };
 mod tree;
 pub use tree::{TreeColumnDefinition, TreeDefinition, validate_tree};
+mod color;
+mod navigation;
+pub use navigation::{
+    NavigationDefinition, NavigationPageDefinition, NavigationSectionDefinition,
+    NavigationViewDefinition, validate_navigation,
+};
 mod data_form;
 mod rating;
+pub use color::{
+    BrushValue, ColorEditorDefinition, GradientStop, LinearGradient, Srgba8, parse_color_literal,
+    validate_color_editor,
+};
 pub use rating::{RatingDefinition, validate_rating};
 mod breadcrumb;
 mod font_picker;
@@ -434,6 +444,7 @@ impl ElementDefinition {
             ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
                 p.children.iter().collect()
             }
+            ElementKind::NavigationPane(p) => p.pages.iter().map(|p| p.content.as_ref()).collect(),
             ElementKind::ToolBar(p) => p.children.iter().collect(),
             ElementKind::MenuBar(p) => p.items.iter().collect(),
             ElementKind::Popup(p) => p.child.as_deref().into_iter().collect(),
@@ -510,6 +521,9 @@ impl ElementDefinition {
             ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
                 p.children.iter_mut().collect()
             }
+            ElementKind::NavigationPane(p) => {
+                p.pages.iter_mut().map(|p| p.content.as_mut()).collect()
+            }
             ElementKind::ToolBar(p) => p.children.iter_mut().collect(),
             ElementKind::MenuBar(p) => p.items.iter_mut().collect(),
             ElementKind::Popup(p) => p.child.as_deref_mut().into_iter().collect(),
@@ -580,7 +594,10 @@ pub enum ElementKind {
     Grid(GridDefinition),
     GridControl(GridControlDefinition),
     DataForm(DataFormDefinition),
+    NavigationPane(Box<NavigationDefinition>),
     Rating(RatingDefinition),
+    ColorEdit(ColorEditorDefinition),
+    BrushEdit(ColorEditorDefinition),
     FontPicker(FontPickerDefinition),
     Breadcrumb(BreadcrumbDefinition),
     TreeView(TreeDefinition),
@@ -1233,6 +1250,7 @@ fn parse_element_properties(
                     | "SelectedIndex"
                     | "FilterText"
                     | "Query"
+                    | "Route"
             ) && !matches!(
                 kind,
                 ElementKind::TextBlock(_)
@@ -1251,12 +1269,15 @@ fn parse_element_properties(
                     | "SelectedIndex"
                     | "FilterText"
                     | "Query"
+                    | "Route"
             ) || matches!(
                 kind,
                 ElementKind::ZoomControl(_)
                     | ElementKind::Slider(_)
                     | ElementKind::Calendar(_)
                     | ElementKind::Rating(_)
+                    | ElementKind::ColorEdit(_)
+                    | ElementKind::BrushEdit(_)
             ) && property == "Value";
             let trigger = if editable && !immediate {
                 UpdateSourceTrigger::LostFocus
@@ -1674,6 +1695,8 @@ fn parse_element(
         ribbon::parse_children(node, depth, count, ribbon, names, checked_radio_groups)?;
     } else if let ElementKind::GridControl(grid) = &mut kind {
         grid_control::parse_children(node, depth, count, grid)?;
+    } else if let ElementKind::NavigationPane(value) = &mut kind {
+        navigation::parse_children(node, depth, count, value, names, checked_radio_groups)?;
     } else if let ElementKind::Breadcrumb(value) = &mut kind {
         breadcrumb::parse_children(node, depth, count, value)?;
     } else if let ElementKind::DataForm(form) = &mut kind {
@@ -1794,6 +1817,8 @@ fn parse_element(
             | ElementKind::MemoEdit(_)
             | ElementKind::SearchBox(_)
             | ElementKind::Rating(_)
+            | ElementKind::ColorEdit(_)
+            | ElementKind::BrushEdit(_)
             | ElementKind::FontPicker(_)
             | ElementKind::PasswordBox(_)
             | ElementKind::NumericEdit(_)

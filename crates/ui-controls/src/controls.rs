@@ -25,7 +25,29 @@ mod badge_tests;
 mod badges;
 pub use badges::{BadgeAnchor, BadgeClip, BadgeContent, BadgeSettings, BadgeSeverity, MAX_BADGES};
 mod choices;
+mod color_data;
+mod color_edit;
+mod color_model;
+mod color_popup;
+#[cfg(test)]
+mod color_tests;
+pub use color_data::{brush_from_value, brush_to_value, color_from_value, color_to_value};
+pub use color_edit::{BrushChanged, BrushValidator, ColorEditor};
+pub use color_model::{
+    BrushValue, ColorEditorSettings, ColorReplacePolicy, GradientStop, GradientStopId,
+    LinearGradient, PendingGradientStop, Srgba8,
+};
+pub use color_popup::ColorPopup;
 mod data_form;
+mod navigation;
+mod navigation_model;
+#[cfg(test)]
+mod navigation_tests;
+pub use navigation::{NavigationCause, NavigationChanged, NavigationPane, NavigationValidator};
+pub use navigation_model::{
+    MAX_NAVIGATION_PAGES, MAX_NAVIGATION_SECTIONS, NavigationMode, NavigationModel, NavigationPage,
+    NavigationSection, NavigationSettings, NavigationView,
+};
 mod font_picker;
 mod font_picker_data;
 pub use font_picker_data::{font_descriptor_from_value, font_descriptor_to_value};
@@ -544,6 +566,7 @@ pub struct Controls {
     list_items: list_items::ListItemsState,
     searches: search::SearchState,
     breadcrumbs: breadcrumb::BreadcrumbState,
+    navigations: navigation::Navigations,
     calendars: calendar_view::CalendarState,
     temporal_popups: date_time_popup::TemporalPopupState,
     bars: bars::BarsState,
@@ -554,6 +577,7 @@ pub struct Controls {
     grids: HashMap<WidgetId, grid::GridState>,
     trees: tree::Trees,
     font_pickers: font_picker::FontPickers,
+    color_editors: color_edit::ColorEditors,
     data_sources: HashMap<String, DataSourceHandle>,
     data_wake: grid::DataWake,
     pub runtime: UiRuntime,
@@ -646,6 +670,7 @@ impl Controls {
             list_items: Default::default(),
             searches: Default::default(),
             breadcrumbs: Default::default(),
+            navigations: Default::default(),
             calendars: Default::default(),
             temporal_popups: Default::default(),
             bars: Default::default(),
@@ -656,6 +681,7 @@ impl Controls {
             grids: HashMap::new(),
             trees: tree::Trees::default(),
             font_pickers: font_picker::FontPickers::default(),
+            color_editors: color_edit::ColorEditors::default(),
             data_sources: HashMap::new(),
             data_wake: grid::DataWake::default(),
             runtime,
@@ -803,6 +829,7 @@ impl Controls {
             control.caret_reveal = true;
             self.invalidate_async_editor(id);
         }
+        self.refresh_color_source_status();
     }
     /// Business editing events, independent of the draft's `TextChanged` queue.
     pub fn drain_edit_events(&mut self) -> Vec<EditEvent> {
@@ -892,6 +919,9 @@ impl Controls {
     /// Application calls are permitted for read-only/disabled editors; user
     /// keyboard and focus routes are gated by editability.
     pub fn commit_edit(&mut self, id: WidgetId) -> Result<CommitOutcome, ControlError> {
+        if let Some(owner) = self.color_inline_owner(id) {
+            return self.commit_color_inline(owner);
+        }
         if let Some(grid) = self.grid_owner_of_editor(id) {
             return self.commit_grid_editor(grid);
         }
@@ -964,6 +994,9 @@ impl Controls {
         id: WidgetId,
         text: &str,
     ) -> Result<CommitOutcome, ControlError> {
+        if let Some(owner) = self.color_inline_owner(id) {
+            return self.set_color_inline_application(owner, text);
+        }
         let control = self.editor_control(id)?;
         let value = normalize_editor_text(text, control.single_line).map_err(edit_error)?;
         editor_limits(control.editor.max_length)
@@ -1175,7 +1208,10 @@ impl Controls {
                         hovered
                     },
                 focused,
-                checked: self.checked(id).unwrap_or(false),
+                checked: self.checked(id).unwrap_or_else(|| {
+                    let control = &self.controls[&id];
+                    matches!(control.role, Some(Role::Tab | Role::ListItem)) && control.checked
+                }),
             }
             .normalized(),
         )
@@ -1878,7 +1914,9 @@ impl Controls {
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.preflight_search_removal(id)?;
         self.preflight_breadcrumb_removal(id)?;
+        self.preflight_navigation_removal(id)?;
         self.preflight_font_removal(id)?;
+        self.preflight_color_removal(id)?;
         self.preflight_bar_removal(id)?;
         self.preflight_flyout_removal(id)?;
         self.preflight_memo_removal(id)?;
@@ -1925,6 +1963,7 @@ impl Controls {
         self.grids.retain(|id, _| self.controls.contains_key(id));
         self.prune_trees();
         self.prune_font_pickers();
+        self.prune_color_editors()?;
         self.badges
             .retain(|id, _| self.runtime.tree().contains(*id));
         self.sync_data_wakes()?;
@@ -1938,6 +1977,7 @@ impl Controls {
         self.prune_list_item_content();
         self.prune_searches()?;
         self.prune_breadcrumbs()?;
+        self.prune_navigations();
         self.retain_progress_animations();
         self.layout.retain_measures(self.runtime.tree());
         self.retain_splitters()?;
@@ -2297,6 +2337,7 @@ impl Controls {
         self.sync_searches()?;
         self.sync_breadcrumbs()?;
         self.sync_font_pickers()?;
+        self.sync_color_editors()?;
         self.sync_passwords()?;
         self.poll_editor_validation()?;
         self.sync_memos()?;
@@ -2348,6 +2389,7 @@ impl Controls {
             self.sync_bars()?;
             self.sync_breadcrumb_layout()?;
             self.sync_tab_headers()?;
+            self.sync_navigations()?;
             self.sync_status_bars()?;
             self.sync_sliders()?;
             self.sync_ratings()?;
@@ -2374,6 +2416,7 @@ impl Controls {
             add_stats(&mut pass, self.sync_popup_layout()?);
             add_stats(&mut pass, self.sync_rich_layout()?);
             self.sync_flyouts()?;
+            self.sync_color_popup_layout()?;
             if self.runtime.needs_update() {
                 add_stats(&mut pass, self.runtime.update(&mut self.layout, viewport)?);
             }
@@ -2478,8 +2521,10 @@ impl Controls {
             || self.password_before_input(&event)?
             || self.memo_before_input(&event)?
             || self.editor_scroll_before_input(&event)?
+            || self.color_before_input(&event)?
             || self.search_before_input(&event)?
             || self.breadcrumb_before_input(&event)?
+            || self.navigation_before_input(&event)?
             || self.flyout_before_input(&event)?
             || self.bars_before_input(&event)?
             || self.tab_before_input(&event)?
@@ -2729,7 +2774,13 @@ impl Controls {
         if self.activate_password(id)? {
             return Ok(());
         }
+        if self.activate_navigation(id)? {
+            return Ok(());
+        }
         if self.activate_breadcrumb(id)? {
+            return Ok(());
+        }
+        if self.activate_color(id)? {
             return Ok(());
         }
         if self.activate_search(id)? {
@@ -2961,6 +3012,7 @@ impl Controls {
             *caret_goal_x = None;
             self.scene_dirty = true;
         }
+        self.refresh_color_source_status();
         Ok(())
     }
     pub fn ime_commit(&mut self, text: &str) -> Result<(), ControlError> {
@@ -3033,6 +3085,7 @@ impl Controls {
             }
         }
         self.scene_dirty = true;
+        self.refresh_color_source_status();
     }
     // Also observes public runtime focus mutations at the next Controls boundary.
     // A disappearing, hidden or disabled editor is never implicitly accepted.
@@ -3220,6 +3273,9 @@ impl Controls {
                 continue;
             }
             if self.paint_text_display(id, bounds, clip)? {
+                continue;
+            }
+            if self.paint_color_editor(id, bounds, clip) {
                 continue;
             }
             if self.paint_rating(id, bounds, clip)? {

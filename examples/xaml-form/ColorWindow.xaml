@@ -1,0 +1,46 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Цвет и кисть — точные значения" Width="1080" Height="820" Padding="26">
+  <Grid Spacing="16">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="7">
+      <TextBlock Text="Цвет и кисть" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Палитра, RGBA и градиент изменяют предпросмотр. «Применить» или Ctrl+Enter подтверждает весь результат; Escape и щелчок снаружи отменяют его." TextTone="Secondary"/>
+    </StackPanel>
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="16">
+        <GroupBox Header="Точный цвет">
+          <StackPanel Spacing="10">
+            <ColorEdit x:Name="FillColor" AutomationName="Цвет заливки" Value="{Binding Fill}" IsReadOnly="{Binding Locked}" Width="480"/>
+            <TextBlock x:Name="ColorAccepted" Text="Принятый цвет" FontWeight="SemiBold"/>
+            <TextBlock Text="Hex использует #AARRGGBB. Альфа 0 сохраняет RGB; пустое значение отличается от прозрачного цвета. Правило формы отклоняет насыщенный красный." TextTone="Secondary"/>
+            <CheckBox x:Name="ColorLocked" Content="Только чтение" IsChecked="{Binding Locked}"/>
+            <WrapPanel Spacing="8">
+              <Button x:Name="ColorNone" Content="Нет значения" Command="ColorDemoNone"/>
+              <Button x:Name="ColorTransparent" Content="Прозрачный синий" Command="ColorDemoTransparent"/>
+              <Button x:Name="ColorReject" Content="Проверить красный" Command="ColorDemoReject"/>
+              <Button x:Name="ColorReset" Content="Восстановить значения" Command="ColorDemoReset"/>
+            </WrapPanel>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="Линейная кисть">
+          <StackPanel Spacing="10">
+            <BrushEdit x:Name="FillBrush" AutomationName="Кисть заливки" Value="{Binding Brush}" IsReadOnly="{Binding Locked}" Width="560"/>
+            <TextBlock x:Name="BrushAccepted" Text="Принятая кисть" FontWeight="SemiBold"/>
+            <TextBlock Text="Две точки в позиции 0,5 создают резкую границу. Перемещение точки сохраняет её идентичность; выбранная точка редактируется теми же RGBA полями." TextTone="Secondary"/>
+            <Button x:Name="BrushOpen" Content="Открыть редактор кисти" Command="ColorDemoBrush" Width="270"/>
+          </StackPanel>
+        </GroupBox>
+        <GroupBox Header="Прозрачность и отсутствие">
+          <StackPanel Spacing="8">
+            <ColorEdit x:Name="NoColor" AutomationName="Отсутствующий цвет" IsReadOnly="True" Width="400"/>
+            <ColorEdit x:Name="TransparentColor" AutomationName="Прозрачный цвет с сохранённым RGB" Value="#00123456" IsReadOnly="True" Width="400"/>
+          </StackPanel>
+        </GroupBox>
+      </StackPanel>
+    </ScrollViewer>
+    <DockPanel Grid.Row="2">
+      <WrapPanel DockPanel.Dock="Right" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel>
+      <StackPanel Spacing="3"><TextBlock x:Name="ColorActivity" Text="Подтверждений: 0"/><TextBlock x:Name="ColorError" Text="Ошибок нет" TextTone="Secondary"/></StackPanel>
+    </DockPanel>
+  </Grid>
+</Window>

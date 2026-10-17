@@ -494,3 +494,8 @@ mod tests {
         assert!(rectangle.is_valid());
     }
 }
+
+mod color;
+pub use color::{
+    BrushValue, ColorValueError, GradientStop, LinearGradient, MAX_GRADIENT_STOPS, Srgba8,
+};

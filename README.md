@@ -69,6 +69,8 @@ cargo run --release --locked -p xaml-form -- --font
 cargo run --release --locked -p xaml-form -- --rating
 cargo run --release --locked -p xaml-form -- --badges
 cargo run --release --locked -p xaml-form -- --breadcrumb
+cargo run --release --locked -p xaml-form -- --color
+cargo run --release --locked -p xaml-form -- --navigation
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
@@ -101,6 +103,12 @@ their content and focus. See [attached badges](docs/public/badges.md).
 `--breadcrumb` demonstrates retained path segments, editable locations, delayed
 child providers, history and overflow. Applications validate navigation before
 publishing the accepted path. See [breadcrumb navigation](docs/public/breadcrumbs.md).
+
+`--color` demonstrates exact RGBA, nullable colors and linear gradient editing.
+See [color and brush editors](docs/public/color-editors.md).
+
+`--navigation` demonstrates retained pages, route history and side, accordion,
+hamburger, office and frame presentations. See [navigation](docs/public/navigation.md).
 
 The optional `file-adapters` feature of `rust-desktop-ui-data` provides bounded
 JSON and CSV sources with explicit schemas, exact values and transactional

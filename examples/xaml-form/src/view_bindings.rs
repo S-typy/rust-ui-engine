@@ -25,6 +25,7 @@ fn property(name: &str) -> Result<BindingProperty, String> {
     Ok(match name {
         "Text" | "Content" => BindingProperty::Text,
         "Query" => BindingProperty::Query,
+        "Route" => BindingProperty::Route,
         "Header" => BindingProperty::Header,
         "IsExpanded" => BindingProperty::IsExpanded,
         "SelectedIndex" => BindingProperty::SelectedIndex,
@@ -162,6 +163,18 @@ fn fallback(
                 || ui.zoom_settings(widget).is_some() =>
         {
             DataValue::Number(value.parse().map_err(err)?)
+        }
+        BindingProperty::Value if ui.color_editor_parts(widget).is_some() => {
+            let color = rust_desktop_ui_xaml::parse_color_literal(value)?;
+            if ui.is_brush_editor(widget) {
+                rust_desktop_ui_controls::brush_to_value(
+                    color
+                        .map(rust_desktop_ui_controls::BrushValue::Solid)
+                        .as_ref(),
+                )
+            } else {
+                rust_desktop_ui_controls::color_to_value(color)
+            }
         }
         BindingProperty::Value if ui.date_settings(widget).is_some() => {
             if value.is_empty() || value == "Null" {
@@ -402,12 +415,31 @@ impl MountedView {
             }
         }
         engine.initialize(ui).map_err(err)?;
+        if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
+            d.target.property == BindingProperty::Route
+                && engine.last_target_value(d.target).is_none()
+        }) {
+            return Err(format!(
+                "Invalid initial navigation Route: {}",
+                diagnostic.message
+            ));
+        }
         if let Some(diagnostic) = engine.diagnostics().iter().find(|diagnostic| {
             diagnostic.target.property == BindingProperty::Value
                 && ui.breadcrumb_path(diagnostic.target.widget).is_some()
         }) {
             return Err(format!(
                 "Invalid initial Breadcrumb Value: {}",
+                diagnostic.message
+            ));
+        }
+        if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
+            d.target.property == BindingProperty::Value
+                && ui.color_editor_parts(d.target.widget).is_some()
+                && engine.last_target_value(d.target).is_none()
+        }) {
+            return Err(format!(
+                "Invalid initial typed Value: {}",
                 diagnostic.message
             ));
         }

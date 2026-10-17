@@ -97,7 +97,8 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
     }).collect::<Vec<_>>().join(",");
     let badges = badges::snapshot(ui, view);
     let breadcrumbs = breadcrumbs::snapshot(ui, view);
+    let navigations = crate::navigation_diagnostics::snapshot(ui, view);
     format!(
-        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}],\"grids\":[{grids}],\"badges\":[{badges}],\"breadcrumbs\":[{breadcrumbs}]}}"
+        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}],\"grids\":[{grids}],\"badges\":[{badges}],\"breadcrumbs\":[{breadcrumbs}],\"navigations\":[{navigations}]}}"
     )
 }

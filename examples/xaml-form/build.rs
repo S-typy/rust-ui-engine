@@ -13,6 +13,8 @@ fn main() {
         ("SelectionWindow.xaml", "selection_window.rs"),
         ("SearchWindow.xaml", "search_window.rs"),
         ("RatingWindow.xaml", "rating_window.rs"),
+        ("ColorWindow.xaml", "color_window.rs"),
+        ("NavigationWindow.xaml", "navigation_window.rs"),
         ("FontWindow.xaml", "font_window.rs"),
         ("BadgeWindow.xaml", "badge_window.rs"),
         ("BreadcrumbWindow.xaml", "breadcrumb_window.rs"),

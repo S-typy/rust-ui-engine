@@ -18,6 +18,7 @@ use std::{
 pub enum BindingProperty {
     Text,
     Query,
+    Route,
     FilterText,
     Header,
     IsExpanded,
@@ -433,6 +434,16 @@ impl ControlBindings {
 
     pub fn drain_diagnostics(&mut self) -> Vec<BindingDiagnostic> {
         std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Last successfully applied target value, including a fallback. Diagnostics
+    /// may still report why a fallback was necessary. ItemsSource has no cache.
+    pub fn last_target_value(&self, target: BindingEndpoint) -> Option<&DataValue> {
+        self.links
+            .iter()
+            .find(|link| link.binding.target == target)?
+            .target
+            .as_ref()
     }
 
     pub fn diagnostics(&self) -> &[BindingDiagnostic] {
@@ -1103,6 +1114,18 @@ impl ControlBindings {
                         })
                     })
                 } else if endpoint.property == BindingProperty::Value
+                    && let Some(validator) = ui.color_source_validator(endpoint.widget)
+                {
+                    let brush = ui.is_brush_editor(endpoint.widget);
+                    Box::new(move |value| {
+                        let value = if brush {
+                            crate::brush_from_value(&value)?
+                        } else {
+                            crate::color_from_value(&value)?.map(crate::BrushValue::Solid)
+                        };
+                        validator.check(value.as_ref())
+                    })
+                } else if endpoint.property == BindingProperty::Value
                     && let Some(mode) = ui.calendar_selection(endpoint.widget)
                 {
                     let validator = ui.calendar_source_validator(endpoint.widget).unwrap();
@@ -1252,7 +1275,15 @@ impl ControlBindings {
             };
             source_check(value)
         };
-        if binding.target.property == BindingProperty::SelectedKey
+        if binding.target.property == BindingProperty::Route {
+            ui.chain_navigation_validator(
+                binding.target.widget,
+                crate::NavigationValidator::new(move |route| {
+                    validate(DataValue::String(route.into()))
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::SelectedKey
             && ui.tree_settings(binding.target.widget).is_some()
         {
             ui.chain_tree_selection_validator(
@@ -1322,6 +1353,25 @@ impl ControlBindings {
                 binding.target.widget,
                 crate::BreadcrumbValidator::new(move |value| {
                     validate(crate::breadcrumb_path_to_value(value))
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Value
+            && ui.color_editor_parts(binding.target.widget).is_some()
+        {
+            let brush = ui.is_brush_editor(binding.target.widget);
+            ui.chain_color_validator(
+                binding.target.widget,
+                crate::BrushValidator::new(move |value| {
+                    let data = if brush {
+                        crate::brush_to_value(value)
+                    } else {
+                        crate::color_to_value(match value {
+                            Some(crate::BrushValue::Solid(c)) => Some(*c),
+                            _ => None,
+                        })
+                    };
+                    validate(data)
                 }),
             )
             .map_err(control_error)?;
@@ -1569,6 +1619,10 @@ fn read_property(
             .map(|settings| DataValue::Bool(settings.visible))
             .ok_or_else(|| invalid("Badge.Visibility requires an attachment")),
 
+        BindingProperty::Route => ui
+            .navigation_route(id)
+            .map(|route| DataValue::String(route.into()))
+            .ok_or_else(|| invalid("Route requires NavigationPane")),
         BindingProperty::Query => ui
             .search_query(id)
             .map(|query| DataValue::String(query.into()))
@@ -1634,6 +1688,13 @@ fn read_property(
         BindingProperty::Value if ui.breadcrumb_path(id).is_some() => Ok(
             crate::breadcrumb_path_to_value(ui.breadcrumb_path(id).unwrap()),
         ),
+        BindingProperty::Value if ui.color_editor_parts(id).is_some() => {
+            Ok(if ui.is_brush_editor(id) {
+                crate::brush_to_value(ui.brush_value(id).unwrap())
+            } else {
+                crate::color_to_value(ui.color_value(id).unwrap())
+            })
+        }
         BindingProperty::Value if ui.font_value(id).is_some() => {
             Ok(crate::font_descriptor_to_value(ui.font_value(id).unwrap()))
         }
@@ -1723,6 +1784,7 @@ fn read_property(
             .or_else(|| ui.rating_settings(id).map(|s| s.read_only))
             .or_else(|| ui.breadcrumb_settings(id).map(|s| s.read_only))
             .or_else(|| ui.font_picker_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.color_editor_settings(id).map(|s| s.is_read_only))
             .or_else(|| ui.calendar_settings(id).map(|s| s.is_read_only))
             .map(DataValue::Bool)
             .ok_or_else(|| invalid("IsReadOnly requires an editor or list")),
@@ -1730,6 +1792,7 @@ fn read_property(
             let editor = ui
                 .composite_editor(id)
                 .or_else(|| ui.search_parts(id).map(|parts| parts.editor))
+                .or_else(|| ui.color_editor_parts(id).map(|parts| parts.editor))
                 .unwrap_or(id);
             ui.editor_settings(editor)
                 .map(|s| s.placeholder.clone().into())
@@ -1869,6 +1932,10 @@ fn write_property(
             ui.set_badge(id, Some(settings)).map_err(control_error)
         }
 
+        BindingProperty::Route => ui
+            .navigate(id, string(value)?, crate::NavigationMode::Replace)
+            .map(|_| ())
+            .map_err(control_error),
         BindingProperty::Query => ui
             .set_search_query(id, string(value)?)
             .map_err(control_error),
@@ -1962,6 +2029,14 @@ fn write_property(
                     crate::breadcrumb_path_from_value(value).map_err(|e| invalid(&e))?,
                 )
                 .map_err(control_error)
+            } else if ui.color_editor_parts(id).is_some() {
+                if ui.is_brush_editor(id) {
+                    ui.set_brush_value(id, crate::brush_from_value(value).map_err(|e| invalid(&e))?)
+                        .map_err(control_error)
+                } else {
+                    ui.set_color_value(id, crate::color_from_value(value).map_err(|e| invalid(&e))?)
+                        .map_err(control_error)
+                }
             } else if ui.font_value(id).is_some() {
                 ui.set_font_value(
                     id,
@@ -2079,6 +2154,8 @@ fn write_property(
             } else if ui.breadcrumb_path(id).is_some() {
                 ui.set_breadcrumb_read_only(id, value)
                     .map_err(control_error)
+            } else if ui.color_editor_parts(id).is_some() {
+                ui.set_color_read_only(id, value).map_err(control_error)
             } else if ui.font_value(id).is_some() {
                 ui.set_font_read_only(id, value).map_err(control_error)
             } else if let Some(settings) = ui.tree_settings(id) {
@@ -2108,6 +2185,7 @@ fn write_property(
             .set_placeholder(
                 ui.composite_editor(id)
                     .or_else(|| ui.search_parts(id).map(|parts| parts.editor))
+                    .or_else(|| ui.color_editor_parts(id).map(|parts| parts.editor))
                     .unwrap_or(id),
                 string(value)?,
             )

@@ -1,0 +1,63 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Разделы и страницы" Width="1120" Height="800" Padding="24">
+  <Grid Spacing="14">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="4">
+      <TextBlock Text="Разделы и страницы" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Страницы сохраняют текст и выбор при смене раздела и вида навигации." TextTone="Secondary"/>
+    </StackPanel>
+    <WrapPanel Grid.Row="1" Spacing="6">
+      <Button Content="Боковая панель" x:Name="NavigationSideButton" Command="NavigationSide"/>
+      <Button Content="Аккордеон" x:Name="NavigationAccordionButton" Command="NavigationAccordion"/>
+      <Button Content="Компактно" x:Name="NavigationHamburgerButton" Command="NavigationHamburger"/>
+      <Button Content="Панель разделов" x:Name="NavigationOfficeButton" Command="NavigationOffice"/>
+      <Button Content="Только страница" x:Name="NavigationFrameButton" Command="NavigationFrame"/>
+      <Button Content="Открыть параметры" x:Name="NavigationExternalButton" Command="NavigationExternal"/>
+      <Button Content="Доступность параметров" x:Name="NavigationAvailabilityButton" Command="NavigationAvailability"/>
+      <Button Content="Запретить переход в документ" x:Name="NavigationGuardButton" Command="NavigationGuard"/>
+    </WrapPanel>
+    <NavigationPane x:Name="Navigation" Grid.Row="2" AutomationName="Разделы приложения"
+                    Route="{Binding Route}" PaneWidth="224" HistoryLimit="16">
+      <NavigationSection Id="work" Header="Работа" Icon="FolderOpen">
+        <NavigationPage Route="home" Header="Главная" Icon="FolderOpen">
+          <ScrollViewer>
+            <StackPanel Spacing="18" Padding="24">
+              <TextBlock Text="Рабочая страница" FontSize="24" FontWeight="SemiBold"/>
+              <TextBlock Text="Измените текст, перейдите в документ и вернитесь назад. Черновик и позиция фокуса сохранятся." TextWrapping="Wrap"/>
+              <GroupBox Header="Черновик">
+                <StackPanel Spacing="12">
+                  <TextBox x:Name="NavigationDraft" AutomationName="Текст черновика" Text="{Binding Draft}"/>
+                  <ComboBox x:Name="NavigationChoice" AutomationName="Вид документа" SelectedValue="letter">
+                    <ListBoxItem Value="letter" Content="Письмо"/><ListBoxItem Value="report" Content="Отчёт"/>
+                  </ComboBox>
+                  <MemoEdit x:Name="NavigationNotes" AutomationName="Заметки страницы" Text="Заметки остаются на своей странице." PopupWidth="420" PopupHeight="260"/>
+                </StackPanel>
+              </GroupBox>
+              <TextBlock Text="Принятый текст" FontWeight="SemiBold"/>
+              <TextBlock x:Name="NavigationAccepted" Text="{Binding Draft}" TextWrapping="Wrap"/>
+            </StackPanel>
+          </ScrollViewer>
+        </NavigationPage>
+        <NavigationPage Route="document" Header="Документ" Icon="Edit">
+          <StackPanel Spacing="18" Padding="24">
+            <TextBlock Text="Документ" FontSize="24" FontWeight="SemiBold"/>
+            <TextBox x:Name="NavigationDocument" AutomationName="Название документа" Text="Новый документ"/>
+            <CheckBox x:Name="NavigationFlag" Content="Пометить документ"/>
+            <TextBlock Text="Alt+Left и Alt+Right перемещаются по истории. Эти переходы не добавляют новые записи." TextWrapping="Wrap" TextTone="Secondary"/>
+          </StackPanel>
+        </NavigationPage>
+      </NavigationSection>
+      <NavigationSection Id="application" Header="Приложение" Icon="Sun">
+        <NavigationPage Route="settings" Header="Параметры" Icon="Sun">
+          <StackPanel Spacing="18" Padding="24">
+            <TextBlock Text="Параметры приложения" FontSize="24" FontWeight="SemiBold"/>
+            <CheckBox Content="Показывать уведомления" IsChecked="True"/>
+            <StackPanel Orientation="Horizontal" Spacing="8"><Button Content="Светлая тема" Command="Light"/><Button Content="Тёмная тема" Command="Dark"/></StackPanel>
+            <TextBlock Text="Внешний маршрут заменяет текущую запись истории. Недоступная страница остаётся смонтированной." TextWrapping="Wrap" TextTone="Secondary"/>
+          </StackPanel>
+        </NavigationPage>
+      </NavigationSection>
+    </NavigationPane>
+    <TextBlock Grid.Row="3" x:Name="NavigationStatus" Text="Главная" TextWrapping="Wrap" TextTone="Secondary"/>
+  </Grid>
+</Window>

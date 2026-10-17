@@ -8,6 +8,18 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
         "TreeGrid" => ElementKind::TreeGrid(TreeDefinition::default()),
         "Rating" => ElementKind::Rating(RatingDefinition::default()),
         "Breadcrumb" => ElementKind::Breadcrumb(BreadcrumbDefinition::default()),
+        "ColorEdit" => ElementKind::ColorEdit(ColorEditorDefinition::default()),
+        "BrushEdit" => ElementKind::BrushEdit(ColorEditorDefinition::default()),
+        "NavigationPane" | "Accordion" | "NavigationFrame" => {
+            ElementKind::NavigationPane(Box::new(NavigationDefinition {
+                view: match name {
+                    "Accordion" => NavigationViewDefinition::Accordion,
+                    "NavigationFrame" => NavigationViewDefinition::Frame,
+                    _ => NavigationViewDefinition::Side,
+                },
+                ..Default::default()
+            }))
+        }
         "FontPicker" => ElementKind::FontPicker(FontPickerDefinition::default()),
         "DataForm" => ElementKind::DataForm(DataFormDefinition::default()),
         "Border" => ElementKind::Border(BorderDefinition::default()),
@@ -59,7 +71,11 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
     match kind {
         ElementKind::Slider(_) => name == "Value",
         ElementKind::Rating(_) => matches!(name, "Value" | "IsReadOnly"),
+        ElementKind::NavigationPane(_) => name == "Route",
         ElementKind::Breadcrumb(_) => matches!(name, "Value" | "IsReadOnly"),
+        ElementKind::ColorEdit(_) | ElementKind::BrushEdit(_) => {
+            matches!(name, "Value" | "IsReadOnly")
+        }
         ElementKind::FontPicker(_) => matches!(name, "Value" | "IsReadOnly"),
         ElementKind::TreeView(_) | ElementKind::TreeGrid(_) => {
             matches!(name, "SelectedKey" | "IsReadOnly")
@@ -442,7 +458,11 @@ pub(super) fn property(
             }
         }
         ElementKind::Rating(rating) => rating::property(document, attr, rating),
+        ElementKind::NavigationPane(value) => navigation::property(document, attr, value),
         ElementKind::Breadcrumb(value) => breadcrumb::property(document, attr, value),
+        ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) => {
+            color::property(document, attr, value)
+        }
         ElementKind::FontPicker(font) => font_picker::property(document, attr, font),
         ElementKind::TreeView(tree) => tree::property(document, attr, tree, false),
         ElementKind::TreeGrid(tree) => tree::property(document, attr, tree, true),
@@ -1164,6 +1184,10 @@ pub(super) fn parse_children(
     groups: &mut HashSet<RadioGroupKey>,
     kind: &mut ElementKind,
 ) -> Result<(), Diagnostic> {
+    let is_brush = matches!(kind, ElementKind::BrushEdit(_));
+    if let ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) = kind {
+        return color::children(node, value, is_brush, depth, count);
+    }
     let mut single = None;
     let mut properties = HashSet::new();
     for child in node.children() {
@@ -1560,8 +1584,15 @@ pub(super) fn validate(
         ElementKind::Rating(rating) => {
             validate_rating(rating, common).map_err(|message| at_node(node, message))?
         }
+        ElementKind::NavigationPane(value) => {
+            validate_navigation(value, common).map_err(|message| at_node(node, message))?
+        }
         ElementKind::Breadcrumb(value) => {
             validate_breadcrumb(value, common).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) => {
+            validate_color_editor(value, matches!(kind, ElementKind::BrushEdit(_)), common)
+                .map_err(|message| at_node(node, message))?;
         }
         ElementKind::FontPicker(font) => {
             validate_font_picker(font, common).map_err(|message| at_node(node, message))?

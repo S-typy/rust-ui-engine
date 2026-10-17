@@ -13,6 +13,8 @@ mod badge;
 mod bindings;
 #[path = "view_breadcrumb.rs"]
 mod breadcrumb;
+#[path = "view_color.rs"]
+mod color;
 #[path = "view_data_form.rs"]
 mod data_form;
 #[path = "view_extras.rs"]
@@ -23,6 +25,8 @@ mod font;
 mod forms;
 #[path = "view_grid.rs"]
 mod grid;
+#[path = "view_navigation.rs"]
+mod navigation;
 #[cfg(test)]
 #[path = "rating_adapter_tests.rs"]
 mod rating_tests;
@@ -137,6 +141,7 @@ impl MountedView {
                         | ElementKind::Border(_)
                         | ElementKind::GroupBox(_)
                         | ElementKind::TabbedGroup(_)
+                        | ElementKind::NavigationPane(_)
                         | ElementKind::ScrollViewer(_)
                         | ElementKind::DockPanel(_)
                 )
@@ -239,6 +244,7 @@ impl MountedView {
                 | ElementKind::WrapPanel(_)
                 | ElementKind::DockPanel(_)
                 | ElementKind::DockWorkspace(_)
+                | ElementKind::NavigationPane(_)
                 | ElementKind::Ribbon(_) => Length::Auto,
                 ElementKind::StatusBar(_) => Length::Px(ui.theme().tokens().control_height - 4.0),
                 ElementKind::RibbonStatusBar(_) => Length::Px(ui.theme().tokens().control_height),
@@ -277,6 +283,8 @@ impl MountedView {
                 ElementKind::TextBox(_)
                 | ElementKind::MemoEdit(_)
                 | ElementKind::SearchBox(_)
+                | ElementKind::ColorEdit(_)
+                | ElementKind::BrushEdit(_)
                 | ElementKind::PasswordBox(_)
                 | ElementKind::NumericEdit(_)
                 | ElementKind::MaskEdit(_)
@@ -370,6 +378,9 @@ impl MountedView {
                     style,
                 )
                 .map_err(err)?,
+            ElementKind::NavigationPane(_) => {
+                self.mount_navigation(ui, parent, element, style, available_width, &context)?
+            }
             ElementKind::Breadcrumb(definition) => self.mount_breadcrumb(
                 ui,
                 parent,
@@ -381,6 +392,15 @@ impl MountedView {
                     .or(common.name.as_deref())
                     .unwrap_or("Location"),
             )?,
+            ElementKind::ColorEdit(definition) | ElementKind::BrushEdit(definition) => self
+                .mount_color(
+                    ui,
+                    parent,
+                    definition,
+                    matches!(element.kind, ElementKind::BrushEdit(_)),
+                    style,
+                    common.name.as_deref().unwrap_or("Цвет или кисть"),
+                )?,
             ElementKind::FontPicker(definition) => self.mount_font(
                 ui,
                 parent,
@@ -831,7 +851,10 @@ impl MountedView {
                 ElementKind::Rating(_) => Role::Rating,
                 ElementKind::DataForm(_)
                 | ElementKind::FontPicker(_)
-                | ElementKind::Breadcrumb(_) => Role::Group,
+                | ElementKind::Breadcrumb(_)
+                | ElementKind::ColorEdit(_)
+                | ElementKind::BrushEdit(_)
+                | ElementKind::NavigationPane(_) => Role::Group,
                 ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
                 ElementKind::ButtonEdit(_)
                 | ElementKind::NumericEdit(_)
@@ -948,6 +971,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             + f32::from(r.maximum.saturating_sub(1)) * r.spacing
             + 64.0),
         ElementKind::FontPicker(_) => Ok(176.0),
+        ElementKind::NavigationPane(_) => Ok(640.0),
         ElementKind::Breadcrumb(_) => Ok(520.0),
         ElementKind::DockWorkspace(_) => {
             Err("DockWorkspace requires the docking window coordinator".into())
@@ -974,6 +998,8 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         | ElementKind::SearchBox(_)
         | ElementKind::PasswordBox(_)
         | ElementKind::NumericEdit(_)
+        | ElementKind::ColorEdit(_)
+        | ElementKind::BrushEdit(_)
         | ElementKind::MaskEdit(_)
         | ElementKind::DateTimeEdit(_)
         | ElementKind::DateRangeEdit(_)
@@ -1341,12 +1367,28 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             ElementKind::Rating(rating) => {
                 rust_desktop_ui_xaml::validate_rating(rating, &element.common)?
             }
+            ElementKind::NavigationPane(value) => {
+                rust_desktop_ui_xaml::validate_navigation(value, &element.common)?;
+                count += value.sections.len() + value.pages.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || depth + 3 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH
+                {
+                    return Err("Navigation metadata count/depth exceeded".into());
+                }
+            }
             ElementKind::Breadcrumb(value) => {
                 rust_desktop_ui_xaml::validate_breadcrumb(value, &element.common)?;
                 breadcrumb::path(value).validate().map_err(err)?;
             }
             ElementKind::FontPicker(font) => {
                 rust_desktop_ui_xaml::validate_font_picker(font, &element.common)?
+            }
+            ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) => {
+                rust_desktop_ui_xaml::validate_color_editor(
+                    value,
+                    matches!(element.kind, ElementKind::BrushEdit(_)),
+                    &element.common,
+                )?;
             }
             ElementKind::DataForm(form) => {
                 data_form::validate_source(ui, form)?;
@@ -1530,6 +1572,15 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                     .into_iter()
                     .enumerate()
                     .map(|(index, child)| (child, depth + 4, first_host + index)),
+            );
+        } else if let ElementKind::NavigationPane(value) = &element.kind {
+            let first_page = count - value.pages.len() + 1;
+            pending.extend(
+                value
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .map(|(index, page)| (page.content.as_ref(), depth + 3, first_page + index)),
             );
         } else if let ElementKind::TabbedGroup(group) = &element.kind {
             let first_tab = count - group.tabs.len() + 1;
