@@ -836,7 +836,10 @@ impl Compiler<'_> {
                     ));
                 }
                 if property == "ItemTemplate"
-                    && !matches!(node.name.as_str(), "ListBox" | "ComboBox" | "LookupEdit")
+                    && !matches!(
+                        node.name.as_str(),
+                        "ListBox" | "ComboBox" | "LookupEdit" | "TileCollection" | "Gallery"
+                    )
                 {
                     return Err(self.error(
                         attr.offset,

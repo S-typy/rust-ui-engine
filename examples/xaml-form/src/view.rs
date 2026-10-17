@@ -9,6 +9,8 @@ use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind
 use std::collections::{HashMap, HashSet};
 #[path = "view_badge.rs"]
 mod badge;
+#[path = "view_barcode.rs"]
+mod barcode;
 #[path = "view_bindings.rs"]
 mod bindings;
 #[path = "view_breadcrumb.rs"]
@@ -23,10 +25,14 @@ mod extras;
 mod font;
 #[path = "view_forms.rs"]
 mod forms;
+#[path = "view_gallery.rs"]
+mod gallery;
 #[path = "view_grid.rs"]
 mod grid;
 #[path = "view_navigation.rs"]
 mod navigation;
+#[path = "view_notifications.rs"]
+mod notifications;
 #[cfg(test)]
 #[path = "rating_adapter_tests.rs"]
 mod rating_tests;
@@ -34,8 +40,12 @@ mod rating_tests;
 mod status;
 #[path = "view_templates.rs"]
 mod templates;
+#[path = "view_tiles.rs"]
+mod tiles;
 #[path = "view_tree.rs"]
 mod tree;
+#[path = "view_wizard.rs"]
+mod wizard;
 
 #[derive(Default)]
 pub(crate) struct MountedView {
@@ -142,6 +152,7 @@ impl MountedView {
                         | ElementKind::GroupBox(_)
                         | ElementKind::TabbedGroup(_)
                         | ElementKind::NavigationPane(_)
+                        | ElementKind::Wizard(_)
                         | ElementKind::ScrollViewer(_)
                         | ElementKind::DockPanel(_)
                 )
@@ -222,7 +233,7 @@ impl MountedView {
                         .map_or(32.0, |size| size.width),
                 )
             }
-            (None, ElementKind::Image(_)) => Length::Auto,
+            (None, ElementKind::Image(_) | ElementKind::Barcode(_)) => Length::Auto,
             (None, ElementKind::Icon(_)) => Length::Px(16.0),
             (None, ElementKind::Separator(separator))
                 if separator.orientation == Orientation::Vertical =>
@@ -245,7 +256,9 @@ impl MountedView {
                 | ElementKind::DockPanel(_)
                 | ElementKind::DockWorkspace(_)
                 | ElementKind::NavigationPane(_)
+                | ElementKind::Wizard(_)
                 | ElementKind::Ribbon(_) => Length::Auto,
+                ElementKind::StepProgress(_) => Length::Px(76.0),
                 ElementKind::StatusBar(_) => Length::Px(ui.theme().tokens().control_height - 4.0),
                 ElementKind::RibbonStatusBar(_) => Length::Px(ui.theme().tokens().control_height),
                 ElementKind::StatusBarItem(_) => Length::Auto,
@@ -266,13 +279,18 @@ impl MountedView {
                 }
                 ElementKind::ToolBar(_) => Length::Px(ui.theme().tokens().control_height + 8.0),
                 ElementKind::MenuBar(_) => Length::Px(ui.theme().tokens().control_height),
+                ElementKind::NotificationCenter(_) => Length::Px(0.0),
+                ElementKind::LoadingOverlay(_) => Length::Px(240.0),
                 ElementKind::Popup(_) => Length::Px(0.0),
                 ElementKind::Overlay(_)
                 | ElementKind::SplitContainer(_)
                 | ElementKind::RadioGroup(_) => Length::Auto,
                 ElementKind::ZoomControl(_) => Length::Px(ui.theme().tokens().control_height - 8.0),
+                ElementKind::Gallery(_) => Length::Auto,
+                ElementKind::TileCollection(_) => Length::Auto,
                 ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::Calendar(_) => Length::Px(300.0),
+                ElementKind::Barcode(_) => Length::Auto,
                 ElementKind::Rating(rating) => Length::Px(rating.glyph_size + 8.0),
                 ElementKind::GridControl(_)
                 | ElementKind::DataForm(_)
@@ -360,6 +378,14 @@ impl MountedView {
                 style,
                 common.bindings.contains_key("Height"),
             )?,
+            ElementKind::Barcode(value) => ui
+                .barcode(
+                    parent,
+                    barcode::initial(value, common.bindings.contains_key("Value")),
+                    barcode::settings(value),
+                    style,
+                )
+                .map_err(err)?,
             ElementKind::Rating(rating) => ui
                 .rating(
                     parent,
@@ -378,9 +404,35 @@ impl MountedView {
                     style,
                 )
                 .map_err(err)?,
+            ElementKind::Gallery(value) => self.mount_gallery(
+                ui,
+                parent,
+                value,
+                style,
+                common
+                    .automation_name
+                    .as_deref()
+                    .or(common.name.as_deref())
+                    .unwrap_or("Образцы"),
+            )?,
             ElementKind::NavigationPane(_) => {
                 self.mount_navigation(ui, parent, element, style, available_width, &context)?
             }
+            ElementKind::Wizard(_) => {
+                self.mount_wizard(ui, parent, element, style, available_width, &context)?
+            }
+            ElementKind::StepProgress(definition) => self.mount_step_progress(
+                ui,
+                parent,
+                definition,
+                element
+                    .common
+                    .automation_name
+                    .as_deref()
+                    .or(element.common.name.as_deref())
+                    .unwrap_or("Этапы"),
+                style,
+            )?,
             ElementKind::Breadcrumb(definition) => self.mount_breadcrumb(
                 ui,
                 parent,
@@ -392,6 +444,32 @@ impl MountedView {
                     .or(common.name.as_deref())
                     .unwrap_or("Location"),
             )?,
+            ElementKind::TileCollection(value) => self.mount_tiles(
+                ui,
+                parent,
+                value,
+                style,
+                common
+                    .automation_name
+                    .as_deref()
+                    .or(common.name.as_deref())
+                    .unwrap_or("Плитки"),
+            )?,
+            ElementKind::NotificationCenter(value) => {
+                ui.notification_center(
+                    parent,
+                    rust_desktop_ui_controls::NotificationCenterSettings {
+                        width: value.card_width,
+                        max_visible: value.max_visible,
+                    },
+                    style,
+                )
+                .map_err(err)?
+                .container
+            }
+            ElementKind::LoadingOverlay(_) => {
+                self.mount_loading(ui, parent, element, style, available_width, &context)?
+            }
             ElementKind::ColorEdit(definition) | ElementKind::BrushEdit(definition) => self
                 .mount_color(
                     ui,
@@ -844,17 +922,24 @@ impl MountedView {
                 | ElementKind::WrapPanel(_)
                 | ElementKind::DockPanel(_) => Role::Panel,
                 ElementKind::ScrollViewer(_) => Role::ScrollView,
-                ElementKind::ListBox(_) => Role::ListBox,
+                ElementKind::ListBox(_)
+                | ElementKind::TileCollection(_)
+                | ElementKind::Gallery(_) => Role::ListBox,
                 ElementKind::GridControl(_) => Role::Grid,
                 ElementKind::TreeGrid(_) => Role::Grid,
                 ElementKind::TreeView(_) => Role::Tree,
+                ElementKind::Barcode(_) => Role::Image,
                 ElementKind::Rating(_) => Role::Rating,
                 ElementKind::DataForm(_)
                 | ElementKind::FontPicker(_)
                 | ElementKind::Breadcrumb(_)
                 | ElementKind::ColorEdit(_)
                 | ElementKind::BrushEdit(_)
-                | ElementKind::NavigationPane(_) => Role::Group,
+                | ElementKind::NotificationCenter(_)
+                | ElementKind::LoadingOverlay(_)
+                | ElementKind::NavigationPane(_)
+                | ElementKind::Wizard(_)
+                | ElementKind::StepProgress(_) => Role::Group,
                 ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
                 ElementKind::ButtonEdit(_)
                 | ElementKind::NumericEdit(_)
@@ -966,12 +1051,20 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
         ElementKind::GridControl(_) | ElementKind::DataForm(_) | ElementKind::TreeGrid(_) => {
             Ok(560.0)
         }
+        ElementKind::NotificationCenter(_) => Ok(0.0),
+        ElementKind::LoadingOverlay(_) => Ok(400.0),
         ElementKind::TreeView(_) => Ok(320.0),
+        ElementKind::Barcode(value) => {
+            barcode::width(value, element.common.bindings.contains_key("Value"))
+        }
         ElementKind::Rating(r) => Ok(f32::from(r.maximum) * r.glyph_size
             + f32::from(r.maximum.saturating_sub(1)) * r.spacing
             + 64.0),
+        ElementKind::Gallery(_) => Ok(360.0),
+        ElementKind::TileCollection(_) => Ok(640.0),
         ElementKind::FontPicker(_) => Ok(176.0),
         ElementKind::NavigationPane(_) => Ok(640.0),
+        ElementKind::Wizard(_) | ElementKind::StepProgress(_) => Ok(640.0),
         ElementKind::Breadcrumb(_) => Ok(520.0),
         ElementKind::DockWorkspace(_) => {
             Err("DockWorkspace requires the docking window coordinator".into())
@@ -1364,8 +1457,26 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                 }
             }
             ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
+            ElementKind::Barcode(value) => {
+                rust_desktop_ui_xaml::validate_barcode(value, &element.common)?;
+                barcode::settings(value)
+                    .validate_value(barcode::initial(
+                        value,
+                        element.common.bindings.contains_key("Value"),
+                    ))
+                    .map_err(err)?;
+            }
             ElementKind::Rating(rating) => {
                 rust_desktop_ui_xaml::validate_rating(rating, &element.common)?
+            }
+            ElementKind::Gallery(value) => {
+                rust_desktop_ui_xaml::validate_gallery(value, &element.common)?;
+                gallery::model(value)?;
+                gallery::settings(value).validate().map_err(err)?;
+                count += value.items.len() + value.groups.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS {
+                    return Err("Gallery metadata exceeds tree budget".into());
+                }
             }
             ElementKind::NavigationPane(value) => {
                 rust_desktop_ui_xaml::validate_navigation(value, &element.common)?;
@@ -1376,12 +1487,49 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                     return Err("Navigation metadata count/depth exceeded".into());
                 }
             }
+            ElementKind::Wizard(value) => {
+                rust_desktop_ui_xaml::validate_wizard(value, &element.common)?;
+                count += value.steps.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || depth + 2 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH
+                {
+                    return Err("Wizard metadata count/depth exceeded".into());
+                }
+            }
+            ElementKind::StepProgress(value) => {
+                rust_desktop_ui_xaml::validate_step_progress(value, &element.common)?;
+                count += value.steps.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || depth + 1 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH
+                {
+                    return Err("Step metadata count/depth exceeded".into());
+                }
+            }
             ElementKind::Breadcrumb(value) => {
                 rust_desktop_ui_xaml::validate_breadcrumb(value, &element.common)?;
                 breadcrumb::path(value).validate().map_err(err)?;
             }
             ElementKind::FontPicker(font) => {
                 rust_desktop_ui_xaml::validate_font_picker(font, &element.common)?
+            }
+            ElementKind::TileCollection(value) => {
+                rust_desktop_ui_xaml::validate_tiles(value, &element.common)?;
+                tiles::model(value)?;
+                tiles::settings(value).validate().map_err(err)?;
+                count += value.items.len() + value.groups.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS {
+                    return Err("Tile metadata exceeds tree budget".into());
+                }
+                for item in &value.items {
+                    if let Some(command) = &item.command
+                        && !ui.commands().contains(&command.clone().into())
+                    {
+                        return Err(format!("Unknown tile command '{command}'"));
+                    }
+                }
+            }
+            ElementKind::NotificationCenter(_) | ElementKind::LoadingOverlay(_) => {
+                rust_desktop_ui_xaml::validate_notifications(&element.kind, &element.common)?;
             }
             ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) => {
                 rust_desktop_ui_xaml::validate_color_editor(
@@ -1572,6 +1720,15 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                     .into_iter()
                     .enumerate()
                     .map(|(index, child)| (child, depth + 4, first_host + index)),
+            );
+        } else if let ElementKind::Wizard(value) = &element.kind {
+            let first_step = count - value.steps.len() + 1;
+            pending.extend(
+                value
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .map(|(index, step)| (step.content.as_ref(), depth + 2, first_step + index)),
             );
         } else if let ElementKind::NavigationPane(value) = &element.kind {
             let first_page = count - value.pages.len() + 1;

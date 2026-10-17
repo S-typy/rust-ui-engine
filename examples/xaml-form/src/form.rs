@@ -27,8 +27,12 @@ pub(crate) struct Form {
     rating: Option<crate::rating_model::State>,
     color: Option<crate::color_model::State>,
     navigation: Option<crate::navigation_model::State>,
+    tiles: Option<crate::tile_model::State>,
+    gallery: Option<crate::gallery_model::State>,
     font: Option<crate::font_model::State>,
     badges: Option<crate::badge_model::State>,
+    wizard: Option<crate::wizard_model::State>,
+    barcode: Option<crate::barcode_model::State>,
     data_form: Option<crate::data_form_model::State>,
     tree: Option<crate::tree_model::State>,
     grid_workspace: Option<crate::grid_workspace_model::State>,
@@ -99,8 +103,12 @@ impl Form {
         crate::rating_model::register(&mut ui);
         crate::color_model::register(&mut ui);
         crate::navigation_model::register(&mut ui);
+        crate::tile_model::register(&mut ui);
+        crate::gallery_model::register(&mut ui)?;
         crate::font_model::register(&mut ui);
         crate::badge_model::register(&mut ui);
+        crate::wizard_model::register(&mut ui);
+        crate::barcode_model::register(&mut ui);
         crate::data_form_model::register(&mut ui);
         let tree_source = crate::tree_model::register(&mut ui)?;
         let mut pending = vec![&definition.content];
@@ -250,8 +258,12 @@ impl Form {
         let rating = crate::rating_model::State::install(&mut ui, &view)?;
         let color = crate::color_model::State::install(&mut ui, &view)?;
         let navigation = crate::navigation_model::State::install(&mut ui, &view)?;
+        let tiles = crate::tile_model::State::install(&mut ui, &view)?;
+        let gallery = crate::gallery_model::State::install(&mut ui, &view)?;
         let font = crate::font_model::State::install(&mut ui, &mut view)?;
         let badges = crate::badge_model::State::install(&mut ui, &view)?;
+        let wizard = crate::wizard_model::State::install(&mut ui, &view)?;
+        let barcode = crate::barcode_model::State::install(&mut ui, &view)?;
         let data_form = crate::data_form_model::State::install(&mut ui, &mut view)?;
         let tree = crate::tree_model::State::install(&mut ui, &view, tree_source)?;
         let grid_workspace = match grid_sources {
@@ -269,8 +281,12 @@ impl Form {
             rating,
             color,
             navigation,
+            tiles,
+            gallery,
             font,
             badges,
+            wizard,
+            barcode,
             data_form,
             tree,
             grid_workspace,
@@ -399,6 +415,16 @@ impl Form {
             {
                 continue;
             }
+            if let Some(state) = &mut self.barcode
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.wizard
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
             if let Some(state) = &mut self.badges
                 && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
             {
@@ -411,6 +437,16 @@ impl Form {
             }
             if let Some(state) = &mut self.navigation
                 && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.gallery
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.tiles
+                && state.command(&mut self.ui, &invocation.id.0)?
             {
                 continue;
             }
@@ -632,6 +668,12 @@ impl Form {
         if let Some(state) = &self.selection {
             state.refresh(&mut self.ui)?;
         }
+        if let Some(state) = &mut self.barcode {
+            state.refresh(&mut self.ui)?;
+        }
+        if let Some(state) = &mut self.wizard {
+            state.refresh(&mut self.ui)?;
+        }
         if let Some(state) = &mut self.breadcrumb {
             state.refresh(&mut self.ui)?;
         }
@@ -641,8 +683,14 @@ impl Form {
         if let Some(state) = &mut self.font {
             state.refresh(&mut self.ui)?;
         }
+        if let Some(state) = &mut self.tiles {
+            state.refresh(&mut self.ui)?;
+        }
         if let Some(state) = &mut self.color {
             state.refresh(&mut self.ui)?;
+        }
+        if let Some(state) = &mut self.gallery {
+            state.sync(&mut self.ui)?;
         }
         if let Some(state) = &mut self.navigation {
             state.sync(&mut self.ui)?;
@@ -763,7 +811,7 @@ impl DesktopApp for Form {
             self.ui.update(viewport).map_err(err)?;
         }
         self.application_events()?;
-        if self.navigation.is_some() {
+        if self.navigation.is_some() || self.gallery.is_some() {
             self.ui.update(viewport).map_err(err)?;
         }
         if let Some(mounted) = &mut self.view.ribbon {
@@ -792,8 +840,12 @@ impl DesktopApp for Form {
                 || self.rating.is_some()
                 || self.color.is_some()
                 || self.navigation.is_some()
+                || self.tiles.is_some()
+                || self.gallery.is_some()
                 || self.font.is_some()
                 || self.badges.is_some()
+                || self.wizard.is_some()
+                || self.barcode.is_some()
                 || self.data_form.is_some()
                 || self.tree.is_some()
                 || self.grid_workspace.is_some()
@@ -931,6 +983,11 @@ impl DesktopApp for Form {
                         .breadcrumb
                         .as_ref()
                         .and_then(|state| state.deadline())
+                        .is_some_and(|at| at <= now)
+                    || self
+                        .wizard
+                        .as_ref()
+                        .and_then(|state| state.deadline())
                         .is_some_and(|at| at <= now);
             }
             PlatformEvent::Accessibility(request) => {
@@ -995,6 +1052,7 @@ impl DesktopApp for Form {
             .into_iter()
             .chain(self.search.as_ref().and_then(|state| state.deadline()))
             .chain(self.breadcrumb.as_ref().and_then(|state| state.deadline()))
+            .chain(self.wizard.as_ref().and_then(|state| state.deadline()))
             .min()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }

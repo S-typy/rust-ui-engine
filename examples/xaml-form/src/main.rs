@@ -1,6 +1,11 @@
 //! A native form whose structure and initial properties are compiled from XAML.
+mod notifications_app;
+mod generated_notifications {
+    include!(concat!(env!("OUT_DIR"), "/notifications_window.rs"));
+}
 mod accessibility;
 mod badge_model;
+mod barcode_model;
 #[cfg(test)]
 mod batch_binding_tests;
 mod batch_diagnostics;
@@ -26,6 +31,8 @@ mod forms_model;
 mod forms_tests;
 #[cfg(test)]
 mod foundation_accessibility_tests;
+mod gallery_diagnostics;
+mod gallery_model;
 mod grid_workspace_model;
 #[cfg(test)]
 mod group_adapter_tests;
@@ -46,12 +53,14 @@ mod status_adapter_tests;
 mod template_adapter_tests;
 #[cfg(test)]
 mod tests;
+mod tile_model;
 mod tree_model;
 mod view;
 mod view_ribbon;
 mod visual_model;
 #[cfg(test)]
 mod visual_tests;
+mod wizard_model;
 mod workspace_app;
 mod workspace_model;
 
@@ -107,11 +116,23 @@ mod generated_font {
 mod generated_navigation {
     include!(concat!(env!("OUT_DIR"), "/navigation_window.rs"));
 }
+mod generated_gallery {
+    include!(concat!(env!("OUT_DIR"), "/gallery_window.rs"));
+}
+mod generated_tiles {
+    include!(concat!(env!("OUT_DIR"), "/tile_window.rs"));
+}
 mod generated_color {
     include!(concat!(env!("OUT_DIR"), "/color_window.rs"));
 }
 mod generated_rating {
     include!(concat!(env!("OUT_DIR"), "/rating_window.rs"));
+}
+mod generated_barcode {
+    include!(concat!(env!("OUT_DIR"), "/barcode_window.rs"));
+}
+mod generated_wizard {
+    include!(concat!(env!("OUT_DIR"), "/wizard_window.rs"));
 }
 mod generated_search {
     include!(concat!(env!("OUT_DIR"), "/search_window.rs"));
@@ -124,6 +145,9 @@ mod generated_grid_workspace {
 }
 mod generated_tree {
     include!(concat!(env!("OUT_DIR"), "/tree_window.rs"));
+}
+mod generated_documents {
+    include!(concat!(env!("OUT_DIR"), "/document_window.rs"));
 }
 mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
@@ -145,6 +169,7 @@ fn main() -> ExitCode {
 
 fn start() -> Result<(), String> {
     let mut theme = None;
+    let mut notifications = false;
     let mut controls = false;
     let mut editors = false;
     let mut groups = false;
@@ -157,9 +182,13 @@ fn start() -> Result<(), String> {
     let mut rating = false;
     let mut color = false;
     let mut navigation = false;
+    let mut tiles = false;
+    let mut gallery = false;
     let mut badges = false;
     let mut breadcrumb = false;
     let mut font = false;
+    let mut wizard = false;
+    let mut barcode = false;
     let mut data_form = false;
     let mut tree = false;
     let mut grid_workspace = false;
@@ -170,6 +199,7 @@ fn start() -> Result<(), String> {
     let mut density = None;
     let mut recovery = false;
     let mut docking = false;
+    let mut documents = false;
     let mut float_pane = None;
     let mut layout_file = None;
     let mut smoke_test = false;
@@ -200,6 +230,7 @@ fn start() -> Result<(), String> {
                 recovery = true;
                 smoke_test = true;
             }
+            "--notifications" => notifications = true,
             "--controls" => controls = true,
             "--editors" => editors = true,
             "--groups" => groups = true,
@@ -212,13 +243,21 @@ fn start() -> Result<(), String> {
             "--rating" => rating = true,
             "--color" => color = true,
             "--navigation" => navigation = true,
+            "--tiles" => tiles = true,
+            "--gallery" => gallery = true,
             "--badges" => badges = true,
             "--breadcrumb" => breadcrumb = true,
             "--font" => font = true,
+            "--wizard" => wizard = true,
+            "--barcodes" => barcode = true,
             "--data-form" => data_form = true,
             "--tree" => tree = true,
             "--grid-workspace" => grid_workspace = true,
             "--docking" => docking = true,
+            "--documents" => {
+                documents = true;
+                docking = true;
+            }
             "--float-pane" => {
                 float_pane = Some(arguments.next().ok_or("--float-pane requires a pane ID")?)
             }
@@ -233,6 +272,9 @@ fn start() -> Result<(), String> {
             "--native-title-bar" => native_title_bar = true,
             "--no-activate" => activate = false,
             "--help" | "-h" => {
+                println!(
+                    "--gallery opens grouped visual samples, preview/acceptance and retained Ribbon/popup hosts."
+                );
                 println!(
                     "--data-editors opens DataEditorsWindow.xaml: transactional data, MemoEdit, editor buttons and PasswordBox.\n--workspace opens WorkspaceWindow.xaml: retained tabs, dialogs, customizable status, reusable styles/templates and typed queries."
                 );
@@ -281,6 +323,7 @@ fn start() -> Result<(), String> {
         }
     }
     if [
+        notifications,
         controls,
         docking,
         editors,
@@ -297,9 +340,13 @@ fn start() -> Result<(), String> {
         rating,
         color,
         navigation,
+        tiles,
+        gallery,
         badges,
         breadcrumb,
         font,
+        wizard,
+        barcode,
         data_form,
         tree,
         grid_workspace,
@@ -322,7 +369,17 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if navigation {
+    let mut definition = if notifications {
+        generated_notifications::window_definition()
+    } else if documents {
+        generated_documents::window_definition()
+    } else if gallery {
+        generated_gallery::window_definition()
+    } else if barcode {
+        generated_barcode::window_definition()
+    } else if wizard {
+        generated_wizard::window_definition()
+    } else if navigation {
         generated_navigation::window_definition()
     } else if breadcrumb {
         generated_breadcrumb::window_definition()
@@ -336,6 +393,8 @@ fn start() -> Result<(), String> {
         generated_badges::window_definition()
     } else if font {
         generated_font::window_definition()
+    } else if tiles {
+        generated_tiles::window_definition()
     } else if color {
         generated_color::window_definition()
     } else if rating {
@@ -407,11 +466,20 @@ fn start() -> Result<(), String> {
             diagnostics,
             float_pane.as_deref(),
         )?;
-        let path = layout_file
-            .map(Ok)
-            .unwrap_or_else(docking_app::storage::default_path)?;
-        app.set_layout_file(path);
+        if documents {
+            app.enable_documents()?;
+        } else {
+            let path = layout_file
+                .map(Ok)
+                .unwrap_or_else(docking_app::storage::default_path)?;
+            app.set_layout_file(path);
+        }
         return rust_desktop_ui_platform_winit::run_multi(app);
+    }
+    if notifications {
+        return rust_desktop_ui_platform_winit::run_multi(
+            notifications_app::NotificationsApplication::new(definition, options, diagnostics)?,
+        );
     }
     if workspace {
         let mut application =
@@ -419,7 +487,11 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if navigation {
+    let app = if gallery {
+        form::Form::new_with_model(definition, diagnostics, Some(gallery_model::model()?))?
+    } else if wizard {
+        form::Form::new_with_model(definition, diagnostics, Some(wizard_model::model()?))?
+    } else if navigation {
         form::Form::new_with_model(definition, diagnostics, Some(navigation_model::model()?))?
     } else if breadcrumb {
         form::Form::new_with_model(definition, diagnostics, Some(breadcrumb_model::model()?))?
@@ -438,6 +510,8 @@ fn start() -> Result<(), String> {
         form::Form::new_with_model(definition, diagnostics, Some(badge_model::model()?))?
     } else if font {
         form::Form::new_with_model(definition, diagnostics, Some(font_model::model()?))?
+    } else if tiles {
+        form::Form::new_with_model(definition, diagnostics, Some(tile_model::model()?))?
     } else if color {
         form::Form::new_with_model(definition, diagnostics, Some(color_model::model()?))?
     } else if rating {

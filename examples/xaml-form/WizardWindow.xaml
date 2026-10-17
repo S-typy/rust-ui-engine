@@ -1,0 +1,48 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Мастер настройки проекта" Width="1040" Height="760" Padding="24">
+  <Grid Spacing="14">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Мастер настройки проекта" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Проверка данных перед переходом, два маршрута и сохранение черновиков при возврате." TextTone="Secondary"/>
+    </StackPanel>
+    <WrapPanel Grid.Row="1" Spacing="12">
+      <Button x:Name="WizardReset" Content="Начать заново" Command="WizardReset"/>
+      <Button x:Name="WizardLate" Content="Поздний ответ" Command="WizardLate"/>
+      <CheckBox x:Name="WizardReadOnly" Content="Только чтение" IsChecked="{Binding ReadOnly}"/>
+      <Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/>
+    </WrapPanel>
+    <Wizard Grid.Row="2" x:Name="ProjectWizard" AutomationName="Настройка проекта" IsReadOnly="{Binding ReadOnly}" StartStep="project">
+      <WizardStep Id="project" Header="Название и маршрут" Next="remote,local">
+        <StackPanel Spacing="16" Padding="16">
+          <TextBlock Text="Название проекта" FontSize="22" FontWeight="SemiBold"/>
+          <TextBox x:Name="WizardProjectName" AutomationName="Название проекта" PlaceholderText="Введите название" Text=""/>
+          <CheckBox x:Name="WizardRemote" Content="Настроить удалённое подключение"/>
+          <TextBlock Text="Пустое название не позволяет перейти дальше. Кнопки мастера не подтверждают обычный редактор. Черновик остаётся при возврате назад." TextTone="Secondary"/>
+        </StackPanel>
+      </WizardStep>
+      <WizardStep Id="remote" Header="Удалённое подключение" Next="review">
+        <StackPanel Spacing="16" Padding="16">
+          <TextBlock Text="Подключение к серверу" FontSize="22" FontWeight="SemiBold"/>
+          <TextBox x:Name="WizardEndpoint" AutomationName="Адрес сервера" Text="server:demo"/>
+          <TextBlock Text="Пример принимает адрес с префиксом server:. Сетевые запросы не выполняются." TextTone="Secondary"/>
+        </StackPanel>
+      </WizardStep>
+      <WizardStep Id="local" Header="Локальные параметры" Next="review">
+        <StackPanel Spacing="16" Padding="16">
+          <TextBlock Text="Локальные параметры" FontSize="22" FontWeight="SemiBold"/>
+          <TextBox x:Name="WizardFolder" AutomationName="Имя локальной папки" Text="Projects"/>
+          <TextBlock Text="Назад возвращает к названию, сохраняя ввод в обеих ветвях." TextTone="Secondary"/>
+        </StackPanel>
+      </WizardStep>
+      <WizardStep Id="review" Header="Проверка и завершение" IsFinal="True">
+        <StackPanel Spacing="16" Padding="16">
+          <TextBlock Text="Проверьте настройки" FontSize="22" FontWeight="SemiBold"/>
+          <TextBlock x:Name="WizardReview" Text=""/>
+          <TextBlock Text="Завершить и Отмена дают разные результаты. После результата можно явно начать заново; введённые данные сохранятся." TextTone="Secondary"/>
+        </StackPanel>
+      </WizardStep>
+    </Wizard>
+    <TextBlock Grid.Row="3" x:Name="WizardSummary" Text="" TextTone="Secondary"/>
+  </Grid>
+</Window>

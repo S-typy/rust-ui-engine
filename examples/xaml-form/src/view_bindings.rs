@@ -36,7 +36,7 @@ fn property(name: &str) -> Result<BindingProperty, String> {
         "SelectedKey" => BindingProperty::SelectedKey,
         "SelectedValue" => BindingProperty::SelectedValue,
         "FilterText" => BindingProperty::FilterText,
-        "SelectedValues" => BindingProperty::SelectedValues,
+        "SelectedValues" | "SelectedKeys" => BindingProperty::SelectedValues,
         "ItemsSource" => BindingProperty::ItemsSource,
         "IsChecked" => BindingProperty::IsChecked,
         "IsEnabled" => BindingProperty::IsEnabled,
@@ -248,6 +248,13 @@ fn fallback(
         BindingProperty::Value if ui.slider_value(widget).is_some() => {
             DataValue::Number(value.parse().map_err(err)?)
         }
+        BindingProperty::SelectedValues if ui.tile_settings(widget).is_some() => DataValue::List(
+            value
+                .split(',')
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| DataValue::String(v.trim().into()))
+                .collect(),
+        ),
         BindingProperty::SelectedValue | BindingProperty::SelectedKey if value == "Null" => {
             DataValue::Null
         }
@@ -416,6 +423,25 @@ impl MountedView {
         }
         engine.initialize(ui).map_err(err)?;
         if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
+            d.target.property == BindingProperty::Value
+                && ui.barcode_settings(d.target.widget).is_some()
+                && engine.last_target_value(d.target).is_none()
+        }) {
+            return Err(format!(
+                "Invalid initial Barcode Value: {}",
+                diagnostic.message
+            ));
+        }
+        if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
+            ui.gallery_parts(d.target.widget).is_some()
+                && engine.last_target_value(d.target).is_none()
+        }) {
+            return Err(format!(
+                "Invalid initial gallery binding: {}",
+                diagnostic.message
+            ));
+        }
+        if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
             d.target.property == BindingProperty::Route
                 && engine.last_target_value(d.target).is_none()
         }) {
@@ -433,6 +459,16 @@ impl MountedView {
                 diagnostic.message
             ));
         }
+        if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
+            ui.tile_settings(d.target.widget).is_some()
+                && engine.last_target_value(d.target).is_none()
+        }) {
+            return Err(format!(
+                "Invalid initial tile binding: {}",
+                diagnostic.message
+            ));
+        }
+
         if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
             d.target.property == BindingProperty::Value
                 && ui.color_editor_parts(d.target.widget).is_some()

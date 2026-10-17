@@ -1,6 +1,7 @@
 fn main() {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
     for (source, generated) in [
+        ("NotificationsWindow.xaml", "notifications_window.rs"),
         ("MainWindow.xaml", "main_window.rs"),
         ("ControlsWindow.xaml", "controls_window.rs"),
         ("DockWindow.xaml", "dock_window.rs"),
@@ -15,9 +16,14 @@ fn main() {
         ("RatingWindow.xaml", "rating_window.rs"),
         ("ColorWindow.xaml", "color_window.rs"),
         ("NavigationWindow.xaml", "navigation_window.rs"),
+        ("TileWindow.xaml", "tile_window.rs"),
+        ("GalleryWindow.xaml", "gallery_window.rs"),
         ("FontWindow.xaml", "font_window.rs"),
         ("BadgeWindow.xaml", "badge_window.rs"),
         ("BreadcrumbWindow.xaml", "breadcrumb_window.rs"),
+        ("WizardWindow.xaml", "wizard_window.rs"),
+        ("BarcodeWindow.xaml", "barcode_window.rs"),
+        ("DocumentWindow.xaml", "document_window.rs"),
         ("DataFormWindow.xaml", "data_form_window.rs"),
         ("TreeWindow.xaml", "tree_window.rs"),
         ("GridWorkspaceWindow.xaml", "grid_workspace_window.rs"),

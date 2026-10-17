@@ -66,6 +66,8 @@ impl DockWindow {
                 .cancel_pointer_interaction()
                 .map_err(err)?;
         }
+        self.mdi.cancel(&mut self.ui).map_err(err)?;
+        self.mdi_geometry = None;
         self.geometry = None;
         self.action_owners.clear();
         self.hovered_pane = None;

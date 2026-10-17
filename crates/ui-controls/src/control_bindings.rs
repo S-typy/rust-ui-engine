@@ -334,6 +334,12 @@ impl ControlBindings {
             {
                 return Err(invalid("ProgressBar Value supports OneWay or OneTime"));
             }
+            if binding.target.property == BindingProperty::Value
+                && ui.barcode_settings(binding.target.widget).is_some()
+                && binding.mode.writes_source()
+            {
+                return Err(invalid("Barcode Value supports OneWay or OneTime"));
+            }
             read_property(
                 ui,
                 binding.target,
@@ -1103,7 +1109,44 @@ impl ControlBindings {
                 })
             }
             BindingSource::Element(endpoint) => {
-                if endpoint.property == BindingProperty::Value
+                if endpoint.property == BindingProperty::SelectedKey
+                    && let Some(validator) = ui.gallery_source_validator(endpoint.widget)
+                {
+                    Box::new(move |value| {
+                        let keys = match value {
+                            DataValue::Null => Vec::new(),
+                            DataValue::String(v) => vec![v],
+                            _ => return Err("Gallery SelectedKey requires string or null".into()),
+                        };
+                        validator.check(&keys)
+                    })
+                } else if matches!(
+                    endpoint.property,
+                    BindingProperty::SelectedKey | BindingProperty::SelectedValues
+                ) && let Some(validator) = ui.tile_source_validator(endpoint.widget)
+                {
+                    let multiple = endpoint.property == BindingProperty::SelectedValues;
+                    Box::new(move |value| {
+                        let keys = if multiple {
+                            value
+                                .as_list()
+                                .ok_or("Tile selection source requires a list")?
+                                .iter()
+                                .map(|v| match v {
+                                    DataValue::String(v) => Ok(v.clone()),
+                                    _ => Err("Tile key must be a string".to_owned()),
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                        } else {
+                            match value {
+                                DataValue::Null => Vec::new(),
+                                DataValue::String(v) => vec![v],
+                                _ => return Err("Tile key must be a string or null".into()),
+                            }
+                        };
+                        validator.check(&keys)
+                    })
+                } else if endpoint.property == BindingProperty::Value
                     && let Some(validator) = ui.rating_source_validator(endpoint.widget)
                 {
                     Box::new(move |value| {
@@ -1275,11 +1318,45 @@ impl ControlBindings {
             };
             source_check(value)
         };
-        if binding.target.property == BindingProperty::Route {
+        if binding.target.property == BindingProperty::SelectedKey
+            && ui.gallery_parts(binding.target.widget).is_some()
+        {
+            ui.add_gallery_source_validator(
+                binding.target.widget,
+                SelectionValidator::new(move |keys| {
+                    validate(
+                        keys.first()
+                            .cloned()
+                            .map_or(DataValue::Null, DataValue::String),
+                    )
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Route {
             ui.chain_navigation_validator(
                 binding.target.widget,
                 crate::NavigationValidator::new(move |route| {
                     validate(DataValue::String(route.into()))
+                }),
+            )
+            .map_err(control_error)?;
+        } else if ui.tile_settings(binding.target.widget).is_some()
+            && matches!(
+                binding.target.property,
+                BindingProperty::SelectedKey | BindingProperty::SelectedValues
+            )
+        {
+            let multiple = binding.target.property == BindingProperty::SelectedValues;
+            ui.add_tile_source_validator(
+                binding.target.widget,
+                SelectionValidator::new(move |keys| {
+                    validate(if multiple {
+                        DataValue::List(keys.iter().cloned().map(DataValue::String).collect())
+                    } else {
+                        keys.first()
+                            .cloned()
+                            .map_or(DataValue::Null, DataValue::String)
+                    })
                 }),
             )
             .map_err(control_error)?;
@@ -1662,6 +1739,22 @@ fn read_property(
             .map(DataValue::Bool)
             .ok_or_else(|| invalid("IsIndeterminate requires ProgressBar")),
         BindingProperty::SelectedKey => {
+            if ui.gallery_parts(id).is_some() {
+                return Ok(ui
+                    .gallery_selected_key(id)
+                    .map_or(DataValue::Null, |key| DataValue::String(key.into())));
+            }
+            if let Some(settings) = ui.tile_settings(id) {
+                if settings.selection != crate::SelectionMode::Single {
+                    return Err(invalid("Tile SelectedKey requires Single selection"));
+                }
+                return Ok(ui
+                    .tile_selected_keys(id)
+                    .unwrap()
+                    .first()
+                    .cloned()
+                    .map_or(DataValue::Null, DataValue::String));
+            }
             if let Some(settings) = ui.tree_settings(id) {
                 if settings.selection_mode != crate::SelectionMode::Single {
                     return Err(invalid("Tree SelectedKey requires Single selection"));
@@ -1680,6 +1773,9 @@ fn read_property(
             } else {
                 Err(invalid("SelectedKey requires RadioGroup or tree"))
             }
+        }
+        BindingProperty::Value if ui.barcode_settings(id).is_some() => {
+            Ok(DataValue::String(ui.barcode_value(id).unwrap().to_owned()))
         }
         BindingProperty::Value if ui.rating_settings(id).is_some() => Ok(ui
             .rating_value(id)
@@ -1709,6 +1805,14 @@ fn read_property(
             .map(DataValue::Number)
             .ok_or_else(|| invalid("Value requires an editor, ProgressBar or ZoomControl")),
         BindingProperty::SelectedValue | BindingProperty::SelectedValues => {
+            if let Some(keys) = ui.tile_selected_keys(id) {
+                if endpoint.property != BindingProperty::SelectedValues {
+                    return Err(invalid("Tiles expose SelectedKey or SelectedValues"));
+                }
+                return Ok(DataValue::List(
+                    keys.iter().cloned().map(DataValue::String).collect(),
+                ));
+            }
             if endpoint.property == BindingProperty::SelectedValue && ui.grid_settings(id).is_some()
             {
                 return Ok(ui
@@ -1725,6 +1829,9 @@ fn read_property(
                 items.get(&id),
             ))
         }
+        BindingProperty::ItemsSource if ui.tile_model(id).is_some() => Ok(
+            crate::tile_items_to_value(ui.tile_model(id).unwrap().items()),
+        ),
         BindingProperty::ItemsSource => ui
             .selection_items(id)
             .map(|v| v.to_vec())
@@ -1779,9 +1886,12 @@ fn read_property(
             })
             .or_else(|| ui.is_read_only(id))
             .or_else(|| ui.selection_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.tile_settings(id).map(|s| s.is_read_only))
+            .or_else(|| ui.gallery_settings(id).map(|s| s.is_read_only))
             .or_else(|| ui.grid_settings(id).map(|s| s.is_read_only))
             .or_else(|| ui.tree_settings(id).map(|s| s.read_only))
             .or_else(|| ui.rating_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.wizard_settings(id).map(|s| s.read_only))
             .or_else(|| ui.breadcrumb_settings(id).map(|s| s.read_only))
             .or_else(|| ui.font_picker_settings(id).map(|s| s.read_only))
             .or_else(|| ui.color_editor_settings(id).map(|s| s.is_read_only))
@@ -1979,6 +2089,25 @@ fn write_property(
         BindingProperty::IsIndeterminate => ui
             .set_progress_indeterminate(id, boolean(value)?)
             .map_err(control_error),
+        BindingProperty::SelectedKey if ui.gallery_parts(id).is_some() => {
+            let key = if *value == DataValue::Null {
+                None
+            } else {
+                Some(string(value)?.to_owned())
+            };
+            ui.set_gallery_selected_key(id, key).map_err(control_error)
+        }
+        BindingProperty::SelectedKey if ui.tile_settings(id).is_some() => {
+            if ui.tile_settings(id).unwrap().selection != crate::SelectionMode::Single {
+                return Err(invalid("Tile SelectedKey requires Single selection"));
+            }
+            let keys = if *value == DataValue::Null {
+                Vec::new()
+            } else {
+                vec![string(value)?.to_owned()]
+            };
+            ui.set_tile_selected_keys(id, keys).map_err(control_error)
+        }
         BindingProperty::SelectedKey if ui.tree_settings(id).is_some() => {
             if ui.tree_settings(id).unwrap().selection_mode != crate::SelectionMode::Single {
                 return Err(invalid("Tree SelectedKey requires Single selection"));
@@ -2013,7 +2142,10 @@ fn write_property(
             )
             .map_err(control_error),
         BindingProperty::Value => {
-            if ui.rating_settings(id).is_some() {
+            if ui.barcode_settings(id).is_some() {
+                ui.set_barcode_value(id, string(value)?)
+                    .map_err(control_error)
+            } else if ui.rating_settings(id).is_some() {
                 ui.set_rating_value(
                     id,
                     if *value == DataValue::Null {
@@ -2062,6 +2194,18 @@ fn write_property(
             }
         }
         BindingProperty::SelectedValue | BindingProperty::SelectedValues => {
+            if ui.tile_settings(id).is_some() {
+                if endpoint.property != BindingProperty::SelectedValues {
+                    return Err(invalid("Tiles expose SelectedKey or SelectedValues"));
+                }
+                let keys = value
+                    .as_list()
+                    .ok_or_else(|| invalid("Tile SelectedValues requires a list"))?
+                    .iter()
+                    .map(|v| string(v).map(str::to_owned))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return ui.set_tile_selected_keys(id, keys).map_err(control_error);
+            }
             if endpoint.property == BindingProperty::SelectedValue && ui.grid_settings(id).is_some()
             {
                 let key = match value {
@@ -2108,6 +2252,12 @@ fn write_property(
                 .map_err(control_error)
         }
         BindingProperty::ItemsSource => {
+            if let Some(model) = ui.tile_model(id) {
+                let rows = crate::tile_items_from_value(value).map_err(|e| invalid(&e))?;
+                let model =
+                    crate::TileModel::new(model.groups().to_vec(), rows).map_err(control_error)?;
+                return ui.set_tile_model(id, model).map_err(control_error);
+            }
             let (rows, state) = map_items(value, mapping)?;
             // Install identity mapping before validators inspect a selection
             // retained across replacement. Restore it if the control rejects.
@@ -2149,8 +2299,18 @@ fn write_property(
         BindingProperty::IsEnabled => ui.set_enabled(id, boolean(value)?).map_err(control_error),
         BindingProperty::IsReadOnly => {
             let value = boolean(value)?;
-            if ui.rating_settings(id).is_some() {
+            if let Some(settings) = ui.gallery_settings(id) {
+                let mut settings = settings.clone();
+                settings.is_read_only = value;
+                ui.set_gallery_settings(id, settings).map_err(control_error)
+            } else if let Some(settings) = ui.tile_settings(id) {
+                let mut settings = settings.clone();
+                settings.is_read_only = value;
+                ui.set_tile_settings(id, settings).map_err(control_error)
+            } else if ui.rating_settings(id).is_some() {
                 ui.set_rating_read_only(id, value).map_err(control_error)
+            } else if ui.wizard_parts(id).is_some() {
+                ui.set_wizard_read_only(id, value).map_err(control_error)
             } else if ui.breadcrumb_path(id).is_some() {
                 ui.set_breadcrumb_read_only(id, value)
                     .map_err(control_error)

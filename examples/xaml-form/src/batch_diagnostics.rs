@@ -8,6 +8,8 @@ use rust_desktop_ui_controls::Controls;
 mod badges;
 #[path = "breadcrumb_diagnostics.rs"]
 mod breadcrumbs;
+#[path = "wizard_diagnostics.rs"]
+mod wizards;
 
 pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
     let mut names: Vec<_> = view.names.iter().collect();
@@ -98,7 +100,9 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
     let badges = badges::snapshot(ui, view);
     let breadcrumbs = breadcrumbs::snapshot(ui, view);
     let navigations = crate::navigation_diagnostics::snapshot(ui, view);
+    let wizards = wizards::snapshot(ui, view);
+    let galleries = crate::gallery_diagnostics::snapshot(ui, view);
     format!(
-        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}],\"grids\":[{grids}],\"badges\":[{badges}],\"breadcrumbs\":[{breadcrumbs}],\"navigations\":[{navigations}]}}"
+        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}],\"grids\":[{grids}],\"badges\":[{badges}],\"breadcrumbs\":[{breadcrumbs}],\"navigations\":[{navigations}],\"wizards\":[{wizards}],\"galleries\":[{galleries}]}}"
     )
 }

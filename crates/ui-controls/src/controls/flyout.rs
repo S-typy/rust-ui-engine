@@ -409,6 +409,7 @@ impl Controls {
         let target = self.flyouts.entries.get(&self.flyouts.open[index]).cloned();
         let closing = self.flyouts.open[index..].to_vec();
         for id in closing {
+            self.gallery_will_close(id)?;
             self.search_will_close(id);
             self.temporal_will_close(id)?;
             self.memo_will_close(id)?;

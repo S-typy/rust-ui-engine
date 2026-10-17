@@ -1,0 +1,43 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Плитки — коллекция документов" Width="1120" Height="780" Padding="24">
+  <Grid Spacing="14">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Коллекция документов" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Стрелки перемещают фокус. Enter и пробел открывают плитку; Ctrl+Shift+стрелки меняют порядок. При изменении ширины выбранный документ и позиция прокрутки сохраняются." TextTone="Secondary"/>
+    </StackPanel>
+    <WrapPanel Grid.Row="1" Spacing="8">
+      <Button x:Name="TilesMany" Content="100 000 документов" Command="TilesDemoMany"/>
+      <Button x:Name="TilesReset" Content="Пример с группами" Command="TilesDemoReset"/>
+      <Button x:Name="TilesLast" Content="К последнему" Command="TilesDemoLast"/>
+      <CheckBox x:Name="TilesLocked" Content="Только чтение" IsChecked="{Binding Locked}"/>
+      <CheckBox x:Name="TilesVeto" Content="Запретить документ 3" IsChecked="{Binding Veto}"/>
+    </WrapPanel>
+    <Grid Grid.Row="2" Spacing="16">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="3*"/><ColumnDefinition Width="2*"/></Grid.ColumnDefinitions>
+      <TileCollection x:Name="Documents" AutomationName="Документы" MinHeight="120" SelectedKey="{Binding Selected}" IsReadOnly="{Binding Locked}">
+        <TileGroup Key="work" Header="Рабочие документы"/>
+        <TileGroup Key="reference" Header="Справочные материалы"/>
+      </TileCollection>
+      <GroupBox Grid.Column="1" Header="Текущий документ">
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+          <StackPanel Spacing="12">
+            <TextBlock x:Name="TilesSelected" Text="Документ не выбран" FontWeight="SemiBold"/>
+            <TextBox x:Name="TileDocument" AutomationName="Текст документа" Text="Сохранённый текст"/>
+            <TextBlock Text="Черновик и принятый текст остаются в этом редакторе при прокрутке, перестановке и изменении размеров коллекции." TextTone="Secondary"/>
+            <TextBlock Text="Шаблон плиток" FontWeight="SemiBold"/>
+            <TileCollection x:Name="TemplateTiles" AutomationName="Плитки с шаблоном" Height="200" CellWidth="130" CellHeight="100" AllowReorder="False">
+              <TileCollection.ItemTemplate><StackPanel Spacing="4"><TextBlock Text="{Binding Text}" FontWeight="SemiBold"/><TextBlock Text="{Binding Column0}" TextTone="Secondary"/></StackPanel></TileCollection.ItemTemplate>
+              <Tile Key="one" Text="Шаблон один"><TileColumn Text="Текст из данных"/></Tile>
+              <Tile Key="two" Text="Шаблон два"><TileColumn Text="Независимый ключ"/></Tile>
+            </TileCollection>
+          </StackPanel>
+        </ScrollViewer>
+      </GroupBox>
+    </Grid>
+    <DockPanel Grid.Row="3">
+      <WrapPanel DockPanel.Dock="Right" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel>
+      <StackPanel Spacing="3"><TextBlock x:Name="TilesStatus" Text="Открытий: 0"/><TextBlock x:Name="TilesGeometry" Text="Видимые плитки" TextTone="Secondary"/><TextBlock x:Name="TilesError" Text="Ошибок нет" TextTone="Secondary"/></StackPanel>
+    </DockPanel>
+  </Grid>
+</Window>

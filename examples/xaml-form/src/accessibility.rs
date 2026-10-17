@@ -95,8 +95,9 @@ impl Accessibility {
         for semantic in semantics {
             let widget = semantic.id;
             let id = self.widgets[&widget];
-            let status =
-                semantic.role == ControlRole::Label && view.find_name("Status") == Some(widget);
+            let status = (semantic.role == ControlRole::Label
+                && view.find_name("Status") == Some(widget))
+                || ui.notification_message(widget);
             let mut node = Node::new(if status {
                 Role::Status
             } else if semantic.role == ControlRole::MenuItem && semantic.checked.is_some() {
@@ -264,6 +265,8 @@ impl Accessibility {
             }
             if ui.selection_settings(widget).is_some_and(|settings| {
                 settings.mode == rust_desktop_ui_controls::SelectionMode::Multiple
+            }) || ui.tile_settings(widget).is_some_and(|settings| {
+                settings.selection == rust_desktop_ui_controls::SelectionMode::Multiple
             }) {
                 node.set_multiselectable();
             }
@@ -1032,3 +1035,7 @@ mod status_tests {
 #[cfg(test)]
 #[path = "accessibility_rating.rs"]
 mod rating_tests;
+
+#[cfg(test)]
+#[path = "accessibility_tiles.rs"]
+mod tiles_tests;

@@ -1,11 +1,13 @@
 //! Retained controls, themes, commands, and an adaptive Ribbon.
 
+pub mod barcode;
 mod binding;
 mod button;
 mod commands;
 mod control_bindings;
 mod controls;
 mod docking;
+pub mod document_workspace;
 mod editor;
 mod localization;
 mod primitives;
@@ -42,3 +44,5 @@ mod primitive_tests;
 mod radio_tests;
 #[cfg(test)]
 mod tests;
+
+pub mod workspace;

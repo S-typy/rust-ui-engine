@@ -2,13 +2,14 @@
 //!
 //! Adapters perform explicit synchronous reads and transactional writes. A
 //! source keeps the last accepted snapshot, executes local typed queries and
-//! never performs I/O while reading a cell. Large or remote data requires an
-//! application-owned worker or a separate paged source.
+//! never performs I/O while reading a cell. [`PagedDataSource`] coordinates
+//! bounded asynchronous row pages; providers and workers remain application-owned.
 
 #[cfg(feature = "file-adapters")]
 mod files;
 mod model;
 mod observable;
+mod paged;
 mod query;
 mod scalar;
 mod source;
@@ -21,6 +22,7 @@ mod write;
 pub use files::*;
 pub use model::*;
 pub use observable::*;
+pub use paged::*;
 pub use query::*;
 pub use scalar::*;
 pub use source::*;

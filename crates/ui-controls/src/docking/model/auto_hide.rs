@@ -72,12 +72,17 @@ impl DockGeometry {
                 .contains(point.x, point.y)
                 .then_some(&panel.pane);
         }
-        self.groups.iter().find_map(|group| {
-            group
-                .content
-                .contains(point.x, point.y)
-                .then_some(&group.active)
-        })
+        // Front group bounds occlude lower content, including the front header.
+        self.groups
+            .iter()
+            .rev()
+            .find(|group| group.bounds.contains(point.x, point.y))
+            .and_then(|group| {
+                group
+                    .content
+                    .contains(point.x, point.y)
+                    .then_some(&group.active)
+            })
     }
 }
 impl DockLayout {

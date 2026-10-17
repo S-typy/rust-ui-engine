@@ -52,7 +52,9 @@ impl Gallery {
         let mut focus = ROOT;
         for item in semantics {
             let id = NodeId(self.accessible_widgets[&item.id]);
-            let mut node = Node::new(if item.id == self.grid_node {
+            let mut node = Node::new(if self.ui.notification_message(item.id) {
+                Role::Status
+            } else if item.id == self.grid_node {
                 Role::TreeGrid
             } else if item.role == ControlRole::MenuItem && item.checked.is_some() {
                 Role::MenuItemCheckBox
@@ -61,7 +63,9 @@ impl Gallery {
             });
             node.set_label(item.label);
             node.set_bounds(bounds(item.bounds, scale));
-            if item.role == ControlRole::StatusBar {
+            if self.ui.notification_message(item.id) {
+                node.set_live(rust_desktop_ui_platform_winit::accesskit::Live::Polite);
+            } else if item.role == ControlRole::StatusBar {
                 node.set_live(rust_desktop_ui_platform_winit::accesskit::Live::Off);
             }
             if item.has_popup {
@@ -218,6 +222,8 @@ impl Gallery {
             }
             if self.ui.selection_settings(item.id).is_some_and(|settings| {
                 settings.mode == rust_desktop_ui_controls::SelectionMode::Multiple
+            }) || self.ui.tile_settings(item.id).is_some_and(|settings| {
+                settings.selection == rust_desktop_ui_controls::SelectionMode::Multiple
             }) {
                 node.set_multiselectable();
             }

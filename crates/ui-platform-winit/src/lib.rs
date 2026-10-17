@@ -11,7 +11,9 @@ mod input;
 mod modality;
 mod multi;
 mod multi_host;
+mod splash;
 mod wake;
+pub use splash::{SplashSession, SplashState, SplashWorker};
 
 pub use accessibility::AccessibilitySnapshot;
 pub use accesskit;

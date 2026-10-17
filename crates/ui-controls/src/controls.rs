@@ -20,10 +20,47 @@ use std::{
 };
 
 mod appearance;
+mod barcode;
+#[cfg(test)]
+mod barcode_tests;
+pub use barcode::{BarcodeDisplayStatus, BarcodeSettings};
+mod loading;
+#[cfg(test)]
+mod notification_tests;
+mod notifications;
+mod notifications_model;
+pub use loading::{LoadingOverlay, LoadingResult, LoadingStatus, LoadingToken};
+pub use notifications::{NotificationCenter, NotificationParts};
+pub use notifications_model::{
+    MAX_NOTIFICATION_HISTORY, MAX_PENDING_NOTIFICATIONS, NotificationAction,
+    NotificationCenterSettings, NotificationCloseReason, NotificationId, NotificationRecord,
+    NotificationSeverity, NotificationSpec,
+};
+
 #[cfg(test)]
 mod badge_tests;
 mod badges;
 pub use badges::{BadgeAnchor, BadgeClip, BadgeContent, BadgeSettings, BadgeSeverity, MAX_BADGES};
+mod gallery;
+mod gallery_model;
+#[cfg(test)]
+mod gallery_tests;
+pub use gallery::{Gallery, GalleryPreviewChanged, GallerySelectionChanged};
+pub use gallery_model::{
+    GalleryGroup, GalleryItem, GalleryModel, GallerySettings, MAX_GALLERY_GROUPS, MAX_GALLERY_ITEMS,
+};
+mod tiles;
+mod tiles_data;
+mod tiles_model;
+pub use tiles_data::{tile_items_from_value, tile_items_to_value};
+mod tiles_layout;
+#[cfg(test)]
+mod tiles_tests;
+pub use tiles::{TileCollection, TileEvent, TileEventKind, TileModelValidator, TileStats};
+pub use tiles_model::{
+    MAX_TILE_EXTENT, MAX_TILE_GROUPS, MAX_TILES, TileGroup, TileItem, TileModel, TileSettings,
+    TileSize,
+};
 mod choices;
 mod color_data;
 mod color_edit;
@@ -97,6 +134,18 @@ pub use password::{
     PasswordEventKind, PasswordRef, PasswordValue,
 };
 mod breadcrumb;
+mod step_progress;
+mod wizard;
+mod wizard_model;
+#[cfg(test)]
+mod wizard_tests;
+pub use step_progress::StepProgress;
+pub use wizard::{Wizard, WizardSettings};
+pub use wizard_model::{
+    MAX_WIZARD_STEPS, StepProgressItem, StepProgressValue, StepState, WizardCompletion,
+    WizardDecision, WizardEvent, WizardEventKind, WizardIntent, WizardModel, WizardRequest,
+    WizardResult, WizardStatus, WizardStep,
+};
 mod breadcrumb_data;
 mod breadcrumb_model;
 #[cfg(test)]
@@ -551,6 +600,7 @@ pub struct Controls {
     text_displays: text_display::TextDisplays,
     sliders: sliders::Sliders,
     ratings: rating::Ratings,
+    barcodes: HashMap<WidgetId, barcode::BarcodeState>,
     badges: HashMap<WidgetId, badges::BadgeState>,
     button_contents: button_content::ButtonContents,
     progress_animation: progress::ProgressAnimation,
@@ -566,6 +616,8 @@ pub struct Controls {
     list_items: list_items::ListItemsState,
     searches: search::SearchState,
     breadcrumbs: breadcrumb::BreadcrumbState,
+    wizards: wizard::Wizards,
+    step_progresses: step_progress::StepProgressState,
     navigations: navigation::Navigations,
     calendars: calendar_view::CalendarState,
     temporal_popups: date_time_popup::TemporalPopupState,
@@ -578,6 +630,10 @@ pub struct Controls {
     trees: tree::Trees,
     font_pickers: font_picker::FontPickers,
     color_editors: color_edit::ColorEditors,
+    galleries: gallery::Galleries,
+    tiles: tiles::Tiles,
+    notifications: notifications::Notifications,
+    loadings: loading::Loadings,
     data_sources: HashMap<String, DataSourceHandle>,
     data_wake: grid::DataWake,
     pub runtime: UiRuntime,
@@ -657,6 +713,7 @@ impl Controls {
             button_contents: Default::default(),
             sliders: Default::default(),
             ratings: Default::default(),
+            barcodes: Default::default(),
             badges: HashMap::new(),
             text_displays: Default::default(),
             caret_clock: None,
@@ -670,6 +727,8 @@ impl Controls {
             list_items: Default::default(),
             searches: Default::default(),
             breadcrumbs: Default::default(),
+            wizards: Default::default(),
+            step_progresses: Default::default(),
             navigations: Default::default(),
             calendars: Default::default(),
             temporal_popups: Default::default(),
@@ -682,6 +741,10 @@ impl Controls {
             trees: tree::Trees::default(),
             font_pickers: font_picker::FontPickers::default(),
             color_editors: color_edit::ColorEditors::default(),
+            galleries: gallery::Galleries::default(),
+            tiles: tiles::Tiles::default(),
+            notifications: notifications::Notifications::default(),
+            loadings: loading::Loadings::default(),
             data_sources: HashMap::new(),
             data_wake: grid::DataWake::default(),
             runtime,
@@ -828,6 +891,7 @@ impl Controls {
             control.caret_goal_x = None;
             control.caret_reveal = true;
             self.invalidate_async_editor(id);
+            self.invalidate_wizard_editor(id);
         }
         self.refresh_color_source_status();
     }
@@ -1914,9 +1978,15 @@ impl Controls {
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.preflight_search_removal(id)?;
         self.preflight_breadcrumb_removal(id)?;
+        self.preflight_wizard_removal(id)?;
+        self.preflight_step_progress_removal(id)?;
         self.preflight_navigation_removal(id)?;
         self.preflight_font_removal(id)?;
         self.preflight_color_removal(id)?;
+        self.preflight_gallery_removal(id)?;
+        self.preflight_tile_removal(id)?;
+        self.preflight_notification_removal(id)?;
+        self.preflight_loading_removal(id)?;
         self.preflight_bar_removal(id)?;
         self.preflight_flyout_removal(id)?;
         self.preflight_memo_removal(id)?;
@@ -1964,6 +2034,10 @@ impl Controls {
         self.prune_trees();
         self.prune_font_pickers();
         self.prune_color_editors()?;
+        self.prune_galleries()?;
+        self.prune_tiles();
+        self.prune_notifications()?;
+        self.prune_loadings();
         self.badges
             .retain(|id, _| self.runtime.tree().contains(*id));
         self.sync_data_wakes()?;
@@ -1973,6 +2047,7 @@ impl Controls {
         self.retain_text_displays();
         self.retain_sliders()?;
         self.retain_ratings()?;
+        self.retain_barcodes();
         self.prune_button_contents();
         self.prune_list_item_content();
         self.prune_searches()?;
@@ -2336,6 +2411,7 @@ impl Controls {
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
         self.sync_searches()?;
         self.sync_breadcrumbs()?;
+        self.sync_wizards()?;
         self.sync_font_pickers()?;
         self.sync_color_editors()?;
         self.sync_passwords()?;
@@ -2388,6 +2464,7 @@ impl Controls {
             self.sync_splitters()?;
             self.sync_bars()?;
             self.sync_breadcrumb_layout()?;
+            self.sync_step_progress_layout()?;
             self.sync_tab_headers()?;
             self.sync_navigations()?;
             self.sync_status_bars()?;
@@ -2395,6 +2472,10 @@ impl Controls {
             self.sync_ratings()?;
             self.sync_grids()?;
             self.sync_trees()?;
+            self.sync_galleries()?;
+            self.sync_tiles()?;
+            self.sync_notifications()?;
+            self.sync_loadings()?;
             let scrolls: Vec<_> = self
                 .controls
                 .iter()
@@ -2515,15 +2596,19 @@ impl Controls {
             self.scene_dirty = true;
             return Ok(());
         }
-        if self.temporal_before_input(&event)?
+        if self.notification_before_input(&event)?
+            || self.temporal_before_input(&event)?
             || self.calendar_before_input(&event)?
             || self.numeric_before_input(&event)?
             || self.password_before_input(&event)?
             || self.memo_before_input(&event)?
             || self.editor_scroll_before_input(&event)?
+            || self.gallery_before_input(&event)?
+            || self.tile_before_input(&event)?
             || self.color_before_input(&event)?
             || self.search_before_input(&event)?
             || self.breadcrumb_before_input(&event)?
+            || self.wizard_before_input(&event)?
             || self.navigation_before_input(&event)?
             || self.flyout_before_input(&event)?
             || self.bars_before_input(&event)?
@@ -2777,7 +2862,19 @@ impl Controls {
         if self.activate_navigation(id)? {
             return Ok(());
         }
+        if self.activate_wizard(id)? {
+            return Ok(());
+        }
         if self.activate_breadcrumb(id)? {
+            return Ok(());
+        }
+        if self.activate_gallery(id)? {
+            return Ok(());
+        }
+        if self.activate_tile(id)? {
+            return Ok(());
+        }
+        if self.activate_notification(id)? || self.activate_loading(id)? {
             return Ok(());
         }
         if self.activate_color(id)? {
@@ -3276,6 +3373,9 @@ impl Controls {
                 continue;
             }
             if self.paint_color_editor(id, bounds, clip) {
+                continue;
+            }
+            if self.paint_barcode(id, bounds, clip)? {
                 continue;
             }
             if self.paint_rating(id, bounds, clip)? {
@@ -4074,7 +4174,9 @@ impl Controls {
                         control.kind.role()
                     }
                 });
-                let value = if let Some(value) = self.rating_semantic_value(id) {
+                let value = if let Some(value) = self.barcode_value(id) {
+                    Some(value.to_owned())
+                } else if let Some(value) = self.rating_semantic_value(id) {
                     Some(value)
                 } else if self.progress_indeterminate(id) == Some(true) {
                     None
@@ -4118,7 +4220,11 @@ impl Controls {
                     if props.focusable {
                         actions.push(SemanticAction::Focus);
                     }
-                    if control.kind.clickable() && !self.rich_read_only(id) {
+                    if control.kind.clickable()
+                        && !self.rich_read_only(id)
+                        && !self.tile_read_only(id)
+                        && !self.gallery_read_only(id)
+                    {
                         actions.push(SemanticAction::Activate);
                     }
                     if matches!(control.kind, Kind::TextBox(_)) && !control.editor.is_read_only {
@@ -4169,8 +4275,14 @@ impl Controls {
                     selected,
                     position_in_set: self
                         .list_item_set_position(id)
+                        .or_else(|| self.tile_set_position(id))
+                        .or_else(|| self.gallery_set_position(id))
                         .map(|(position, _)| position),
-                    set_size: self.list_item_set_position(id).map(|(_, size)| size),
+                    set_size: self
+                        .list_item_set_position(id)
+                        .or_else(|| self.tile_set_position(id))
+                        .or_else(|| self.gallery_set_position(id))
+                        .map(|(_, size)| size),
                     disabled: !enabled,
                     read_only: self
                         .password_settings(id)
@@ -4181,10 +4293,13 @@ impl Controls {
                             .unwrap_or(false)
                         || control.editor.is_read_only
                         || self.rich_read_only(id)
+                        || self.tile_read_only(id)
+                        || self.gallery_read_only(id)
                         || self
                             .grid_settings(id)
                             .is_some_and(|settings| settings.is_read_only)
                         || self.progress_settings(id).is_some()
+                        || self.barcode_settings(id).is_some()
                         || self
                             .rating_settings(id)
                             .is_some_and(|settings| settings.read_only),
@@ -4239,6 +4354,8 @@ impl Controls {
                                 || self.list_item_is_radio(id)))
                 })
                 || self.rich_read_only(id)
+                || self.tile_read_only(id)
+                || self.gallery_read_only(id)
             {
                 return Ok(());
             }

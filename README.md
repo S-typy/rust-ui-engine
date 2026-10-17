@@ -71,6 +71,12 @@ cargo run --release --locked -p xaml-form -- --badges
 cargo run --release --locked -p xaml-form -- --breadcrumb
 cargo run --release --locked -p xaml-form -- --color
 cargo run --release --locked -p xaml-form -- --navigation
+cargo run --release --locked -p xaml-form -- --wizard
+cargo run --release --locked -p xaml-form -- --tiles
+cargo run --release --locked -p xaml-form -- --gallery
+cargo run --release --locked -p xaml-form -- --barcodes
+cargo run --release --locked -p xaml-form -- --notifications
+cargo run --release --locked -p xaml-form -- --documents
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
@@ -109,6 +115,19 @@ See [color and brush editors](docs/public/color-editors.md).
 
 `--navigation` demonstrates retained pages, route history and side, accordion,
 hamburger, office and frame presentations. See [navigation](docs/public/navigation.md).
+
+`--wizard` demonstrates guarded retained steps and asynchronous completion.
+See [wizard and step progress](docs/public/wizard.md).
+
+`--gallery` demonstrates grouped image/icon samples, preview and accepted selection,
+and one retained gallery moving between form, Ribbon, and popup hosts.
+See [sample galleries](docs/public/sample-gallery.md).
+
+`--tiles` demonstrates bounded tile collections with stable selection,
+keyboard reorder and commands. See [tile collections](docs/public/tiles.md).
+
+[Workspace Store](docs/public/workspace-store.md) validates explicit settings
+snapshots before applying them as a single transaction.
 
 The optional `file-adapters` feature of `rust-desktop-ui-data` provides bounded
 JSON and CSV sources with explicit schemas, exact values and transactional
@@ -330,6 +349,7 @@ Their historical success does not validate the newer gallery.
 
 ## Documentation
 
+- [Barcodes](docs/public/barcodes.md), [notifications and loading](docs/public/notifications.md), [document workspaces](docs/public/document-workspace.md)
 - [Architecture](docs/public/architecture.md), [retained runtime](docs/public/retained-ui.md), [layout](docs/public/layout.md)
 - [Text](docs/public/text.md), [controls](docs/public/controls.md), [Ribbon](docs/public/ribbon.md), [TreeGrid](docs/public/treegrid.md)
 - [Docking and floating windows](docs/public/docking.md)

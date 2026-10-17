@@ -56,6 +56,7 @@ impl DockWindow {
             }
         }
         self.finish_shell_actions()?;
+        response.redraw |= self.state.borrow_mut().refresh_documents()?;
         response.clipboard.extend(
             self.ui
                 .drain_clipboard_requests()
@@ -77,7 +78,8 @@ impl DockWindow {
         input: InputEvent,
         response: &mut EventResponse,
     ) -> Result<(), String> {
-        if self.route_desktop_drag(&input)? {
+        let mdi_enabled = self.state.borrow().mdi_mode();
+        if !mdi_enabled && self.route_desktop_drag(&input)? {
             return Ok(());
         }
         if !matches!(
@@ -156,6 +158,31 @@ impl DockWindow {
             return Ok(());
         }
 
+        let composing_document = self.live_focused_pane().filter(|pane| {
+            let state = self.state.borrow();
+            state.documents.is_some() && state.panes[pane].ime_composition_active() == Some(true)
+        });
+        if let Some(pane) = composing_document {
+            if matches!(
+                input,
+                InputEvent::KeyDown {
+                    key: Key::Escape,
+                    ..
+                }
+            ) {
+                self.deliver_pane(&pane, PlatformEvent::ImeCancel, response)?;
+                return Ok(());
+            }
+            if let InputEvent::PointerDown { position, .. } = &input
+                && self.geometry.as_ref().and_then(|g| g.pane_at(*position)) != Some(&pane)
+            {
+                return Ok(());
+            }
+            if matches!(input, InputEvent::KeyDown { modifiers, .. } if modifiers.control || modifiers.alt)
+            {
+                return Ok(());
+            }
+        }
         if matches!(input, InputEvent::PointerDown { .. }) {
             self.suppress_text = false;
         }
@@ -235,11 +262,30 @@ impl DockWindow {
             return Ok(());
         }
 
-        let (consumed, requests) = self
-            .dock
-            .handle_input(&mut self.ui, &input, &self.state.borrow().layout)
-            .map_err(err)?;
-        self.update_desktop_drag(&input)?;
+        let mdi_mode = self.state.borrow().mdi_mode() && self.id == DockWindowId::MAIN;
+        let (consumed, requests) = if mdi_mode {
+            let mut state = self.state.borrow_mut();
+            let layout = state.layout.clone();
+            let result = self
+                .mdi
+                .handle_input(
+                    &mut self.ui,
+                    &input,
+                    &layout,
+                    &mut state.documents.as_mut().unwrap().mdi,
+                )
+                .map_err(err)?;
+            drop(state);
+            self.apply_mdi_requests(result.1)?;
+            (result.0, Vec::new())
+        } else {
+            self.dock
+                .handle_input(&mut self.ui, &input, &self.state.borrow().layout)
+                .map_err(err)?
+        };
+        if !mdi_mode {
+            self.update_desktop_drag(&input)?;
+        }
         if consumed {
             if matches!(input, InputEvent::PointerDown { .. }) {
                 self.state.borrow_mut().focus_pane(self.id, None)?;
@@ -313,6 +359,7 @@ impl DockWindow {
             }
         }
         if !focused {
+            self.mdi.cancel(&mut self.ui).map_err(err)?;
             self.set_hovered_pane(None, response)?;
         }
         Ok(())
@@ -328,7 +375,7 @@ impl DockWindow {
         let pane = state.focused.as_ref().and_then(|(window, pane)| {
             (*window == self.id
                 && state.layout.window_for(pane) == Some(self.id)
-                && state.layout.pane_is_visible(pane))
+                && state.pane_visible(pane))
             .then(|| pane.clone())
         });
         if let Some(pane) = pane
@@ -342,7 +389,7 @@ impl DockWindow {
     fn pane_is_live(&self, pane: &DockPaneId) -> bool {
         let state = self.state.borrow();
         state.layout.window_for(pane) == Some(self.id)
-            && state.layout.pane_is_visible(pane)
+            && state.pane_visible(pane)
             && self
                 .pane_bounds(pane)
                 .is_some_and(|bounds| bounds.width > 0.0 && bounds.height > 0.0)
@@ -400,9 +447,20 @@ impl DockWindow {
                 },
             )?;
         }
-        self.state
-            .borrow_mut()
-            .focus_pane(self.id, Some(pane.clone()))?;
+        {
+            let mut state = self.state.borrow_mut();
+            if state.mdi_mode() && self.id == DockWindowId::MAIN {
+                state
+                    .documents
+                    .as_mut()
+                    .unwrap()
+                    .mdi
+                    .activate(pane)
+                    .map_err(err)?;
+                state.layout.activate(pane).map_err(err)?;
+            }
+            state.focus_pane(self.id, Some(pane.clone()))?;
+        }
         self.ui.runtime.apply(Mutation::Focus(None)).map_err(err)?;
         self.deliver_pane(
             pane,
@@ -458,10 +516,24 @@ impl DockWindow {
         } else {
             self.ui.drain_activated()
         };
-        let requests = self
-            .dock
-            .process_activated(&activated, &self.state.borrow().layout);
-        self.apply_requests(requests)?;
+        if self.state.borrow().mdi_mode() && self.id == DockWindowId::MAIN {
+            let mut state = self.state.borrow_mut();
+            let requests = self
+                .mdi
+                .process_activated(
+                    &self.ui,
+                    &activated,
+                    &mut state.documents.as_mut().unwrap().mdi,
+                )
+                .map_err(err)?;
+            drop(state);
+            self.apply_mdi_requests(requests)?;
+        } else {
+            let requests = self
+                .dock
+                .process_activated(&activated, &self.state.borrow().layout);
+            self.apply_requests(requests)?;
+        }
         let invocations = self.ui.commands_mut().drain_invocations();
         let mut state = self.state.borrow_mut();
         for invocation in invocations {

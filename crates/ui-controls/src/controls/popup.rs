@@ -968,7 +968,7 @@ impl Controls {
         self.scene_dirty = true;
         Ok(())
     }
-    fn try_popup_focus(&mut self, id: WidgetId) -> Result<bool, ControlError> {
+    pub(super) fn try_popup_focus(&mut self, id: WidgetId) -> Result<bool, ControlError> {
         if !self.window_focused
             || !self.is_enabled(id)
             || !self

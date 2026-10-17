@@ -224,6 +224,18 @@ impl DockLayout {
         })
     }
 
+    /// Register a new stable pane identity in the closed set. Existing placement
+    /// and allocation counters remain intact; content creation belongs to the host.
+    pub fn register_closed_pane(&mut self, pane: DockPane) -> Result<(), DockError> {
+        let mut candidate = self.clone();
+        candidate.snapshot.closed.push(pane.id.clone());
+        candidate.panes.push(pane);
+        validate_catalog(&candidate.panes)?;
+        validate_snapshot(&candidate.panes, &candidate.snapshot)?;
+        *self = candidate;
+        Ok(())
+    }
+
     pub fn panes(&self) -> &[DockPane] {
         &self.panes
     }

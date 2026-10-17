@@ -275,6 +275,7 @@ impl Controls {
         let owner = self
             .tab_owner(id)
             .ok_or_else(|| ControlError::Invalid("Unknown tab control".into()))?;
+        self.check_wizard_tab_transition(owner)?;
         let state = &self.tabs[&owner];
         let target = state
             .tabs
@@ -348,7 +349,11 @@ impl Controls {
         }
         self.sync_tab_headers()?;
         self.refresh_tab_stops()?;
-        if focus_within && self.is_enabled(target) && self.window_focused {
+        if focus_within
+            && self.is_enabled(target)
+            && self.window_focused
+            && !self.wizard_switches_tab_focus(owner)
+        {
             self.runtime.apply(Mutation::Focus(Some(target)))?;
         }
         self.scene_dirty = true;
@@ -673,6 +678,7 @@ impl Controls {
         let owner = self
             .tab_owner(id)
             .ok_or_else(|| ControlError::Invalid("Unknown tab control".into()))?;
+        self.check_wizard_tab_transition(owner)?;
         let state = &self.tabs[&owner];
         let unique: HashSet<_> = order.iter().copied().collect();
         if order.len() != state.tabs.len()
@@ -720,6 +726,9 @@ impl Controls {
         header: WidgetId,
         content: Option<WidgetId>,
     ) -> Result<(), ControlError> {
+        if let Some(owner) = self.tab_owner(header) {
+            self.check_wizard_tab_transition(owner)?;
+        }
         if !matches!(
             self.controls.get(&header).map(|c| &c.kind),
             Some(Kind::Tab { .. })

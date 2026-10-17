@@ -1,4 +1,5 @@
 //! Several native windows compose the same long-lived panel documents.
+mod documents;
 mod drag;
 mod input;
 pub(crate) mod storage;
@@ -34,6 +35,7 @@ fn err(error: impl std::fmt::Display) -> String {
 
 struct Workspace {
     layout: DockLayout,
+    documents: Option<documents::DocumentHost>,
     initial: DockSnapshot,
     panes: BTreeMap<DockPaneId, Form>,
     active: DockPaneId,
@@ -70,7 +72,7 @@ impl Workspace {
         let visible = self
             .layout
             .window_for(&pane)
-            .filter(|_| self.layout.pane_is_visible(&pane));
+            .filter(|_| self.pane_visible(&pane));
         if let Some(window) = visible {
             // Moving a still-active pane never destroys or blurs its editor.
             self.focused = Some((window, pane));
@@ -93,6 +95,14 @@ impl Workspace {
                 form.event(PlatformEvent::ImeCancel)?;
             }
             if let Some(pane) = pane {
+                if let Some(documents) = &mut self.documents
+                    && !documents.controller.close_pending()
+                {
+                    documents
+                        .controller
+                        .activate(&mut self.layout, &pane)
+                        .map_err(err)?;
+                }
                 self.active = pane.clone();
                 self.focused = Some((window, pane));
             }
@@ -101,6 +111,33 @@ impl Workspace {
     }
 
     fn request(&mut self, window: DockWindowId, request: DockRequest) -> Result<(), String> {
+        if self.documents.is_some() {
+            self.refresh_documents()?;
+            if let DockRequest::Close(id) = &request {
+                if let Err(message) = self.begin_document_close(
+                    window,
+                    rust_desktop_ui_controls::document_workspace::DocumentCloseScope::Document(
+                        id.clone(),
+                    ),
+                    false,
+                ) {
+                    self.layout_status = message;
+                }
+                return Ok(());
+            }
+            if let Err(message) = self.check_document_transfer() {
+                self.layout_status = message;
+                return Ok(());
+            }
+            if self
+                .documents
+                .as_ref()
+                .is_some_and(|d| d.controller.close_pending())
+            {
+                self.layout_status = "Закрытие ожидает решения.".into();
+                return Ok(());
+            }
+        }
         let result = (|| -> Result<(), String> {
             match request {
                 DockRequest::Activate(pane) => {
@@ -108,11 +145,18 @@ impl Workspace {
                         && self.layout.revealed_auto_hide(window).is_none()
                     {
                         self.auto_hide_return.remove(&window);
-                        if self.active != pane && self.layout.pane_is_visible(&self.active) {
+                        if self.active != pane && self.pane_visible(&self.active) {
                             self.auto_hide_return.insert(window, self.active.clone());
                         }
                     }
-                    self.layout.activate(&pane).map_err(err)?;
+                    if let Some(documents) = &mut self.documents {
+                        documents
+                            .controller
+                            .activate(&mut self.layout, &pane)
+                            .map_err(err)?;
+                    } else {
+                        self.layout.activate(&pane).map_err(err)?;
+                    }
                     self.active = pane;
                 }
                 DockRequest::Close(pane) => {
@@ -156,7 +200,7 @@ impl Workspace {
                     if restore_focus
                         && let Some(pane) = previous
                         && self.layout.window_for(&pane) == Some(window)
-                        && self.layout.pane_is_visible(&pane)
+                        && self.pane_visible(&pane)
                     {
                         self.focus_pane(window, Some(pane.clone()))?;
                         self.panes
@@ -178,6 +222,26 @@ impl Workspace {
     }
 
     fn command(&mut self, window: DockWindowId, command: &str) -> Result<(), String> {
+        if self.documents.is_some() {
+            self.refresh_documents()?;
+            match self.document_command(window, command) {
+                Ok(true) => return Ok(()),
+                Err(message) => {
+                    self.layout_status = message;
+                    return Ok(());
+                }
+                Ok(false) => {}
+            }
+            if !matches!(command, "Light" | "Dark")
+                && self
+                    .documents
+                    .as_ref()
+                    .is_some_and(|d| d.controller.close_pending())
+            {
+                self.layout_status = "Закрытие ожидает решения.".into();
+                return Ok(());
+            }
+        }
         match command {
             "DockFloat" if !self.layout.is_closed(&self.active) => {
                 self.request(window, DockRequest::Float(self.active.clone()))?
@@ -350,6 +414,7 @@ impl DockApplication {
         Ok(Self {
             state: Rc::new(RefCell::new(Workspace {
                 layout,
+                documents: None,
                 initial,
                 panes,
                 active,
@@ -492,6 +557,28 @@ impl DesktopApplication for DockApplication {
     }
     fn close_requested(&mut self, key: WindowKey) -> Result<(), String> {
         let mut state = self.state.borrow_mut();
+        if state.documents.is_some() {
+            let scope = if key == WindowKey::MAIN {
+                rust_desktop_ui_controls::document_workspace::DocumentCloseScope::All
+            } else {
+                rust_desktop_ui_controls::document_workspace::DocumentCloseScope::Window(
+                    DockWindowId(key.0),
+                )
+            };
+            if state
+                .documents
+                .as_ref()
+                .is_some_and(|d| d.controller.close_pending())
+            {
+                return Ok(());
+            }
+            if let Err(message) =
+                state.begin_document_close(DockWindowId(key.0), scope, key == WindowKey::MAIN)
+            {
+                state.layout_status = message;
+            }
+            return Ok(());
+        }
         state.drag = None;
         state.drop_targets.remove(&DockWindowId(key.0));
         if key == WindowKey::MAIN {
@@ -531,6 +618,8 @@ struct DockWindow {
     ribbon: Option<MountedRibbon>,
     chrome: FormChrome,
     dock: DockView,
+    mdi: DockMdiView,
+    mdi_geometry: Option<DockMdiGeometry>,
     scene: Scene,
     geometry: Option<DockGeometry>,
     accessible: Accessibility,
@@ -568,6 +657,17 @@ impl DockWindow {
             })
             .map_err(err)?;
         for (command, label) in [
+            ("DocTabbed", "Вкладки"),
+            ("DocMdi", "MDI"),
+            ("DocWindowed", "Окна"),
+            ("DocSave", "Сохранить документ"),
+            ("DocClose", "Закрыть документ"),
+            ("DocCloseGroup", "Закрыть группу"),
+            ("DocCloseAll", "Закрыть все"),
+            ("DocOpenAll", "Открыть снова"),
+            ("DocFailSave", "Ошибка сохранения"),
+            ("DocCascade", "Каскад"),
+            ("DocTile", "Плитка"),
             ("DockFloat", "Отдельное окно"),
             ("DockBack", "Закрепить"),
             ("DockReset", "Сбросить расположение"),
@@ -602,6 +702,7 @@ impl DockWindow {
         };
         let root = ui.root();
         let dock = DockView::new(&mut ui, root, id).map_err(err)?;
+        let mdi = DockMdiView::new(&mut ui, root, id).map_err(err)?;
         let layout_status = ui.label(root, "", LayoutStyle::default()).map_err(err)?;
         ui.set_text_style(
             layout_status,
@@ -621,6 +722,8 @@ impl DockWindow {
             ribbon,
             chrome: FormChrome::new(title_bar),
             dock,
+            mdi,
+            mdi_geometry: None,
             scene: Scene::default(),
             geometry: None,
             accessible: Accessibility::default(),
@@ -659,7 +762,7 @@ impl DockWindow {
         let mut panes = Vec::new();
         let mut state = self.state.borrow_mut();
         for (pane, bounds) in self.geometry.iter().flat_map(DockGeometry::visible_panes) {
-            if !state.layout.pane_is_visible(pane) {
+            if !state.pane_visible(pane) {
                 continue;
             }
             let Some(form) = state.panes.get_mut(pane) else {
@@ -702,6 +805,7 @@ impl DesktopApp for DockWindow {
         if self.id != DockWindowId::MAIN && state.layout.root(self.id).is_none() {
             return Ok(());
         }
+        state.refresh_documents()?;
         self.ui.set_theme(state.theme).map_err(err)?;
         self.ui
             .commands_mut()
@@ -772,15 +876,49 @@ impl DesktopApp for DockWindow {
             (viewport.width - 16.0).max(0.0),
             (viewport.height - content_top - footer_height - 8.0).max(0.0),
         );
-        let geometry = self
-            .dock
-            .update(&mut self.ui, &state.layout, bounds)
-            .map_err(err)?;
+        let mdi_mode = state.mdi_mode() && self.id == DockWindowId::MAIN;
+        let dock_root = self.dock.root();
+        let mdi_root = self.mdi.root();
+        for (node, visible) in [(dock_root, !mdi_mode), (mdi_root, mdi_mode)] {
+            let mut props = self
+                .ui
+                .runtime
+                .tree()
+                .node(node)
+                .ok_or("Missing workspace host")?
+                .props
+                .clone();
+            props.visible = visible;
+            self.ui
+                .runtime
+                .apply(Mutation::SetProps { node, props })
+                .map_err(err)?;
+        }
+        let geometry = if mdi_mode {
+            let layout = state.layout.clone();
+            let doc = state.documents.as_mut().unwrap();
+            doc.mdi.synchronize(&layout, self.id).map_err(err)?;
+            let geometry = self
+                .mdi
+                .update(&mut self.ui, &layout, &doc.mdi, bounds)
+                .map_err(err)?;
+            let result = geometry.as_dock_geometry();
+            self.mdi_geometry = Some(geometry);
+            result
+        } else {
+            self.mdi_geometry = None;
+            self.dock
+                .update(&mut self.ui, &state.layout, bounds)
+                .map_err(err)?
+        };
         let popup_open = self.ui.popup_open()
             || geometry
                 .visible_panes()
                 .any(|(pane, _)| state.panes[pane].ui.popup_open());
-        if !popup_open && let Some(targets) = self.dock.drop_targets() {
+        if !mdi_mode
+            && !popup_open
+            && let Some(targets) = self.dock.drop_targets()
+        {
             state.drop_targets.insert(self.id, targets);
         } else {
             state.drop_targets.remove(&self.id);
@@ -812,12 +950,24 @@ impl DesktopApp for DockWindow {
             }
             let form = state.panes.get_mut(pane).ok_or("Missing pane document")?;
             form.update(Size::new(bounds.width, bounds.height), scale)?;
-            self.scene
-                .append_view(form.scene(), Point::new(bounds.x, bounds.y), bounds)
-                .map_err(err)?;
+            if let Some(mdi) = &self.mdi_geometry {
+                for clip in mdi.visible_content(pane) {
+                    self.scene
+                        .append_view(form.scene(), Point::new(bounds.x, bounds.y), clip)
+                        .map_err(err)?;
+                }
+            } else {
+                self.scene
+                    .append_view(form.scene(), Point::new(bounds.x, bounds.y), bounds)
+                    .map_err(err)?;
+            }
         }
         self.scene.append(self.ui.overlay_scene());
-        self.scene.append(self.dock.overlay_scene());
+        self.scene.append(if mdi_mode {
+            self.mdi.overlay_scene()
+        } else {
+            self.dock.overlay_scene()
+        });
         if state.diagnostics {
             use crate::popup_diagnostics::{rectangle, string};
             let groups = geometry.groups.iter().map(|group| format!("{{\"bounds\":{},\"content\":{},\"header\":{},\"active\":{},\"panes\":[{}]}}", rectangle(group.bounds), rectangle(group.content), rectangle(group.tab_strip), string(group.active.as_str()), group.panes.iter().map(|p| string(p.as_str())).collect::<Vec<_>>().join(","))).collect::<Vec<_>>().join(",");
@@ -876,14 +1026,15 @@ impl DesktopApp for DockWindow {
                 .collect::<Vec<_>>()
                 .join(",");
             let diagnostic = format!(
-                "dock-state {{\"window\":{},\"viewport\":[{},{}],\"floating\":{},\"groups\":[{}],\"editors\":[{}],\"auto_hide\":[{}]}}",
+                "dock-state {{\"window\":{},\"viewport\":[{},{}],\"floating\":{},\"groups\":[{}],\"editors\":[{}],\"auto_hide\":[{}],\"documents\":{}}}",
                 self.id.0,
                 viewport.width,
                 viewport.height,
                 state.layout.floating().len(),
                 groups,
                 editors,
-                auto_hide
+                auto_hide,
+                state.document_diagnostic()
             );
             if diagnostic != self.last_diagnostic {
                 println!("{diagnostic}");
@@ -920,6 +1071,15 @@ impl DesktopApp for DockWindow {
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
         self.handle_event(event)
     }
+    fn take_dialog_request(&mut self) -> Option<platform::DialogRequest> {
+        self.document_dialog()
+    }
+    fn dialog_completed(
+        &mut self,
+        completion: platform::DialogCompletion,
+    ) -> Result<EventResponse, String> {
+        self.document_dialog_completed(completion)
+    }
     fn desktop_geometry_changed(&mut self, geometry: WindowGeometry) {
         let mut state = self.state.borrow_mut();
         if state.native_geometry.get(&self.id).is_none_or(|old| {
@@ -939,6 +1099,7 @@ impl DesktopApp for DockWindow {
     fn pointer_capture_lost(&mut self) -> Result<EventResponse, String> {
         self.sync_layout_revision()?;
         self.cancel_dock_drag()?;
+        self.mdi.cancel(&mut self.ui).map_err(err)?;
         self.ui.cancel_pointer_interaction().map_err(err)?;
         let mut state = self.state.borrow_mut();
         let panes = state.layout.window_panes(self.id).unwrap_or_default();
@@ -986,6 +1147,11 @@ impl DesktopApp for DockWindow {
             .iter()
             .flat_map(DockGeometry::visible_panes)
             .filter_map(|(pane, _)| state.panes.get(pane).and_then(DesktopApp::wake_after))
+            .chain(
+                state
+                    .document_deadline()
+                    .map(|d| d.saturating_duration_since(std::time::Instant::now())),
+            )
             .chain(
                 self.ui
                     .next_deadline()

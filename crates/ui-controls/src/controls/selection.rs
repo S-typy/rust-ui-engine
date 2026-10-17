@@ -12,7 +12,7 @@ impl SelectionValidator {
     pub fn new(validator: impl Fn(&[String]) -> Result<(), String> + 'static) -> Self {
         Self(Rc::new(validator))
     }
-    pub(super) fn check(&self, keys: &[String]) -> Result<(), String> {
+    pub(crate) fn check(&self, keys: &[String]) -> Result<(), String> {
         (self.0)(keys)
     }
 }

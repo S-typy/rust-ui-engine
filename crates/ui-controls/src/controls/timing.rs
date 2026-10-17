@@ -21,6 +21,7 @@ impl Controls {
             self.progress_deadline(),
             self.expander_deadline(),
             self.password_deadline(),
+            self.notification_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -42,6 +43,7 @@ impl Controls {
         changed |= self.progress_tick(now);
         changed |= self.expander_tick(now)?;
         changed |= self.password_tick(now)?;
+        changed |= self.notification_tick(now)?;
         Ok(changed)
     }
 }

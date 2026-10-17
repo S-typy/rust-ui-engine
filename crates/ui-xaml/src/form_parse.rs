@@ -2,12 +2,17 @@ use crate::*;
 
 pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
     Some(match name {
+        "NotificationCenter" => ElementKind::NotificationCenter(Default::default()),
+        "LoadingOverlay" => ElementKind::LoadingOverlay(Box::default()),
         "Grid" => ElementKind::Grid(GridDefinition::default()),
         "GridControl" => ElementKind::GridControl(GridControlDefinition::default()),
         "TreeView" => ElementKind::TreeView(TreeDefinition::default()),
         "TreeGrid" => ElementKind::TreeGrid(TreeDefinition::default()),
+        "Barcode" => ElementKind::Barcode(BarcodeDefinition::default()),
         "Rating" => ElementKind::Rating(RatingDefinition::default()),
         "Breadcrumb" => ElementKind::Breadcrumb(BreadcrumbDefinition::default()),
+        "Gallery" => ElementKind::Gallery(Box::default()),
+        "TileCollection" => ElementKind::TileCollection(Box::default()),
         "ColorEdit" => ElementKind::ColorEdit(ColorEditorDefinition::default()),
         "BrushEdit" => ElementKind::BrushEdit(ColorEditorDefinition::default()),
         "NavigationPane" | "Accordion" | "NavigationFrame" => {
@@ -20,6 +25,8 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
                 ..Default::default()
             }))
         }
+        "Wizard" => ElementKind::Wizard(Box::default()),
+        "StepProgress" => ElementKind::StepProgress(StepProgressDefinition::default()),
         "FontPicker" => ElementKind::FontPicker(FontPickerDefinition::default()),
         "DataForm" => ElementKind::DataForm(DataFormDefinition::default()),
         "Border" => ElementKind::Border(BorderDefinition::default()),
@@ -70,12 +77,19 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
     }
     match kind {
         ElementKind::Slider(_) => name == "Value",
+        ElementKind::Barcode(_) => name == "Value",
         ElementKind::Rating(_) => matches!(name, "Value" | "IsReadOnly"),
         ElementKind::NavigationPane(_) => name == "Route",
         ElementKind::Breadcrumb(_) => matches!(name, "Value" | "IsReadOnly"),
         ElementKind::ColorEdit(_) | ElementKind::BrushEdit(_) => {
             matches!(name, "Value" | "IsReadOnly")
         }
+        ElementKind::Gallery(_) => matches!(name, "SelectedKey" | "IsReadOnly"),
+        ElementKind::Wizard(_) => name == "IsReadOnly",
+        ElementKind::TileCollection(_) => matches!(
+            name,
+            "SelectedKey" | "SelectedKeys" | "ItemsSource" | "IsReadOnly"
+        ),
         ElementKind::FontPicker(_) => matches!(name, "Value" | "IsReadOnly"),
         ElementKind::TreeView(_) | ElementKind::TreeGrid(_) => {
             matches!(name, "SelectedKey" | "IsReadOnly")
@@ -457,12 +471,20 @@ pub(super) fn property(
                 selection_property(document, attr, selection)
             }
         }
+        ElementKind::Barcode(value) => barcode::property(document, attr, value),
         ElementKind::Rating(rating) => rating::property(document, attr, rating),
         ElementKind::NavigationPane(value) => navigation::property(document, attr, value),
         ElementKind::Breadcrumb(value) => breadcrumb::property(document, attr, value),
+        ElementKind::TileCollection(value) => tiles::property(document, attr, value),
+        ElementKind::NotificationCenter(_) | ElementKind::LoadingOverlay(_) => {
+            notifications::property(document, attr, kind)
+        }
         ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) => {
             color::property(document, attr, value)
         }
+        ElementKind::Gallery(value) => gallery::property(document, attr, value),
+        ElementKind::Wizard(value) => wizard::property(document, attr, value),
+        ElementKind::StepProgress(value) => wizard::progress_property(document, attr, value),
         ElementKind::FontPicker(font) => font_picker::property(document, attr, font),
         ElementKind::TreeView(tree) => tree::property(document, attr, tree, false),
         ElementKind::TreeGrid(tree) => tree::property(document, attr, tree, true),
@@ -1581,14 +1603,32 @@ pub(super) fn validate(
         }
     }
     match kind {
+        ElementKind::Barcode(value) => {
+            validate_barcode(value, common).map_err(|e| at_node(node, e))?
+        }
         ElementKind::Rating(rating) => {
             validate_rating(rating, common).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::Gallery(value) => {
+            validate_gallery(value, common).map_err(|e| at_node(node, e))?
         }
         ElementKind::NavigationPane(value) => {
             validate_navigation(value, common).map_err(|message| at_node(node, message))?
         }
+        ElementKind::Wizard(value) => {
+            validate_wizard(value, common).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::StepProgress(value) => {
+            validate_step_progress(value, common).map_err(|message| at_node(node, message))?
+        }
         ElementKind::Breadcrumb(value) => {
             validate_breadcrumb(value, common).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::TileCollection(value) => {
+            validate_tiles(value, common).map_err(|e| at_node(node, e))?
+        }
+        ElementKind::NotificationCenter(_) | ElementKind::LoadingOverlay(_) => {
+            validate_notifications(kind, common).map_err(|e| at_node(node, e))?
         }
         ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) => {
             validate_color_editor(value, matches!(kind, ElementKind::BrushEdit(_)), common)

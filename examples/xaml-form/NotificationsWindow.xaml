@@ -1,0 +1,25 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Уведомления и ожидание" Width="1060" Height="760" Padding="24">
+  <Grid Spacing="14">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Уведомления и ожидание" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Карточки сохраняют фокус. Операции выполняются в рабочем потоке; отмена не блокирует окно." TextTone="Secondary"/>
+      <NotificationCenter x:Name="Notifications" CardWidth="360" MaxVisible="3"/>
+    </StackPanel>
+    <WrapPanel x:Name="NotificationActions" Grid.Row="1" Spacing="8"/>
+    <LoadingOverlay x:Name="WaitSurface" Grid.Row="2" Label="Ожидание операции">
+      <GroupBox Header="Содержимое сохраняется">
+        <StackPanel Spacing="12">
+          <TextBlock Text="Черновик документа" FontWeight="SemiBold"/>
+          <TextBox x:Name="NotificationDraft" AutomationName="Черновик документа" Text="Сохранённый документ"/>
+          <TextBlock Text="Уведомление не подтверждает значение и не отменяет композицию. При ожидании содержимое временно недоступно, но его состояние остаётся прежним." TextTone="Secondary"/>
+        </StackPanel>
+      </GroupBox>
+    </LoadingOverlay>
+    <StackPanel Grid.Row="3" Spacing="5">
+      <TextBlock x:Name="NotificationResult" Text="Готово" FontWeight="SemiBold"/>
+      <TextBlock x:Name="NotificationHistory" Text="История: 0; действий: 0" TextTone="Secondary"/>
+    </StackPanel>
+  </Grid>
+</Window>

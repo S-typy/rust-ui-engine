@@ -62,14 +62,34 @@ pub use grid_extensions::{
 };
 mod tree;
 pub use tree::{TreeColumnDefinition, TreeDefinition, validate_tree};
+mod tiles;
+pub use tiles::{
+    TileCollectionDefinition, TileDefinition, TileGroupDefinition, TileSizeDefinition,
+    validate_tiles,
+};
+mod notifications;
+pub use notifications::{
+    LoadingOverlayDefinition, NotificationCenterDefinition, validate_notifications,
+};
 mod color;
+mod wizard;
+pub use wizard::{
+    StepDefinition, StepProgressDefinition, StepStateDefinition, WizardDefinition,
+    WizardStepDefinition, validate_step_progress, validate_wizard,
+};
 mod navigation;
 pub use navigation::{
     NavigationDefinition, NavigationPageDefinition, NavigationSectionDefinition,
     NavigationViewDefinition, validate_navigation,
 };
 mod data_form;
+mod gallery;
+pub use gallery::{
+    GalleryDefinition, GalleryGroupDefinition, GalleryItemDefinition, validate_gallery,
+};
+mod barcode;
 mod rating;
+pub use barcode::{BarcodeDefinition, BarcodeSymbologyDefinition, validate_barcode};
 pub use color::{
     BrushValue, ColorEditorDefinition, GradientStop, LinearGradient, Srgba8, parse_color_literal,
     validate_color_editor,
@@ -444,6 +464,7 @@ impl ElementDefinition {
             ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
                 p.children.iter().collect()
             }
+            ElementKind::Wizard(p) => p.steps.iter().map(|p| p.content.as_ref()).collect(),
             ElementKind::NavigationPane(p) => p.pages.iter().map(|p| p.content.as_ref()).collect(),
             ElementKind::ToolBar(p) => p.children.iter().collect(),
             ElementKind::MenuBar(p) => p.items.iter().collect(),
@@ -459,6 +480,7 @@ impl ElementDefinition {
                 .iter()
                 .filter_map(|button| button.content_template.as_deref())
                 .collect(),
+            ElementKind::LoadingOverlay(p) => p.child.as_deref().into_iter().collect(),
             ElementKind::Border(p) => vec![&p.child],
             ElementKind::GroupBox(p) => p
                 .header_content
@@ -521,6 +543,7 @@ impl ElementDefinition {
             ElementKind::StackPanel(p) | ElementKind::WrapPanel(p) | ElementKind::Overlay(p) => {
                 p.children.iter_mut().collect()
             }
+            ElementKind::Wizard(p) => p.steps.iter_mut().map(|p| p.content.as_mut()).collect(),
             ElementKind::NavigationPane(p) => {
                 p.pages.iter_mut().map(|p| p.content.as_mut()).collect()
             }
@@ -540,6 +563,7 @@ impl ElementDefinition {
                 .iter_mut()
                 .filter_map(|button| button.content_template.as_deref_mut())
                 .collect(),
+            ElementKind::LoadingOverlay(p) => p.child.as_deref_mut().into_iter().collect(),
             ElementKind::Border(p) => vec![&mut p.child],
             ElementKind::GroupBox(p) => p
                 .header_content
@@ -579,6 +603,8 @@ impl ElementDefinition {
 /// Supported layout elements. Menu buttons own static menu entries separately.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
+    NotificationCenter(NotificationCenterDefinition),
+    LoadingOverlay(Box<LoadingOverlayDefinition>),
     ToolBar(ToolBarDefinition),
     MenuBar(MenuBarDefinition),
     Popup(PopupDefinition),
@@ -594,8 +620,13 @@ pub enum ElementKind {
     Grid(GridDefinition),
     GridControl(GridControlDefinition),
     DataForm(DataFormDefinition),
+    Wizard(Box<WizardDefinition>),
+    StepProgress(StepProgressDefinition),
     NavigationPane(Box<NavigationDefinition>),
     Rating(RatingDefinition),
+    Barcode(BarcodeDefinition),
+    Gallery(Box<GalleryDefinition>),
+    TileCollection(Box<TileCollectionDefinition>),
     ColorEdit(ColorEditorDefinition),
     BrushEdit(ColorEditorDefinition),
     FontPicker(FontPickerDefinition),
@@ -1245,6 +1276,7 @@ fn parse_element_properties(
                     | "LowerValue"
                     | "UpperValue"
                     | "SelectedValues"
+                    | "SelectedKeys"
                     | "IsChecked"
                     | "IsExpanded"
                     | "SelectedIndex"
@@ -1254,6 +1286,7 @@ fn parse_element_properties(
             ) && !matches!(
                 kind,
                 ElementKind::TextBlock(_)
+                    | ElementKind::Barcode(_)
                     | ElementKind::ProgressBar(_)
                     | ElementKind::BusyIndicator(_)
             );
@@ -1264,6 +1297,7 @@ fn parse_element_properties(
                     | "LowerValue"
                     | "UpperValue"
                     | "SelectedValues"
+                    | "SelectedKeys"
                     | "IsChecked"
                     | "IsExpanded"
                     | "SelectedIndex"
@@ -1689,12 +1723,30 @@ fn parse_element(
     let document = node.document();
     let (mut common, mut kind) = parse_element_properties(node, names)?;
     let mut menu_text_bytes = 0;
-    if let ElementKind::DockWorkspace(workspace) = &mut kind {
+    if let ElementKind::LoadingOverlay(value) = &mut kind {
+        notifications::parse_loading(
+            node,
+            depth,
+            element_id,
+            count,
+            names,
+            checked_radio_groups,
+            value,
+        )?;
+    } else if let ElementKind::DockWorkspace(workspace) = &mut kind {
         *workspace = docking::parse_workspace(node, depth, count, names, checked_radio_groups)?;
+    } else if let ElementKind::TileCollection(value) = &mut kind {
+        tiles::parse_children(node, depth, count, value)?;
     } else if let ElementKind::Ribbon(ribbon) = &mut kind {
         ribbon::parse_children(node, depth, count, ribbon, names, checked_radio_groups)?;
     } else if let ElementKind::GridControl(grid) = &mut kind {
         grid_control::parse_children(node, depth, count, grid)?;
+    } else if let ElementKind::Wizard(value) = &mut kind {
+        wizard::parse_steps(node, depth, count, names, checked_radio_groups, value)?;
+    } else if let ElementKind::StepProgress(value) = &mut kind {
+        wizard::parse_progress(node, depth, count, value)?;
+    } else if let ElementKind::Gallery(value) = &mut kind {
+        gallery::parse_children(node, depth, count, value)?;
     } else if let ElementKind::NavigationPane(value) = &mut kind {
         navigation::parse_children(node, depth, count, value, names, checked_radio_groups)?;
     } else if let ElementKind::Breadcrumb(value) = &mut kind {

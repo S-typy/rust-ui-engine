@@ -1,0 +1,61 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Галерея образцов" Width="1140" Height="840" Padding="16">
+  <Window.Resources><DataTemplate x:Key="SampleCaption"><TextBlock Text="{Binding Text}" TextWrapping="Wrap"/></DataTemplate></Window.Resources>
+  <Grid Spacing="12">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Ribbon x:Name="GalleryRibbon">
+      <RibbonTab Id="Samples" Header="Образцы" KeyTip="S">
+        <RibbonGroup Id="Placement" Header="Размещение">
+          <Button Command="GalleryHome" Icon="FolderOpen" KeyTip="H"/>
+          <Button Command="GalleryRibbon" Icon="Pin" KeyTip="R"/>
+          <Button Command="GalleryPopup" Icon="Add" KeyTip="P"/>
+        </RibbonGroup>
+        <RibbonGroup Id="Gallery" Header="Образцы в ленте">
+          <RibbonContent Id="Samples" Header="Галерея" KeyTip="G" Width="460" MinWidth="240" Height="144"><Grid x:Name="GalleryRibbonHost"/></RibbonContent>
+        </RibbonGroup>
+      </RibbonTab>
+    </Ribbon>
+    <WrapPanel Grid.Row="1" Spacing="8">
+      <Button x:Name="GalleryHomeButton" Content="В рабочую область" Command="GalleryHome"/>
+      <Button x:Name="GalleryRibbonButton" Content="В ленту" Command="GalleryRibbon"/>
+      <Button x:Name="GalleryPopupButton" Content="Открыть все образцы" Command="GalleryPopup"/>
+      <Button x:Name="GalleryReadOnlyButton" Content="Только просмотр" Command="GalleryReadOnly"/>
+      <Button x:Name="GalleryGuardButton" Content="Проверка красного образца" Command="GalleryGuard"/>
+    </WrapPanel>
+    <Grid Grid.Row="2" Spacing="20">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <GroupBox Header="Образцы">
+        <Grid x:Name="GalleryStandaloneHost">
+          <Gallery x:Name="Samples" AutomationName="Образцы оформления"
+                   SelectedKey="{Binding SelectedSample}" ItemTemplate="{StaticResource SampleCaption}" SampleWidth="144" SampleHeight="100">
+            <GalleryGroup Key="colors" Header="Цветовые образцы">
+              <GalleryItem Key="blue" Text="Синий" ImageResource="GalleryBlue"/>
+              <GalleryItem Key="green" Text="Зелёный" ImageResource="GalleryGreen"/>
+              <GalleryItem Key="red" Text="Красный" ImageResource="GalleryRed"/>
+              <GalleryItem Key="sky" Text="Небо" ImageResource="GalleryBlue"/>
+              <GalleryItem Key="forest" Text="Лес" ImageResource="GalleryGreen"/>
+              <GalleryItem Key="coral" Text="Коралл" ImageResource="GalleryRed"/>
+            </GalleryGroup>
+            <GalleryGroup Key="symbols" Header="Значки">
+              <GalleryItem Key="check" Text="Готово" Icon="Check"/>
+              <GalleryItem Key="edit" Text="Редактирование" Icon="Edit"/>
+              <GalleryItem Key="pin" Text="Закрепление" Icon="Pin"/>
+              <GalleryItem Key="unavailable" Text="Недоступно" Icon="Close" IsEnabled="False"/>
+            </GalleryGroup>
+          </Gallery>
+        </Grid>
+      </GroupBox>
+      <StackPanel Grid.Column="1" Spacing="14">
+        <TextBlock Text="Предварительный просмотр" FontSize="24" FontWeight="SemiBold"/>
+        <TextBlock Text="Наведение и стрелки показывают образец. Enter или щелчок подтверждают выбор; Escape отменяет просмотр." TextWrapping="Wrap"/>
+        <WrapPanel Spacing="16"><Image x:Name="GalleryPreviewImage" Source="GalleryBlue" Width="112" Height="80"/><Icon x:Name="GalleryPreviewIcon" Symbol="Check" Width="48" Height="48"/></WrapPanel>
+        <TextBlock x:Name="GalleryPreview" Text="Синий" FontSize="20" FontWeight="SemiBold"/>
+        <TextBlock Text="Принятый ключ" FontWeight="SemiBold"/>
+        <TextBlock x:Name="GalleryAccepted" Text="{Binding SelectedSample}"/>
+        <TextBox x:Name="GalleryDocument" AutomationName="Текст документа" Text="Черновик документа" CommitOnLostFocus="False"/>
+        <TextBlock Text="Перенос галереи не пересоздаёт образцы или редактор документа." TextWrapping="Wrap" TextTone="Secondary"/>
+      </StackPanel>
+    </Grid>
+    <TextBlock Grid.Row="3" x:Name="GalleryStatus" Text="Готово" TextWrapping="Wrap" TextTone="Secondary"/>
+  </Grid>
+</Window>

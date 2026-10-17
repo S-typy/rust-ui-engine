@@ -144,7 +144,7 @@ fn items(selection: &x::SelectionDefinition) -> Vec<SelectionItem> {
         .collect()
 }
 
-fn item_template(root: &ElementDefinition) -> Result<ListItemTemplate, String> {
+pub(super) fn item_template(root: &ElementDefinition) -> Result<ListItemTemplate, String> {
     x::validate_item_template(root)?;
     fn convert(node: &ElementDefinition) -> ListTemplateNode {
         let c = &node.common;
