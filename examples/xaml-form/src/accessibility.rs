@@ -7,6 +7,9 @@ use std::collections::{HashMap, HashSet};
 
 const WINDOW: NodeId = NodeId(1);
 
+#[cfg(test)]
+#[path = "accessibility_badge_tests.rs"]
+mod badge_tests;
 #[path = "accessibility_grid.rs"]
 mod grid;
 #[cfg(test)]
@@ -229,8 +232,16 @@ impl Accessibility {
             if let Some(settings) = ui.editor_settings(widget) {
                 append_description(&mut node, &settings.placeholder);
             }
+            if let Some(description) = semantic.description {
+                // Informational layout owners must survive the native filter.
+                // This reuses the owner node; it adds no focus or input target.
+                if node.role() == Role::GenericContainer {
+                    node.set_role(Role::Group);
+                }
+                append_description(&mut node, &description);
+            }
             if let Some(tooltip) = semantic.tooltip {
-                // Windows UIA exposes description as FullDescription/HelpText;
+                // Windows UIA exposes description as FullDescription;
                 // the tooltip property alone is not projected by this backend.
                 append_description(&mut node, &tooltip);
                 node.set_tooltip(tooltip);

@@ -1,0 +1,65 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Индикаторы состояния" Width="1120" Height="820" Padding="28">
+  <Grid Spacing="18">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Индикаторы состояния" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Счётчики, короткие подписи и значки рядом с элементами формы." TextTone="Secondary"/>
+    </StackPanel>
+    <WrapPanel Grid.Row="1" Spacing="8">
+      <Button x:Name="BadgeIncrement" Content="Добавить сообщение" Command="BadgeIncrement"/>
+      <Button x:Name="BadgeHuge" Content="Большой счётчик" Command="BadgeHuge"/>
+      <Button x:Name="BadgeReset" Content="Сбросить" Command="BadgeReset"/>
+      <Button x:Name="BadgeReflow" Content="Изменить ширину" Command="BadgeReflow"/>
+      <Button x:Name="BadgeClip" Content="Обрезка по кнопке" Command="BadgeClip"/>
+    </WrapPanel>
+    <Grid Grid.Row="2" Spacing="20">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="3*"/><ColumnDefinition Width="2*"/></Grid.ColumnDefinitions>
+      <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Spacing="24" Padding="14">
+          <GroupBox Header="Сообщения и задачи" Padding="24">
+            <WrapPanel x:Name="BadgeWrap" MaxWidth="420" Padding="16" Spacing="28" Visibility="{Binding OwnerVisible}" IsEnabled="{Binding OwnerEnabled}">
+              <Button x:Name="BadgeInbox" Content="Входящие" Width="150" Height="42" Command="BadgeOpen"
+                      ToolTip="Открыть входящие сообщения" Badge.Count="{Binding Count}" Badge.Label="Непрочитанные сообщения"
+                      Badge.Severity="Info" Badge.Visibility="{Binding Visible}"/>
+              <Button x:Name="BadgeDone" Content="Завершённые" Width="150" Height="42"
+                      Badge.Text="Готово" Badge.Severity="Success" Badge.Visibility="{Binding Visible}"/>
+              <Button x:Name="BadgeWarning" Content="На проверке" Width="150" Height="42"
+                      Badge.Count="12" Badge.MaxCount="9" Badge.Severity="Warning" Badge.Visibility="{Binding Visible}"/>
+              <Button x:Name="BadgeError" Content="Замечания" Width="150" Height="42"
+                      Badge.Icon="Close" Badge.Label="Есть замечания" Badge.Severity="Error" Badge.Visibility="{Binding Visible}"/>
+            </WrapPanel>
+          </GroupBox>
+          <GroupBox Header="Документ" Padding="28">
+            <StackPanel Spacing="24" Padding="16">
+              <TextBox x:Name="BadgeDraft" Text="Текст документа остаётся при изменении счётчика" AutomationName="Текст документа"
+                       Badge.Text="Черновик" Badge.Severity="Neutral" Badge.Offset="-32,0" Badge.Visibility="{Binding Visible}"/>
+              <Grid x:Name="BadgeCard" Surface="Card" Padding="18" Height="110" Badge.Icon="Check" Badge.Label="Документ сохранён"
+                    Badge.Severity="Success" Badge.Offset="-12,12" Badge.Visibility="{Binding Visible}">
+                <TextBlock Text="Сводка документа" FontWeight="SemiBold"/>
+              </Grid>
+            </StackPanel>
+          </GroupBox>
+        </StackPanel>
+      </ScrollViewer>
+      <GroupBox Grid.Column="1" Header="Отображение" Padding="24">
+        <StackPanel Spacing="16">
+          <CheckBox x:Name="BadgesVisible" Content="Показать индикаторы" IsChecked="{Binding Visible}"/>
+          <CheckBox x:Name="BadgeOwnerVisible" Content="Показать сообщения и задачи" IsChecked="{Binding OwnerVisible}"/>
+          <CheckBox x:Name="BadgeOwnerEnabled" Content="Разрешить команды сообщений" IsChecked="{Binding OwnerEnabled}"/>
+          <Separator/>
+          <TextBlock Text="Полный счётчик" FontWeight="SemiBold"/>
+          <TextBlock x:Name="BadgeFullCount" Text="{Binding Count}" TextWrapping="Wrap"/>
+          <TextBlock Text="На кнопке показано 99+, когда сообщений больше 99. Полное число доступно в описании кнопки." TextWrapping="Wrap" TextTone="Secondary"/>
+          <TextBlock x:Name="BadgeClipStatus" Text="Индикатор может выступать за край кнопки." TextWrapping="Wrap"/>
+          <TextBlock Text="Измените ширину области или окна: индикаторы останутся рядом со своими элементами." TextWrapping="Wrap" TextTone="Secondary"/>
+        </StackPanel>
+      </GroupBox>
+    </Grid>
+    <Grid Grid.Row="3" Spacing="12">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="BadgeActivity" Text="Готово" TextWrapping="Wrap"/>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></StackPanel>
+    </Grid>
+  </Grid>
+</Window>

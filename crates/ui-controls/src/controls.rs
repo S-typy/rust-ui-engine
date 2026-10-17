@@ -20,6 +20,10 @@ use std::{
 };
 
 mod appearance;
+#[cfg(test)]
+mod badge_tests;
+mod badges;
+pub use badges::{BadgeAnchor, BadgeClip, BadgeContent, BadgeSettings, BadgeSeverity, MAX_BADGES};
 mod choices;
 mod data_form;
 mod font_picker;
@@ -303,6 +307,8 @@ pub struct SemanticNode {
     pub has_popup: bool,
     pub expanded: Option<bool>,
     pub tooltip: Option<String>,
+    /// Supplemental information, separate from the accessible name and value.
+    pub description: Option<String>,
 }
 
 /// One draft string change (IME preedit excluded). Drain after input or updates.
@@ -510,6 +516,7 @@ pub struct Controls {
     text_displays: text_display::TextDisplays,
     sliders: sliders::Sliders,
     ratings: rating::Ratings,
+    badges: HashMap<WidgetId, badges::BadgeState>,
     button_contents: button_content::ButtonContents,
     progress_animation: progress::ProgressAnimation,
     async_editors: editor_async::AsyncEditorStore,
@@ -612,6 +619,7 @@ impl Controls {
             button_contents: Default::default(),
             sliders: Default::default(),
             ratings: Default::default(),
+            badges: HashMap::new(),
             text_displays: Default::default(),
             caret_clock: None,
             flyouts: Default::default(),
@@ -1901,6 +1909,8 @@ impl Controls {
         self.grids.retain(|id, _| self.controls.contains_key(id));
         self.prune_trees();
         self.prune_font_pickers();
+        self.badges
+            .retain(|id, _| self.runtime.tree().contains(*id));
         self.sync_data_wakes()?;
         self.groups.retain(|id, _| self.controls.contains_key(id));
         self.retain_status_controls()?;
@@ -3144,6 +3154,7 @@ impl Controls {
             }
             if after_children {
                 self.paint_scroll_bars(id);
+                self.paint_badge(id);
                 continue;
             }
             let mut children = self
@@ -3161,7 +3172,8 @@ impl Controls {
             if matches!(
                 self.controls.get(&id).map(|c| &c.kind),
                 Some(Kind::Scroll { .. })
-            ) {
+            ) || self.badges.contains_key(&id)
+            {
                 pending.push((id, overlay, true));
             }
             pending.extend(
@@ -3960,6 +3972,7 @@ impl Controls {
                         has_popup: false,
                         expanded: None,
                         tooltip: None,
+                        description: self.badge_description(id),
                         focused: self.runtime.focused() == Some(id),
                         bounds,
                         actions: Vec::new(),
@@ -4110,6 +4123,7 @@ impl Controls {
                         .expander_expanded(id)
                         .or_else(|| self.popup_expanded(id)),
                     tooltip: control.tooltip.clone(),
+                    description: self.badge_description(id),
                     focused: self.runtime.focused() == Some(id),
                     bounds,
                     actions,

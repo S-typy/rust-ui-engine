@@ -133,6 +133,7 @@ pub(crate) fn element(element: &ElementDefinition) -> String {
         "rust_desktop_ui_xaml::ElementDefinition {{
             common: rust_desktop_ui_xaml::CommonProperties {{
                 control_template: {control_template},
+                badge: {badge},
                 name: {name},
                 rich_tool_tip: {rich_tool_tip}, is_link: {is_link}, repeat_delay_ms: {repeat_delay_ms:?}, repeat_interval_ms: {repeat_interval_ms},
                 width: {width:?},
@@ -156,6 +157,7 @@ pub(crate) fn element(element: &ElementDefinition) -> String {
             kind: {kind},
         }}",
         name = optional_string(&common.name),
+        badge = crate::badges::code(&common.badge),
         control_template = common.control_template.as_ref().map_or("None".into(), |template| format!("Some(Box::new(rust_desktop_ui_xaml::ControlTemplateDefinition {{ target: rust_desktop_ui_xaml::ControlTemplateTarget::{:?}, content_part: {:?}.into(), visual: Box::new({}) }}))", template.target, template.content_part, self::element(&template.visual))),
         rich_tool_tip = common.rich_tool_tip.as_ref().map_or("None".into(), |tip| format!("Some(rust_desktop_ui_xaml::RichToolTipDefinition {{ header: {:?}.into(), icon: {}, image: {}, image_description: {:?}.into() }})", tip.header, optional_icon(tip.icon), optional_string(&tip.image), tip.image_description)),
         is_link = common.is_link, repeat_delay_ms = common.repeat_delay_ms, repeat_interval_ms = common.repeat_interval_ms,

@@ -120,6 +120,7 @@ fn validate_entries(
         }
         match entry {
             Entry::Element(element) => {
+                crate::validate_badge(&element.common)?;
                 match &element.kind {
                     ElementKind::GridControl(grid) => {
                         crate::validate_grid_control(grid)?;

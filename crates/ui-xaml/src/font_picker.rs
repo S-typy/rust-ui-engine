@@ -48,10 +48,11 @@ pub fn validate_font_picker(
         return Err("FontPicker requires a bounded family, size 1..512, weight 1..1000, width 25..400, Normal/Italic or Oblique angle -45..45 and preview text 1..4096 bytes".into());
     }
     if common.bindings.keys().any(|property| {
-        !matches!(
-            property.as_str(),
-            "Value" | "IsReadOnly" | "IsEnabled" | "Visibility" | "Width" | "Height"
-        )
+        !crate::badges::binding_property(property)
+            && !matches!(
+                property.as_str(),
+                "Value" | "IsReadOnly" | "IsEnabled" | "Visibility" | "Width" | "Height"
+            )
     }) {
         return Err(
             "FontPicker supports Value, IsReadOnly and common geometry/visibility bindings".into(),

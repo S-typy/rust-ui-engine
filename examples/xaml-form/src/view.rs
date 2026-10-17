@@ -7,6 +7,8 @@ use rust_desktop_ui_controls::{
 use rust_desktop_ui_core::{Axis, Color, Edges, LayoutKind, LayoutStyle, Length, WidgetId};
 use rust_desktop_ui_xaml::{ButtonStyleDefinition, ElementDefinition, ElementKind, Orientation};
 use std::collections::{HashMap, HashSet};
+#[path = "view_badge.rs"]
+mod badge;
 #[path = "view_bindings.rs"]
 mod bindings;
 #[path = "view_data_form.rs"]
@@ -798,6 +800,7 @@ impl MountedView {
             ui.set_tooltip(id, tip).map_err(err)?;
         }
         extras::apply_common_extras(ui, id, element)?;
+        badge::apply(ui, id, &element.common)?;
         self.roles.insert(
             id,
             match &element.kind {
@@ -1241,6 +1244,7 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             return Err("ToolTip exceeds the 4096-byte UTF-8 limit".into());
         }
         bindings::validate_definitions(element)?;
+        rust_desktop_ui_xaml::validate_badge(&element.common)?;
         rust_desktop_ui_xaml::validate_selection_presentation(&element.kind, &element.common)?;
         if let Some(template) = &element.common.control_template {
             rust_desktop_ui_xaml::validate_control_template(template)?;

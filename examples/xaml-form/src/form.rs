@@ -25,6 +25,7 @@ pub(crate) struct Form {
     search: Option<crate::search_model::State>,
     rating: Option<crate::rating_model::State>,
     font: Option<crate::font_model::State>,
+    badges: Option<crate::badge_model::State>,
     data_form: Option<crate::data_form_model::State>,
     tree: Option<crate::tree_model::State>,
     grid_workspace: Option<crate::grid_workspace_model::State>,
@@ -93,6 +94,7 @@ impl Form {
         crate::search_model::register(&mut ui);
         crate::rating_model::register(&mut ui);
         crate::font_model::register(&mut ui);
+        crate::badge_model::register(&mut ui);
         crate::data_form_model::register(&mut ui);
         let tree_source = crate::tree_model::register(&mut ui)?;
         let mut pending = vec![&definition.content];
@@ -240,6 +242,7 @@ impl Form {
         let search = crate::search_model::State::install(&mut ui, &view)?;
         let rating = crate::rating_model::State::install(&mut ui, &view)?;
         let font = crate::font_model::State::install(&mut ui, &mut view)?;
+        let badges = crate::badge_model::State::install(&mut ui, &view)?;
         let data_form = crate::data_form_model::State::install(&mut ui, &mut view)?;
         let tree = crate::tree_model::State::install(&mut ui, &view, tree_source)?;
         let grid_workspace = match grid_sources {
@@ -255,6 +258,7 @@ impl Form {
             search,
             rating,
             font,
+            badges,
             data_form,
             tree,
             grid_workspace,
@@ -380,6 +384,11 @@ impl Form {
             }
             if let Some(state) = &mut self.selection
                 && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.badges
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
             {
                 continue;
             }
@@ -742,6 +751,7 @@ impl DesktopApp for Form {
                 || self.search.is_some()
                 || self.rating.is_some()
                 || self.font.is_some()
+                || self.badges.is_some()
                 || self.data_form.is_some()
                 || self.tree.is_some()
                 || self.grid_workspace.is_some()

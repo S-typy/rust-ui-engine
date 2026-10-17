@@ -50,7 +50,9 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
 }
 
 pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
-    if matches!(name, "IsEnabled" | "Visibility" | "Width" | "Height") {
+    if badges::binding_property(name)
+        || matches!(name, "IsEnabled" | "Visibility" | "Width" | "Height")
+    {
         return true;
     }
     match kind {
@@ -115,6 +117,9 @@ pub(super) fn common_property(
     attr: Attribute<'_, '_>,
     common: &mut CommonProperties,
 ) -> Result<bool, Diagnostic> {
+    if badges::property(document, attr, common)? {
+        return Ok(true);
+    }
     let value = attr.value();
     let metric = || editor_metric(document, attr, MAX_DIMENSION, true);
     match attr.name() {

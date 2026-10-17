@@ -356,10 +356,11 @@ pub fn validate_password_box(password: &PasswordBoxDefinition) -> Result<(), Str
 /// Ordinary bindings can control availability and geometry, never a password.
 pub fn validate_password_bindings(common: &crate::CommonProperties) -> Result<(), String> {
     if common.bindings.keys().any(|property| {
-        !matches!(
-            property.as_str(),
-            "IsEnabled" | "Visibility" | "Width" | "Height"
-        )
+        !crate::badges::binding_property(property)
+            && !matches!(
+                property.as_str(),
+                "IsEnabled" | "Visibility" | "Width" | "Height"
+            )
     }) {
         return Err(
             "PasswordBox permits only IsEnabled, Visibility, Width and Height bindings".into(),

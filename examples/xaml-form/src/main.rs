@@ -1,5 +1,6 @@
 //! A native form whose structure and initial properties are compiled from XAML.
 mod accessibility;
+mod badge_model;
 #[cfg(test)]
 mod batch_binding_tests;
 mod batch_diagnostics;
@@ -90,6 +91,9 @@ mod generated_ribbon_workspace {
 mod generated_selection {
     include!(concat!(env!("OUT_DIR"), "/selection_window.rs"));
 }
+mod generated_badges {
+    include!(concat!(env!("OUT_DIR"), "/badge_window.rs"));
+}
 mod generated_font {
     include!(concat!(env!("OUT_DIR"), "/font_window.rs"));
 }
@@ -138,6 +142,7 @@ fn start() -> Result<(), String> {
     let mut selection = false;
     let mut search = false;
     let mut rating = false;
+    let mut badges = false;
     let mut font = false;
     let mut data_form = false;
     let mut tree = false;
@@ -189,6 +194,7 @@ fn start() -> Result<(), String> {
             "--selection" => selection = true,
             "--search" => search = true,
             "--rating" => rating = true,
+            "--badges" => badges = true,
             "--font" => font = true,
             "--data-form" => data_form = true,
             "--tree" => tree = true,
@@ -270,6 +276,7 @@ fn start() -> Result<(), String> {
         selection,
         search,
         rating,
+        badges,
         font,
         data_form,
         tree,
@@ -299,6 +306,8 @@ fn start() -> Result<(), String> {
         generated_data_form::window_definition()
     } else if tree {
         generated_tree::window_definition()
+    } else if badges {
+        generated_badges::window_definition()
     } else if font {
         generated_font::window_definition()
     } else if rating {
@@ -393,6 +402,8 @@ fn start() -> Result<(), String> {
         form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
     } else if tree {
         form::Form::new_with_model(definition, diagnostics, Some(tree_model::model()?))?
+    } else if badges {
+        form::Form::new_with_model(definition, diagnostics, Some(badge_model::model()?))?
     } else if font {
         form::Form::new_with_model(definition, diagnostics, Some(font_model::model()?))?
     } else if rating {

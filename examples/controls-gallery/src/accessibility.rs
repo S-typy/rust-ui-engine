@@ -110,6 +110,14 @@ impl Gallery {
             if let Some(settings) = self.ui.editor_settings(item.id) {
                 append_description(&mut node, &settings.placeholder);
             }
+            if let Some(description) = item.description {
+                // Informational layout owners must survive the native filter.
+                // This reuses the owner node; it adds no focus or input target.
+                if node.role() == Role::GenericContainer {
+                    node.set_role(Role::Group);
+                }
+                append_description(&mut node, &description);
+            }
             if let Some(tooltip) = item.tooltip {
                 // Keep tooltip metadata while also supplying the description
                 // consumed by the native Windows accessibility provider.

@@ -67,6 +67,7 @@ cargo run --release --locked -p xaml-form -- --tree
 cargo run --release --locked -p xaml-form -- --grid-workspace
 cargo run --release --locked -p xaml-form -- --font
 cargo run --release --locked -p xaml-form -- --rating
+cargo run --release --locked -p xaml-form -- --badges
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
@@ -92,6 +93,9 @@ See [grid presentations](docs/public/grid-presentations.md).
 explicit missing-font fallback. `--rating` demonstrates fractional scores,
 an empty value, validation and keyboard or pointer input. See
 [font selection](docs/public/font-picker.md) and [rating](docs/public/rating.md).
+
+`--badges` attaches counts, labels and icons to existing controls while retaining
+their content and focus. See [attached badges](docs/public/badges.md).
 
 `--ribbon-workspace` demonstrates retained Ribbon content, Backstage and
 quick-access customization. Its preferences remain in memory until the window

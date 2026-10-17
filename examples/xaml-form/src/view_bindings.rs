@@ -44,6 +44,9 @@ fn property(name: &str) -> Result<BindingProperty, String> {
         "Width" => BindingProperty::Width,
         "Height" => BindingProperty::Height,
         "PlaceholderText" => BindingProperty::PlaceholderText,
+        "Badge.Count" => BindingProperty::BadgeCount,
+        "Badge.Text" => BindingProperty::BadgeText,
+        "Badge.Visibility" => BindingProperty::BadgeVisibility,
         _ => return Err(format!("Unsupported binding property '{name}'")),
     })
 }
@@ -126,19 +129,21 @@ fn fallback(
             "false" => DataValue::Bool(false),
             _ => return Err("Boolean FallbackValue must be True or False".into()),
         },
-        BindingProperty::Visibility => match value.to_ascii_lowercase().as_str() {
-            "true" => DataValue::Bool(true),
-            "false" => DataValue::Bool(false),
-            "visible" => DataValue::from("Visible"),
-            "hidden" => DataValue::from("Hidden"),
-            "collapsed" => DataValue::from("Collapsed"),
-            _ => {
-                return Err(
-                    "Visibility FallbackValue must be Visible/Hidden/Collapsed or True/False"
-                        .into(),
-                );
+        BindingProperty::Visibility | BindingProperty::BadgeVisibility => {
+            match value.to_ascii_lowercase().as_str() {
+                "true" => DataValue::Bool(true),
+                "false" => DataValue::Bool(false),
+                "visible" => DataValue::from("Visible"),
+                "hidden" => DataValue::from("Hidden"),
+                "collapsed" => DataValue::from("Collapsed"),
+                _ => {
+                    return Err(
+                        "Visibility FallbackValue must be Visible/Hidden/Collapsed or True/False"
+                            .into(),
+                    );
+                }
             }
-        },
+        }
         BindingProperty::Width | BindingProperty::Height if value == "Auto" => DataValue::Null,
         BindingProperty::SelectedIndex => {
             let index: f64 = value.parse().map_err(err)?;

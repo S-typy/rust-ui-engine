@@ -37,6 +37,9 @@ pub enum BindingProperty {
     Width,
     Height,
     PlaceholderText,
+    BadgeCount,
+    BadgeText,
+    BadgeVisibility,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -247,7 +250,9 @@ impl ControlBindings {
                 && (link.binding.target.property == binding.target.property
                     || matches!(
                         (link.binding.target.property, binding.target.property),
-                        (BindingProperty::Text, BindingProperty::Value)
+                        (BindingProperty::BadgeCount, BindingProperty::BadgeText)
+                            | (BindingProperty::BadgeText, BindingProperty::BadgeCount)
+                            | (BindingProperty::Text, BindingProperty::Value)
                             | (BindingProperty::Value, BindingProperty::Text)
                             | (BindingProperty::Text, BindingProperty::Header)
                             | (BindingProperty::Header, BindingProperty::Text)
@@ -264,6 +269,15 @@ impl ControlBindings {
                     ))
         }) {
             return Err(invalid("A property can have only one binding"));
+        }
+        if matches!(
+            binding.target.property,
+            BindingProperty::BadgeCount
+                | BindingProperty::BadgeText
+                | BindingProperty::BadgeVisibility
+        ) && binding.mode.writes_source()
+        {
+            return Err(invalid("Badge bindings support OneWay or OneTime"));
         }
         if binding.target.property == BindingProperty::ItemsSource && binding.mode.writes_source() {
             return Err(invalid("ItemsSource supports OneWay or OneTime"));
@@ -1524,6 +1538,27 @@ fn read_property(
         return editor_parser(ui, endpoint).parse(text);
     }
     match endpoint.property {
+        BindingProperty::BadgeCount => match &ui
+            .badge(id)
+            .ok_or_else(|| invalid("Badge.Count requires an attachment"))?
+            .content
+        {
+            crate::BadgeContent::Count(value) => Ok(DataValue::String(value.to_string())),
+            _ => Err(invalid("Badge.Count requires count content")),
+        },
+        BindingProperty::BadgeText => match &ui
+            .badge(id)
+            .ok_or_else(|| invalid("Badge.Text requires an attachment"))?
+            .content
+        {
+            crate::BadgeContent::Text(value) => Ok(DataValue::String(value.clone())),
+            _ => Err(invalid("Badge.Text requires text content")),
+        },
+        BindingProperty::BadgeVisibility => ui
+            .badge(id)
+            .map(|settings| DataValue::Bool(settings.visible))
+            .ok_or_else(|| invalid("Badge.Visibility requires an attachment")),
+
         BindingProperty::Query => ui
             .search_query(id)
             .map(|query| DataValue::String(query.into()))
@@ -1770,6 +1805,56 @@ fn write_property(
         return accepted(outcome);
     }
     match endpoint.property {
+        BindingProperty::BadgeCount
+        | BindingProperty::BadgeText
+        | BindingProperty::BadgeVisibility => {
+            let mut settings = ui
+                .badge(id)
+                .cloned()
+                .ok_or_else(|| invalid("Badge bindings require an attachment"))?;
+            match endpoint.property {
+                BindingProperty::BadgeCount => {
+                    let DataValue::String(text) = value else {
+                        return Err(invalid("Badge.Count requires a canonical u64 string"));
+                    };
+                    let count = text
+                        .parse::<u64>()
+                        .map_err(|_| invalid("Badge.Count requires a canonical u64 string"))?;
+                    if count.to_string() != *text {
+                        return Err(invalid("Badge.Count requires a canonical u64 string"));
+                    }
+                    if !matches!(settings.content, crate::BadgeContent::Count(_)) {
+                        return Err(invalid("Badge.Count requires count content"));
+                    }
+                    settings.content = crate::BadgeContent::Count(count);
+                }
+                BindingProperty::BadgeText => {
+                    let DataValue::String(text) = value else {
+                        return Err(invalid("Badge.Text requires a string"));
+                    };
+                    if !matches!(settings.content, crate::BadgeContent::Text(_)) {
+                        return Err(invalid("Badge.Text requires text content"));
+                    }
+                    settings.content = crate::BadgeContent::Text(text.clone());
+                }
+                _ => {
+                    settings.visible = match value {
+                        DataValue::Bool(value) => *value,
+                        DataValue::String(value) if value == "Visible" => true,
+                        DataValue::String(value) if value == "Hidden" || value == "Collapsed" => {
+                            false
+                        }
+                        _ => {
+                            return Err(invalid(
+                                "Badge.Visibility requires bool or Visible/Hidden/Collapsed",
+                            ));
+                        }
+                    };
+                }
+            }
+            ui.set_badge(id, Some(settings)).map_err(control_error)
+        }
+
         BindingProperty::Query => ui
             .set_search_query(id, string(value)?)
             .map_err(control_error),

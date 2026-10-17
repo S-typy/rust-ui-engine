@@ -35,7 +35,12 @@ mod extras;
 pub use extras::*;
 mod extensions;
 pub use extensions::{ComponentMarkup, ComponentRegistry};
+mod badges;
 mod codegen;
+pub use badges::{
+    BadgeAnchorDefinition, BadgeClipDefinition, BadgeDefinition, BadgeSeverityDefinition,
+    validate_badge,
+};
 mod form_parse;
 mod forms;
 mod item_templates;
@@ -328,6 +333,8 @@ fn validate_chrome_placement(common: &CommonProperties, element: &str) -> Result
 /// Properties shared by every content element in a Window.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CommonProperties {
+    /// An attached indicator that does not participate in layout or input.
+    pub badge: Option<Box<BadgeDefinition>>,
     /// Optional compiled decorative presentation. The behavioral owner is retained.
     pub control_template: Option<Box<ControlTemplateDefinition>>,
     pub rich_tool_tip: Option<RichToolTipDefinition>,
@@ -371,6 +378,7 @@ pub struct CommonProperties {
 impl Default for CommonProperties {
     fn default() -> Self {
         Self {
+            badge: None,
             control_template: None,
             rich_tool_tip: None,
             is_link: false,
@@ -1253,6 +1261,9 @@ fn parse_element_properties(
                 UpdateSourceTrigger::PropertyChanged
             };
             let binding = binding::parse_binding(document, attribute, editable, trigger)?;
+            if badges::binding_property(property) {
+                common.badge.get_or_insert_with(Default::default);
+            }
             common.bindings.insert(property.into(), binding);
             continue;
         }

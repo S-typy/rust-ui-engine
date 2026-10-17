@@ -75,10 +75,12 @@ pub fn validate_tree(
         return Err("SelectedKey requires Single selection".into());
     }
     for property in common.bindings.keys() {
-        if !matches!(
-            property.as_str(),
-            "SelectedKey" | "IsReadOnly" | "IsEnabled" | "Visibility" | "Width" | "Height"
-        ) {
+        if !crate::badges::binding_property(property)
+            && !matches!(
+                property.as_str(),
+                "SelectedKey" | "IsReadOnly" | "IsEnabled" | "Visibility" | "Width" | "Height"
+            )
+        {
             return Err(format!("Tree.{property} does not support bindings"));
         }
     }

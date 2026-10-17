@@ -12,7 +12,8 @@ pub fn validate_item_template(root: &ElementDefinition) -> Result<(), String> {
             return Err("ItemTemplate supports at most 32 nodes and 8 levels".into());
         }
         let c = &node.common;
-        if c.name.is_some()
+        if c.badge.is_some()
+            || c.name.is_some()
             || c.data_context.is_some()
             || c.control_template.is_some()
             || c.rich_tool_tip.is_some()

@@ -137,16 +137,18 @@ pub(super) fn validate_columns(columns: &[GridColumnDefinition]) -> Result<(), S
 /// Values, converters and registered source paths are resolved by the host.
 pub fn validate_grid_control_bindings(common: &CommonProperties) -> Result<(), String> {
     for property in common.bindings.keys() {
-        if !matches!(
-            property.as_str(),
-            "IsEnabled"
-                | "Visibility"
-                | "Width"
-                | "Height"
-                | "IsReadOnly"
-                | "FilterText"
-                | "SelectedValue"
-        ) {
+        if !crate::badges::binding_property(property)
+            && !matches!(
+                property.as_str(),
+                "IsEnabled"
+                    | "Visibility"
+                    | "Width"
+                    | "Height"
+                    | "IsReadOnly"
+                    | "FilterText"
+                    | "SelectedValue"
+            )
+        {
             return Err(format!("GridControl.{property} does not support a binding"));
         }
     }

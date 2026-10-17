@@ -40,10 +40,11 @@ pub fn validate_rating(rating: &RatingDefinition, common: &CommonProperties) -> 
         return Err("Rating requires Maximum 1..20, Step 0.01..1, GlyphSize 8..64, Spacing 0..32 and a finite Value within 0..Maximum; empty Value requires AllowEmpty".into());
     }
     if common.bindings.keys().any(|p| {
-        !matches!(
-            p.as_str(),
-            "Value" | "IsReadOnly" | "IsEnabled" | "Visibility" | "Width" | "Height"
-        )
+        !crate::badges::binding_property(p)
+            && !matches!(
+                p.as_str(),
+                "Value" | "IsReadOnly" | "IsEnabled" | "Visibility" | "Width" | "Height"
+            )
     }) {
         return Err("Rating supports Value, IsReadOnly and common layout bindings".into());
     }
