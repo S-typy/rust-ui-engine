@@ -53,6 +53,7 @@ struct MultiHost<A> {
 
 // Drop GPU surfaces and native adapters before their corresponding Window.
 struct WindowState {
+    services: crate::services::NativeServices,
     app_waker: AppWaker,
     renderer: Option<GpuRenderer>,
     adapter: Adapter,
@@ -242,6 +243,8 @@ impl<A: DesktopApplication> MultiHost<A> {
                 .window_mut(key)
                 .ok_or("Retiring view disappeared")?;
             state.app_waker.deactivate();
+            state.services.close();
+            app.platform_services_changed(None);
             app.set_waker(None);
             for response in retire_view(app, state.focused)? {
                 state.effects(app, &mut self.clipboard, response)?;
@@ -328,7 +331,10 @@ impl<A: DesktopApplication> MultiHost<A> {
                 &app_waker,
             );
             app.set_waker(Some(app_waker.clone()));
+            let services = crate::services::NativeServices::new(window.clone(), app_waker.clone());
+            app.platform_services_changed(Some(services.handle()));
             let mut state = WindowState {
+                services,
                 app_waker,
                 renderer: None,
                 adapter,
@@ -917,6 +923,8 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
                 return;
             };
             state.app_waker.deactivate();
+            state.services.close();
+            app.platform_services_changed(None);
             app.set_waker(None);
             let result = retire_view(app, state.focused).and_then(|responses| {
                 for response in responses {
@@ -987,9 +995,11 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
     }
 
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        for (key, state) in &self.windows {
+        for (key, state) in &mut self.windows {
             state.app_waker.deactivate();
             if let Some(app) = self.app.window_mut(*key) {
+                state.services.close();
+                app.platform_services_changed(None);
                 app.set_waker(None);
             }
         }
@@ -1063,6 +1073,20 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
                     return Err(format!("Native smoke timed out for {:?}", key));
                 }
                 let mut redraw = false;
+                for _ in 0..64 {
+                    let Some(completion) = state.services.next() else {
+                        break;
+                    };
+                    let response = app.platform_service_completed(completion)?;
+                    redraw |= state.effects(app, clipboard, response)?;
+                }
+                for _ in 0..128 {
+                    let Some(event) = state.services.event() else {
+                        break;
+                    };
+                    let response = app.platform_service_event(event)?;
+                    redraw |= state.effects(app, clipboard, response)?;
+                }
                 if !state.modal_blocked
                     && let Some(request) = app.take_dialog_request()
                 {
@@ -1091,7 +1115,7 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
                 }
                 if state.wake_at.is_some_and(|at| at <= now) {
                     state.wake_at = None;
-                    redraw = state.dispatch(app, clipboard, PlatformEvent::Tick)?;
+                    redraw |= state.dispatch(app, clipboard, PlatformEvent::Tick)?;
                     state.wake_at = app
                         .wake_after()
                         .map(|delay| now + delay.max(Duration::from_millis(1)));

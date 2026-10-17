@@ -29,10 +29,13 @@ pub(crate) struct Form {
     navigation: Option<crate::navigation_model::State>,
     tiles: Option<crate::tile_model::State>,
     gallery: Option<crate::gallery_model::State>,
+    properties: Option<crate::property_model::State>,
     font: Option<crate::font_model::State>,
     badges: Option<crate::badge_model::State>,
     wizard: Option<crate::wizard_model::State>,
     barcode: Option<crate::barcode_model::State>,
+    spell: Option<crate::spell_model::State>,
+    gauge: Option<crate::gauge_model::State>,
     data_form: Option<crate::data_form_model::State>,
     tree: Option<crate::tree_model::State>,
     grid_workspace: Option<crate::grid_workspace_model::State>,
@@ -105,10 +108,13 @@ impl Form {
         crate::navigation_model::register(&mut ui);
         crate::tile_model::register(&mut ui);
         crate::gallery_model::register(&mut ui)?;
+        crate::property_model::register(&mut ui)?;
         crate::font_model::register(&mut ui);
         crate::badge_model::register(&mut ui);
         crate::wizard_model::register(&mut ui);
         crate::barcode_model::register(&mut ui);
+        crate::spell_model::register(&mut ui);
+        crate::gauge_model::register(&mut ui);
         crate::data_form_model::register(&mut ui);
         let tree_source = crate::tree_model::register(&mut ui)?;
         let mut pending = vec![&definition.content];
@@ -260,10 +266,13 @@ impl Form {
         let navigation = crate::navigation_model::State::install(&mut ui, &view)?;
         let tiles = crate::tile_model::State::install(&mut ui, &view)?;
         let gallery = crate::gallery_model::State::install(&mut ui, &view)?;
+        let properties = crate::property_model::State::install(&mut ui, &mut view)?;
         let font = crate::font_model::State::install(&mut ui, &mut view)?;
         let badges = crate::badge_model::State::install(&mut ui, &view)?;
         let wizard = crate::wizard_model::State::install(&mut ui, &view)?;
         let barcode = crate::barcode_model::State::install(&mut ui, &view)?;
+        let spell = crate::spell_model::State::install(&mut ui, &view)?;
+        let gauge = crate::gauge_model::State::install(&mut ui, &view)?;
         let data_form = crate::data_form_model::State::install(&mut ui, &mut view)?;
         let tree = crate::tree_model::State::install(&mut ui, &view, tree_source)?;
         let grid_workspace = match grid_sources {
@@ -283,10 +292,13 @@ impl Form {
             navigation,
             tiles,
             gallery,
+            properties,
             font,
             badges,
             wizard,
             barcode,
+            spell,
+            gauge,
             data_form,
             tree,
             grid_workspace,
@@ -415,6 +427,16 @@ impl Form {
             {
                 continue;
             }
+            if let Some(state) = &mut self.spell
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.gauge
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
             if let Some(state) = &mut self.barcode
                 && state.command(&mut self.ui, &invocation.id.0)?
             {
@@ -436,6 +458,11 @@ impl Form {
                 continue;
             }
             if let Some(state) = &mut self.navigation
+                && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.properties
                 && state.command(&mut self.ui, &mut self.view, &invocation.id.0)?
             {
                 continue;
@@ -668,6 +695,12 @@ impl Form {
         if let Some(state) = &self.selection {
             state.refresh(&mut self.ui)?;
         }
+        if let Some(state) = &mut self.spell {
+            state.refresh(&mut self.ui)?;
+        }
+        if let Some(state) = &mut self.gauge {
+            state.refresh(&mut self.ui)?;
+        }
         if let Some(state) = &mut self.barcode {
             state.refresh(&mut self.ui)?;
         }
@@ -688,6 +721,9 @@ impl Form {
         }
         if let Some(state) = &mut self.color {
             state.refresh(&mut self.ui)?;
+        }
+        if let Some(state) = &mut self.properties {
+            state.sync(&mut self.ui, &mut self.view)?;
         }
         if let Some(state) = &mut self.gallery {
             state.sync(&mut self.ui)?;
@@ -811,7 +847,7 @@ impl DesktopApp for Form {
             self.ui.update(viewport).map_err(err)?;
         }
         self.application_events()?;
-        if self.navigation.is_some() || self.gallery.is_some() {
+        if self.navigation.is_some() || self.gallery.is_some() || self.properties.is_some() {
             self.ui.update(viewport).map_err(err)?;
         }
         if let Some(mounted) = &mut self.view.ribbon {
@@ -842,9 +878,12 @@ impl DesktopApp for Form {
                 || self.navigation.is_some()
                 || self.tiles.is_some()
                 || self.gallery.is_some()
+                || self.properties.is_some()
                 || self.font.is_some()
                 || self.badges.is_some()
                 || self.wizard.is_some()
+                || self.spell.is_some()
+                || self.gauge.is_some()
                 || self.barcode.is_some()
                 || self.data_form.is_some()
                 || self.tree.is_some()
@@ -855,6 +894,9 @@ impl DesktopApp for Form {
                 let snapshot = crate::batch_diagnostics::snapshot(&self.ui, &self.view);
                 if snapshot != self.last_batch_diagnostic {
                     println!("batch-state {snapshot}");
+                    if let Some(state) = &self.properties {
+                        println!("property-state {}", state.diagnostics(&self.ui, &self.view));
+                    }
                     self.last_batch_diagnostic = snapshot;
                 }
             }
@@ -932,8 +974,8 @@ impl DesktopApp for Form {
                 ) {
                     self.ui.dismiss_tooltip();
                 }
-                let mut consumed = false;
-                if let Some(mounted) = &mut self.view.ribbon {
+                let mut consumed = self.view.property_grid_input(&mut self.ui, &input)?;
+                if !consumed && let Some(mounted) = &mut self.view.ribbon {
                     if matches!(input, InputEvent::KeyDown { .. } | InputEvent::KeyUp { .. }) {
                         self.suppress_text = mounted.ribbon.key_tips_visible();
                     } else if matches!(
@@ -974,6 +1016,11 @@ impl DesktopApp for Form {
             PlatformEvent::Tick => {
                 let now = Instant::now();
                 redraw = self.ui.tick(now).map_err(err)?
+                    || self
+                        .spell
+                        .as_ref()
+                        .and_then(|s| s.deadline())
+                        .is_some_and(|at| at <= now)
                     || self
                         .search
                         .as_ref()
@@ -1053,6 +1100,7 @@ impl DesktopApp for Form {
             .chain(self.search.as_ref().and_then(|state| state.deadline()))
             .chain(self.breadcrumb.as_ref().and_then(|state| state.deadline()))
             .chain(self.wizard.as_ref().and_then(|state| state.deadline()))
+            .chain(self.spell.as_ref().and_then(|state| state.deadline()))
             .min()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }

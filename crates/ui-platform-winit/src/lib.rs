@@ -11,8 +11,10 @@ mod input;
 mod modality;
 mod multi;
 mod multi_host;
+mod services;
 mod splash;
 mod wake;
+pub use services::*;
 pub use splash::{SplashSession, SplashState, SplashWorker};
 
 pub use accessibility::AccessibilitySnapshot;
@@ -64,6 +66,26 @@ impl EventResponse {
 /// Implement this trait to run a retained scene in a native GPU window.
 /// `accessibility` supplies a complete connected tree; the host sends only changed nodes.
 pub trait DesktopApp {
+    /// A bounded owner-scoped service/dispatcher handle. None revokes the old
+    /// owner before suspension/destruction. Native errors arrive as completions.
+    fn platform_services_changed(&mut self, services: Option<PlatformServiceHandle>) {
+        let _ = services;
+    }
+    fn platform_service_completed(
+        &mut self,
+        completion: PlatformServiceCompletion,
+    ) -> Result<EventResponse, String> {
+        let _ = completion;
+        Ok(EventResponse::default())
+    }
+    fn platform_service_event(
+        &mut self,
+        event: PlatformServiceEvent,
+    ) -> Result<EventResponse, String> {
+        let _ = event;
+        Ok(EventResponse::default())
+    }
+
     /// Return at most one queued owned native dialog. The host processes it
     /// outside painting; completion is delivered once on this same UI thread.
     fn take_dialog_request(&mut self) -> Option<DialogRequest> {

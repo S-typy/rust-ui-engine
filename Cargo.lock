@@ -3769,6 +3769,7 @@ dependencies = [
  "rust-desktop-ui-controls",
  "rust-desktop-ui-core",
  "rust-desktop-ui-data",
+ "rust-desktop-ui-images",
  "rust-desktop-ui-platform-winit",
  "rust-desktop-ui-treegrid",
  "rust-desktop-ui-xaml",

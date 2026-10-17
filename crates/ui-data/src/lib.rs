@@ -11,7 +11,9 @@ mod model;
 mod observable;
 mod paged;
 mod query;
+mod query_text;
 mod scalar;
+mod scheduling;
 mod source;
 #[cfg(feature = "sqlite")]
 mod sqlite;
@@ -24,7 +26,9 @@ pub use model::*;
 pub use observable::*;
 pub use paged::*;
 pub use query::*;
+pub use query_text::*;
 pub use scalar::*;
+pub use scheduling::*;
 pub use source::*;
 #[cfg(feature = "sqlite")]
 pub use sqlite::*;
@@ -41,3 +45,6 @@ mod sqlite_tests;
 mod tests;
 #[cfg(test)]
 mod write_tests;
+
+pub mod pivot;
+pub use pivot::*;

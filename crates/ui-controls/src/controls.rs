@@ -20,10 +20,50 @@ use std::{
 };
 
 mod appearance;
+mod pivot;
+pub use pivot::{PivotAxis, PivotDrillEvent, PivotParts, PivotView};
+mod spellcheck;
+#[cfg(test)]
+mod spellcheck_tests;
+pub use spellcheck::{
+    LexiconMetadata, LexiconProvider, SpellCompletion, SpellError, SpellIssue, SpellProvider,
+    SpellRequest, SpellSettings,
+};
+mod chart;
+mod chart_model;
+mod gauge;
+pub use chart_model::{
+    ChartBar, ChartError, ChartGeometry, ChartLine, ChartMark, ChartModel, ChartPoint,
+    ChartPointKey, ChartRange, ChartSeries, ChartSettings, ChartView, MAX_CHART_POINTS,
+    MAX_CHART_SERIES,
+};
+mod chart_paint;
+#[cfg(test)]
+mod chart_tests;
+pub use chart::{ChartDisplayStatus, ChartSelectionChange};
+mod gauge_model;
+mod gauge_paint;
+#[cfg(test)]
+mod gauge_tests;
+pub use gauge_model::{GaugeDisplayStatus, GaugeRange, GaugeSettings, GaugeTone, GaugeView};
 mod barcode;
 #[cfg(test)]
 mod barcode_tests;
 pub use barcode::{BarcodeDisplayStatus, BarcodeSettings};
+mod image_editor;
+mod query_builder;
+pub use image_editor::{
+    ImageEditorEvent, ImageEditorParts, ImageEditorSettings, ImageEditorValidator, ImageLoadToken,
+    ImageViewport,
+};
+mod query_builder_model;
+#[cfg(test)]
+mod query_builder_tests;
+pub use query_builder::QueryBuilderParts;
+pub use query_builder_model::{
+    QueryBuilderApplied, QueryBuilderMode, QueryBuilderSettings, QueryBuilderValidator,
+    QueryBuilderValue,
+};
 mod loading;
 #[cfg(test)]
 mod notification_tests;
@@ -76,6 +116,14 @@ pub use color_model::{
 };
 pub use color_popup::ColorPopup;
 mod data_form;
+mod property_grid;
+mod property_grid_model;
+#[cfg(test)]
+mod property_grid_tests;
+pub use property_grid::PropertyGrid;
+pub use property_grid_model::{
+    PropertyChanged, PropertyCommit, PropertyDescriptor, PropertyGridSettings, PropertyValue,
+};
 mod navigation;
 mod navigation_model;
 #[cfg(test)]
@@ -343,6 +391,7 @@ pub enum Role {
     SpinButton,
     StatusBar,
     ProgressBar,
+    Meter,
     Slider,
     Grid,
     Tree,
@@ -600,6 +649,10 @@ pub struct Controls {
     text_displays: text_display::TextDisplays,
     sliders: sliders::Sliders,
     ratings: rating::Ratings,
+    spellchecks: spellcheck::SpellState,
+    gauges: HashMap<WidgetId, gauge::GaugeState>,
+    charts: HashMap<WidgetId, chart::ChartState>,
+    chart_press: Option<chart::ChartPress>,
     barcodes: HashMap<WidgetId, barcode::BarcodeState>,
     badges: HashMap<WidgetId, badges::BadgeState>,
     button_contents: button_content::ButtonContents,
@@ -634,6 +687,8 @@ pub struct Controls {
     tiles: tiles::Tiles,
     notifications: notifications::Notifications,
     loadings: loading::Loadings,
+    query_builders: query_builder::QueryBuilders,
+    image_editors: image_editor::ImageEditors,
     data_sources: HashMap<String, DataSourceHandle>,
     data_wake: grid::DataWake,
     pub runtime: UiRuntime,
@@ -713,6 +768,10 @@ impl Controls {
             button_contents: Default::default(),
             sliders: Default::default(),
             ratings: Default::default(),
+            spellchecks: Default::default(),
+            gauges: Default::default(),
+            charts: Default::default(),
+            chart_press: None,
             barcodes: Default::default(),
             badges: HashMap::new(),
             text_displays: Default::default(),
@@ -745,6 +804,8 @@ impl Controls {
             tiles: tiles::Tiles::default(),
             notifications: notifications::Notifications::default(),
             loadings: loading::Loadings::default(),
+            query_builders: query_builder::QueryBuilders::default(),
+            image_editors: Default::default(),
             data_sources: HashMap::new(),
             data_wake: grid::DataWake::default(),
             runtime,
@@ -892,6 +953,7 @@ impl Controls {
             control.caret_reveal = true;
             self.invalidate_async_editor(id);
             self.invalidate_wizard_editor(id);
+            self.invalidate_spellcheck(id);
         }
         self.refresh_color_source_status();
     }
@@ -1147,6 +1209,7 @@ impl Controls {
         self.refresh_paints()?;
         self.synchronize_editor_focus()?;
         self.cancel_inactive_preedit();
+        self.sync_spellchecks();
         self.sync_zoom_gesture()?;
         self.sync_popup_availability()?;
         self.tooltip_sync();
@@ -1188,6 +1251,7 @@ impl Controls {
         *editor = settings;
         self.invalidate_async_editor(id);
         self.scene_dirty = true;
+        self.sync_spellchecks();
         self.refresh_paints()
     }
     pub fn editor_settings(&self, id: WidgetId) -> Option<&EditorSettings> {
@@ -1987,6 +2051,8 @@ impl Controls {
         self.preflight_tile_removal(id)?;
         self.preflight_notification_removal(id)?;
         self.preflight_loading_removal(id)?;
+        self.preflight_query_builder_removal(id)?;
+        self.preflight_image_editor_removal(id)?;
         self.preflight_bar_removal(id)?;
         self.preflight_flyout_removal(id)?;
         self.preflight_memo_removal(id)?;
@@ -2038,6 +2104,8 @@ impl Controls {
         self.prune_tiles();
         self.prune_notifications()?;
         self.prune_loadings();
+        self.prune_query_builders();
+        self.prune_image_editors();
         self.badges
             .retain(|id, _| self.runtime.tree().contains(*id));
         self.sync_data_wakes()?;
@@ -2047,6 +2115,9 @@ impl Controls {
         self.retain_text_displays();
         self.retain_sliders()?;
         self.retain_ratings()?;
+        self.retain_gauges();
+        self.sync_charts()?;
+        self.sync_spellchecks();
         self.retain_barcodes();
         self.prune_button_contents();
         self.prune_list_item_content();
@@ -2409,6 +2480,7 @@ impl Controls {
         self.refresh_tab_stops()
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
+        self.sync_spellchecks();
         self.sync_searches()?;
         self.sync_breadcrumbs()?;
         self.sync_wizards()?;
@@ -2475,7 +2547,10 @@ impl Controls {
             self.sync_galleries()?;
             self.sync_tiles()?;
             self.sync_notifications()?;
+            self.sync_charts()?;
             self.sync_loadings()?;
+            self.sync_query_builders()?;
+            self.sync_image_editors()?;
             let scrolls: Vec<_> = self
                 .controls
                 .iter()
@@ -2516,6 +2591,8 @@ impl Controls {
     /// levels, editor drafts, accepted values and IME composition remain intact.
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
+        self.cancel_image_gesture()?;
+        self.cancel_chart_interaction()?;
         self.cancel_editor_scroll()?;
         self.cancel_slider_interaction()?;
         self.cancel_rating_interaction()?;
@@ -2630,6 +2707,15 @@ impl Controls {
             return Ok(());
         }
         if self.rich_before_input(&event)? {
+            return Ok(());
+        }
+        if self.image_editor_before_input(&event)? {
+            return Ok(());
+        }
+        if self.chart_before_input(&event)? {
+            return Ok(());
+        }
+        if self.query_builder_before_input(&event)? {
             return Ok(());
         }
         if self.status_before_input(&event)? {
@@ -2872,6 +2958,12 @@ impl Controls {
             return Ok(());
         }
         if self.activate_tile(id)? {
+            return Ok(());
+        }
+        if self.activate_image_editor(id)? {
+            return Ok(());
+        }
+        if self.activate_query_builder(id)? {
             return Ok(());
         }
         if self.activate_notification(id)? || self.activate_loading(id)? {
@@ -3363,6 +3455,9 @@ impl Controls {
             if self.paint_password(id, bounds, clip)? {
                 continue;
             }
+            if self.paint_image_editor(id, bounds, clip) {
+                continue;
+            }
             if self.paint_image(id, bounds, clip) {
                 continue;
             }
@@ -3373,6 +3468,12 @@ impl Controls {
                 continue;
             }
             if self.paint_color_editor(id, bounds, clip) {
+                continue;
+            }
+            if self.paint_chart(id, bounds, clip)? {
+                continue;
+            }
+            if self.paint_gauge(id, bounds, clip)? {
                 continue;
             }
             if self.paint_barcode(id, bounds, clip)? {
@@ -4151,7 +4252,7 @@ impl Controls {
                         has_popup: false,
                         expanded: None,
                         tooltip: None,
-                        description: self.badge_description(id),
+                        description: self.chart_accessible_description(id),
                         focused: self.runtime.focused() == Some(id),
                         bounds,
                         actions: Vec::new(),
@@ -4174,7 +4275,11 @@ impl Controls {
                         control.kind.role()
                     }
                 });
-                let value = if let Some(value) = self.barcode_value(id) {
+                let value = if let Some(value) = self.chart_semantic_value(id) {
+                    Some(value.to_owned())
+                } else if let Some(value) = self.gauge_semantic_value(id) {
+                    Some(value.to_owned())
+                } else if let Some(value) = self.barcode_value(id) {
                     Some(value.to_owned())
                 } else if let Some(value) = self.rating_semantic_value(id) {
                     Some(value)
@@ -4299,6 +4404,8 @@ impl Controls {
                             .grid_settings(id)
                             .is_some_and(|settings| settings.is_read_only)
                         || self.progress_settings(id).is_some()
+                        || self.chart_model(id).is_some()
+                        || self.gauge_settings(id).is_some()
                         || self.barcode_settings(id).is_some()
                         || self
                             .rating_settings(id)
@@ -4317,7 +4424,7 @@ impl Controls {
                         .expander_expanded(id)
                         .or_else(|| self.popup_expanded(id)),
                     tooltip: control.tooltip.clone(),
-                    description: self.badge_description(id),
+                    description: self.chart_accessible_description(id),
                     focused: self.runtime.focused() == Some(id),
                     bounds,
                     actions,

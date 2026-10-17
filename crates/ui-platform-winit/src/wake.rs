@@ -92,6 +92,11 @@ impl std::fmt::Debug for AppWaker {
     }
 }
 impl AppWaker {
+    #[cfg(test)]
+    pub(crate) fn testing(send: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+        Self::new(move |_| send())
+    }
+
     fn new(send: impl Fn(WakeToken) -> bool + Send + Sync + 'static) -> Self {
         Self(Arc::new(State {
             pending: AtomicBool::new(false),

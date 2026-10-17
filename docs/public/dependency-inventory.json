@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "review_date": "2026-10-16",
-  "cargo_lock_sha256": "4dbe13533a23c541b677a9fb60b09e36331133338822dd39138a29cffaf28d26",
+  "review_date": "2026-10-17",
+  "cargo_lock_sha256": "8ca602cd5b6b2cb47bff883aeea0c369518cb57377cfa9b0e0b9880e11095c97",
   "scope": "All resolved registry packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
   "features_scope": "Resolution features reported by cargo metadata for all targets; verify actual compilation features with cargo tree for the selected package and target.",
   "license_scope": "Manifest SPDX declarations, package license/notice file hashes and selected exact-revision upstream evidence. Not a line-by-line copyright or binary redistribution clearance.",
@@ -18985,6 +18985,7 @@
         "Win32_Security",
         "Win32_System",
         "Win32_System_Com",
+        "Win32_System_Com_StructuredStorage",
         "Win32_System_Diagnostics",
         "Win32_System_Diagnostics_Debug",
         "Win32_System_Kernel",
@@ -18999,6 +19000,7 @@
         "Win32_UI_Input_KeyboardAndMouse",
         "Win32_UI_Shell",
         "Win32_UI_Shell_Common",
+        "Win32_UI_Shell_PropertiesSystem",
         "Win32_UI_WindowsAndMessaging",
         "default",
         "std"
@@ -19657,6 +19659,7 @@
         "Win32_Storage_FileSystem",
         "Win32_System",
         "Win32_System_Console",
+        "Win32_System_DataExchange",
         "Win32_System_Diagnostics",
         "Win32_System_Diagnostics_Debug",
         "Win32_System_IO",

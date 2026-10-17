@@ -11,6 +11,11 @@ all platforms. Native IME, screen-reader interaction, monitor DPI transitions an
 Linux/macOS GPU execution still need the checks recorded in the
 [runtime matrix](docs/public/runtime-matrix.md). No binary release is announced.
 
+The UI-independent [scheduling model](docs/public/scheduling.md) provides
+resources, recurring appointments, explicit timezone policies and atomic series
+changes. Run its example with
+`cargo run -p rust-desktop-ui-data --example scheduling_queries`.
+
 ## Run the XAML form
 
 The default [MainWindow.xaml](examples/xaml-form/MainWindow.xaml) combines a
@@ -77,9 +82,34 @@ cargo run --release --locked -p xaml-form -- --gallery
 cargo run --release --locked -p xaml-form -- --barcodes
 cargo run --release --locked -p xaml-form -- --notifications
 cargo run --release --locked -p xaml-form -- --documents
+cargo run --release --locked -p xaml-form -- --properties
+cargo run --release --locked -p xaml-form -- --query-builder
+cargo run --release --locked -p xaml-form -- --gauges
+cargo run --release --locked -p xaml-form -- --spellcheck
+cargo run --release --locked -p xaml-form -- --image-editor
+cargo run --release --locked -p xaml-form -- --pivot
+cargo run --release --locked -p xaml-form -- --charts
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
+
+`--properties` opens typed multi-object fields with mixed values, defaults and
+atomic writes. `--query-builder` edits typed filters and expressions in visual
+and text modes. `--gauges` shows bounded radial, linear and state indicators.
+See [property fields](docs/public/property-grid.md),
+[query builders](docs/public/query-builders.md) and
+[gauges](docs/public/gauges.md).
+
+`--image-editor` opens a retained image workspace with zoom, crop, rotation,
+bounded undo/redo, explicit PNG load/save and a separate accepted preview.
+See [image viewing and editing](docs/public/image-editor.md).
+
+Windows [application services](docs/public/platform-services.md) provide an
+owner-scoped dispatcher, Unicode/HTML/image clipboard, tray menu, taskbar
+progress/overlay and explicit current-executable Jump List tasks. These native
+services return `Unsupported` on other systems. Run the standalone fixture with
+`cargo run -p rust-desktop-ui-platform-winit --example platform_services`; its
+clipboard commands require the explicit `--clipboard-fixture` option.
 
 `--controls` opens [ControlsWindow.xaml](examples/xaml-form/ControlsWindow.xaml),
 the separate example of individual controls and popup menus.
@@ -143,7 +173,9 @@ status sections, reusable styles/templates and grouped queries. File selection
 returns paths without reading or writing files; `--dialog-directory PATH` sets
 the initial directory. See [dialogs](docs/public/dialogs.md),
 [styles and templates](docs/public/styles-and-templates.md), and
-[query evaluation](docs/public/query.md).
+[query evaluation](docs/public/query.md) and
+[visual/text query builders](docs/public/query-builders.md).
+`--query-builder` demonstrates explicit Apply/Cancel over immutable sample data.
 
 `--batch` opens [BatchWindow.xaml](examples/xaml-form/BatchWindow.xaml): resizable
 panes, menus and toolbars, retained popup editors, switches, nullable checks,
@@ -370,3 +402,7 @@ complete. API compatibility before 1.0 is not guaranteed.
 Project code is [Apache-2.0](LICENSE). Dependencies retain their own licenses;
 system fonts are used without copying or bundling font files. Binary distribution
 requires the applicable third-party notices and platform SDK terms.
+
+`--pivot` demonstrates typed aggregates, field arrangement and source drill-down over the retained Grid.
+
+`--charts` demonstrates bounded Line, Scatter, Bar and Sparkline views over typed tables.

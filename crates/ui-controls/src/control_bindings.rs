@@ -340,6 +340,12 @@ impl ControlBindings {
             {
                 return Err(invalid("Barcode Value supports OneWay or OneTime"));
             }
+            if binding.target.property == BindingProperty::Value
+                && ui.gauge_settings(binding.target.widget).is_some()
+                && binding.mode.writes_source()
+            {
+                return Err(invalid("Gauge Value supports OneWay or OneTime"));
+            }
             read_property(
                 ui,
                 binding.target,
@@ -1414,6 +1420,16 @@ impl ControlBindings {
             )
             .map_err(control_error)?;
         } else if binding.target.property == BindingProperty::Value
+            && ui.query_builder_parts(binding.target.widget).is_some()
+        {
+            ui.chain_query_builder_validator(
+                binding.target.widget,
+                crate::QueryBuilderValidator::new(move |v| {
+                    validate(DataValue::String(v.to_text().map_err(|e| e.to_string())?))
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Value
             && ui.rating_settings(binding.target.widget).is_some()
         {
             ui.chain_rating_validator(
@@ -1774,9 +1790,18 @@ fn read_property(
                 Err(invalid("SelectedKey requires RadioGroup or tree"))
             }
         }
+        BindingProperty::Value if ui.gauge_settings(id).is_some() => {
+            Ok(DataValue::Number(ui.gauge_value(id).unwrap()))
+        }
         BindingProperty::Value if ui.barcode_settings(id).is_some() => {
             Ok(DataValue::String(ui.barcode_value(id).unwrap().to_owned()))
         }
+        BindingProperty::Value if ui.query_builder_value(id).is_some() => Ok(DataValue::String(
+            ui.query_builder_value(id)
+                .unwrap()
+                .to_text()
+                .map_err(control_error)?,
+        )),
         BindingProperty::Value if ui.rating_settings(id).is_some() => Ok(ui
             .rating_value(id)
             .unwrap()
@@ -1892,6 +1917,8 @@ fn read_property(
             .or_else(|| ui.tree_settings(id).map(|s| s.read_only))
             .or_else(|| ui.rating_settings(id).map(|s| s.read_only))
             .or_else(|| ui.wizard_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.image_editor_read_only(id))
+            .or_else(|| ui.query_builder_read_only(id))
             .or_else(|| ui.breadcrumb_settings(id).map(|s| s.read_only))
             .or_else(|| ui.font_picker_settings(id).map(|s| s.read_only))
             .or_else(|| ui.color_editor_settings(id).map(|s| s.is_read_only))
@@ -2142,7 +2169,13 @@ fn write_property(
             )
             .map_err(control_error),
         BindingProperty::Value => {
-            if ui.barcode_settings(id).is_some() {
+            if ui.query_builder_parts(id).is_some() {
+                ui.set_query_builder_value_text(id, string(value)?, false)
+                    .map_err(control_error)
+            } else if ui.gauge_settings(id).is_some() {
+                ui.set_gauge_value(id, number(value)?)
+                    .map_err(control_error)
+            } else if ui.barcode_settings(id).is_some() {
                 ui.set_barcode_value(id, string(value)?)
                     .map_err(control_error)
             } else if ui.rating_settings(id).is_some() {
@@ -2299,7 +2332,13 @@ fn write_property(
         BindingProperty::IsEnabled => ui.set_enabled(id, boolean(value)?).map_err(control_error),
         BindingProperty::IsReadOnly => {
             let value = boolean(value)?;
-            if let Some(settings) = ui.gallery_settings(id) {
+            if ui.image_editor_parts(id).is_some() {
+                ui.set_image_editor_read_only(id, value)
+                    .map_err(control_error)
+            } else if ui.query_builder_parts(id).is_some() {
+                ui.set_query_builder_read_only(id, value)
+                    .map_err(control_error)
+            } else if let Some(settings) = ui.gallery_settings(id) {
                 let mut settings = settings.clone();
                 settings.is_read_only = value;
                 ui.set_gallery_settings(id, settings).map_err(control_error)

@@ -10,3 +10,5 @@ pub use engine::*;
 
 mod fonts;
 pub use fonts::*;
+
+pub mod spellcheck;

@@ -1,0 +1,11 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Редактор изображений" Width="1200" Height="780" Padding="20">
+  <Grid Spacing="12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6"><TextBlock Text="Редактор изображений" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Рабочая версия отделена от принятой. PNG сохраняет принятую версию. Для обрезки нажмите Обрезать, выделите область и нажмите ещё раз." TextWrapping="Wrap" TextTone="Secondary"/></StackPanel>
+    <CheckBox x:Name="ImageLocked" Grid.Row="1" Content="Только просмотр" IsChecked="{Binding Locked}"/>
+    <Grid Grid.Row="2" Spacing="14"><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <ImageEditor x:Name="ImageEditor" AutomationName="Редактор изображения" IsReadOnly="{Binding Locked}"/>
+      <ImageViewer Grid.Column="1" x:Name="AcceptedImage" AutomationName="Принятое изображение"/>
+    </Grid>
+    <TextBlock Grid.Row="3" x:Name="ImageResult" Text="Масштаб: Ctrl+колесо, перемещение: мышь или стрелки. Ctrl+Enter — принять; Escape — отменить." TextWrapping="Wrap"/>
+  </Grid>
+</Window>

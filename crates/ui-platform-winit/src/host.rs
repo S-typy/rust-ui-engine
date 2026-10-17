@@ -55,6 +55,7 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
         proxy,
         window: None,
         app_waker: None,
+        services: None,
         chrome: None,
         capture: None,
         renderer: None,
@@ -86,6 +87,7 @@ struct Host<A> {
     options: RunOptions,
     proxy: EventLoopProxy<HostEvent>,
     app_waker: Option<AppWaker>,
+    services: Option<crate::services::NativeServices>,
     window: Option<Arc<Window>>,
     chrome: Option<NativeChrome>,
     capture: Option<desktop::CaptureObserver>,
@@ -114,6 +116,9 @@ impl<A> Drop for Host<A> {
     fn drop(&mut self) {
         if let Some(waker) = &self.app_waker {
             waker.deactivate();
+        }
+        if let Some(services) = &mut self.services {
+            services.close();
         }
     }
 }
@@ -509,6 +514,9 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
         ));
         self.accessible_nodes.clear();
         self.app.set_waker(Some(waker.clone()));
+        let services = crate::services::NativeServices::new(window.clone(), waker.clone());
+        self.app.platform_services_changed(Some(services.handle()));
+        self.services = Some(services);
         self.app_waker = Some(waker);
         window.set_visible(true);
         self.focused = window.has_focus();
@@ -523,6 +531,10 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
         if let Some(waker) = self.app_waker.take() {
             waker.deactivate();
         }
+        if let Some(mut services) = self.services.take() {
+            services.close();
+        }
+        self.app.platform_services_changed(None);
         self.app.set_waker(None);
         self.focused = false;
         self.modifiers = Modifiers::default();
@@ -585,6 +597,10 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
         if let Some(waker) = self.app_waker.take() {
             waker.deactivate();
         }
+        if let Some(mut services) = self.services.take() {
+            services.close();
+        }
+        self.app.platform_services_changed(None);
         self.app.set_waker(None);
     }
 
@@ -767,6 +783,31 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Snapshot a bounded turn; callbacks may enqueue work for a later wake.
+        for _ in 0..64 {
+            let Some(completion) = self.services.as_mut().and_then(|v| v.next()) else {
+                break;
+            };
+            match self.app.platform_service_completed(completion) {
+                Ok(response) => self.effects(event_loop, response),
+                Err(error) => {
+                    self.fail(event_loop, error);
+                    return;
+                }
+            }
+        }
+        for _ in 0..128 {
+            let Some(event) = self.services.as_mut().and_then(|v| v.event()) else {
+                break;
+            };
+            match self.app.platform_service_event(event) {
+                Ok(response) => self.effects(event_loop, response),
+                Err(error) => {
+                    self.fail(event_loop, error);
+                    return;
+                }
+            }
+        }
         self.drain_capture_loss(event_loop);
         if self.failure.is_some() {
             return;

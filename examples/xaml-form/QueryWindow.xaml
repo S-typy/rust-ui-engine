@@ -1,0 +1,12 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Фильтры и выражения" Width="1120" Height="820" Padding="20">
+  <Grid Spacing="12">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6"><TextBlock Text="Фильтры и выражения" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Редактируйте дерево или текст. Применить публикует запрос; отмена сохраняет исходные данные." TextWrapping="Wrap" TextTone="Secondary"/></StackPanel>
+    <CheckBox Grid.Row="1" x:Name="QueryLocked" Content="Только просмотр" IsChecked="{Binding Locked}"/>
+    <TabbedGroup Grid.Row="2" x:Name="QueryTabs">
+      <GroupTab Header="Фильтр"><FilterBuilder x:Name="Filter" AutomationName="Построитель фильтра" DataSource="QueryRows" Value="{Binding Filter}" IsReadOnly="{Binding Locked}" MinWidth="700"/></GroupTab>
+      <GroupTab Header="Выражение"><ExpressionBuilder x:Name="Expression" AutomationName="Построитель выражения" DataSource="QueryRows" Value="{Binding Expression}" Mode="Text" IsReadOnly="{Binding Locked}" MinWidth="700"/></GroupTab>
+    </TabbedGroup>
+    <StackPanel Grid.Row="3" Spacing="6"><TextBlock x:Name="QueryAccepted" Text="{Binding Filter}" TextWrapping="Wrap"/><TextBlock x:Name="QueryPreview" Text="Запрос ещё не выполнялся" TextWrapping="Wrap"/><TextBlock Text="Ctrl+Enter — применить; Escape — отменить. Исходные строки остаются прежними." TextTone="Secondary"/></StackPanel>
+  </Grid>
+</Window>

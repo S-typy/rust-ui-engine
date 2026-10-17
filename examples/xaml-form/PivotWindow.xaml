@@ -1,0 +1,11 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Сводная таблица" Width="1400" Height="900" Padding="20">
+  <Grid Spacing="10">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="180"/></Grid.RowDefinitions>
+    <StackPanel Spacing="4"><TextBlock Text="Сводная таблица" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Перетаскивайте поля между строками и столбцами. Ctrl+стрелки перемещают выбранное поле. Раскрытие итогов сохраняет исходные ключи." TextWrapping="Wrap" TextTone="Secondary"/></StackPanel>
+    <WrapPanel Grid.Row="1" x:Name="PivotActions" Spacing="6"/>
+    <Grid Grid.Row="2" x:Name="PivotHost"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="*"/></Grid.RowDefinitions></Grid>
+    <TextBlock Grid.Row="3" x:Name="PivotResult" Text="Выберите агрегат и нажмите «Исходные записи»." TextWrapping="Wrap"/>
+    <GridControl Grid.Row="4" x:Name="PivotDrillRows" DataSource="PivotDrill" IsReadOnly="True"/>
+  </Grid>
+</Window>

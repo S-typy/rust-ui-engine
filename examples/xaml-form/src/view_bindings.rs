@@ -159,6 +159,7 @@ fn fallback(
         | BindingProperty::UpperValue => DataValue::Number(value.parse().map_err(err)?),
         BindingProperty::Value
             if ui.spin_settings(widget).is_some()
+                || ui.gauge_settings(widget).is_some()
                 || ui.progress_settings(widget).is_some()
                 || ui.zoom_settings(widget).is_some() =>
         {
@@ -424,6 +425,16 @@ impl MountedView {
         engine.initialize(ui).map_err(err)?;
         if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
             d.target.property == BindingProperty::Value
+                && ui.gauge_settings(d.target.widget).is_some()
+                && engine.last_target_value(d.target).is_none()
+        }) {
+            return Err(format!(
+                "Invalid initial Gauge Value: {}",
+                diagnostic.message
+            ));
+        }
+        if let Some(diagnostic) = engine.diagnostics().iter().find(|d| {
+            d.target.property == BindingProperty::Value
                 && ui.barcode_settings(d.target.widget).is_some()
                 && engine.last_target_value(d.target).is_none()
         }) {
@@ -484,6 +495,7 @@ impl MountedView {
     }
     pub(crate) fn sync_bindings(&mut self, ui: &mut Controls) -> bool {
         let changed = self.bindings.as_mut().is_some_and(|engine| engine.sync(ui));
-        self.sync_template_bindings(ui) || changed
+        let properties_changed = self.sync_property_grids(ui);
+        self.sync_template_bindings(ui) || properties_changed || changed
     }
 }

@@ -1,4 +1,20 @@
 //! A native form whose structure and initial properties are compiled from XAML.
+mod image_editor_app;
+mod generated_image_editor {
+    include!(concat!(env!("OUT_DIR"), "/image_editor_window.rs"));
+}
+mod charts_model;
+mod pivot_model;
+mod generated_charts {
+    include!(concat!(env!("OUT_DIR"), "/charts_window.rs"));
+}
+mod query_model;
+mod generated_pivot {
+    include!(concat!(env!("OUT_DIR"), "/pivot_window.rs"));
+}
+mod generated_query {
+    include!(concat!(env!("OUT_DIR"), "/query_window.rs"));
+}
 mod notifications_app;
 mod generated_notifications {
     include!(concat!(env!("OUT_DIR"), "/notifications_window.rs"));
@@ -33,6 +49,7 @@ mod forms_tests;
 mod foundation_accessibility_tests;
 mod gallery_diagnostics;
 mod gallery_model;
+mod gauge_model;
 mod grid_workspace_model;
 #[cfg(test)]
 mod group_adapter_tests;
@@ -41,12 +58,14 @@ mod layout_adapter_tests;
 mod navigation_diagnostics;
 mod navigation_model;
 mod popup_diagnostics;
+mod property_model;
 mod rating_model;
 #[cfg(test)]
 mod ribbon_tests;
 mod ribbon_workspace_model;
 mod search_model;
 mod selection_model;
+mod spell_model;
 #[cfg(test)]
 mod status_adapter_tests;
 #[cfg(test)]
@@ -116,6 +135,9 @@ mod generated_font {
 mod generated_navigation {
     include!(concat!(env!("OUT_DIR"), "/navigation_window.rs"));
 }
+mod generated_properties {
+    include!(concat!(env!("OUT_DIR"), "/property_window.rs"));
+}
 mod generated_gallery {
     include!(concat!(env!("OUT_DIR"), "/gallery_window.rs"));
 }
@@ -127,6 +149,12 @@ mod generated_color {
 }
 mod generated_rating {
     include!(concat!(env!("OUT_DIR"), "/rating_window.rs"));
+}
+mod generated_spell {
+    include!(concat!(env!("OUT_DIR"), "/spell_window.rs"));
+}
+mod generated_gauge {
+    include!(concat!(env!("OUT_DIR"), "/gauge_window.rs"));
 }
 mod generated_barcode {
     include!(concat!(env!("OUT_DIR"), "/barcode_window.rs"));
@@ -169,6 +197,10 @@ fn main() -> ExitCode {
 
 fn start() -> Result<(), String> {
     let mut theme = None;
+    let mut image_editor = false;
+    let mut query_builder = false;
+    let mut pivot = false;
+    let mut charts = false;
     let mut notifications = false;
     let mut controls = false;
     let mut editors = false;
@@ -184,11 +216,14 @@ fn start() -> Result<(), String> {
     let mut navigation = false;
     let mut tiles = false;
     let mut gallery = false;
+    let mut properties = false;
     let mut badges = false;
     let mut breadcrumb = false;
     let mut font = false;
     let mut wizard = false;
     let mut barcode = false;
+    let mut spell = false;
+    let mut gauge = false;
     let mut data_form = false;
     let mut tree = false;
     let mut grid_workspace = false;
@@ -230,6 +265,10 @@ fn start() -> Result<(), String> {
                 recovery = true;
                 smoke_test = true;
             }
+            "--image-editor" => image_editor = true,
+            "--query-builder" => query_builder = true,
+            "--pivot" => pivot = true,
+            "--charts" => charts = true,
             "--notifications" => notifications = true,
             "--controls" => controls = true,
             "--editors" => editors = true,
@@ -245,11 +284,14 @@ fn start() -> Result<(), String> {
             "--navigation" => navigation = true,
             "--tiles" => tiles = true,
             "--gallery" => gallery = true,
+            "--properties" => properties = true,
             "--badges" => badges = true,
             "--breadcrumb" => breadcrumb = true,
             "--font" => font = true,
             "--wizard" => wizard = true,
             "--barcodes" => barcode = true,
+            "--spellcheck" => spell = true,
+            "--gauges" => gauge = true,
             "--data-form" => data_form = true,
             "--tree" => tree = true,
             "--grid-workspace" => grid_workspace = true,
@@ -274,6 +316,9 @@ fn start() -> Result<(), String> {
             "--help" | "-h" => {
                 println!(
                     "--gallery opens grouped visual samples, preview/acceptance and retained Ribbon/popup hosts."
+                );
+                println!(
+                    "--image-editor opens a retained image editor and accepted preview with explicit PNG load/save."
                 );
                 println!(
                     "--data-editors opens DataEditorsWindow.xaml: transactional data, MemoEdit, editor buttons and PasswordBox.\n--workspace opens WorkspaceWindow.xaml: retained tabs, dialogs, customizable status, reusable styles/templates and typed queries."
@@ -323,6 +368,10 @@ fn start() -> Result<(), String> {
         }
     }
     if [
+        image_editor,
+        pivot,
+        charts,
+        query_builder,
         notifications,
         controls,
         docking,
@@ -342,11 +391,14 @@ fn start() -> Result<(), String> {
         navigation,
         tiles,
         gallery,
+        properties,
         badges,
         breadcrumb,
         font,
         wizard,
         barcode,
+        spell,
+        gauge,
         data_form,
         tree,
         grid_workspace,
@@ -369,12 +421,26 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if notifications {
+    let mut definition = if image_editor {
+        generated_image_editor::window_definition()
+    } else if charts {
+        generated_charts::window_definition()
+    } else if pivot {
+        generated_pivot::window_definition()
+    } else if query_builder {
+        generated_query::window_definition()
+    } else if properties {
+        generated_properties::window_definition()
+    } else if notifications {
         generated_notifications::window_definition()
     } else if documents {
         generated_documents::window_definition()
     } else if gallery {
         generated_gallery::window_definition()
+    } else if spell {
+        generated_spell::window_definition()
+    } else if gauge {
+        generated_gauge::window_definition()
     } else if barcode {
         generated_barcode::window_definition()
     } else if wizard {
@@ -476,6 +542,30 @@ fn start() -> Result<(), String> {
         }
         return rust_desktop_ui_platform_winit::run_multi(app);
     }
+    if image_editor {
+        return run(
+            image_editor_app::ImageDemo::new(definition, diagnostics)?,
+            options,
+        );
+    }
+    if charts {
+        return run(
+            charts_model::ChartsDemo::new(definition, diagnostics)?,
+            options,
+        );
+    }
+    if pivot {
+        return run(
+            pivot_model::PivotDemo::new(definition, diagnostics)?,
+            options,
+        );
+    }
+    if query_builder {
+        return run(
+            query_model::QueryDemo::new(definition, diagnostics)?,
+            options,
+        );
+    }
     if notifications {
         return rust_desktop_ui_platform_winit::run_multi(
             notifications_app::NotificationsApplication::new(definition, options, diagnostics)?,
@@ -487,7 +577,9 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if gallery {
+    let app = if properties {
+        form::Form::new(definition, diagnostics)?
+    } else if gallery {
         form::Form::new_with_model(definition, diagnostics, Some(gallery_model::model()?))?
     } else if wizard {
         form::Form::new_with_model(definition, diagnostics, Some(wizard_model::model()?))?

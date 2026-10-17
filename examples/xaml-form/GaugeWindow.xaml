@@ -1,0 +1,52 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Шкалы измерений" Width="1000" Height="820">
+  <Grid Margin="20" Spacing="14">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Grid.Row="0" Spacing="4">
+      <TextBlock Text="Шкалы измерений" FontSize="26" FontWeight="SemiBold"/>
+      <TextBlock Text="Общий диапазон, живое значение и текстовое состояние"/>
+    </StackPanel>
+    <WrapPanel Grid.Row="1" Spacing="8">
+      <Button x:Name="GaugeLow" Command="GaugeLow" Content="Норма 35" Width="120"/>
+      <Button x:Name="GaugeHigh" Command="GaugeHigh" Content="Высокое 85" Width="120"/>
+      <Button x:Name="GaugeInvalid" Command="GaugeInvalid" Content="Вне шкалы" Width="120"/>
+      <Button x:Name="GaugeCompact" Command="GaugeCompact" Content="Компактно" Width="120"/>
+      <Button x:Name="GaugeRestore" Command="GaugeRestore" Content="Развернуть" Width="120"/>
+      <Button x:Name="GaugeLight" Command="Light" Content="Светлая" Width="120"/>
+      <Button x:Name="GaugeDark" Command="Dark" Content="Тёмная" Width="120"/>
+    </WrapPanel>
+    <Grid Grid.Row="2" Spacing="14">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <Grid.RowDefinitions><RowDefinition Height="340"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+      <GroupBox Header="Температура · круговая шкала" Grid.Row="0" Grid.Column="0">
+        <CircularGauge x:Name="GaugeCircular" AutomationName="Температура круговая" Value="35" Unit="°C" Height="260">
+          <GaugeRange Start="0" End="60" Label="Норма" Tone="Good"/>
+          <GaugeRange Start="60" End="80" Label="Внимание" Tone="Warning"/>
+          <GaugeRange Start="80" End="100" Label="Опасно" Tone="Danger"/>
+        </CircularGauge>
+      </GroupBox>
+      <GroupBox Header="Температура · линейная шкала" Grid.Row="0" Grid.Column="1">
+        <LinearGauge x:Name="GaugeLinear" AutomationName="Температура линейная" Value="35" Unit="°C" Height="180">
+          <GaugeRange Start="0" End="60" Label="Норма" Tone="Good"/>
+          <GaugeRange Start="60" End="80" Label="Внимание" Tone="Warning"/>
+          <GaugeRange Start="80" End="100" Label="Опасно" Tone="Danger"/>
+        </LinearGauge>
+      </GroupBox>
+      <GroupBox Header="Цифровое значение" Grid.Row="1" Grid.Column="0">
+        <DigitalGauge x:Name="GaugeDigital" AutomationName="Температура цифровая" Value="35" Unit="°C" Height="140">
+          <GaugeRange Start="0" End="60" Label="Норма" Tone="Good"/>
+          <GaugeRange Start="60" End="80" Label="Внимание" Tone="Warning"/>
+          <GaugeRange Start="80" End="100" Label="Опасно" Tone="Danger"/>
+        </DigitalGauge>
+      </GroupBox>
+      <GroupBox Header="Состояние измерения" Grid.Row="1" Grid.Column="1">
+        <StateIndicator x:Name="GaugeState" AutomationName="Состояние температуры" Value="35" Unit="°C" Height="140">
+          <GaugeRange Start="0" End="60" Label="Норма" Tone="Good"/>
+          <GaugeRange Start="60" End="80" Label="Внимание" Tone="Warning"/>
+          <GaugeRange Start="80" End="100" Label="Опасно" Tone="Danger"/>
+        </StateIndicator>
+      </GroupBox>
+    </Grid>
+    <TextBlock Grid.Row="3" x:Name="GaugeStatus" Text="Готово"/>
+  </Grid>
+</Window>

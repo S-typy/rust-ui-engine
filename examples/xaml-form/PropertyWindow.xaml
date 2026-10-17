@@ -1,0 +1,34 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Свойства объектов" Width="1180" Height="880" Padding="24">
+  <Grid Spacing="14">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Свойства двух документов" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Разные значения показываются явно. Применение и сброс изменяют оба объекта одной транзакцией." TextTone="Secondary" TextWrapping="Wrap"/>
+    </StackPanel>
+    <WrapPanel Grid.Row="1" Spacing="8">
+      <Button x:Name="PropertyResetCount" Content="Сбросить количество" Command="PropertyDemoReset"/>
+      <Button x:Name="PropertyReject" Content="Отклонённая запись" Command="PropertyDemoReject"/>
+      <Button x:Name="PropertyExternal" Content="Изменить источник" Command="PropertyDemoExternal"/>
+      <Button x:Name="PropertyRefresh" Content="Обновить свойства" Command="PropertyDemoRefresh"/>
+      <Button x:Name="PropertyCancel" Content="Отменить имя" Command="PropertyDemoCancel"/>
+    </WrapPanel>
+    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+      <PropertyGrid x:Name="DocumentProperties" AutomationName="Инспектор двух документов"
+                    DataSource="InspectionObjects" ObjectKeys="1,2" LabelWidth="180" MinWidth="900">
+        <PropertyGrid.Properties>
+          <Property FieldName="name" Label="Название" Category="Документ" DefaultValue="Без названия"/>
+          <Property FieldName="enabled" Label="Включён" Category="Документ" DefaultIsNull="True"/>
+          <Property FieldName="identifier" Label="Идентификатор" Category="Документ" IsReadOnly="True"/>
+          <Property FieldName="count" Label="Количество" Category="Параметры" Group="Размеры" DefaultValue="10"/>
+          <Property FieldName="price" Label="Стоимость" Category="Параметры" Group="Финансы" DefaultValue="0"/>
+          <Property FieldName="created" Label="Дата создания" Category="Параметры" DefaultValue="2026-01-01"/>
+        </PropertyGrid.Properties>
+      </PropertyGrid>
+    </ScrollViewer>
+    <StackPanel Grid.Row="3" Spacing="6">
+      <TextBlock x:Name="PropertyAccepted" Text="" TextWrapping="Wrap"/>
+      <TextBlock x:Name="PropertyActivity" Text="" TextWrapping="Wrap" TextTone="Secondary"/>
+    </StackPanel>
+  </Grid>
+</Window>

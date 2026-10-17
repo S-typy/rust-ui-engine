@@ -9,6 +9,7 @@ use rust_desktop_ui_treegrid::{
 };
 use std::{cell::RefCell, rc::Rc};
 mod editors;
+mod pivot;
 mod presentation;
 #[cfg(test)]
 mod presentation_tests;

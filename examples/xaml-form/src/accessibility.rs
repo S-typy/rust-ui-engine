@@ -111,6 +111,11 @@ impl Accessibility {
                     .cloned()
                     .unwrap_or(semantic.label),
             );
+            // AccessKit's static Label exposes its name through value on Windows.
+            // Keep automation overrides; editable controls retain their own value.
+            if node.role() == Role::Label {
+                node.set_value(node.label().unwrap_or_default().to_owned());
+            }
             node.set_bounds(bounds(semantic.bounds, scale));
             if status {
                 node.set_live(accesskit::Live::Polite);
@@ -123,6 +128,14 @@ impl Accessibility {
                 && let Some(value) = semantic.value
             {
                 node.set_value(value);
+            }
+            if let Some(settings) = ui.gauge_settings(widget) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_read_only();
+                node.set_role_description("Измерение");
+                append_description(&mut node, settings.state_label());
             }
             if let Some(settings) = ui.progress_settings(widget) {
                 if ui.progress_indeterminate(widget) != Some(true) {
@@ -484,6 +497,7 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Menu => Role::Menu,
         ControlRole::MenuItem => Role::MenuItem,
         ControlRole::StatusBar => Role::Status,
+        ControlRole::Meter => Role::Meter,
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
         ControlRole::RangeSlider => Role::Group,
@@ -599,6 +613,101 @@ mod status_tests {
             let id = self.accessibility.id(widget).unwrap();
             &tree.nodes.iter().find(|(node, _)| *node == id).unwrap().1
         }
+    }
+
+    #[test]
+    fn static_label_value_exposes_automation_caption_without_overwriting_editor_text() {
+        let mut fixture = Fixture::new(false);
+        let root = fixture.ui.root();
+        let label = fixture
+            .ui
+            .label(
+                root,
+                "Разные значения",
+                LayoutStyle {
+                    width: Length::Px(240.0),
+                    height: Length::Px(24.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture
+            .ui
+            .set_automation_name(label, "Название: разные значения")
+            .unwrap();
+        let editor = fixture
+            .ui
+            .text_box(
+                root,
+                "Accessible editor",
+                "Draft contents",
+                LayoutStyle {
+                    width: Length::Px(240.0),
+                    height: Length::Px(32.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        fixture.ui.update(Size::new(800.0, 600.0)).unwrap();
+        let tree = fixture.tree();
+        assert_eq!(fixture.node(&tree, label).role(), Role::Label);
+        assert_eq!(
+            fixture.node(&tree, label).value(),
+            Some("Название: разные значения")
+        );
+        assert_eq!(
+            fixture.node(&tree, editor).label(),
+            Some("Accessible editor")
+        );
+        assert_eq!(fixture.node(&tree, editor).value(), Some("Draft contents"));
+        fixture
+            .view
+            .automation_names
+            .insert(label, "Explicit XAML caption".into());
+        let tree = fixture.tree();
+        assert_eq!(
+            fixture.node(&tree, label).value(),
+            Some("Explicit XAML caption")
+        );
+        assert_eq!(fixture.node(&tree, fixture.message).role(), Role::Status);
+        assert_eq!(fixture.node(&tree, fixture.message).label(), Some("Ready"));
+    }
+
+    #[test]
+    fn gauge_projects_readonly_numeric_measurement_and_state_text() {
+        use rust_desktop_ui_controls::{GaugeRange, GaugeSettings, GaugeTone};
+        let mut f = Fixture::new(false);
+        let id =
+            f.ui.gauge(
+                f.ui.root(),
+                GaugeSettings {
+                    minimum: -20.0,
+                    maximum: 120.0,
+                    value: 85.0,
+                    unit: "°C".into(),
+                    ranges: vec![GaugeRange {
+                        start: 80.0,
+                        end: 120.0,
+                        label: "Горячо".into(),
+                        tone: GaugeTone::Danger,
+                    }],
+                    ..Default::default()
+                },
+                LayoutStyle::default(),
+            )
+            .unwrap();
+        f.ui.update(VIEWPORT).unwrap();
+        let tree = f.tree();
+        let node = f.node(&tree, id);
+        assert_eq!(node.role(), Role::Meter);
+        assert_eq!(node.numeric_value(), Some(85.0));
+        assert_eq!(node.min_numeric_value(), Some(-20.0));
+        assert_eq!(node.max_numeric_value(), Some(120.0));
+        assert!(node.is_read_only());
+        assert!(!node.supports_action(Action::SetValue));
+        assert_eq!(node.value(), Some("85.0 °C · Горячо"));
+        f.set_value(id, 30.0).unwrap();
+        assert_eq!(f.ui.gauge_value(id), Some(85.0));
     }
 
     #[test]

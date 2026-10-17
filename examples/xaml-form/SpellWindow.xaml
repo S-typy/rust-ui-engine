@@ -1,0 +1,41 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Проверка орфографии" Width="1040" Height="720">
+  <ScrollViewer x:Name="SpellScroll" Margin="24" HorizontalScrollBarVisibility="Disabled">
+  <StackPanel Spacing="16">
+    <TextBlock Text="Проверка орфографии" FontSize="26" FontWeight="SemiBold"/>
+    <TextBlock Text="Явный словарь приложения · версии текста · исправление с отменой"/>
+    <TextBox x:Name="SpellEditor" AutomationName="Текст для проверки" Text="Привт, мир! Это пример текста."
+             CommitOnLostFocus="False" Height="52" MaxLength="4096"/>
+    <WrapPanel Spacing="8">
+      <Button x:Name="SpellCheck" Command="SpellCheck" Content="Проверить"/>
+      <Button x:Name="SpellApply" Command="SpellApply" Content="Исправить первое"/>
+      <Button x:Name="SpellUndo" Command="SpellUndo" Content="Отменить исправление"/>
+      <Button x:Name="SpellAccept" Command="SpellAccept" Content="Принять текст"/>
+      <Button x:Name="SpellCancel" Command="SpellCancel" Content="Отменить проверку"/>
+    </WrapPanel>
+    <WrapPanel Spacing="8">
+      <Button x:Name="SpellIgnoreOnce" Command="SpellIgnoreOnce" Content="Пропустить один раз"/>
+      <Button x:Name="SpellIgnoreAll" Command="SpellIgnoreAll" Content="Игнорировать слово"/>
+      <Button x:Name="SpellCustom" Command="SpellCustom" Content="В свой словарь"/>
+      <Button x:Name="SpellStale" Command="SpellStale" Content="Поздний ответ"/>
+      <Button x:Name="SpellReset" Command="SpellReset" Content="Сбросить пример"/>
+    </WrapPanel>
+    <GroupBox Header="Результат проверки">
+      <StackPanel Spacing="10">
+        <TextBlock x:Name="SpellStatus" AutomationName="Состояние проверки" Text="Готово"/>
+        <TextBlock x:Name="SpellIssues" Text="Нажмите «Проверить»"/>
+        <TextBlock x:Name="SpellAccepted" Text="Бизнес-значение сохранено"/>
+      </StackPanel>
+    </GroupBox>
+    <WrapPanel Spacing="8">
+      <MemoEdit x:Name="SpellMemo" AutomationName="Заметка с проверкой" Text="Привт, мир!" PopupWidth="650" PopupHeight="320" Width="230"/>
+      <Button x:Name="SpellMemoFix" Command="SpellMemoFix" Content="Исправить в заметке"/>
+      <Button x:Name="SpellReadOnly" Command="SpellReadOnly" Content="Только чтение"/>
+      <Button x:Name="SpellLight" Command="Light" Content="Светлая"/>
+      <Button x:Name="SpellDark" Command="Dark" Content="Тёмная"/>
+    </WrapPanel>
+    <TextBlock Text="Словарь примера: привет, мир, это, пример, текста. Создан для этой демонстрации; Apache-2.0."
+               TextTone="Secondary" TextWrapping="Wrap"/>
+  </StackPanel>
+  </ScrollViewer>
+</Window>

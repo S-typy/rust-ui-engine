@@ -42,6 +42,7 @@ impl Controls {
         id: WidgetId,
         text: &str,
     ) -> Result<(), ControlError> {
+        self.preflight_query_builder_text(id, text)?;
         self.preflight_search_text(id, text)?;
         self.preflight_breadcrumb_text(id, text)?;
         let style = *self

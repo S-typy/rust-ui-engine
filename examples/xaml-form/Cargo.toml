@@ -9,6 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
+rust-desktop-ui-images = { path = "../../crates/ui-images", version = "0.1.0" }
 rust-desktop-ui-core = { path = "../../crates/ui-core", version = "0.1.0" }
 rust-desktop-ui-controls = { path = "../../crates/ui-controls", version = "0.1.0" }
 rust-desktop-ui-data = { path = "../../crates/ui-data", version = "0.1.0", features = ["sqlite"] }

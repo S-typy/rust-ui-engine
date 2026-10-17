@@ -62,6 +62,10 @@ impl Gallery {
                 role(item.role)
             });
             node.set_label(item.label);
+            // AccessKit's Label name is derived from value by the Windows provider.
+            if node.role() == Role::Label {
+                node.set_value(node.label().unwrap_or_default().to_owned());
+            }
             node.set_bounds(bounds(item.bounds, scale));
             if self.ui.notification_message(item.id) {
                 node.set_live(rust_desktop_ui_platform_winit::accesskit::Live::Polite);
@@ -132,6 +136,14 @@ impl Gallery {
                 && let Some(value) = item.value
             {
                 node.set_value(value);
+            }
+            if let Some(settings) = self.ui.gauge_settings(item.id) {
+                node.set_min_numeric_value(settings.minimum);
+                node.set_max_numeric_value(settings.maximum);
+                node.set_numeric_value(settings.value);
+                node.set_read_only();
+                node.set_role_description("Измерение");
+                append_description(&mut node, settings.state_label());
             }
             if let Some(settings) = self.ui.progress_settings(item.id) {
                 if self.ui.progress_indeterminate(item.id) != Some(true) {
@@ -553,6 +565,7 @@ fn role(role: ControlRole) -> Role {
         ControlRole::MenuItem => Role::MenuItem,
         ControlRole::Group => Role::Group,
         ControlRole::StatusBar => Role::Status,
+        ControlRole::Meter => Role::Meter,
         ControlRole::ProgressBar => Role::ProgressIndicator,
         ControlRole::Slider => Role::Slider,
         ControlRole::RangeSlider => Role::Group,
@@ -564,5 +577,56 @@ fn role(role: ControlRole) -> Role {
         ControlRole::Splitter => Role::Splitter,
         ControlRole::Grid => Role::Grid,
         ControlRole::Tree => Role::Tree,
+    }
+}
+
+#[cfg(test)]
+mod label_tests {
+    use super::*;
+    #[test]
+    fn gallery_static_labels_project_value_and_editor_keeps_its_text() {
+        use rust_desktop_ui_core::{LayoutStyle, Length, Size};
+        let mut gallery =
+            Gallery::new(1, std::path::PathBuf::from("unused-label-test-state.json")).unwrap();
+        let root = gallery.ui.root();
+        let label = gallery
+            .ui
+            .label(
+                root,
+                "Visible text",
+                LayoutStyle {
+                    width: Length::Px(200.0),
+                    height: Length::Px(24.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        gallery
+            .ui
+            .set_automation_name(label, "Accessible static caption")
+            .unwrap();
+        let editor = gallery
+            .ui
+            .text_box(
+                root,
+                "Editor caption",
+                "Editor draft",
+                LayoutStyle {
+                    width: Length::Px(200.0),
+                    height: Length::Px(32.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        gallery.ui.update(Size::new(1400.0, 1200.0)).unwrap();
+        let tree = gallery.accessibility_tree(1.0);
+        let node = |widget| {
+            let id = NodeId(gallery.accessible_widgets[&widget]);
+            &tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1
+        };
+        assert_eq!(node(label).role(), Role::Label);
+        assert_eq!(node(label).value(), Some("Accessible static caption"));
+        assert_eq!(node(editor).label(), Some("Editor caption"));
+        assert_eq!(node(editor).value(), Some("Editor draft"));
     }
 }

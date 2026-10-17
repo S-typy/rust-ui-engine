@@ -67,6 +67,10 @@ pub use tiles::{
     TileCollectionDefinition, TileDefinition, TileGroupDefinition, TileSizeDefinition,
     validate_tiles,
 };
+mod query_builder;
+pub use query_builder::{
+    QueryBuilderDefinition, QueryBuilderModeDefinition, validate_query_builder,
+};
 mod notifications;
 pub use notifications::{
     LoadingOverlayDefinition, NotificationCenterDefinition, validate_notifications,
@@ -83,11 +87,19 @@ pub use navigation::{
     NavigationViewDefinition, validate_navigation,
 };
 mod data_form;
+mod property_grid;
+pub use property_grid::{PropertyDefinition, PropertyGridDefinition, validate_property_grid};
 mod gallery;
 pub use gallery::{
     GalleryDefinition, GalleryGroupDefinition, GalleryItemDefinition, validate_gallery,
 };
+mod gauge;
+pub use gauge::{
+    GaugeDefinition, GaugeRangeDefinition, GaugeToneDefinition, GaugeViewDefinition, validate_gauge,
+};
 mod barcode;
+mod image_editor;
+pub use image_editor::{ImageEditorDefinition, validate_image_editor};
 mod rating;
 pub use barcode::{BarcodeDefinition, BarcodeSymbologyDefinition, validate_barcode};
 pub use color::{
@@ -603,6 +615,8 @@ impl ElementDefinition {
 /// Supported layout elements. Menu buttons own static menu entries separately.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ElementKind {
+    FilterBuilder(Box<QueryBuilderDefinition>),
+    ExpressionBuilder(Box<QueryBuilderDefinition>),
     NotificationCenter(NotificationCenterDefinition),
     LoadingOverlay(Box<LoadingOverlayDefinition>),
     ToolBar(ToolBarDefinition),
@@ -620,10 +634,13 @@ pub enum ElementKind {
     Grid(GridDefinition),
     GridControl(GridControlDefinition),
     DataForm(DataFormDefinition),
+    PropertyGrid(PropertyGridDefinition),
     Wizard(Box<WizardDefinition>),
     StepProgress(StepProgressDefinition),
     NavigationPane(Box<NavigationDefinition>),
+    ImageEditor(ImageEditorDefinition),
     Rating(RatingDefinition),
+    Gauge(GaugeDefinition),
     Barcode(BarcodeDefinition),
     Gallery(Box<GalleryDefinition>),
     TileCollection(Box<TileCollectionDefinition>),
@@ -1286,6 +1303,7 @@ fn parse_element_properties(
             ) && !matches!(
                 kind,
                 ElementKind::TextBlock(_)
+                    | ElementKind::Gauge(_)
                     | ElementKind::Barcode(_)
                     | ElementKind::ProgressBar(_)
                     | ElementKind::BusyIndicator(_)
@@ -1306,9 +1324,12 @@ fn parse_element_properties(
                     | "Route"
             ) || matches!(
                 kind,
-                ElementKind::ZoomControl(_)
+                ElementKind::FilterBuilder(_)
+                    | ElementKind::ExpressionBuilder(_)
+                    | ElementKind::ZoomControl(_)
                     | ElementKind::Slider(_)
                     | ElementKind::Calendar(_)
+                    | ElementKind::ImageEditor(_)
                     | ElementKind::Rating(_)
                     | ElementKind::ColorEdit(_)
                     | ElementKind::BrushEdit(_)
@@ -1751,6 +1772,8 @@ fn parse_element(
         navigation::parse_children(node, depth, count, value, names, checked_radio_groups)?;
     } else if let ElementKind::Breadcrumb(value) = &mut kind {
         breadcrumb::parse_children(node, depth, count, value)?;
+    } else if let ElementKind::PropertyGrid(value) = &mut kind {
+        property_grid::parse_children(node, depth, count, value)?;
     } else if let ElementKind::DataForm(form) = &mut kind {
         data_form::parse_children(node, depth, count, form)?;
     } else if let ElementKind::TreeGrid(tree) = &mut kind {
@@ -1868,7 +1891,9 @@ fn parse_element(
             | ElementKind::ButtonEdit(_)
             | ElementKind::MemoEdit(_)
             | ElementKind::SearchBox(_)
+            | ElementKind::ImageEditor(_)
             | ElementKind::Rating(_)
+            | ElementKind::Gauge(_)
             | ElementKind::ColorEdit(_)
             | ElementKind::BrushEdit(_)
             | ElementKind::FontPicker(_)

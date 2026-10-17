@@ -9,3 +9,6 @@ pub use cache::*;
 mod svg_tests;
 #[cfg(test)]
 mod tests;
+
+mod edit;
+pub use edit::*;

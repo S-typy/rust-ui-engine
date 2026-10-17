@@ -27,12 +27,18 @@ mod font;
 mod forms;
 #[path = "view_gallery.rs"]
 mod gallery;
+#[path = "view_gauge.rs"]
+mod gauge;
 #[path = "view_grid.rs"]
 mod grid;
 #[path = "view_navigation.rs"]
 mod navigation;
 #[path = "view_notifications.rs"]
 mod notifications;
+#[path = "view_property_grid.rs"]
+mod property_grid;
+#[path = "view_query_builder.rs"]
+mod query_builder;
 #[cfg(test)]
 #[path = "rating_adapter_tests.rs"]
 mod rating_tests;
@@ -50,6 +56,7 @@ mod wizard;
 #[derive(Default)]
 pub(crate) struct MountedView {
     pub(crate) data_forms: HashMap<WidgetId, rust_desktop_ui_controls::DataForm>,
+    pub(crate) property_grids: HashMap<WidgetId, rust_desktop_ui_controls::PropertyGrid>,
     presentations: HashMap<WidgetId, templates::Presentation>,
     presentation_context: Option<templates::PresentationContext>,
     presentation_owner_contexts: HashMap<WidgetId, String>,
@@ -279,6 +286,9 @@ impl MountedView {
                 }
                 ElementKind::ToolBar(_) => Length::Px(ui.theme().tokens().control_height + 8.0),
                 ElementKind::MenuBar(_) => Length::Px(ui.theme().tokens().control_height),
+                ElementKind::FilterBuilder(_) | ElementKind::ExpressionBuilder(_) => {
+                    Length::Px(480.0)
+                }
                 ElementKind::NotificationCenter(_) => Length::Px(0.0),
                 ElementKind::LoadingOverlay(_) => Length::Px(240.0),
                 ElementKind::Popup(_) => Length::Px(0.0),
@@ -290,10 +300,13 @@ impl MountedView {
                 ElementKind::TileCollection(_) => Length::Auto,
                 ElementKind::ListBox(_) => Length::Px(160.0),
                 ElementKind::Calendar(_) => Length::Px(300.0),
+                ElementKind::Gauge(_) => Length::Auto,
                 ElementKind::Barcode(_) => Length::Auto,
+                ElementKind::ImageEditor(_) => Length::Px(420.0),
                 ElementKind::Rating(rating) => Length::Px(rating.glyph_size + 8.0),
                 ElementKind::GridControl(_)
                 | ElementKind::DataForm(_)
+                | ElementKind::PropertyGrid(_)
                 | ElementKind::FontPicker(_)
                 | ElementKind::Breadcrumb(_)
                 | ElementKind::TreeView(_)
@@ -378,6 +391,13 @@ impl MountedView {
                 style,
                 common.bindings.contains_key("Height"),
             )?,
+            ElementKind::Gauge(value) => gauge::mount(
+                ui,
+                parent,
+                value,
+                common.bindings.contains_key("Value"),
+                style,
+            )?,
             ElementKind::Barcode(value) => ui
                 .barcode(
                     parent,
@@ -386,6 +406,32 @@ impl MountedView {
                     style,
                 )
                 .map_err(err)?,
+            ElementKind::ImageEditor(value) => {
+                let bitmap = value
+                    .source
+                    .as_ref()
+                    .map(|name| {
+                        ui.image_resource_asset(name)
+                            .map(|a| a.bitmap().clone())
+                            .map_err(err)
+                    })
+                    .transpose()?;
+                if value.viewer {
+                    ui.image_viewer(parent, bitmap, style)
+                } else {
+                    ui.image_editor(
+                        parent,
+                        bitmap,
+                        rust_desktop_ui_controls::ImageEditorSettings {
+                            read_only: value.is_read_only,
+                            ..Default::default()
+                        },
+                        style,
+                    )
+                }
+                .map_err(err)?
+                .container
+            }
             ElementKind::Rating(rating) => ui
                 .rating(
                     parent,
@@ -455,6 +501,12 @@ impl MountedView {
                     .or(common.name.as_deref())
                     .unwrap_or("Плитки"),
             )?,
+            ElementKind::FilterBuilder(v) => {
+                self.mount_query_builder(ui, parent, v, false, style)?
+            }
+            ElementKind::ExpressionBuilder(v) => {
+                self.mount_query_builder(ui, parent, v, true, style)?
+            }
             ElementKind::NotificationCenter(value) => {
                 ui.notification_center(
                     parent,
@@ -486,6 +538,9 @@ impl MountedView {
                 style,
                 common.name.as_deref().unwrap_or("Font"),
             )?,
+            ElementKind::PropertyGrid(definition) => {
+                self.mount_property_grid(ui, parent, definition, style)?
+            }
             ElementKind::DataForm(definition) => {
                 self.mount_data_form(ui, parent, definition, style)?
             }
@@ -928,13 +983,18 @@ impl MountedView {
                 ElementKind::GridControl(_) => Role::Grid,
                 ElementKind::TreeGrid(_) => Role::Grid,
                 ElementKind::TreeView(_) => Role::Tree,
+                ElementKind::Gauge(_) => Role::Meter,
                 ElementKind::Barcode(_) => Role::Image,
+                ElementKind::ImageEditor(_) => Role::Group,
                 ElementKind::Rating(_) => Role::Rating,
                 ElementKind::DataForm(_)
+                | ElementKind::PropertyGrid(_)
                 | ElementKind::FontPicker(_)
                 | ElementKind::Breadcrumb(_)
                 | ElementKind::ColorEdit(_)
                 | ElementKind::BrushEdit(_)
+                | ElementKind::FilterBuilder(_)
+                | ElementKind::ExpressionBuilder(_)
                 | ElementKind::NotificationCenter(_)
                 | ElementKind::LoadingOverlay(_)
                 | ElementKind::NavigationPane(_)
@@ -1048,15 +1108,19 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             extras::container_desired_width(ui, element)
         }
         ElementKind::ZoomControl(_) => Ok(220.0),
-        ElementKind::GridControl(_) | ElementKind::DataForm(_) | ElementKind::TreeGrid(_) => {
-            Ok(560.0)
-        }
+        ElementKind::GridControl(_)
+        | ElementKind::DataForm(_)
+        | ElementKind::PropertyGrid(_)
+        | ElementKind::TreeGrid(_) => Ok(560.0),
+        ElementKind::FilterBuilder(_) | ElementKind::ExpressionBuilder(_) => Ok(800.0),
         ElementKind::NotificationCenter(_) => Ok(0.0),
         ElementKind::LoadingOverlay(_) => Ok(400.0),
         ElementKind::TreeView(_) => Ok(320.0),
+        ElementKind::Gauge(_) => Ok(300.0),
         ElementKind::Barcode(value) => {
             barcode::width(value, element.common.bindings.contains_key("Value"))
         }
+        ElementKind::ImageEditor(_) => Ok(640.0),
         ElementKind::Rating(r) => Ok(f32::from(r.maximum) * r.glyph_size
             + f32::from(r.maximum.saturating_sub(1)) * r.spacing
             + 64.0),
@@ -1457,6 +1521,12 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                 }
             }
             ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
+            ElementKind::Gauge(value) => {
+                rust_desktop_ui_xaml::validate_gauge(value, &element.common)?;
+                gauge::settings(value, element.common.bindings.contains_key("Value"))
+                    .validate()
+                    .map_err(err)?;
+            }
             ElementKind::Barcode(value) => {
                 rust_desktop_ui_xaml::validate_barcode(value, &element.common)?;
                 barcode::settings(value)
@@ -1465,6 +1535,12 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                         element.common.bindings.contains_key("Value"),
                     ))
                     .map_err(err)?;
+            }
+            ElementKind::ImageEditor(value) => {
+                rust_desktop_ui_xaml::validate_image_editor(value, &element.common)?;
+                if let Some(source) = &value.source {
+                    ui.image_resource_asset(source).map_err(err)?;
+                }
             }
             ElementKind::Rating(rating) => {
                 rust_desktop_ui_xaml::validate_rating(rating, &element.common)?
@@ -1528,6 +1604,14 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                     }
                 }
             }
+            ElementKind::FilterBuilder(v) | ElementKind::ExpressionBuilder(v) => {
+                rust_desktop_ui_xaml::validate_query_builder(v, &element.common)?;
+                query_builder::validate(
+                    ui,
+                    v,
+                    matches!(element.kind, ElementKind::ExpressionBuilder(_)),
+                )?;
+            }
             ElementKind::NotificationCenter(_) | ElementKind::LoadingOverlay(_) => {
                 rust_desktop_ui_xaml::validate_notifications(&element.kind, &element.common)?;
             }
@@ -1537,6 +1621,16 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
                     matches!(element.kind, ElementKind::BrushEdit(_)),
                     &element.common,
                 )?;
+            }
+            ElementKind::PropertyGrid(value) => {
+                property_grid::validate_source(ui, value, &element.common)?;
+                count += value.properties.len();
+                if count > rust_desktop_ui_xaml::MAX_ELEMENTS
+                    || (!value.properties.is_empty()
+                        && depth + 2 > rust_desktop_ui_xaml::MAX_ELEMENT_DEPTH)
+                {
+                    return Err("Property metadata count/depth exceeded".into());
+                }
             }
             ElementKind::DataForm(form) => {
                 data_form::validate_source(ui, form)?;

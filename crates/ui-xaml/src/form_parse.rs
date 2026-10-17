@@ -2,13 +2,34 @@ use crate::*;
 
 pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
     Some(match name {
+        "FilterBuilder" => ElementKind::FilterBuilder(Box::default()),
+        "ExpressionBuilder" => ElementKind::ExpressionBuilder(Box::new(QueryBuilderDefinition {
+            value: "integer(\"0\")".into(),
+            ..Default::default()
+        })),
         "NotificationCenter" => ElementKind::NotificationCenter(Default::default()),
         "LoadingOverlay" => ElementKind::LoadingOverlay(Box::default()),
         "Grid" => ElementKind::Grid(GridDefinition::default()),
         "GridControl" => ElementKind::GridControl(GridControlDefinition::default()),
         "TreeView" => ElementKind::TreeView(TreeDefinition::default()),
         "TreeGrid" => ElementKind::TreeGrid(TreeDefinition::default()),
+        "CircularGauge" | "LinearGauge" | "DigitalGauge" | "StateIndicator" => {
+            ElementKind::Gauge(GaugeDefinition {
+                view: match name {
+                    "LinearGauge" => GaugeViewDefinition::Linear,
+                    "DigitalGauge" => GaugeViewDefinition::Digital,
+                    "StateIndicator" => GaugeViewDefinition::State,
+                    _ => GaugeViewDefinition::Circular,
+                },
+                ..Default::default()
+            })
+        }
         "Barcode" => ElementKind::Barcode(BarcodeDefinition::default()),
+        "ImageEditor" | "ImageViewer" => ElementKind::ImageEditor(ImageEditorDefinition {
+            viewer: name == "ImageViewer",
+            is_read_only: name == "ImageViewer",
+            ..Default::default()
+        }),
         "Rating" => ElementKind::Rating(RatingDefinition::default()),
         "Breadcrumb" => ElementKind::Breadcrumb(BreadcrumbDefinition::default()),
         "Gallery" => ElementKind::Gallery(Box::default()),
@@ -29,6 +50,7 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
         "StepProgress" => ElementKind::StepProgress(StepProgressDefinition::default()),
         "FontPicker" => ElementKind::FontPicker(FontPickerDefinition::default()),
         "DataForm" => ElementKind::DataForm(DataFormDefinition::default()),
+        "PropertyGrid" => ElementKind::PropertyGrid(PropertyGridDefinition::default()),
         "Border" => ElementKind::Border(BorderDefinition::default()),
         "GroupBox" => ElementKind::GroupBox(GroupBoxDefinition::default()),
         "Expander" => ElementKind::Expander(ExpanderDefinition::default()),
@@ -76,8 +98,13 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         return true;
     }
     match kind {
+        ElementKind::FilterBuilder(_) | ElementKind::ExpressionBuilder(_) => {
+            matches!(name, "Value" | "IsReadOnly")
+        }
         ElementKind::Slider(_) => name == "Value",
+        ElementKind::Gauge(_) => name == "Value",
         ElementKind::Barcode(_) => name == "Value",
+        ElementKind::ImageEditor(_) => name == "IsReadOnly",
         ElementKind::Rating(_) => matches!(name, "Value" | "IsReadOnly"),
         ElementKind::NavigationPane(_) => name == "Route",
         ElementKind::Breadcrumb(_) => matches!(name, "Value" | "IsReadOnly"),
@@ -471,11 +498,16 @@ pub(super) fn property(
                 selection_property(document, attr, selection)
             }
         }
+        ElementKind::Gauge(value) => gauge::property(document, attr, value),
         ElementKind::Barcode(value) => barcode::property(document, attr, value),
+        ElementKind::ImageEditor(value) => image_editor::property(document, attr, value),
         ElementKind::Rating(rating) => rating::property(document, attr, rating),
         ElementKind::NavigationPane(value) => navigation::property(document, attr, value),
         ElementKind::Breadcrumb(value) => breadcrumb::property(document, attr, value),
         ElementKind::TileCollection(value) => tiles::property(document, attr, value),
+        ElementKind::FilterBuilder(v) | ElementKind::ExpressionBuilder(v) => {
+            query_builder::attribute(document, attr, v)
+        }
         ElementKind::NotificationCenter(_) | ElementKind::LoadingOverlay(_) => {
             notifications::property(document, attr, kind)
         }
@@ -500,6 +532,7 @@ pub(super) fn property(
             }
             Ok(true)
         }
+        ElementKind::PropertyGrid(value) => property_grid::attribute(document, attr, value),
         ElementKind::DataForm(form) => {
             match attr.name() {
                 "DataSource" => form.data_source = attr.value().into(),
@@ -1206,6 +1239,9 @@ pub(super) fn parse_children(
     groups: &mut HashSet<RadioGroupKey>,
     kind: &mut ElementKind,
 ) -> Result<(), Diagnostic> {
+    if let ElementKind::Gauge(value) = kind {
+        return gauge::children(node, value, depth, count);
+    }
     let is_brush = matches!(kind, ElementKind::BrushEdit(_));
     if let ElementKind::ColorEdit(value) | ElementKind::BrushEdit(value) = kind {
         return color::children(node, value, is_brush, depth, count);
@@ -1603,8 +1639,12 @@ pub(super) fn validate(
         }
     }
     match kind {
+        ElementKind::Gauge(value) => validate_gauge(value, common).map_err(|e| at_node(node, e))?,
         ElementKind::Barcode(value) => {
             validate_barcode(value, common).map_err(|e| at_node(node, e))?
+        }
+        ElementKind::ImageEditor(value) => {
+            validate_image_editor(value, common).map_err(|e| at_node(node, e))?
         }
         ElementKind::Rating(rating) => {
             validate_rating(rating, common).map_err(|message| at_node(node, message))?
@@ -1627,6 +1667,9 @@ pub(super) fn validate(
         ElementKind::TileCollection(value) => {
             validate_tiles(value, common).map_err(|e| at_node(node, e))?
         }
+        ElementKind::FilterBuilder(v) | ElementKind::ExpressionBuilder(v) => {
+            validate_query_builder(v, common).map_err(|e| at_node(node, e))?
+        }
         ElementKind::NotificationCenter(_) | ElementKind::LoadingOverlay(_) => {
             validate_notifications(kind, common).map_err(|e| at_node(node, e))?
         }
@@ -1636,6 +1679,9 @@ pub(super) fn validate(
         }
         ElementKind::FontPicker(font) => {
             validate_font_picker(font, common).map_err(|message| at_node(node, message))?
+        }
+        ElementKind::PropertyGrid(value) => {
+            validate_property_grid(value, common).map_err(|message| at_node(node, message))?;
         }
         ElementKind::DataForm(form) => {
             validate_data_form(form).map_err(|message| at_node(node, message))?;

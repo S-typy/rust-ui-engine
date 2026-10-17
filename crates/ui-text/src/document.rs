@@ -1,4 +1,4 @@
-use std::{collections::VecDeque, fmt, ops::Range};
+use std::{collections::VecDeque, fmt, ops::Range, sync::Arc};
 use unicode_segmentation::UnicodeSegmentation;
 
 const HISTORY_LIMIT: usize = 128;
@@ -134,13 +134,47 @@ struct State {
 /// assert!(document.undo());
 /// assert_eq!(document.text(), "А👩‍💻e\u{301}");
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct TextDocument {
+    version: DocumentVersion,
     state: State,
     graphemes: Vec<usize>,
     composition: Option<Composition>,
     undo: VecDeque<State>,
     redo: Vec<State>,
+}
+
+/// Opaque identity of a document's text revision. Keeping a version alive
+/// prevents identity reuse. Undo, redo and cloning never resurrect an old version.
+#[derive(Clone)]
+pub struct DocumentVersion(Arc<()>);
+impl DocumentVersion {
+    fn fresh() -> Self {
+        Self(Arc::new(()))
+    }
+}
+impl PartialEq for DocumentVersion {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for DocumentVersion {}
+impl fmt::Debug for DocumentVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("DocumentVersion(..)")
+    }
+}
+impl Clone for TextDocument {
+    fn clone(&self) -> Self {
+        Self {
+            version: DocumentVersion::fresh(),
+            state: self.state.clone(),
+            graphemes: self.graphemes.clone(),
+            composition: self.composition.clone(),
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+        }
+    }
 }
 
 impl Default for TextDocument {
@@ -155,6 +189,7 @@ impl TextDocument {
         let end = text.len();
         let graphemes = boundaries(&text);
         Self {
+            version: DocumentVersion::fresh(),
             state: State {
                 text,
                 selection: Selection {
@@ -170,6 +205,10 @@ impl TextDocument {
     }
     pub fn text(&self) -> &str {
         &self.state.text
+    }
+    /// Version of committed document text, independent of caret and IME preedit.
+    pub fn version(&self) -> DocumentVersion {
+        self.version.clone()
     }
     pub fn selection(&self) -> Selection {
         self.state.selection
@@ -246,6 +285,26 @@ impl TextDocument {
     pub fn try_insert(&mut self, text: &str, limits: TextLimits) -> Result<(), EditError> {
         self.validate_replacement(self.selection().range(), text, limits)?;
         self.insert(text);
+        Ok(())
+    }
+
+    /// Replace an explicit grapheme-aligned UTF-8 range as one undo operation.
+    /// Rejection preserves text, selection, composition and both history stacks.
+    pub fn try_replace_range(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        limits: TextLimits,
+    ) -> Result<(), EditError> {
+        if range.start > range.end
+            || self.graphemes.binary_search(&range.start).is_err()
+            || self.graphemes.binary_search(&range.end).is_err()
+        {
+            return Err(EditError::InvalidSelection);
+        }
+        self.validate_replacement(range.clone(), text, limits)?;
+        self.cancel_preedit();
+        self.replace(range, text);
         Ok(())
     }
 
@@ -506,6 +565,7 @@ impl TextDocument {
     pub fn undo(&mut self) -> bool {
         self.cancel_preedit();
         if let Some(previous) = self.undo.pop_back() {
+            self.version = DocumentVersion::fresh();
             self.redo.push(std::mem::replace(&mut self.state, previous));
             self.graphemes = boundaries(self.text());
             true
@@ -526,6 +586,7 @@ impl TextDocument {
     pub fn redo(&mut self) -> bool {
         self.cancel_preedit();
         if let Some(next) = self.redo.pop() {
+            self.version = DocumentVersion::fresh();
             let previous = std::mem::replace(&mut self.state, next);
             self.graphemes = boundaries(self.text());
             self.push_undo(previous);
@@ -588,6 +649,9 @@ impl TextDocument {
         }
         let previous = self.state.clone();
         self.state.text.replace_range(range.clone(), text);
+        if self.state.text != previous.text {
+            self.version = DocumentVersion::fresh();
+        }
         self.graphemes = boundaries(self.text());
         // Insertion/deletion can merge surrounding graphemes (combining marks,
         // regional indicators and ZWJ). Keep the resulting caret on a boundary.
