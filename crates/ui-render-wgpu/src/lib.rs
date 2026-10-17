@@ -362,6 +362,23 @@ impl SurfaceState {
 struct DeviceHealth {
     lost: Option<String>,
     error: Option<String>,
+    // Shared retry budget; a successful frame from any peer resets it.
+    unpresented_recoveries: u8,
+}
+impl DeviceHealth {
+    fn next_recovery(&self) -> Result<u8, GpuError> {
+        self.unpresented_recoveries
+            .checked_add(1)
+            .filter(|n| *n <= 3)
+            .ok_or_else(|| {
+                GpuError::RequestDevice(
+                    "Shared GPU recovery limit reached before a successful frame".into(),
+                )
+            })
+    }
+    fn presented(&mut self) {
+        self.unpresented_recoveries = 0;
+    }
 }
 
 fn check_frame_inputs(rectangles: usize, scale_factor: f32) -> Result<(), GpuError> {
@@ -593,7 +610,46 @@ fn check_adapter(
     Ok(())
 }
 
+/// Host-owned device/queue cache. It never owns a native Window or Surface.
+/// Surfaces and their draw resources remain owned by individual renderers.
+#[derive(Default)]
+pub struct GpuContext {
+    generation: u64,
+    shared: Option<SharedGpu>,
+}
+struct SharedGpu {
+    instance: wgpu::Instance,
+    adapter: wgpu::Adapter,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    health: Arc<Mutex<DeviceHealth>>,
+}
+impl GpuContext {
+    /// Current device generation; zero means no device has been created.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+    /// A loss affects every surface sharing this device. Validation errors are
+    /// deliberately not treated as device loss and are still returned to callers.
+    pub fn is_lost(&self) -> bool {
+        self.shared.as_ref().is_some_and(|shared| {
+            shared
+                .health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .lost
+                .is_some()
+        })
+    }
+    fn next_generation(&self) -> Result<u64, GpuError> {
+        self.generation
+            .checked_add(1)
+            .ok_or_else(|| GpuError::RequestDevice("GPU context generation exhausted".into()))
+    }
+}
+
 pub struct GpuRenderer {
+    context_generation: u64,
     window: Arc<Window>,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -614,6 +670,8 @@ pub struct GpuRenderer {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RendererStats {
+    /// Host context generation that produced this frame (zero before rendering).
+    pub device_generation: u64,
     pub images: usize,
     pub cached_images: usize,
     pub uploaded_images: usize,
@@ -628,57 +686,116 @@ pub struct RendererStats {
 
 impl GpuRenderer {
     pub async fn new(window: Arc<Window>) -> Result<Self, GpuError> {
+        Self::new_with_context(window, &mut GpuContext::default()).await
+    }
+
+    /// Create a surface and local draw resources using a host-owned device.
+    /// A lost context creates a fresh adapter/device generation; healthy context
+    /// reuse still validates compatibility with the new native surface.
+    pub async fn new_with_context(
+        window: Arc<Window>,
+        context: &mut GpuContext,
+    ) -> Result<Self, GpuError> {
         let physical = window.inner_size();
-        let descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
-        if !descriptor
-            .backends
-            .intersects(wgpu::Instance::enabled_backend_features())
-        {
-            return Err(GpuError::RequestAdapter(format!(
-                "Selected backends {:?} are unavailable in this build/platform",
-                descriptor.backends
-            )));
+        let surface = if let Some(shared) = context.shared.as_ref().filter(|_| !context.is_lost()) {
+            shared
+                .instance
+                .create_surface(window.clone())
+                .map_err(|error| GpuError::CreateSurface(error.to_string()))?
+        } else {
+            let generation = context.next_generation()?;
+            let unpresented_recoveries = context.shared.as_ref().map_or(Ok(0), |old| {
+                old.health
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .next_recovery()
+            })?;
+            let descriptor = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+            if !descriptor
+                .backends
+                .intersects(wgpu::Instance::enabled_backend_features())
+            {
+                return Err(GpuError::RequestAdapter(format!(
+                    "Selected backends {:?} are unavailable in this build/platform",
+                    descriptor.backends
+                )));
+            }
+            let instance = wgpu::Instance::new(descriptor);
+            let surface = instance
+                .create_surface(window.clone())
+                .map_err(|e| GpuError::CreateSurface(e.to_string()))?;
+            let adapter = instance
+                .request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    force_fallback_adapter: false,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| GpuError::RequestAdapter(e.to_string()))?;
+            let gpu_info = adapter.get_info();
+            check_adapter(gpu_info.device_type, gpu_info.backend, &gpu_info.name)?;
+            let (device, queue) = adapter
+                .request_device(&wgpu::DeviceDescriptor::default())
+                .await
+                .map_err(|e| GpuError::RequestDevice(e.to_string()))?;
+            let health = Arc::new(Mutex::new(DeviceHealth {
+                unpresented_recoveries,
+                ..DeviceHealth::default()
+            }));
+            let error_health = health.clone();
+            device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+                let mut health = error_health
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                health.error.get_or_insert_with(|| error.to_string());
+            }));
+            let lost_health = health.clone();
+            device.set_device_lost_callback(move |reason, message| {
+                let mut health = lost_health
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                health.lost = Some(format!("{reason:?}: {message}"));
+            });
+
+            context.shared = Some(SharedGpu {
+                instance,
+                adapter,
+                device,
+                queue,
+                health,
+            });
+            context.generation = generation;
+            surface
+        };
+        let shared = context.shared.as_ref().unwrap();
+        if !shared.adapter.is_surface_supported(&surface) {
+            return Err(GpuError::UnsupportedSurface);
         }
-        let instance = wgpu::Instance::new(descriptor);
-        let surface = instance
-            .create_surface(window.clone())
-            .map_err(|e| GpuError::CreateSurface(e.to_string()))?;
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                force_fallback_adapter: false,
-                ..Default::default()
-            })
-            .await
-            .map_err(|e| GpuError::RequestAdapter(e.to_string()))?;
+        let adapter = &shared.adapter;
+        let device = shared.device.clone();
+        let queue = shared.queue.clone();
+        let health = shared.health.clone();
+        // Preserve genuine validation/backend errors before allocating local resources.
+        {
+            let current = health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(message) = &current.lost {
+                return Err(GpuError::DeviceLost(message.clone()));
+            }
+            if let Some(message) = &current.error {
+                return Err(GpuError::Backend(message.clone()));
+            }
+        }
         let gpu_info = adapter.get_info();
-        check_adapter(gpu_info.device_type, gpu_info.backend, &gpu_info.name)?;
-        let (device, queue) = adapter
-            .request_device(&wgpu::DeviceDescriptor::default())
-            .await
-            .map_err(|e| GpuError::RequestDevice(e.to_string()))?;
-        let health = Arc::new(Mutex::new(DeviceHealth::default()));
-        let error_health = health.clone();
-        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-            let mut health = error_health
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            health.error.get_or_insert_with(|| error.to_string());
-        }));
-        let lost_health = health.clone();
-        device.set_device_lost_callback(move |reason, message| {
-            let mut health = lost_health
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            health.lost = Some(format!("{reason:?}: {message}"));
-        });
+        let context_generation = context.generation;
         let mut state = SurfaceState::new(physical);
         state.resize(physical, device.limits().max_texture_dimension_2d)?;
         let mut config = surface
-            .get_default_config(&adapter, physical.width.max(1), physical.height.max(1))
+            .get_default_config(adapter, physical.width.max(1), physical.height.max(1))
             .ok_or(GpuError::UnsupportedSurface)?;
-        config.format = srgb_surface_format(&surface.get_capabilities(&adapter).formats)?;
+        config.format = srgb_surface_format(&surface.get_capabilities(adapter).formats)?;
         config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
         // Configuration is deferred until a nonzero frame; minimized windows stay parked.
         let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -721,6 +838,7 @@ impl GpuRenderer {
         let strokes = StrokeRenderer::new(&device, config.format, &viewport_layout);
         let images = ImageRenderer::new(&device, config.format, &viewport_layout);
         let renderer = Self {
+            context_generation,
             window,
             surface,
             device,
@@ -742,6 +860,11 @@ impl GpuRenderer {
         Ok(renderer)
     }
 
+    /// Device generation used by this surface and all its local GPU resources.
+    pub fn context_generation(&self) -> u64 {
+        self.context_generation
+    }
+
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
     }
@@ -755,6 +878,12 @@ impl GpuRenderer {
     /// physical driver failure. The next render returns `RecoveryRequired` and
     /// the host must recreate the renderer while retaining its application Scene.
     pub fn request_device_recovery(&mut self) {
+        // Mark synchronously: the native device-lost callback may arrive later.
+        self.health
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .lost
+            .get_or_insert_with(|| "Controlled shared device destruction".into());
         self.device.destroy();
         self.state.recovery = Some(RecoveryReason::DeviceLost);
     }
@@ -948,6 +1077,7 @@ impl GpuRenderer {
                 }
             }
             self.stats = RendererStats {
+                device_generation: self.context_generation,
                 images: scene.images.len(),
                 cached_images: self.images.cached(),
                 uploaded_images: self.images.uploaded,
@@ -965,6 +1095,10 @@ impl GpuRenderer {
         self.window.pre_present_notify();
         self.queue.present(frame);
         self.check_device()?;
+        self.health
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .presented();
         // No reconfiguration while a SurfaceTexture is alive. Present consumes it first.
         self.state.needs_configure = suboptimal;
         Ok(RenderOutcome::Presented {
@@ -1737,5 +1871,47 @@ mod tests {
         assert_eq!(state.preparation(), Preparation::ZeroSized);
         state.resize(size, 8192).unwrap();
         assert_eq!(state.preparation(), Preparation::Configure);
+    }
+}
+
+#[cfg(test)]
+mod shared_context_tests {
+    use super::*;
+    #[test]
+    fn shared_success_resets_recovery_budget_even_without_parked_peer_frames() {
+        let mut health = DeviceHealth::default();
+        for _ in 0..12 {
+            health.unpresented_recoveries = health.next_recovery().unwrap();
+            // Only the visible peer presents; all surfaces share this health.
+            health.presented();
+        }
+        assert_eq!(health.unpresented_recoveries, 0);
+        for expected in 1..=3 {
+            health.unpresented_recoveries = health.next_recovery().unwrap();
+            assert_eq!(health.unpresented_recoveries, expected);
+        }
+        assert!(health.next_recovery().is_err());
+        assert_eq!(health.unpresented_recoveries, 3);
+    }
+    #[test]
+    fn unused_context_has_no_generation_or_loss() {
+        let context = GpuContext::default();
+        assert_eq!(context.generation(), 0);
+        assert!(!context.is_lost());
+        assert_eq!(context.next_generation().unwrap(), 1);
+        assert_eq!(context.generation(), 0);
+    }
+    #[test]
+    fn context_generation_overflow_rejects_without_mutation() {
+        let context = GpuContext {
+            generation: u64::MAX,
+            shared: None,
+        };
+        assert!(matches!(
+            context.next_generation(),
+            Err(GpuError::RequestDevice(_))
+        ));
+        assert_eq!(context.generation(), u64::MAX);
+        assert!(context.shared.is_none());
     }
 }

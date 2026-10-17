@@ -221,6 +221,13 @@ accessibility cache сбрасывается. Удаление узла отра
 ## Пределы проверки
 
 Host учитывает resize, нулевой размер, occlusion, DPI и ограниченное GPU recovery.
+В `run_multi` отдельные renderer/surface используют host-owned `GpuContext`
+с общим device/queue. Удаление окна освобождает его локальные GPU-ресурсы,
+не создавая новое устройство для оставшихся окон. Контекст не удерживает
+Window/Surface и не переносит GPU types в core или controls. При device loss
+поколение обновляется для связанных renderer; при surface loss здоровый device
+сохраняется. Условия совместимости и восстановления — в
+[ADR-012](adr/ADR-012-shared-gpu-context.md).
 `RunOptions::smoke_device_recovery` вместе с `smoke_test` включает контролируемое
 уничтожение GPU device после resize. Single/multi-window host использует обычную
 ветку восстановления и требует новый успешный Present перед завершением.
@@ -231,6 +238,15 @@ Host учитывает resize, нулевой размер, occlusion, DPI и �
 Состояние app сохраняется при пересоздании renderer. `RunOptions::smoke_test`
 проверяет кадры и native resize с ограниченным временем выполнения; это не
 тест реального IME, clipboard, screen reader или hardware device loss.
+
+В Windows-профиле Vulkan повторное создание и закрытие окон документов
+сопровождается ростом числа дескрипторов процесса, сохраняющимся после
+уничтожения floating HWND и ограниченного периода ожидания. Сохранность
+документов и закрытие HWND проверяются отдельно от стабильности ресурсов.
+Общий GPU device не устраняет этот оставшийся рост; его источник и конкретный
+владелец выделений пока не установлены. Стабильность ресурсов длительной
+сессии с частыми оконными переходами не подтверждена; подробнее —
+[ограничение DocumentWorkspace](document-workspace.md#long-running-native-window-limitation).
 
 Текущие результаты и ручной протокол — в [runtime matrix](runtime-matrix.md).
 Native CJK candidate window, focus changes во время composition и accessibility

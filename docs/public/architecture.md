@@ -121,6 +121,12 @@ GPU cache, premultiplied linear sampling, source crop и explicit clip;
 Host учитывает нулевой размер, occlusion, resize, DPI, timeout и ограниченное
 число попыток восстановления. Модель приложения переживает пересоздание GPU.
 Наличие этих веток не подтверждает проверку настоящего device loss.
+Многооконный host владеет одним `GpuContext` с поколением Instance/Adapter/
+Device/Queue; surfaces и ресурсы рисования остаются у отдельных renderer.
+Контекст не хранит окна и не расширяет границу Scene до GPU handles.
+Потеря общего device восстанавливает все связанные renderer, сохраняя модели
+приложения. Standalone `GpuRenderer::new` сохраняет независимое создание.
+Контракт времени жизни — [ADR-012](adr/ADR-012-shared-gpu-context.md).
 
 ## Текст и компоненты
 

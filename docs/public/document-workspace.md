@@ -90,3 +90,14 @@ identity/draft/selection, IME refusal, MDI clipping/resize/order and drag cancel
 Native Windows input, rendering and screen-reader evidence is recorded separately;
 model tests alone do not establish those results. Linux/macOS runtime, physical
 mixed-DPI monitor transfer and persistence of MDI rectangles are not claimed here.
+
+## Long-running native-window limitation
+
+On Windows with Vulkan, repeated `Tabbed` / `Mdi` / `Windowed` transitions
+can leave an increasing process handle count after the floating HWNDs have been
+destroyed. The checked runs preserved document identities, drafts and accepted
+values, and the remaining count increase persisted through a bounded idle period.
+Its allocator and cause have not been identified. Sharing the GPU device does not
+establish resource stability for a long-running windowed document session; that
+profile remains a known limitation. These observations do not establish that
+other resource classes or backends are free of leaks.

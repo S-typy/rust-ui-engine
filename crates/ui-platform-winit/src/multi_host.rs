@@ -5,9 +5,11 @@ use crate::{
 };
 use accesskit_winit::{Adapter, WindowEvent as AccessibilityWindowEvent};
 use rust_desktop_ui_core::{InputEvent, Modifiers, Point, Size};
-use rust_desktop_ui_render_wgpu::{GpuRenderer, RenderOutcome, SkipReason};
+use rust_desktop_ui_render_wgpu::{GpuContext, GpuRenderer, RenderOutcome, SkipReason};
 use std::{
+    cell::RefCell,
     collections::{HashMap, HashSet, VecDeque},
+    rc::Rc,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -29,6 +31,7 @@ pub(crate) fn run(app: impl DesktopApplication + 'static) -> Result<(), String> 
     let mut host = MultiHost {
         app,
         proxy: event_loop.create_proxy(),
+        gpu_context: Rc::new(RefCell::new(GpuContext::default())),
         windows: HashMap::new(),
         native_keys: HashMap::new(),
         clipboard: None,
@@ -44,6 +47,7 @@ pub(crate) fn run(app: impl DesktopApplication + 'static) -> Result<(), String> 
 struct MultiHost<A> {
     app: A,
     proxy: EventLoopProxy<HostEvent>,
+    gpu_context: Rc<RefCell<GpuContext>>,
     windows: HashMap<WindowKey, WindowState>,
     native_keys: HashMap<WindowId, WindowKey>,
     clipboard: Option<arboard::Clipboard>,
@@ -56,6 +60,7 @@ struct WindowState {
     services: crate::services::NativeServices,
     app_waker: AppWaker,
     renderer: Option<GpuRenderer>,
+    gpu_context: Rc<RefCell<GpuContext>>,
     adapter: Adapter,
     capture: desktop::CaptureObserver,
     chrome: Option<NativeChrome>,
@@ -126,6 +131,89 @@ impl<A: DesktopApplication> MultiHost<A> {
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
         self.failure = Some(error.to_string());
         event_loop.exit();
+    }
+
+    fn refresh_gpu_context(&mut self) -> Result<(), String> {
+        if self.suspended {
+            return Ok(());
+        }
+        // Re-check after each recreation: the first loss creates the new shared
+        // generation, and every remaining surface must retire its old resources.
+        for state in self.windows.values_mut() {
+            let stale = {
+                let context = self.gpu_context.borrow();
+                context.is_lost()
+                    || state.renderer.as_ref().is_some_and(|renderer| {
+                        renderer.context_generation() != context.generation()
+                    })
+            };
+            if !stale {
+                continue;
+            }
+            // Shared generation retries are charged once by GpuContext, not
+            // once per peer: a parked peer may never present a reset frame.
+            if state.recovery_requested {
+                state.recovery_observed = true;
+                eprintln!(
+                    "WINDOW {:?} RECOVERY: ordinary host renderer recreation (shared generation)",
+                    state.spec.key
+                );
+            }
+            state.renderer = None;
+            state.initialize_renderer()?;
+            state.window.request_redraw();
+        }
+        Ok(())
+    }
+
+    fn coordinate_smoke_recovery(&mut self) -> Result<(), String> {
+        if self.suspended {
+            return Ok(());
+        }
+        let trigger = self
+            .windows
+            .iter()
+            .filter(|(_, state)| {
+                state.spec.options.smoke_test
+                    && state.spec.options.smoke_device_recovery
+                    && !state.recovery_requested
+            })
+            .map(|(key, _)| *key)
+            .min_by_key(|key| key.0);
+        let Some(trigger) = trigger else {
+            return Ok(());
+        };
+        // Every diagnostic peer must present its initial retained resources first.
+        if self
+            .windows
+            .values()
+            .filter(|s| s.spec.options.smoke_test)
+            .any(|s| s.frames < 3 || !s.smoke_resized)
+        {
+            return Ok(());
+        }
+        for state in self
+            .windows
+            .values_mut()
+            .filter(|s| s.spec.options.smoke_test)
+        {
+            state.recovery_requested = true;
+            state.smoke_done = false;
+            state.smoke_deadline = Some(Instant::now() + SMOKE_TIMEOUT);
+        }
+        self.windows
+            .get_mut(&trigger)
+            .unwrap()
+            .renderer
+            .as_mut()
+            .ok_or("Recovery diagnostic renderer is absent")?
+            .request_device_recovery();
+        eprintln!(
+            "WINDOW {:?} RECOVERY: controlled device destruction requested after all peers presented and resized",
+            trigger
+        );
+        self.redraw_all();
+        Ok(())
     }
 
     fn redraw_all(&self) {
@@ -337,6 +425,7 @@ impl<A: DesktopApplication> MultiHost<A> {
                 services,
                 app_waker,
                 renderer: None,
+                gpu_context: self.gpu_context.clone(),
                 adapter,
                 capture,
                 chrome,
@@ -440,8 +529,11 @@ impl WindowState {
     }
 
     fn initialize_renderer(&mut self) -> Result<(), String> {
-        let renderer = pollster::block_on(GpuRenderer::new(self.window.clone()))
-            .map_err(|error| error.to_string())?;
+        let renderer = pollster::block_on(GpuRenderer::new_with_context(
+            self.window.clone(),
+            &mut self.gpu_context.borrow_mut(),
+        ))
+        .map_err(|error| error.to_string())?;
         let info = renderer.adapter_info();
         eprintln!(
             "WINDOW {:?} GPU adapter={:?} backend={:?} type={:?}",
@@ -653,16 +745,9 @@ impl WindowState {
                         self.window.request_redraw();
                     } else if self.frames >= 3 && self.smoke_resized {
                         if self.spec.options.smoke_device_recovery && !self.recovery_requested {
-                            self.recovery_requested = true;
-                            self.renderer
-                                .as_mut()
-                                .expect("renderer initialized")
-                                .request_device_recovery();
-                            eprintln!(
-                                "WINDOW {:?} RECOVERY: controlled device destruction requested after resize",
-                                self.spec.key
-                            );
-                            self.window.request_redraw();
+                            // about_to_wait coordinates one destruction only after
+                            // every diagnostic peer has presented its initial scene.
+                            self.retry_at = Some(Instant::now() + RETRY);
                         } else if !self.spec.options.smoke_device_recovery || self.recovery_observed
                         {
                             self.smoke_done = true;
@@ -690,10 +775,12 @@ impl WindowState {
                 }
             }
             RenderOutcome::RecoveryRequired(reason) => {
-                if self.recoveries >= 3 {
-                    return Err(format!("GPU recovery limit reached: {reason:?}"));
+                if reason != rust_desktop_ui_render_wgpu::RecoveryReason::DeviceLost {
+                    if self.recoveries >= 3 {
+                        return Err(format!("GPU recovery limit reached: {reason:?}"));
+                    }
+                    self.recoveries += 1;
                 }
-                self.recoveries += 1;
                 if self.recovery_requested
                     && reason == rust_desktop_ui_render_wgpu::RecoveryReason::DeviceLost
                 {
@@ -1062,6 +1149,14 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
             return;
         }
         if let Err(error) = self.reconcile(event_loop) {
+            self.fail(event_loop, error);
+            return;
+        }
+        if let Err(error) = self.refresh_gpu_context() {
+            self.fail(event_loop, error);
+            return;
+        }
+        if let Err(error) = self.coordinate_smoke_recovery() {
             self.fail(event_loop, error);
             return;
         }

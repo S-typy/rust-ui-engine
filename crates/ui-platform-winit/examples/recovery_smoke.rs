@@ -87,6 +87,9 @@ impl DesktopApplication for Application {
                 ));
                 if index == 1 {
                     spec.owner = Some(WindowKey::MAIN);
+                    // The host coordinates one main-window trigger only after
+                    // both peers have actually presented and resized.
+                    spec.options.smoke_device_recovery = false;
                 }
                 spec
             })
@@ -130,6 +133,24 @@ fn main() -> Result<(), String> {
             return Err(format!(
                 "window {index}: missing retained-image/text/re-upload evidence: {frames:?}"
             ));
+        }
+        if multiple {
+            let generations: std::collections::BTreeSet<_> =
+                frames.iter().map(|frame| frame.device_generation).collect();
+            if generations != [1, 2].into_iter().collect()
+                || frames.last().unwrap().device_generation != 2
+                || [1, 2].into_iter().any(|generation| {
+                    frames
+                        .iter()
+                        .filter(|s| s.device_generation == generation && s.uploaded_images == 1)
+                        .count()
+                        != 1
+                })
+            {
+                return Err(format!(
+                    "window {index}: missing initial/shared-generation Present and exactly one re-upload per generation: {frames:?}"
+                ));
+            }
         }
         println!(
             "RECOVERY APP PASS: window={index} frames={} same retained Scene; two bitmap uploads; glyphs={}; missing=0",
