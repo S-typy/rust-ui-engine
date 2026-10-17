@@ -10,6 +10,13 @@ description = "Typed bounded data sources and adapters for desktop forms"
 [features]
 default = []
 sqlite = ["dep:rusqlite"]
+file-adapters = ["dep:serde", "dep:serde_json"]
 
 [dependencies]
 rusqlite = { workspace = true, optional = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+
+[[example]]
+name = "file_roundtrip"
+required-features = ["file-adapters"]

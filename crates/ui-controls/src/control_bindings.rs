@@ -1316,6 +1316,16 @@ impl ControlBindings {
             )
             .map_err(control_error)?;
         } else if binding.target.property == BindingProperty::Value
+            && ui.breadcrumb_path(binding.target.widget).is_some()
+        {
+            ui.chain_breadcrumb_validator(
+                binding.target.widget,
+                crate::BreadcrumbValidator::new(move |value| {
+                    validate(crate::breadcrumb_path_to_value(value))
+                }),
+            )
+            .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Value
             && ui.font_value(binding.target.widget).is_some()
         {
             ui.chain_font_validator(
@@ -1621,6 +1631,9 @@ fn read_property(
             .rating_value(id)
             .unwrap()
             .map_or(DataValue::Null, DataValue::Number)),
+        BindingProperty::Value if ui.breadcrumb_path(id).is_some() => Ok(
+            crate::breadcrumb_path_to_value(ui.breadcrumb_path(id).unwrap()),
+        ),
         BindingProperty::Value if ui.font_value(id).is_some() => {
             Ok(crate::font_descriptor_to_value(ui.font_value(id).unwrap()))
         }
@@ -1708,6 +1721,7 @@ fn read_property(
             .or_else(|| ui.grid_settings(id).map(|s| s.is_read_only))
             .or_else(|| ui.tree_settings(id).map(|s| s.read_only))
             .or_else(|| ui.rating_settings(id).map(|s| s.read_only))
+            .or_else(|| ui.breadcrumb_settings(id).map(|s| s.read_only))
             .or_else(|| ui.font_picker_settings(id).map(|s| s.read_only))
             .or_else(|| ui.calendar_settings(id).map(|s| s.is_read_only))
             .map(DataValue::Bool)
@@ -1942,6 +1956,12 @@ fn write_property(
                     },
                 )
                 .map_err(control_error)
+            } else if ui.breadcrumb_path(id).is_some() {
+                ui.set_breadcrumb_path(
+                    id,
+                    crate::breadcrumb_path_from_value(value).map_err(|e| invalid(&e))?,
+                )
+                .map_err(control_error)
             } else if ui.font_value(id).is_some() {
                 ui.set_font_value(
                     id,
@@ -2056,6 +2076,9 @@ fn write_property(
             let value = boolean(value)?;
             if ui.rating_settings(id).is_some() {
                 ui.set_rating_read_only(id, value).map_err(control_error)
+            } else if ui.breadcrumb_path(id).is_some() {
+                ui.set_breadcrumb_read_only(id, value)
+                    .map_err(control_error)
             } else if ui.font_value(id).is_some() {
                 ui.set_font_read_only(id, value).map_err(control_error)
             } else if let Some(settings) = ui.tree_settings(id) {

@@ -74,9 +74,22 @@ pub use password::{
     MAX_PASSWORD_BYTES, MAX_PASSWORD_GRAPHEMES, PasswordBoxSettings, PasswordEvent,
     PasswordEventKind, PasswordRef, PasswordValue,
 };
+mod breadcrumb;
+mod breadcrumb_data;
+mod breadcrumb_model;
+#[cfg(test)]
+mod breadcrumb_tests;
 mod list_item_templates;
 mod list_items;
 mod search;
+pub use breadcrumb::{Breadcrumb, BreadcrumbValidator};
+pub use breadcrumb_data::{breadcrumb_path_from_value, breadcrumb_path_to_value};
+pub use breadcrumb_model::{
+    BreadcrumbChild, BreadcrumbChildrenRequest, BreadcrumbCompletion, BreadcrumbEvent,
+    BreadcrumbEventKind, BreadcrumbNavigationRequest, BreadcrumbNavigationTarget, BreadcrumbPath,
+    BreadcrumbSegment, BreadcrumbSettings, BreadcrumbSourceVersion, BreadcrumbStatus,
+    MAX_BREADCRUMB_CHILDREN, MAX_BREADCRUMB_SEGMENTS,
+};
 mod search_model;
 #[cfg(test)]
 mod search_tests;
@@ -530,6 +543,7 @@ pub struct Controls {
     lookups: lookup::LookupState,
     list_items: list_items::ListItemsState,
     searches: search::SearchState,
+    breadcrumbs: breadcrumb::BreadcrumbState,
     calendars: calendar_view::CalendarState,
     temporal_popups: date_time_popup::TemporalPopupState,
     bars: bars::BarsState,
@@ -631,6 +645,7 @@ impl Controls {
             lookups: Default::default(),
             list_items: Default::default(),
             searches: Default::default(),
+            breadcrumbs: Default::default(),
             calendars: Default::default(),
             temporal_popups: Default::default(),
             bars: Default::default(),
@@ -1862,6 +1877,7 @@ impl Controls {
     /// container or any ancestor instead. Optional embedded buttons may be removed.
     pub fn remove(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.preflight_search_removal(id)?;
+        self.preflight_breadcrumb_removal(id)?;
         self.preflight_font_removal(id)?;
         self.preflight_bar_removal(id)?;
         self.preflight_flyout_removal(id)?;
@@ -1921,6 +1937,7 @@ impl Controls {
         self.prune_button_contents();
         self.prune_list_item_content();
         self.prune_searches()?;
+        self.prune_breadcrumbs()?;
         self.retain_progress_animations();
         self.layout.retain_measures(self.runtime.tree());
         self.retain_splitters()?;
@@ -2278,6 +2295,7 @@ impl Controls {
     }
     pub fn update(&mut self, viewport: Size) -> Result<FrameStats, ControlError> {
         self.sync_searches()?;
+        self.sync_breadcrumbs()?;
         self.sync_font_pickers()?;
         self.sync_passwords()?;
         self.poll_editor_validation()?;
@@ -2328,6 +2346,7 @@ impl Controls {
             self.sync_text_heights()?;
             self.sync_splitters()?;
             self.sync_bars()?;
+            self.sync_breadcrumb_layout()?;
             self.sync_tab_headers()?;
             self.sync_status_bars()?;
             self.sync_sliders()?;
@@ -2460,6 +2479,7 @@ impl Controls {
             || self.memo_before_input(&event)?
             || self.editor_scroll_before_input(&event)?
             || self.search_before_input(&event)?
+            || self.breadcrumb_before_input(&event)?
             || self.flyout_before_input(&event)?
             || self.bars_before_input(&event)?
             || self.tab_before_input(&event)?
@@ -2707,6 +2727,9 @@ impl Controls {
             return Ok(());
         }
         if self.activate_password(id)? {
+            return Ok(());
+        }
+        if self.activate_breadcrumb(id)? {
             return Ok(());
         }
         if self.activate_search(id)? {

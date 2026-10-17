@@ -65,7 +65,9 @@ pub use tree::{TreeColumnDefinition, TreeDefinition, validate_tree};
 mod data_form;
 mod rating;
 pub use rating::{RatingDefinition, validate_rating};
+mod breadcrumb;
 mod font_picker;
+pub use breadcrumb::{BreadcrumbDefinition, BreadcrumbSegmentDefinition, validate_breadcrumb};
 pub use data_form::{DataFormDefinition, DataFormFieldDefinition, validate_data_form};
 pub use font_picker::{FontPickerDefinition, validate_font_picker};
 mod panels;
@@ -580,6 +582,7 @@ pub enum ElementKind {
     DataForm(DataFormDefinition),
     Rating(RatingDefinition),
     FontPicker(FontPickerDefinition),
+    Breadcrumb(BreadcrumbDefinition),
     TreeView(TreeDefinition),
     TreeGrid(TreeDefinition),
     Border(BorderDefinition),
@@ -1671,6 +1674,8 @@ fn parse_element(
         ribbon::parse_children(node, depth, count, ribbon, names, checked_radio_groups)?;
     } else if let ElementKind::GridControl(grid) = &mut kind {
         grid_control::parse_children(node, depth, count, grid)?;
+    } else if let ElementKind::Breadcrumb(value) = &mut kind {
+        breadcrumb::parse_children(node, depth, count, value)?;
     } else if let ElementKind::DataForm(form) = &mut kind {
         data_form::parse_children(node, depth, count, form)?;
     } else if let ElementKind::TreeGrid(tree) = &mut kind {

@@ -23,6 +23,7 @@ pub(crate) struct Form {
     ribbon_workspace: Option<crate::ribbon_workspace_model::State>,
     selection: Option<crate::selection_model::State>,
     search: Option<crate::search_model::State>,
+    breadcrumb: Option<crate::breadcrumb_model::State>,
     rating: Option<crate::rating_model::State>,
     font: Option<crate::font_model::State>,
     badges: Option<crate::badge_model::State>,
@@ -92,6 +93,7 @@ impl Form {
         crate::ribbon_workspace_model::register(&mut ui);
         crate::selection_model::register(&mut ui);
         crate::search_model::register(&mut ui);
+        crate::breadcrumb_model::register(&mut ui);
         crate::rating_model::register(&mut ui);
         crate::font_model::register(&mut ui);
         crate::badge_model::register(&mut ui);
@@ -240,6 +242,7 @@ impl Form {
         let ribbon_workspace = crate::ribbon_workspace_model::State::install(&view);
         let selection = crate::selection_model::State::install(&mut ui, &view)?;
         let search = crate::search_model::State::install(&mut ui, &view)?;
+        let breadcrumb = crate::breadcrumb_model::State::install(&mut ui, &view)?;
         let rating = crate::rating_model::State::install(&mut ui, &view)?;
         let font = crate::font_model::State::install(&mut ui, &mut view)?;
         let badges = crate::badge_model::State::install(&mut ui, &view)?;
@@ -256,6 +259,7 @@ impl Form {
             ribbon_workspace,
             selection,
             search,
+            breadcrumb,
             rating,
             font,
             badges,
@@ -398,6 +402,11 @@ impl Form {
                 continue;
             }
             if let Some(state) = &mut self.rating
+                && state.command(&mut self.ui, &invocation.id.0)?
+            {
+                continue;
+            }
+            if let Some(state) = &mut self.breadcrumb
                 && state.command(&mut self.ui, &invocation.id.0)?
             {
                 continue;
@@ -605,6 +614,9 @@ impl Form {
         if let Some(state) = &self.selection {
             state.refresh(&mut self.ui)?;
         }
+        if let Some(state) = &mut self.breadcrumb {
+            state.refresh(&mut self.ui)?;
+        }
         if let Some(state) = &mut self.search {
             state.refresh(&mut self.ui)?;
         }
@@ -749,6 +761,7 @@ impl DesktopApp for Form {
                 || self.ribbon_workspace.is_some()
                 || self.selection.is_some()
                 || self.search.is_some()
+                || self.breadcrumb.is_some()
                 || self.rating.is_some()
                 || self.font.is_some()
                 || self.badges.is_some()
@@ -884,6 +897,11 @@ impl DesktopApp for Form {
                         .search
                         .as_ref()
                         .and_then(|state| state.deadline())
+                        .is_some_and(|at| at <= now)
+                    || self
+                        .breadcrumb
+                        .as_ref()
+                        .and_then(|state| state.deadline())
                         .is_some_and(|at| at <= now);
             }
             PlatformEvent::Accessibility(request) => {
@@ -947,6 +965,7 @@ impl DesktopApp for Form {
             .next_deadline()
             .into_iter()
             .chain(self.search.as_ref().and_then(|state| state.deadline()))
+            .chain(self.breadcrumb.as_ref().and_then(|state| state.deadline()))
             .min()
             .map(|deadline| deadline.saturating_duration_since(Instant::now()))
     }
@@ -966,4 +985,65 @@ impl DesktopApp for Form {
 }
 fn err(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod breadcrumb_host_tests {
+    use super::*;
+
+    #[test]
+    fn breadcrumb_history_reply_redraws_on_deadline_without_further_input() {
+        let definition =
+            rust_desktop_ui_xaml::parse(include_str!("../BreadcrumbWindow.xaml")).unwrap();
+        let mut form = Form::new_with_model(
+            definition,
+            false,
+            Some(crate::breadcrumb_model::model().unwrap()),
+        )
+        .unwrap();
+        let viewport = Size::new(1120.0, 760.0);
+        form.update(viewport, 1.0).unwrap();
+        let owner = form.find_name("ProjectLocation").unwrap();
+        let original = form.ui.breadcrumb_path(owner).unwrap().clone();
+        form.ui.set_breadcrumb_draft(owner, &original.text).unwrap();
+        form.ui.submit_breadcrumb(owner).unwrap();
+        let request = form
+            .ui
+            .drain_breadcrumb_navigation_requests()
+            .pop()
+            .unwrap();
+        form.ui
+            .complete_breadcrumb_navigation(&request, Ok(original.clone()))
+            .unwrap();
+        form.ui.update(viewport).unwrap();
+        form.ui.open_breadcrumb_history(owner).unwrap();
+        form.ui.update(viewport).unwrap();
+        let row = form
+            .ui
+            .semantics()
+            .into_iter()
+            .find(|node| node.role == Role::ListItem && node.label.trim() == original.text)
+            .expect("materialized history row")
+            .id;
+        form.ui.activate(row).unwrap();
+        form.application_events().unwrap();
+        assert_eq!(
+            form.ui.breadcrumb_status(owner),
+            Some(&rust_desktop_ui_controls::BreadcrumbStatus::Pending)
+        );
+        let delay = form.wake_after().expect("navigation schedules its reply");
+        std::thread::sleep(delay + Duration::from_millis(10));
+        let response = form.event(PlatformEvent::Tick).unwrap();
+        assert!(
+            response.redraw,
+            "a completed navigation must publish a frame without another user event"
+        );
+        form.update(viewport, 1.0).unwrap();
+        assert_eq!(form.ui.breadcrumb_path(owner), Some(&original));
+        assert_ne!(
+            form.ui.breadcrumb_status(owner),
+            Some(&rust_desktop_ui_controls::BreadcrumbStatus::Pending)
+        );
+        assert!(form.wake_after().is_none());
+    }
 }

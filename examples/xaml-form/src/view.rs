@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet};
 mod badge;
 #[path = "view_bindings.rs"]
 mod bindings;
+#[path = "view_breadcrumb.rs"]
+mod breadcrumb;
 #[path = "view_data_form.rs"]
 mod data_form;
 #[path = "view_extras.rs"]
@@ -269,6 +271,7 @@ impl MountedView {
                 ElementKind::GridControl(_)
                 | ElementKind::DataForm(_)
                 | ElementKind::FontPicker(_)
+                | ElementKind::Breadcrumb(_)
                 | ElementKind::TreeView(_)
                 | ElementKind::TreeGrid(_) => Length::Auto,
                 ElementKind::TextBox(_)
@@ -367,6 +370,17 @@ impl MountedView {
                     style,
                 )
                 .map_err(err)?,
+            ElementKind::Breadcrumb(definition) => self.mount_breadcrumb(
+                ui,
+                parent,
+                definition,
+                style,
+                common
+                    .automation_name
+                    .as_deref()
+                    .or(common.name.as_deref())
+                    .unwrap_or("Location"),
+            )?,
             ElementKind::FontPicker(definition) => self.mount_font(
                 ui,
                 parent,
@@ -815,7 +829,9 @@ impl MountedView {
                 ElementKind::TreeGrid(_) => Role::Grid,
                 ElementKind::TreeView(_) => Role::Tree,
                 ElementKind::Rating(_) => Role::Rating,
-                ElementKind::DataForm(_) | ElementKind::FontPicker(_) => Role::Group,
+                ElementKind::DataForm(_)
+                | ElementKind::FontPicker(_)
+                | ElementKind::Breadcrumb(_) => Role::Group,
                 ElementKind::ComboBox(_) | ElementKind::LookupEdit(_) => Role::ComboBox,
                 ElementKind::ButtonEdit(_)
                 | ElementKind::NumericEdit(_)
@@ -932,6 +948,7 @@ fn desired_width(ui: &mut Controls, element: &ElementDefinition) -> Result<f32, 
             + f32::from(r.maximum.saturating_sub(1)) * r.spacing
             + 64.0),
         ElementKind::FontPicker(_) => Ok(176.0),
+        ElementKind::Breadcrumb(_) => Ok(520.0),
         ElementKind::DockWorkspace(_) => {
             Err("DockWorkspace requires the docking window coordinator".into())
         }
@@ -1323,6 +1340,10 @@ fn validate_tree(ui: &mut Controls, root: &ElementDefinition) -> Result<(), Stri
             ElementKind::Image(image) => rust_desktop_ui_xaml::validate_image(image)?,
             ElementKind::Rating(rating) => {
                 rust_desktop_ui_xaml::validate_rating(rating, &element.common)?
+            }
+            ElementKind::Breadcrumb(value) => {
+                rust_desktop_ui_xaml::validate_breadcrumb(value, &element.common)?;
+                breadcrumb::path(value).validate().map_err(err)?;
             }
             ElementKind::FontPicker(font) => {
                 rust_desktop_ui_xaml::validate_font_picker(font, &element.common)?

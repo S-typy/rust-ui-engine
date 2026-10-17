@@ -68,6 +68,7 @@ cargo run --release --locked -p xaml-form -- --grid-workspace
 cargo run --release --locked -p xaml-form -- --font
 cargo run --release --locked -p xaml-form -- --rating
 cargo run --release --locked -p xaml-form -- --badges
+cargo run --release --locked -p xaml-form -- --breadcrumb
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
@@ -96,6 +97,14 @@ an empty value, validation and keyboard or pointer input. See
 
 `--badges` attaches counts, labels and icons to existing controls while retaining
 their content and focus. See [attached badges](docs/public/badges.md).
+
+`--breadcrumb` demonstrates retained path segments, editable locations, delayed
+child providers, history and overflow. Applications validate navigation before
+publishing the accepted path. See [breadcrumb navigation](docs/public/breadcrumbs.md).
+
+The optional `file-adapters` feature of `rust-desktop-ui-data` provides bounded
+JSON and CSV sources with explicit schemas, exact values and transactional
+file replacement. See [file adapters](docs/public/file-adapters.md).
 
 `--ribbon-workspace` demonstrates retained Ribbon content, Backstage and
 quick-access customization. Its preferences remain in memory until the window
@@ -322,11 +331,11 @@ Their historical success does not validate the newer gallery.
 - [Retained runtime checks](docs/public/retained-runtime-test-report.md), [GPU prototype checks](docs/public/gpu-prototype-test-report.md), [requirements](docs/public/requirements.md)
 - [Dependency audit](docs/public/dependencies.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
 
-Automatic intrinsic text measurement, incremental subtree layout and general
-vector/image rendering remain incomplete. TreeGrid uses fixed row heights;
-variable heights, grouping/summaries, advanced docking and PropertyGrid remain
-outside this alpha scope. Alpha 0.1.0 contracts are documented; API compatibility before 1.0
-is not guaranteed.
+Supported profiles and remaining limits are documented for each component.
+Grid presentations include bounded grouping, summaries, card views and related
+detail rows; docking includes floating windows and explicit layout persistence.
+These contracts do not imply that every desktop control or platform scenario is
+complete. API compatibility before 1.0 is not guaranteed.
 
 ## License
 

@@ -6,6 +6,8 @@ use crate::{
 use rust_desktop_ui_controls::Controls;
 #[path = "badge_diagnostics.rs"]
 mod badges;
+#[path = "breadcrumb_diagnostics.rs"]
+mod breadcrumbs;
 
 pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
     let mut names: Vec<_> = view.names.iter().collect();
@@ -94,7 +96,8 @@ pub(crate) fn snapshot(ui: &Controls, view: &MountedView) -> String {
         Some(format!("{{\"name\":{},\"key\":{},\"logical\":{},\"materialized\":{},\"mode\":{},\"error\":{},\"editor\":{editor},\"rows\":[{rows}],\"hits\":[{hits}]}}",string(name),ui.grid_selected_key(id).map_or_else(||"null".into(),|key|string(&key.to_string())),frame.stats.logical_rows,frame.stats.materialized_rows,string(&format!("{:?}",ui.grid_presentation(id).map(|p|p.view))),ui.grid_error(id).map_or_else(||"null".into(),string)))
     }).collect::<Vec<_>>().join(",");
     let badges = badges::snapshot(ui, view);
+    let breadcrumbs = breadcrumbs::snapshot(ui, view);
     format!(
-        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}],\"grids\":[{grids}],\"badges\":[{badges}]}}"
+        "{{\"named\":[{values}],\"nodes\":[{nodes}],\"selections\":[{selections}],\"searches\":[{searches}],\"trees\":[{trees}],\"grids\":[{grids}],\"badges\":[{badges}],\"breadcrumbs\":[{breadcrumbs}]}}"
     )
 }

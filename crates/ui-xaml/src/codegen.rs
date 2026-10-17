@@ -223,6 +223,7 @@ fn form_kind(kind: &ElementKind) -> String {
         ElementKind::GridControl(grid) => ("GridControl", crate::grid_extensions::code(grid)),
         ElementKind::DataForm(form) => ("DataForm",format!("rust_desktop_ui_xaml::DataFormDefinition {{ data_source:{:?}.into(),row_key:{},label_width:{:?},row_gap:{:?},is_read_only:{},fields:vec![{}] }}",form.data_source,form.row_key,form.label_width,form.row_gap,form.is_read_only,form.fields.iter().map(|f|format!("rust_desktop_ui_xaml::DataFormFieldDefinition {{ field:{:?}.into(),label:{},visible:{},is_read_only:{},editor:{:?}.into() }}",f.field,optional_string(&f.label),f.visible,f.is_read_only,f.editor)).collect::<Vec<_>>().join(","))),
         ElementKind::Rating(rating) => ("Rating",crate::rating::code(rating)),
+        ElementKind::Breadcrumb(value) => ("Breadcrumb",crate::breadcrumb::code(value)),
         ElementKind::FontPicker(font) => ("FontPicker",crate::font_picker::code(font)),
         ElementKind::TreeView(tree) => ("TreeView",crate::tree::code(tree)),
         ElementKind::TreeGrid(tree) => ("TreeGrid",crate::tree::code(tree)),

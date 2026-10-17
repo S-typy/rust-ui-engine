@@ -7,6 +7,7 @@ mod batch_diagnostics;
 mod batch_model;
 #[cfg(test)]
 mod binding_adapter_tests;
+mod breadcrumb_model;
 #[cfg(test)]
 mod data_adapter_tests;
 mod data_editors_model;
@@ -91,6 +92,9 @@ mod generated_ribbon_workspace {
 mod generated_selection {
     include!(concat!(env!("OUT_DIR"), "/selection_window.rs"));
 }
+mod generated_breadcrumb {
+    include!(concat!(env!("OUT_DIR"), "/breadcrumb_window.rs"));
+}
 mod generated_badges {
     include!(concat!(env!("OUT_DIR"), "/badge_window.rs"));
 }
@@ -143,6 +147,7 @@ fn start() -> Result<(), String> {
     let mut search = false;
     let mut rating = false;
     let mut badges = false;
+    let mut breadcrumb = false;
     let mut font = false;
     let mut data_form = false;
     let mut tree = false;
@@ -195,6 +200,7 @@ fn start() -> Result<(), String> {
             "--search" => search = true,
             "--rating" => rating = true,
             "--badges" => badges = true,
+            "--breadcrumb" => breadcrumb = true,
             "--font" => font = true,
             "--data-form" => data_form = true,
             "--tree" => tree = true,
@@ -277,6 +283,7 @@ fn start() -> Result<(), String> {
         search,
         rating,
         badges,
+        breadcrumb,
         font,
         data_form,
         tree,
@@ -300,7 +307,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if grid_workspace {
+    let mut definition = if breadcrumb {
+        generated_breadcrumb::window_definition()
+    } else if grid_workspace {
         generated_grid_workspace::window_definition()
     } else if data_form {
         generated_data_form::window_definition()
@@ -391,7 +400,9 @@ fn start() -> Result<(), String> {
         application.set_dialog_directory(dialog_directory);
         return rust_desktop_ui_platform_winit::run_multi(application);
     }
-    let app = if grid_workspace {
+    let app = if breadcrumb {
+        form::Form::new_with_model(definition, diagnostics, Some(breadcrumb_model::model()?))?
+    } else if grid_workspace {
         form::Form::new_with_model(
             definition,
             diagnostics,

@@ -1,0 +1,46 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Навигация по проекту" Width="1120" Height="760" Padding="28">
+  <Grid Spacing="18">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <StackPanel Spacing="6">
+      <TextBlock Text="Навигация по проекту" FontSize="28" FontWeight="SemiBold"/>
+      <TextBlock Text="Уровни пути, дочерние разделы и история успешных переходов." TextTone="Secondary"/>
+    </StackPanel>
+    <Breadcrumb Grid.Row="1" x:Name="ProjectLocation" AutomationName="Расположение в проекте"
+                Value="{Binding Location}" IsReadOnly="{Binding ReadOnly}" Height="40"/>
+    <WrapPanel Grid.Row="2" Spacing="8">
+      <Button x:Name="BreadcrumbHome" Content="Начало" Command="BreadcrumbHome"/>
+      <Button x:Name="BreadcrumbLong" Content="Длинный путь" Command="BreadcrumbLong"/>
+      <Button x:Name="BreadcrumbEdit" Content="Ввести путь" Command="BreadcrumbEdit"/>
+      <Button x:Name="BreadcrumbHistory" Content="История" Command="BreadcrumbHistory"/>
+      <Button x:Name="BreadcrumbChildren" Content="Дочерние разделы" Command="BreadcrumbChildren"/>
+      <Button x:Name="BreadcrumbStale" Content="Поздний ответ" Command="BreadcrumbStale"/>
+      <Button x:Name="BreadcrumbError" Content="Ошибка источника" Command="BreadcrumbError"/>
+    </WrapPanel>
+    <Grid Grid.Row="3" Spacing="20">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="3*"/><ColumnDefinition Width="2*"/></Grid.ColumnDefinitions>
+      <GroupBox Header="Принятое расположение" Padding="20">
+        <StackPanel Spacing="18">
+          <TextBlock x:Name="BreadcrumbAccepted" Text="" FontSize="20" FontWeight="SemiBold" TextWrapping="Wrap"/>
+          <TextBlock x:Name="BreadcrumbSegments" Text="" TextWrapping="Wrap"/>
+          <Separator/>
+          <TextBlock x:Name="BreadcrumbActivity" Text="Готово" TextWrapping="Wrap" TextTone="Secondary"/>
+        </StackPanel>
+      </GroupBox>
+      <GroupBox Grid.Column="1" Header="Проверка переходов" Padding="20">
+        <StackPanel Spacing="14">
+          <CheckBox x:Name="BreadcrumbReadOnly" Content="Только чтение" IsChecked="{Binding ReadOnly}"/>
+          <TextBlock Text="F2 или Ctrl+L включает ввод пути. Enter запрашивает переход, Escape возвращает принятое расположение. Уход из поля сохраняет черновик." TextWrapping="Wrap"/>
+          <TextBlock Text="Например: project:/projects/engine/src или project:/archive. Неизвестный путь оставляет принятое расположение прежним." TextWrapping="Wrap" TextTone="Secondary"/>
+          <TextBlock Text="Ответы приложения задержаны: можно отменить загрузку или выбрать другой уровень. Устаревший ответ будет проигнорирован." TextWrapping="Wrap" TextTone="Secondary"/>
+          <TextBox x:Name="BreadcrumbOtherEditor" Text="Другое поле — для проверки ухода фокуса" AutomationName="Другое поле"/>
+        </StackPanel>
+      </GroupBox>
+    </Grid>
+    <Grid Grid.Row="4" Spacing="12">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+      <TextBlock x:Name="BreadcrumbSummary" Text="" TextWrapping="Wrap"/>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></StackPanel>
+    </Grid>
+  </Grid>
+</Window>

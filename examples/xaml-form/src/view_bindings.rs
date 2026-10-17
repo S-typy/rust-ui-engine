@@ -402,6 +402,15 @@ impl MountedView {
             }
         }
         engine.initialize(ui).map_err(err)?;
+        if let Some(diagnostic) = engine.diagnostics().iter().find(|diagnostic| {
+            diagnostic.target.property == BindingProperty::Value
+                && ui.breadcrumb_path(diagnostic.target.widget).is_some()
+        }) {
+            return Err(format!(
+                "Invalid initial Breadcrumb Value: {}",
+                diagnostic.message
+            ));
+        }
         self.bindings = Some(engine);
         Ok(())
     }

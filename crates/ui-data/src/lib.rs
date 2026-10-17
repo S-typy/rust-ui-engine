@@ -5,6 +5,8 @@
 //! never performs I/O while reading a cell. Large or remote data requires an
 //! application-owned worker or a separate paged source.
 
+#[cfg(feature = "file-adapters")]
+mod files;
 mod model;
 mod observable;
 mod query;
@@ -15,6 +17,8 @@ mod sqlite;
 mod view;
 mod write;
 
+#[cfg(feature = "file-adapters")]
+pub use files::*;
 pub use model::*;
 pub use observable::*;
 pub use query::*;
