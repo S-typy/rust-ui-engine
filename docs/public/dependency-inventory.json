@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "review_date": "2026-10-17",
-  "cargo_lock_sha256": "8ca602cd5b6b2cb47bff883aeea0c369518cb57377cfa9b0e0b9880e11095c97",
+  "review_date": "2026-10-18",
+  "cargo_lock_sha256": "0b8eaa08211a587162a9d56f645fda207d19d7fee25993b8a0f52d56c1336ea3",
   "scope": "All resolved registry packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
   "features_scope": "Resolution features reported by cargo metadata for all targets; verify actual compilation features with cargo tree for the selected package and target.",
   "license_scope": "Manifest SPDX declarations, package license/notice file hashes and selected exact-revision upstream evidence. Not a line-by-line copyright or binary redistribution clearance.",
-  "registry_package_count": 388,
+  "registry_package_count": 390,
   "packages": [
     {
       "license_files": [],
@@ -4535,10 +4535,12 @@
       "rust_version_declared": "1.67.0",
       "features_all_targets": [
         "any_impl",
+        "any_zlib",
         "default",
         "miniz_oxide",
         "runtime_detection",
-        "rust_backend"
+        "rust_backend",
+        "zlib-rs"
       ],
       "links": null,
       "build_scripts": [],
@@ -15873,6 +15875,37 @@
     {
       "license_files": [
         {
+          "path": "LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        }
+      ],
+      "upstream_license_evidence": [],
+      "source_revision": "ec65f79eb1f61b0e11e70859b041a0a304c3a9ff",
+      "path_in_source_repository": "",
+      "native_source_or_archive_files": [],
+      "name": "typed-path",
+      "version": "0.12.3",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "8e28f89b80c87b8fb0cf04ab448d5dd0dd0ade2f8891bae878de66a75a28600e",
+      "repository": "https://github.com/chipsenkbeil/typed-path",
+      "license_declared": "MIT OR Apache-2.0",
+      "license_spdx": "MIT OR Apache-2.0",
+      "rust_version_declared": "1.65.0",
+      "features_all_targets": [
+        "default",
+        "std"
+      ],
+      "links": null,
+      "build_scripts": [],
+      "dependencies": []
+    },
+    {
+      "license_files": [
+        {
           "path": "LICENSE",
           "sha256": "27ebda9d51f0a56b7e281ccd8230a27236dcb51c05f64b07869ecf6e965d68b0"
         }
@@ -22341,6 +22374,80 @@
         },
         {
           "package": "syn@3.0.6",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "license_files": [
+        {
+          "path": "LICENSE",
+          "sha256": "58545fed1565e42d687aecec6897d35c6d37ccb71479a137c0deb2203e125c79"
+        }
+      ],
+      "upstream_license_evidence": [],
+      "source_revision": "771dfc534d2614158af5497ea3dff4d4208d7db1",
+      "path_in_source_repository": "",
+      "native_source_or_archive_files": [],
+      "name": "zip",
+      "version": "8.6.0",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "checksum": "2d04a6b5381502aa6087c94c669499eb1602eb9c5e8198e534de571f7154809b",
+      "repository": "https://github.com/zip-rs/zip2",
+      "license_declared": "MIT",
+      "license_spdx": "MIT",
+      "rust_version_declared": "1.88",
+      "features_all_targets": [
+        "_deflate-any",
+        "deflate-flate2",
+        "deflate-flate2-zlib-rs"
+      ],
+      "links": null,
+      "build_scripts": [],
+      "dependencies": [
+        {
+          "package": "crc32fast@1.5.2",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "flate2@1.1.10",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "indexmap@2.14.2",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "memchr@2.8.3",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "typed-path@0.12.3",
           "kinds": [
             {
               "kind": null,

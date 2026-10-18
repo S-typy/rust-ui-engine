@@ -1,6 +1,10 @@
 //! Retained controls, themes, commands, and an adaptive Ribbon.
 
 pub mod barcode;
+pub mod planning;
+pub mod rich_document;
+pub mod rich_editor;
+pub use planning::*;
 mod binding;
 mod button;
 mod commands;
@@ -12,6 +16,7 @@ mod editor;
 mod localization;
 mod primitives;
 mod ribbon;
+pub mod spatial;
 mod theme;
 pub use localization::*;
 mod editor_async;

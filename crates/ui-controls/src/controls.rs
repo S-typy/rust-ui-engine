@@ -30,6 +30,9 @@ pub use spellcheck::{
     SpellRequest, SpellSettings,
 };
 mod chart;
+mod rich_editor_adapter;
+mod spatial;
+pub use spatial::{SpatialCanvasChange, SpatialCanvasModel, SpatialChangeKind};
 mod chart_model;
 mod gauge;
 pub use chart_model::{
@@ -653,6 +656,8 @@ pub struct Controls {
     gauges: HashMap<WidgetId, gauge::GaugeState>,
     charts: HashMap<WidgetId, chart::ChartState>,
     chart_press: Option<chart::ChartPress>,
+    spatial_canvases: HashMap<WidgetId, spatial::SpatialState>,
+    spatial_press: Option<spatial::SpatialPress>,
     barcodes: HashMap<WidgetId, barcode::BarcodeState>,
     badges: HashMap<WidgetId, badges::BadgeState>,
     button_contents: button_content::ButtonContents,
@@ -772,6 +777,8 @@ impl Controls {
             gauges: Default::default(),
             charts: Default::default(),
             chart_press: None,
+            spatial_canvases: Default::default(),
+            spatial_press: None,
             barcodes: Default::default(),
             badges: HashMap::new(),
             text_displays: Default::default(),
@@ -2117,6 +2124,7 @@ impl Controls {
         self.retain_ratings()?;
         self.retain_gauges();
         self.sync_charts()?;
+        self.sync_spatial()?;
         self.sync_spellchecks();
         self.retain_barcodes();
         self.prune_button_contents();
@@ -2548,6 +2556,7 @@ impl Controls {
             self.sync_tiles()?;
             self.sync_notifications()?;
             self.sync_charts()?;
+            self.sync_spatial()?;
             self.sync_loadings()?;
             self.sync_query_builders()?;
             self.sync_image_editors()?;
@@ -2713,6 +2722,9 @@ impl Controls {
             return Ok(());
         }
         if self.chart_before_input(&event)? {
+            return Ok(());
+        }
+        if self.spatial_before_input(&event)? {
             return Ok(());
         }
         if self.query_builder_before_input(&event)? {
@@ -3468,6 +3480,9 @@ impl Controls {
                 continue;
             }
             if self.paint_color_editor(id, bounds, clip) {
+                continue;
+            }
+            if self.paint_spatial(id, bounds, clip)? {
                 continue;
             }
             if self.paint_chart(id, bounds, clip)? {
@@ -4252,7 +4267,9 @@ impl Controls {
                         has_popup: false,
                         expanded: None,
                         tooltip: None,
-                        description: self.chart_accessible_description(id),
+                        description: self
+                            .chart_accessible_description(id)
+                            .or_else(|| self.spatial_semantic_value(id).map(str::to_owned)),
                         focused: self.runtime.focused() == Some(id),
                         bounds,
                         actions: Vec::new(),
@@ -4275,7 +4292,9 @@ impl Controls {
                         control.kind.role()
                     }
                 });
-                let value = if let Some(value) = self.chart_semantic_value(id) {
+                let value = if let Some(value) = self.spatial_semantic_value(id) {
+                    Some(value.to_owned())
+                } else if let Some(value) = self.chart_semantic_value(id) {
                     Some(value.to_owned())
                 } else if let Some(value) = self.gauge_semantic_value(id) {
                     Some(value.to_owned())
@@ -4424,7 +4443,9 @@ impl Controls {
                         .expander_expanded(id)
                         .or_else(|| self.popup_expanded(id)),
                     tooltip: control.tooltip.clone(),
-                    description: self.chart_accessible_description(id),
+                    description: self
+                        .chart_accessible_description(id)
+                        .or_else(|| self.spatial_semantic_value(id).map(str::to_owned)),
                     focused: self.runtime.focused() == Some(id),
                     bounds,
                     actions,

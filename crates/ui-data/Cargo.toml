@@ -16,6 +16,8 @@ file-adapters = ["dep:serde", "dep:serde_json"]
 rusqlite = { workspace = true, optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+zip.workspace = true
+roxmltree.workspace = true
 
 [[example]]
 name = "file_roundtrip"

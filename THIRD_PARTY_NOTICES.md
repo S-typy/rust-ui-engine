@@ -1,7 +1,7 @@
 # Third-party notices
 
-Snapshot: 2026-10-17. The project code is licensed under Apache-2.0. Dependencies
-retain the licenses declared below. The table covers all 388 registry packages in
+Snapshot: 2026-10-18. The project code is licensed under Apache-2.0. Dependencies
+retain the licenses declared below. The table covers all 390 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
 
@@ -351,6 +351,7 @@ not constitute a complete binary redistribution review.
 | tracing-attributes | 0.1.31 | MIT | [LICENSE](https://docs.rs/crate/tracing-attributes/0.1.31/source/LICENSE) |
 | tracing-core | 0.1.36 | MIT | [LICENSE](https://docs.rs/crate/tracing-core/0.1.36/source/LICENSE), [src/spin/LICENSE](https://docs.rs/crate/tracing-core/0.1.36/source/src/spin/LICENSE) |
 | tree_magic_mini | 3.2.2 | MIT | [LICENSE](https://docs.rs/crate/tree_magic_mini/3.2.2/source/LICENSE) |
+| typed-path | 0.12.3 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/typed-path/0.12.3/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/typed-path/0.12.3/source/LICENSE-MIT) |
 | uds_windows | 1.2.1 | MIT | [LICENSE](https://docs.rs/crate/uds_windows/1.2.1/source/LICENSE) |
 | unicode-ident | 1.0.26 | (MIT OR Apache-2.0) AND Unicode-3.0 | [LICENSE-APACHE](https://docs.rs/crate/unicode-ident/1.0.26/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/unicode-ident/1.0.26/source/LICENSE-MIT), [LICENSE-UNICODE](https://docs.rs/crate/unicode-ident/1.0.26/source/LICENSE-UNICODE) |
 | unicode-segmentation | 1.13.3 | MIT OR Apache-2.0 | [COPYRIGHT](https://docs.rs/crate/unicode-segmentation/1.13.3/source/COPYRIGHT), [LICENSE-APACHE](https://docs.rs/crate/unicode-segmentation/1.13.3/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/unicode-segmentation/1.13.3/source/LICENSE-MIT) |
@@ -439,6 +440,7 @@ not constitute a complete binary redistribution review.
 | zerotrie | 0.2.5 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/zerotrie/0.2.5/source/LICENSE) |
 | zerovec | 0.11.8 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/zerovec/0.11.8/source/LICENSE) |
 | zerovec-derive | 0.11.6 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/zerovec-derive/0.11.6/source/LICENSE) |
+| zip | 8.6.0 | MIT | [LICENSE](https://docs.rs/crate/zip/8.6.0/source/LICENSE) |
 | zlib-rs | 0.6.8 | Zlib | [LICENSE](https://docs.rs/crate/zlib-rs/0.6.8/source/LICENSE) |
 | zmij | 1.0.23 | MIT | [LICENSE-MIT](https://docs.rs/crate/zmij/1.0.23/source/LICENSE-MIT) |
 | zune-core | 0.5.3 | MIT OR Apache-2.0 OR Zlib | [LICENSE-APACHE](https://docs.rs/crate/zune-core/0.5.3/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/zune-core/0.5.3/source/LICENSE-MIT), [LICENSE-ZLIB](https://docs.rs/crate/zune-core/0.5.3/source/LICENSE-ZLIB) |

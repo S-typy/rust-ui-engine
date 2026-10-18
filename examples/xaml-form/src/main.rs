@@ -1,5 +1,18 @@
 //! A native form whose structure and initial properties are compiled from XAML.
 mod image_editor_app;
+mod planning_app;
+mod rich_document_app;
+mod rich_document_model;
+mod spatial_app;
+mod generated_rich_document {
+    include!(concat!(env!("OUT_DIR"), "/rich_document_window.rs"));
+}
+mod generated_spatial {
+    include!(concat!(env!("OUT_DIR"), "/spatial_window.rs"));
+}
+mod generated_planning {
+    include!(concat!(env!("OUT_DIR"), "/planning_window.rs"));
+}
 mod generated_image_editor {
     include!(concat!(env!("OUT_DIR"), "/image_editor_window.rs"));
 }
@@ -181,8 +194,8 @@ mod generated_docking {
     include!(concat!(env!("OUT_DIR"), "/dock_window.rs"));
 }
 
-use rust_desktop_ui_platform_winit::{RunOptions, run};
-use rust_desktop_ui_xaml::Theme;
+use rust_desktop_ui_platform_winit::{DesktopApp, RunOptions, run};
+use rust_desktop_ui_xaml::{Theme, WindowDefinition};
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
@@ -198,6 +211,14 @@ fn main() -> ExitCode {
 fn start() -> Result<(), String> {
     let mut theme = None;
     let mut image_editor = false;
+    let mut charts_3d = false;
+    let mut map = false;
+    let mut diagram = false;
+    let mut scheduler = false;
+    let mut gantt = false;
+    let mut rich_editor = false;
+    let mut spatial_preview = None;
+    let mut planning_preview = None;
     let mut query_builder = false;
     let mut pivot = false;
     let mut charts = false;
@@ -266,6 +287,30 @@ fn start() -> Result<(), String> {
                 smoke_test = true;
             }
             "--image-editor" => image_editor = true,
+            "--charts-3d" => charts_3d = true,
+            "--map" => map = true,
+            "--diagram" => diagram = true,
+            "--scheduler" => scheduler = true,
+            "--gantt" => gantt = true,
+            "--rich-editor" => rich_editor = true,
+            "--planning-preview" => {
+                planning_preview = Some(
+                    arguments
+                        .next()
+                        .ok_or("--planning-preview requires a view index")?
+                        .parse::<u32>()
+                        .map_err(|_| "invalid planning preview index")?,
+                )
+            }
+            "--spatial-preview" => {
+                spatial_preview = Some(
+                    arguments
+                        .next()
+                        .ok_or("--spatial-preview requires an action index")?
+                        .parse::<u32>()
+                        .map_err(|_| "invalid spatial preview index")?,
+                )
+            }
             "--query-builder" => query_builder = true,
             "--pivot" => pivot = true,
             "--charts" => charts = true,
@@ -321,6 +366,15 @@ fn start() -> Result<(), String> {
                     "--image-editor opens a retained image editor and accepted preview with explicit PNG load/save."
                 );
                 println!(
+                    "--charts-3d, --map and --diagram open spatial canvases with live data tables. --spatial-preview INDEX applies an example action before display."
+                );
+                println!(
+                    "--scheduler and --gantt open calendar and task planning. --rich-editor opens formatted documents with explicit DOCX import/export."
+                );
+                println!(
+                    "--planning-preview INDEX selects a scheduler view before display: 0 Day, 1 Week, 2 Month, 3 Timeline. Requires --scheduler."
+                );
+                println!(
                     "--data-editors opens DataEditorsWindow.xaml: transactional data, MemoEdit, editor buttons and PasswordBox.\n--workspace opens WorkspaceWindow.xaml: retained tabs, dialogs, customizable status, reusable styles/templates and typed queries."
                 );
                 println!(
@@ -368,6 +422,12 @@ fn start() -> Result<(), String> {
         }
     }
     if [
+        charts_3d,
+        map,
+        diagram,
+        scheduler,
+        gantt,
+        rich_editor,
         image_editor,
         pivot,
         charts,
@@ -415,13 +475,25 @@ fn start() -> Result<(), String> {
     if float_pane.is_some() && !docking {
         return Err("--float-pane requires --docking".into());
     }
+    if spatial_preview.is_some() && !(charts_3d || map || diagram) {
+        return Err("--spatial-preview requires --charts-3d, --map or --diagram".into());
+    }
+    if planning_preview.is_some() && !scheduler {
+        return Err("--planning-preview requires --scheduler".into());
+    }
     if dialog_directory.is_some() && !workspace {
         return Err("--dialog-directory requires --workspace".into());
     }
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if image_editor {
+    let mut definition = if charts_3d || map || diagram {
+        generated_spatial::window_definition()
+    } else if scheduler || gantt {
+        generated_planning::window_definition()
+    } else if rich_editor {
+        generated_rich_document::window_definition()
+    } else if image_editor {
         generated_image_editor::window_definition()
     } else if charts {
         generated_charts::window_definition()
@@ -526,111 +598,220 @@ fn start() -> Result<(), String> {
         activate,
     };
     if docking {
-        let mut app = docking_app::DockApplication::new(
+        return run_docking(
             definition,
             options,
             diagnostics,
-            float_pane.as_deref(),
-        )?;
-        if documents {
-            app.enable_documents()?;
+            documents,
+            float_pane,
+            layout_file,
+        );
+    }
+    if charts_3d || map || diagram {
+        let kind = if charts_3d {
+            spatial_app::SpatialDemoKind::Chart3D
+        } else if map {
+            spatial_app::SpatialDemoKind::Map
         } else {
-            let path = layout_file
-                .map(Ok)
-                .unwrap_or_else(docking_app::storage::default_path)?;
-            app.set_layout_file(path);
-        }
-        return rust_desktop_ui_platform_winit::run_multi(app);
+            spatial_app::SpatialDemoKind::Diagram
+        };
+        return run_spatial(definition, options, diagnostics, kind, spatial_preview);
+    }
+    if scheduler || gantt {
+        return run_planning(definition, options, diagnostics, gantt, planning_preview);
+    }
+    if rich_editor {
+        return run_demo(
+            definition,
+            options,
+            diagnostics,
+            rich_document_app::RichDocumentDemo::new,
+        );
     }
     if image_editor {
-        return run(
-            image_editor_app::ImageDemo::new(definition, diagnostics)?,
+        return run_demo(
+            definition,
             options,
+            diagnostics,
+            image_editor_app::ImageDemo::new,
         );
     }
     if charts {
-        return run(
-            charts_model::ChartsDemo::new(definition, diagnostics)?,
+        return run_demo(
+            definition,
             options,
+            diagnostics,
+            charts_model::ChartsDemo::new,
         );
     }
     if pivot {
-        return run(
-            pivot_model::PivotDemo::new(definition, diagnostics)?,
+        return run_demo(
+            definition,
             options,
+            diagnostics,
+            pivot_model::PivotDemo::new,
         );
     }
     if query_builder {
-        return run(
-            query_model::QueryDemo::new(definition, diagnostics)?,
+        return run_demo(
+            definition,
             options,
+            diagnostics,
+            query_model::QueryDemo::new,
         );
     }
     if notifications {
-        return rust_desktop_ui_platform_winit::run_multi(
-            notifications_app::NotificationsApplication::new(definition, options, diagnostics)?,
-        );
+        return run_notifications(definition, options, diagnostics);
     }
     if workspace {
-        let mut application =
-            workspace_app::WorkspaceApplication::new(definition, options, diagnostics)?;
-        application.set_dialog_directory(dialog_directory);
-        return rust_desktop_ui_platform_winit::run_multi(application);
+        return run_workspace(definition, options, diagnostics, dialog_directory);
     }
-    let app = if properties {
-        form::Form::new(definition, diagnostics)?
+    let (context, sources) = if properties {
+        (None, Vec::new())
     } else if gallery {
-        form::Form::new_with_model(definition, diagnostics, Some(gallery_model::model()?))?
+        (Some(gallery_model::model()?), Vec::new())
     } else if wizard {
-        form::Form::new_with_model(definition, diagnostics, Some(wizard_model::model()?))?
+        (Some(wizard_model::model()?), Vec::new())
     } else if navigation {
-        form::Form::new_with_model(definition, diagnostics, Some(navigation_model::model()?))?
+        (Some(navigation_model::model()?), Vec::new())
     } else if breadcrumb {
-        form::Form::new_with_model(definition, diagnostics, Some(breadcrumb_model::model()?))?
+        (Some(breadcrumb_model::model()?), Vec::new())
     } else if grid_workspace {
-        form::Form::new_with_model(
-            definition,
-            diagnostics,
-            Some(grid_workspace_model::model()?),
-        )?
+        (Some(grid_workspace_model::model()?), Vec::new())
     } else if data_form {
         let (context, sources) = data_form_model::model()?;
-        form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
+        (Some(context), sources)
     } else if tree {
-        form::Form::new_with_model(definition, diagnostics, Some(tree_model::model()?))?
+        (Some(tree_model::model()?), Vec::new())
     } else if badges {
-        form::Form::new_with_model(definition, diagnostics, Some(badge_model::model()?))?
+        (Some(badge_model::model()?), Vec::new())
     } else if font {
-        form::Form::new_with_model(definition, diagnostics, Some(font_model::model()?))?
+        (Some(font_model::model()?), Vec::new())
     } else if tiles {
-        form::Form::new_with_model(definition, diagnostics, Some(tile_model::model()?))?
+        (Some(tile_model::model()?), Vec::new())
     } else if color {
-        form::Form::new_with_model(definition, diagnostics, Some(color_model::model()?))?
+        (Some(color_model::model()?), Vec::new())
     } else if rating {
-        form::Form::new_with_model(definition, diagnostics, Some(rating_model::model()?))?
+        (Some(rating_model::model()?), Vec::new())
     } else if search {
-        form::Form::new_with_model(definition, diagnostics, Some(search_model::model()?))?
+        (Some(search_model::model()?), Vec::new())
     } else if selection {
-        form::Form::new_with_model(definition, diagnostics, Some(selection_model::model()?))?
+        (Some(selection_model::model()?), Vec::new())
     } else if ribbon_workspace {
-        form::Form::new_with_model(
-            definition,
-            diagnostics,
-            Some(ribbon_workspace_model::model()?),
-        )?
+        (Some(ribbon_workspace_model::model()?), Vec::new())
     } else if data_editors {
         let (context, sources) = data_editors_model::model()?;
-        form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
+        (Some(context), sources)
     } else if batch {
-        form::Form::new_with_model(definition, diagnostics, Some(batch_model::model()?))?
+        (Some(batch_model::model()?), Vec::new())
     } else if data {
         let (context, sources) = data_model::model()?;
-        form::Form::new_with_sources(definition, diagnostics, Some(context), sources)?
+        (Some(context), sources)
     } else if editors || groups || status {
-        form::Form::new_with_model(definition, diagnostics, Some(forms_model::model()?))?
+        (Some(forms_model::model()?), Vec::new())
     } else {
-        form::Form::new(definition, diagnostics)?
+        (None, Vec::new())
     };
+    run_plain_form(definition, options, diagnostics, context, sources)
+}
+
+// Keep application construction out of the argument dispatcher. In debug builds,
+// mutually exclusive branches can otherwise reserve a stack slot for every large
+// application value and Result at once, before any selected branch can run.
+#[inline(never)]
+fn run_demo<A: DesktopApp + 'static>(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    constructor: fn(WindowDefinition, bool) -> Result<A, String>,
+) -> Result<(), String> {
+    let app = constructor(definition, diagnostics)?;
+    run(app, options)
+}
+
+#[inline(never)]
+fn run_spatial(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    kind: spatial_app::SpatialDemoKind,
+    preview: Option<u32>,
+) -> Result<(), String> {
+    let mut app = spatial_app::SpatialDemo::new(definition, diagnostics, kind)?;
+    if let Some(index) = preview {
+        app.preview_action(index)?;
+    }
+    run(app, options)
+}
+
+#[inline(never)]
+fn run_planning(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    gantt: bool,
+    preview: Option<u32>,
+) -> Result<(), String> {
+    let mut app = planning_app::PlanningDemo::new(definition, gantt, diagnostics)?;
+    if let Some(index) = preview {
+        app.preview_mode(index)?;
+    }
+    run(app, options)
+}
+
+#[inline(never)]
+fn run_docking(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    documents: bool,
+    float_pane: Option<String>,
+    layout_file: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let mut app =
+        docking_app::DockApplication::new(definition, options, diagnostics, float_pane.as_deref())?;
+    if documents {
+        app.enable_documents()?;
+    } else {
+        let path = layout_file
+            .map(Ok)
+            .unwrap_or_else(docking_app::storage::default_path)?;
+        app.set_layout_file(path);
+    }
+    rust_desktop_ui_platform_winit::run_multi(app)
+}
+
+#[inline(never)]
+fn run_notifications(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+) -> Result<(), String> {
+    let app = notifications_app::NotificationsApplication::new(definition, options, diagnostics)?;
+    rust_desktop_ui_platform_winit::run_multi(app)
+}
+
+#[inline(never)]
+fn run_workspace(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    dialog_directory: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    let mut app = workspace_app::WorkspaceApplication::new(definition, options, diagnostics)?;
+    app.set_dialog_directory(dialog_directory);
+    rust_desktop_ui_platform_winit::run_multi(app)
+}
+
+#[inline(never)]
+fn run_plain_form(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    context: Option<std::rc::Rc<std::cell::RefCell<rust_desktop_ui_controls::BindingContext>>>,
+    sources: Vec<(String, data_model::SharedSource)>,
+) -> Result<(), String> {
+    let app = form::Form::new_with_sources(definition, diagnostics, context, sources)?;
     if diagnostics {
         println!(
             "named-editor=Message resolved={}",

@@ -48,3 +48,8 @@ mod write_tests;
 
 pub mod pivot;
 pub use pivot::*;
+
+pub mod gantt;
+pub use gantt::*;
+pub mod office_package;
+pub mod workbook;

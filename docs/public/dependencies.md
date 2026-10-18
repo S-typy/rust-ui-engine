@@ -24,7 +24,8 @@
 | rusqlite | `=0.40.2`, `bundled` | Опциональный SQLite adapter | MIT |
 | image | `=0.25.10`, `png/jpeg/bmp/ico` | Декодирование статических raster assets | MIT OR Apache-2.0 |
 | resvg | `=0.48.1`, без default features | Подготовка статического SVG в bitmap | Apache-2.0 OR MIT |
-| roxmltree | `=0.21.1` | XML-разбор и предварительная проверка XAML/SVG | MIT OR Apache-2.0 |
+| roxmltree | `=0.21.1` | XML-разбор и предварительная проверка XAML/SVG/DOCX/XLSX | MIT OR Apache-2.0 |
+| zip | `=8.6.0`, без default features, `deflate-flate2-zlib-rs` | Ограниченные ZIP-пакеты документов и книг | MIT |
 
 Версии и лицензии сверены с опубликованными пакетами:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/source/Cargo.toml),

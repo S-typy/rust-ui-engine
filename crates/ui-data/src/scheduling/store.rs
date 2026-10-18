@@ -106,6 +106,11 @@ impl SchedulingModel {
     pub fn exception(&self, id: ScheduleOccurrenceId) -> Option<&ScheduleException> {
         self.state.exceptions.get(&id)
     }
+    /// Stable identities and immutable exception descriptors, including cancellations.
+    /// Editors can remove a complete series and its exceptions in one atomic batch.
+    pub fn exceptions(&self) -> impl Iterator<Item = (ScheduleOccurrenceId, &ScheduleException)> {
+        self.state.exceptions.iter().map(|(id, value)| (*id, value))
+    }
     pub fn resources(&self) -> impl Iterator<Item = &ScheduleResource> {
         self.state.resources.values()
     }

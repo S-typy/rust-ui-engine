@@ -89,6 +89,12 @@ cargo run --release --locked -p xaml-form -- --spellcheck
 cargo run --release --locked -p xaml-form -- --image-editor
 cargo run --release --locked -p xaml-form -- --pivot
 cargo run --release --locked -p xaml-form -- --charts
+cargo run --release --locked -p xaml-form -- --charts-3d
+cargo run --release --locked -p xaml-form -- --map
+cargo run --release --locked -p xaml-form -- --diagram
+cargo run --release --locked -p xaml-form -- --scheduler
+cargo run --release --locked -p xaml-form -- --gantt
+cargo run --release --locked -p xaml-form -- --rich-editor
 cargo run --release --locked -p xaml-form -- --visuals
 cargo run --release --locked -p xaml-form -- --visuals --high-contrast-dark --touch
 ```
@@ -103,6 +109,24 @@ See [property fields](docs/public/property-grid.md),
 `--image-editor` opens a retained image workspace with zoom, crop, rotation,
 bounded undo/redo, explicit PNG load/save and a separate accepted preview.
 See [image viewing and editing](docs/public/image-editor.md).
+
+`--charts-3d` projects keyed data through an orbitable camera; `--map` shows
+application-owned tile/vector layers, markers and provider results;
+`--diagram` edits shapes, connectors and routing with bounded undo.
+See [3D charts](docs/public/charts-3d.md), [maps](docs/public/maps.md) and
+[diagrams](docs/public/diagrams.md).
+
+`--scheduler` and `--gantt` demonstrate shared calendar/resource data, explicit
+appointment editing and a synchronized task tree/timeline. Their supported
+interactions and limits are described in [planning controls](docs/public/scheduler-and-gantt.md).
+`--rich-editor` combines paragraph/table-cell editing, formatting and paginated
+preview with explicit DOCX open/save. See [rich documents](docs/public/rich-documents.md).
+
+The nonvisual [Workbook](docs/public/workbooks.md) supports atomic cell/range
+edits, formulas, dependency recalculation and XLSX interchange. Run
+`cargo run -p rust-desktop-ui-data --example workbook_codec -- sample sample.xlsx`
+to write a sample. DOCX/XLSX import reports or rejects unsupported content;
+neither codec promises a lossless round-trip for arbitrary office documents.
 
 Windows [application services](docs/public/platform-services.md) provide an
 owner-scoped dispatcher, Unicode/HTML/image clipboard, tray menu, taskbar
