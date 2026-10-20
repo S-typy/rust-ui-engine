@@ -7,6 +7,7 @@ mod drag_drop;
 mod font;
 mod input;
 mod model;
+pub mod pages;
 mod runtime;
 mod scene_image;
 mod scene_stroke;

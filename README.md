@@ -414,6 +414,7 @@ Their historical success does not validate the newer gallery.
 - [Subsystem decision](docs/public/adr/ADR-004-text-controls-platform-treegrid.md), [retained decision](docs/public/adr/ADR-003-retained-runtime.md)
 - [Retained runtime checks](docs/public/retained-runtime-test-report.md), [GPU prototype checks](docs/public/gpu-prototype-test-report.md), [requirements](docs/public/requirements.md)
 - [Dependency audit](docs/public/dependencies.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
+- [Spreadsheet](docs/public/spreadsheets.md), [PDF documents/viewer](docs/public/pdf.md), [printing and reports](docs/public/printing-and-reports.md)
 
 Supported profiles and remaining limits are documented for each component.
 Grid presentations include bounded grouping, summaries, card views and related
@@ -430,3 +431,7 @@ requires the applicable third-party notices and platform SDK terms.
 `--pivot` demonstrates typed aggregates, field arrangement and source drill-down over the retained Grid.
 
 `--charts` demonstrates bounded Line, Scatter, Bar and Sparkline views over typed tables.
+
+`--spreadsheet`, `--pdf`, `--print-preview` and `--report` open document examples
+with explicit file/output commands. Their supported profiles and remaining
+native acceptance limits are documented above.

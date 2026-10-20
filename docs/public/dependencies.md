@@ -26,6 +26,7 @@
 | resvg | `=0.48.1`, без default features | Подготовка статического SVG в bitmap | Apache-2.0 OR MIT |
 | roxmltree | `=0.21.1` | XML-разбор и предварительная проверка XAML/SVG/DOCX/XLSX | MIT OR Apache-2.0 |
 | zip | `=8.6.0`, без default features, `deflate-flate2-zlib-rs` | Ограниченные ZIP-пакеты документов и книг | MIT |
+| lopdf | `=0.45.0`, без default features | PDF objects, streams, encoding и запись; не UI renderer | MIT |
 
 Версии и лицензии сверены с опубликованными пакетами:
 [wgpu](https://docs.rs/crate/wgpu/30.0.1/source/Cargo.toml),
@@ -193,9 +194,9 @@ metadata не доказывает компиляцию этой зависим�
 заменяет проверку назначения новой библиотеки; успешная автоматическая проверка
 не равна проверке всех исходников и условий бинарной поставки.
 
-Инвентаризация от 2026-10-16 соответствует текущему Cargo.lock: **388**
-сторонних registry packages и 13 workspace packages. Для 342 пакетов
-найдены и хешированы license/notice files в архиве; для ещё 45 проверены
+Инвентаризация от 2026-10-20 соответствует текущему Cargo.lock: **423**
+сторонних registry packages и 13 workspace packages. Для 376 пакетов
+найдены и хешированы license/notice files в архиве; для ещё 46 проверены
 материалы точного upstream revision. Единственный прежний manifest-only случай —
 `dispatch 0.2.0` с декларацией MIT. Его attribution packaging и условия Apple SDK,
 перечисленные upstream objc2, остаются открытыми перед поставкой macOS binaries.
@@ -203,8 +204,13 @@ AccessKit evidence включает LICENSE.chromium и AUTHORS наряду с 
 текстами: одной SPDX-декларации manifest недостаточно для упаковки notices.
 Image/SVG pipeline добавил31 registry package; для каждого найден и хеширован
 license text в crate archive. Локальная проверка `cargo deny --locked check licenses`
-на этом lockfile завершилась с exit code0. Это проверка лицензий; новый полный
+на актуальном lockfile 2026-10-20 завершилась с exit code0. Это проверка лицензий; новый полный
 аудит advisories этим результатом не заявляется.
+
+PDF использует [lopdf 0.45.0](https://docs.rs/crate/lopdf/0.45.0/source/LICENSE).
+33 добавленных registry packages проверены отдельно; `alloc-stdlib` не содержит
+license file в архиве, поэтому BSD-3-Clause текст сохранён по точному upstream
+revision. Все остальные новые пакеты содержат license files в архиве.
 
 Историческая проверка `cargo deny --locked --log-level error check`
 349-package snapshot завершилась 2026-10-09 с exit code 0 после проверки и

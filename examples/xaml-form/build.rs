@@ -1,6 +1,7 @@
 fn main() {
     let out = std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo OUT_DIR"));
     for (source, generated) in [
+        ("OutputWindow.xaml", "output_window.rs"),
         ("SpatialWindow.xaml", "spatial_window.rs"),
         ("PlanningWindow.xaml", "planning_window.rs"),
         ("RichDocumentWindow.xaml", "rich_document_window.rs"),

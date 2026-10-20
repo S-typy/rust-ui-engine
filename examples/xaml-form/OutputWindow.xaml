@@ -1,0 +1,9 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" Title="Таблицы, документы и отчёты" Width="1280" Height="900" Padding="16">
+  <Grid Spacing="8">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <TextBlock x:Name="OutputTitle" Text="Таблицы, документы и отчёты" FontSize="26" FontWeight="SemiBold"/>
+    <Grid x:Name="OutputActions" Grid.Row="1"/>
+    <Grid x:Name="OutputHost" Grid.Row="2"/>
+    <TextBlock x:Name="OutputResult" Grid.Row="3" Text="Открытие, сохранение и печать выполняются только по команде." TextWrapping="Wrap"/>
+  </Grid>
+</Window>

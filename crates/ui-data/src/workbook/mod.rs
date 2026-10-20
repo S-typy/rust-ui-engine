@@ -83,6 +83,21 @@ pub struct CellRange {
     end: CellAddress,
 }
 impl CellRange {
+    pub fn contains(self, address: CellAddress) -> bool {
+        address.row >= self.start.row
+            && address.row <= self.end.row
+            && address.column >= self.start.column
+            && address.column <= self.end.column
+    }
+    pub fn intersects(self, other: Self) -> bool {
+        self.start.row <= other.end.row
+            && self.end.row >= other.start.row
+            && self.start.column <= other.end.column
+            && self.end.column >= other.start.column
+    }
+    pub fn contains_range(self, other: Self) -> bool {
+        self.contains(other.start) && self.contains(other.end)
+    }
     pub fn start(self) -> CellAddress {
         self.start
     }
@@ -106,7 +121,7 @@ impl CellRange {
     pub fn is_empty(self) -> bool {
         false
     }
-    fn addresses(self) -> impl Iterator<Item = CellAddress> {
+    pub fn addresses(self) -> impl Iterator<Item = CellAddress> {
         (self.start.row..=self.end.row).flat_map(move |row| {
             (self.start.column..=self.end.column).map(move |column| CellAddress { row, column })
         })
@@ -174,6 +189,13 @@ pub struct WorkbookCell {
     pub style: CellStyle,
 }
 impl WorkbookCell {
+    pub fn translated(&self, rows: i64, columns: i64) -> Result<Self, DataError> {
+        let mut cell = self.clone();
+        if let CellInput::Formula(text) = &mut cell.input {
+            *text = formula::translate(text, rows, columns)?;
+        }
+        Ok(cell)
+    }
     pub fn value(value: CellValue) -> Self {
         Self {
             input: CellInput::Value(value),
@@ -192,6 +214,7 @@ impl WorkbookCell {
 pub struct Worksheet {
     name: String,
     cells: BTreeMap<CellAddress, WorkbookCell>,
+    merges: Vec<CellRange>,
 }
 impl Worksheet {
     pub fn name(&self) -> &str {
@@ -203,6 +226,16 @@ impl Worksheet {
     pub fn cell(&self, address: CellAddress) -> Option<&WorkbookCell> {
         self.cells.get(&address)
     }
+    pub fn merges(&self) -> &[CellRange] {
+        &self.merges
+    }
+    /// The top-left address owns the content of a merged cell.
+    pub fn anchor(&self, address: CellAddress) -> CellAddress {
+        self.merges
+            .iter()
+            .find(|r| r.contains(address))
+            .map_or(address, |r| r.start)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -213,6 +246,15 @@ pub struct WorkbookCellId {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkbookEdit {
+    /// Merge only when no non-anchor cell contains a value. No data is discarded.
+    Merge {
+        sheet: usize,
+        range: CellRange,
+    },
+    Unmerge {
+        sheet: usize,
+        range: CellRange,
+    },
     Set {
         sheet: usize,
         address: CellAddress,
@@ -242,6 +284,32 @@ pub struct Workbook {
     revision: u64,
 }
 impl Workbook {
+    /// Conservative payload estimate for bounded document histories.
+    pub fn estimated_bytes(&self) -> usize {
+        self.sheets
+            .iter()
+            .map(|s| {
+                s.name.len()
+                    + s.merges.len() * 32
+                    + s.cells
+                        .values()
+                        .map(|c| {
+                            512 + c.style.number_format.len()
+                                + match &c.input {
+                                    CellInput::Value(CellValue::Text(t))
+                                    | CellInput::Formula(t) => t.len(),
+                                    _ => 0,
+                                }
+                        })
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+            + self
+                .dependencies
+                .values()
+                .map(|v| v.len() * 128)
+                .sum::<usize>()
+    }
     pub fn new(name: impl Into<String>) -> Result<Self, DataError> {
         let name = name.into();
         validate_name(&name)?;
@@ -249,6 +317,7 @@ impl Workbook {
             sheets: vec![Worksheet {
                 name,
                 cells: BTreeMap::new(),
+                merges: Vec::new(),
             }],
             values: BTreeMap::new(),
             dependencies: BTreeMap::new(),
@@ -286,12 +355,32 @@ impl Workbook {
         if edits.is_empty() {
             return Ok(());
         }
-        if edits.len() > MAX_CELLS {
+        if edits.len() > MAX_CELLS + MAX_SHEETS + 2048 {
             return Err(invalid("edit batch exceeds capacity"));
         }
         let mut next = self.clone();
         for edit in edits {
             match edit {
+                WorkbookEdit::Merge { sheet, range } => {
+                    next.sheet(*sheet)?;
+                    if range.len() < 2 || next.sheets[*sheet].merges.len() >= 1024 {
+                        return Err(invalid("invalid merge or merge capacity exceeded"));
+                    }
+                    next.sheets[*sheet].merges.push(*range);
+                }
+                WorkbookEdit::Unmerge { sheet, range } => {
+                    let original = next.sheet(*sheet)?;
+                    if original
+                        .merges
+                        .iter()
+                        .any(|r| r.intersects(*range) && !range.contains_range(*r))
+                    {
+                        return Err(invalid("range cuts a merged cell"));
+                    }
+                    next.sheets[*sheet]
+                        .merges
+                        .retain(|r| !range.contains_range(*r));
+                }
                 WorkbookEdit::Set {
                     sheet,
                     address,
@@ -304,6 +393,13 @@ impl Workbook {
                 WorkbookEdit::Clear { sheet, range } => {
                     next.sheet(*sheet)?;
                     CellRange::new(range.start, range.end)?;
+                    if next.sheets[*sheet]
+                        .merges
+                        .iter()
+                        .any(|r| r.intersects(*range) && !range.contains_range(*r))
+                    {
+                        return Err(invalid("clear range cuts a merged cell"));
+                    }
                     next.sheets[*sheet].cells.retain(|a, _| {
                         a.row < range.start.row
                             || a.row > range.end.row
@@ -324,6 +420,7 @@ impl Workbook {
                     next.sheets.push(Worksheet {
                         name: name.clone(),
                         cells: BTreeMap::new(),
+                        merges: Vec::new(),
                     });
                 }
                 WorkbookEdit::Copy {
@@ -337,6 +434,43 @@ impl Workbook {
                     next.sheet(*destination_sheet)?;
                     let rows = i64::from(destination.row) - i64::from(source.start.row);
                     let cols = i64::from(destination.column) - i64::from(source.start.column);
+                    let target_range = CellRange::new(
+                        *destination,
+                        CellAddress::new(
+                            destination.row + source.end.row - source.start.row,
+                            destination.column + source.end.column - source.start.column,
+                        )?,
+                    )?;
+                    if original
+                        .merges
+                        .iter()
+                        .any(|r| r.intersects(*source) && !source.contains_range(*r))
+                        || next.sheets[*destination_sheet]
+                            .merges
+                            .iter()
+                            .any(|r| r.intersects(target_range) && !target_range.contains_range(*r))
+                    {
+                        return Err(invalid("copy range cuts a merged cell"));
+                    }
+                    next.sheets[*destination_sheet]
+                        .merges
+                        .retain(|r| !target_range.contains_range(*r));
+                    for range in original
+                        .merges
+                        .iter()
+                        .filter(|r| source.contains_range(**r))
+                    {
+                        let translate = |a: CellAddress| {
+                            CellAddress::new(
+                                (i64::from(a.row) + rows) as u32,
+                                (i64::from(a.column) + cols) as u32,
+                            )
+                        };
+                        next.sheets[*destination_sheet].merges.push(CellRange::new(
+                            translate(range.start)?,
+                            translate(range.end)?,
+                        )?);
+                    }
                     for address in source.addresses() {
                         let target = CellAddress::new(
                             (i64::from(address.row) + rows)
@@ -360,6 +494,23 @@ impl Workbook {
             }
             if next.sheets.iter().map(|s| s.cells.len()).sum::<usize>() > MAX_CELLS {
                 return Err(invalid("workbook cell capacity exceeded"));
+            }
+        }
+        for sheet in &next.sheets {
+            if sheet.merges.len() > 1024 {
+                return Err(invalid("merge capacity exceeded"));
+            }
+            for (index, range) in sheet.merges.iter().enumerate() {
+                if sheet.merges[..index].iter().any(|r| r.intersects(*range)) {
+                    return Err(invalid("overlapping merged cells"));
+                }
+                if sheet.cells.iter().any(|(a, c)| {
+                    range.contains(*a)
+                        && *a != range.start
+                        && !matches!(c.input, CellInput::Value(CellValue::Null))
+                }) {
+                    return Err(invalid("merged cell would hide non-anchor content"));
+                }
             }
         }
         let payload: usize = next

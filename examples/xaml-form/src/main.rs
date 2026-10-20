@@ -1,4 +1,8 @@
 //! A native form whose structure and initial properties are compiled from XAML.
+mod output_app;
+mod generated_output {
+    include!(concat!(env!("OUT_DIR"), "/output_window.rs"));
+}
 mod image_editor_app;
 mod planning_app;
 mod rich_document_app;
@@ -217,6 +221,7 @@ fn start() -> Result<(), String> {
     let mut scheduler = false;
     let mut gantt = false;
     let mut rich_editor = false;
+    let mut output_mode = None;
     let mut spatial_preview = None;
     let mut planning_preview = None;
     let mut query_builder = false;
@@ -293,6 +298,17 @@ fn start() -> Result<(), String> {
             "--scheduler" => scheduler = true,
             "--gantt" => gantt = true,
             "--rich-editor" => rich_editor = true,
+            "--spreadsheet" | "--pdf" | "--print-preview" | "--report" => {
+                if output_mode.is_some() {
+                    return Err("Choose one document example".into());
+                }
+                output_mode = Some(match argument.as_str() {
+                    "--spreadsheet" => output_app::OutputMode::Spreadsheet,
+                    "--pdf" => output_app::OutputMode::Pdf,
+                    "--print-preview" => output_app::OutputMode::Preview,
+                    _ => output_app::OutputMode::Report,
+                });
+            }
             "--planning-preview" => {
                 planning_preview = Some(
                     arguments
@@ -369,7 +385,7 @@ fn start() -> Result<(), String> {
                     "--charts-3d, --map and --diagram open spatial canvases with live data tables. --spatial-preview INDEX applies an example action before display."
                 );
                 println!(
-                    "--scheduler and --gantt open calendar and task planning. --rich-editor opens formatted documents with explicit DOCX import/export."
+                    "--scheduler and --gantt open calendar and task planning. --rich-editor opens formatted documents with explicit DOCX import/export. --spreadsheet, --pdf, --print-preview and --report open the document output examples."
                 );
                 println!(
                     "--planning-preview INDEX selects a scheduler view before display: 0 Day, 1 Week, 2 Month, 3 Timeline. Requires --scheduler."
@@ -422,6 +438,7 @@ fn start() -> Result<(), String> {
         }
     }
     if [
+        output_mode.is_some(),
         charts_3d,
         map,
         diagram,
@@ -487,7 +504,9 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if charts_3d || map || diagram {
+    let mut definition = if output_mode.is_some() {
+        generated_output::window_definition()
+    } else if charts_3d || map || diagram {
         generated_spatial::window_definition()
     } else if scheduler || gantt {
         generated_planning::window_definition()
@@ -597,6 +616,9 @@ fn start() -> Result<(), String> {
         smoke_device_recovery: recovery,
         activate,
     };
+    if let Some(mode) = output_mode {
+        return run_output(definition, options, diagnostics, mode);
+    }
     if docking {
         return run_docking(
             definition,
@@ -718,6 +740,19 @@ fn start() -> Result<(), String> {
 // Keep application construction out of the argument dispatcher. In debug builds,
 // mutually exclusive branches can otherwise reserve a stack slot for every large
 // application value and Result at once, before any selected branch can run.
+#[inline(never)]
+fn run_output(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    mode: output_app::OutputMode,
+) -> Result<(), String> {
+    run(
+        output_app::OutputDemo::new(definition, diagnostics, mode)?,
+        options,
+    )
+}
+
 #[inline(never)]
 fn run_demo<A: DesktopApp + 'static>(
     definition: WindowDefinition,

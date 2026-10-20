@@ -1,9 +1,14 @@
 //! Retained controls, themes, commands, and an adaptive Ribbon.
 
 pub mod barcode;
+pub mod page_viewer;
+pub mod pdf;
 pub mod planning;
+pub mod printing;
+pub mod reports;
 pub mod rich_document;
 pub mod rich_editor;
+pub mod spreadsheet;
 pub use planning::*;
 mod binding;
 mod button;

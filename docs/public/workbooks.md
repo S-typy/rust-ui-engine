@@ -39,7 +39,13 @@ Copy reads a snapshot, so overlapping ranges are deterministic. Relative
 references translate on both axes, `$A1` fixes the column, `A$1` fixes the row
 and `$A$1` fixes both. A translated reference outside a worksheet becomes
 `#REF!`. Copying to an invalid destination rejects the whole transaction.
-Sheet deletion, renaming, row/column insertion and merged cells are not supported.
+Sheet deletion, renaming and row/column insertion are not supported.
+
+`WorkbookEdit::Merge` and `Unmerge` store nonoverlapping merged ranges, exported
+and imported as XLSX `mergeCells`. Merge rejects nonempty non-anchor cells.
+Clear/copy reject operations that cut a merged range; copy translates complete
+merges and formulas atomically. The interactive editing session and viewport
+are documented in [Spreadsheet](spreadsheets.md).
 
 Limits: 64 sheets, 16,384 stored cells across the workbook, 16 MiB of cell and
 formula text, 32 KiB per text cell, 4 KiB per formula and 262,144 dependency

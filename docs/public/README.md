@@ -18,3 +18,5 @@ results distinguish compilation, unit checks, rendered output, and native input.
 
 - [Charts and Sparkline](charts.md) — retained Cartesian presentation and input.
 - [Chart data and geometry](chart-model.md) — finite scales, NULL and bounded series.
+- [Workbook](workbooks.md) and [Spreadsheet](spreadsheets.md) — typed cells, formulas, XLSX and retained editing.
+- [PDF documents/viewer](pdf.md) and [printing/reports](printing-and-reports.md) — pages, preview and explicit output.

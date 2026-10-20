@@ -11,6 +11,7 @@ mod input;
 mod modality;
 mod multi;
 mod multi_host;
+pub mod printing;
 mod services;
 mod splash;
 mod wake;

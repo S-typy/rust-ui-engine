@@ -52,4 +52,5 @@ pub use pivot::*;
 pub mod gantt;
 pub use gantt::*;
 pub mod office_package;
+pub mod spreadsheet;
 pub mod workbook;

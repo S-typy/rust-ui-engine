@@ -97,8 +97,21 @@ impl Workbook {
             if open_row.is_some() {
                 data.push_str("</row>");
             }
+            let merges = if sheet.merges.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<mergeCells count=\"{}\">{}</mergeCells>",
+                    sheet.merges.len(),
+                    sheet
+                        .merges
+                        .iter()
+                        .map(|r| format!("<mergeCell ref=\"{}:{}\"/>", r.start.a1(), r.end.a1()))
+                        .collect::<String>()
+                )
+            };
             let xml = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"{NS}\"><sheetData>{data}</sheetData></worksheet>"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"{NS}\"><sheetData>{data}</sheetData>{merges}</worksheet>"
             );
             parts.insert(format!("xl/worksheets/sheet{n}.xml"), xml.into_bytes());
         }
@@ -806,11 +819,15 @@ fn read_sheet(
             "sheetViews",
             "sheetFormatPr",
             "pageMargins",
+            "mergeCells",
         ],
     )?;
     attribute_diagnostics(root, &[], path, diagnostics);
     for node in root.children().filter(|n| n.is_element()) {
-        if !node.has_tag_name((NS, "sheetData")) && !node.has_tag_name((NS, "dimension")) {
+        if !node.has_tag_name((NS, "sheetData"))
+            && !node.has_tag_name((NS, "dimension"))
+            && !node.has_tag_name((NS, "mergeCells"))
+        {
             warning(
                 diagnostics,
                 path,
@@ -994,6 +1011,29 @@ fn read_sheet(
                 address,
                 cell: WorkbookCell { input, style },
             });
+        }
+    }
+    if let Some(merges) = child(root, "mergeCells") {
+        let mut count = 0usize;
+        attribute_diagnostics(merges, &[("count", None)], path, diagnostics);
+        for node in merges.children().filter(|n| n.is_element()) {
+            if !node.has_tag_name((NS, "mergeCell")) || count >= 1024 {
+                return Err(invalid("invalid merged cells"));
+            }
+            attribute_diagnostics(node, &[("ref", None)], path, diagnostics);
+            let (first, last) = attr(node, "ref")?
+                .split_once(':')
+                .ok_or_else(|| invalid("invalid merge reference"))?;
+            edits.push(WorkbookEdit::Merge {
+                sheet,
+                range: CellRange::new(CellAddress::parse(first)?, CellAddress::parse(last)?)?,
+            });
+            count += 1;
+        }
+        if let Some(declared) = merges.attribute("count")
+            && declared.parse::<usize>().map_err(package_error)? != count
+        {
+            return Err(invalid("merge count mismatch"));
         }
     }
     Ok(())
