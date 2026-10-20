@@ -627,7 +627,7 @@ impl DesktopApp for OutputDemo {
         self.form.ime_composition_active()
     }
 }
-fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)
         .map_err(err)?
@@ -639,7 +639,7 @@ fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, String> {
     }
     Ok(bytes)
 }
-fn atomic_save(path: &Path, bytes: &[u8], cancelled: &AtomicBool) -> Result<(), String> {
+pub(crate) fn atomic_save(path: &Path, bytes: &[u8], cancelled: &AtomicBool) -> Result<(), String> {
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let temporary = path.parent().ok_or("No output directory")?.join(format!(
         ".output-{}-{}.tmp",

@@ -1,4 +1,5 @@
 //! A native form whose structure and initial properties are compiled from XAML.
+mod composition_app;
 mod output_app;
 mod generated_output {
     include!(concat!(env!("OUT_DIR"), "/output_window.rs"));
@@ -222,6 +223,9 @@ fn start() -> Result<(), String> {
     let mut gantt = false;
     let mut rich_editor = false;
     let mut output_mode = None;
+    let mut composition_mode = None;
+    let mut composition_preview = false;
+    let mut media_file = None;
     let mut spatial_preview = None;
     let mut planning_preview = None;
     let mut query_builder = false;
@@ -298,6 +302,22 @@ fn start() -> Result<(), String> {
             "--scheduler" => scheduler = true,
             "--gantt" => gantt = true,
             "--rich-editor" => rich_editor = true,
+            "--report-designer" | "--dashboard" | "--media" => {
+                if composition_mode.is_some() {
+                    return Err("Choose one composition example".into());
+                }
+                composition_mode = Some(match argument.as_str() {
+                    "--report-designer" => composition_app::CompositionMode::ReportDesigner,
+                    "--dashboard" => composition_app::CompositionMode::Dashboard,
+                    _ => composition_app::CompositionMode::Media,
+                });
+            }
+            "--composition-preview" => composition_preview = true,
+            "--media-file" => {
+                media_file = Some(std::path::PathBuf::from(
+                    arguments.next().ok_or("--media-file requires a path")?,
+                ))
+            }
             "--spreadsheet" | "--pdf" | "--print-preview" | "--report" => {
                 if output_mode.is_some() {
                     return Err("Choose one document example".into());
@@ -376,6 +396,9 @@ fn start() -> Result<(), String> {
             "--no-activate" => activate = false,
             "--help" | "-h" => {
                 println!(
+                    "--report-designer, --dashboard and --media open composition examples. --composition-preview selects preview/designer/playback; --media-file PATH opens an explicit local video."
+                );
+                println!(
                     "--gallery opens grouped visual samples, preview/acceptance and retained Ribbon/popup hosts."
                 );
                 println!(
@@ -438,6 +461,7 @@ fn start() -> Result<(), String> {
         }
     }
     if [
+        composition_mode.is_some(),
         output_mode.is_some(),
         charts_3d,
         map,
@@ -504,7 +528,18 @@ fn start() -> Result<(), String> {
     if layout_file.is_some() && !docking {
         return Err("--layout-file requires --docking".into());
     }
-    let mut definition = if output_mode.is_some() {
+    if composition_preview && composition_mode.is_none() {
+        return Err("--composition-preview requires a composition example".into());
+    }
+    if media_file.is_some()
+        && !matches!(
+            composition_mode,
+            Some(composition_app::CompositionMode::Media)
+        )
+    {
+        return Err("--media-file requires --media".into());
+    }
+    let mut definition = if output_mode.is_some() || composition_mode.is_some() {
         generated_output::window_definition()
     } else if charts_3d || map || diagram {
         generated_spatial::window_definition()
@@ -616,6 +651,16 @@ fn start() -> Result<(), String> {
         smoke_device_recovery: recovery,
         activate,
     };
+    if let Some(mode) = composition_mode {
+        return run_composition(
+            definition,
+            options,
+            diagnostics,
+            mode,
+            composition_preview,
+            media_file,
+        );
+    }
     if let Some(mode) = output_mode {
         return run_output(definition, options, diagnostics, mode);
     }
@@ -749,6 +794,21 @@ fn run_output(
 ) -> Result<(), String> {
     run(
         output_app::OutputDemo::new(definition, diagnostics, mode)?,
+        options,
+    )
+}
+
+#[inline(never)]
+fn run_composition(
+    definition: WindowDefinition,
+    options: RunOptions,
+    diagnostics: bool,
+    mode: composition_app::CompositionMode,
+    preview: bool,
+    video: Option<std::path::PathBuf>,
+) -> Result<(), String> {
+    run(
+        composition_app::CompositionDemo::new(definition, diagnostics, mode, preview, video)?,
         options,
     )
 }

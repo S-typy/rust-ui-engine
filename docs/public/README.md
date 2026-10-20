@@ -20,3 +20,5 @@ results distinguish compilation, unit checks, rendered output, and native input.
 - [Chart data and geometry](chart-model.md) — finite scales, NULL and bounded series.
 - [Workbook](workbooks.md) and [Spreadsheet](spreadsheets.md) — typed cells, formulas, XLSX and retained editing.
 - [PDF documents/viewer](pdf.md) and [printing/reports](printing-and-reports.md) — pages, preview and explicit output.
+- [Report Designer and Dashboard](composition.md) — transactional definitions and shared filters.
+- [Media](media.md) — asynchronous provider host and Windows video-file decoding.

@@ -64,6 +64,7 @@ error rather than a misleading partial report. Query evaluation itself has its
 own bounded execution; cancellation is observed before/after query execution
 and while generating rows/pages.
 
-The current definition API is Rust. A designer, serialized report templates,
-subreports, charts/barcodes as report items, repeating group headers and
-widow/orphan rules are not provided.
+Definitions are available through Rust and strict versioned JSON. The
+[report designer](composition.md) edits accepted definitions with undo/redo and
+matching page preview. Subreports, charts/barcodes as report items, repeating
+group headers and widow/orphan rules are not provided.

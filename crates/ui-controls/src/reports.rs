@@ -7,6 +7,8 @@ use rust_desktop_ui_core::{
 use rust_desktop_ui_data::*;
 use rust_desktop_ui_text::TextEngine;
 use std::collections::BTreeMap;
+mod codec;
+pub use codec::MAX_REPORT_DEFINITION_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReportError {

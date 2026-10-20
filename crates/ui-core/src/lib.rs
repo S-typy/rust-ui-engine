@@ -6,6 +6,7 @@ mod dirty;
 mod drag_drop;
 mod font;
 mod input;
+pub mod media;
 mod model;
 pub mod pages;
 mod runtime;

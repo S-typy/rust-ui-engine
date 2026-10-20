@@ -415,6 +415,8 @@ Their historical success does not validate the newer gallery.
 - [Retained runtime checks](docs/public/retained-runtime-test-report.md), [GPU prototype checks](docs/public/gpu-prototype-test-report.md), [requirements](docs/public/requirements.md)
 - [Dependency audit](docs/public/dependencies.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
 - [Spreadsheet](docs/public/spreadsheets.md), [PDF documents/viewer](docs/public/pdf.md), [printing and reports](docs/public/printing-and-reports.md)
+- [Report Designer and Dashboard](docs/public/composition.md): `--report-designer`, `--dashboard`.
+- [Media](docs/public/media.md): `--media`, optional `--media-file PATH`.
 
 Supported profiles and remaining limits are documented for each component.
 Grid presentations include bounded grouping, summaries, card views and related

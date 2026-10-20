@@ -1,10 +1,15 @@
 //! Retained controls, themes, commands, and an adaptive Ribbon.
 
 pub mod barcode;
+mod composition_ui;
+pub mod dashboard;
+mod definition_codec;
+pub mod media;
 pub mod page_viewer;
 pub mod pdf;
 pub mod planning;
 pub mod printing;
+pub mod report_designer;
 pub mod reports;
 pub mod rich_document;
 pub mod rich_editor;

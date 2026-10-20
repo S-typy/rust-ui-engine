@@ -8,6 +8,7 @@ mod dialogs;
 mod host;
 mod ime;
 mod input;
+pub mod media;
 mod modality;
 mod multi;
 mod multi_host;
