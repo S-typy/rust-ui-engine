@@ -831,6 +831,30 @@ mod tests {
         .unwrap();
     }
     #[test]
+    fn capture_loss_rolls_back_document_and_late_focus_action_is_harmless() {
+        let (mut ui, id) = fixture();
+        let b = ui.runtime.bounds(id).unwrap();
+        let start = Point::new(b.x + 80.0, b.y + 60.0);
+        down(&mut ui, start);
+        ui.dispatch(InputEvent::PointerMoved {
+            position: Point::new(start.x + 30.0, start.y + 10.0),
+        })
+        .unwrap();
+        ui.cancel_pointer_interaction().unwrap();
+        let SpatialCanvasModel::Diagram(d) = ui.spatial_model(id).unwrap() else {
+            panic!()
+        };
+        assert_eq!(d.graph().nodes[0].bounds.x, 40.0);
+        assert!(!d.can_undo());
+        assert!(ui.runtime.captured().is_none());
+        ui.dispatch(InputEvent::WindowFocused(false)).unwrap();
+        ui.perform_action(id, SemanticAction::Focus, None).unwrap();
+        assert!(ui.runtime.focused().is_none());
+        ui.dispatch(InputEvent::WindowFocused(true)).unwrap();
+        ui.perform_action(id, SemanticAction::Focus, None).unwrap();
+        assert_eq!(ui.runtime.focused(), Some(id));
+    }
+    #[test]
     fn retained_drag_one_undo_escape_restore_and_disable_release() {
         let (mut ui, id) = fixture();
         let b = ui.runtime.bounds(id).unwrap();

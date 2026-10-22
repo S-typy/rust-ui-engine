@@ -96,7 +96,8 @@ impl Accessibility {
             let widget = semantic.id;
             let id = self.widgets[&widget];
             let status = (semantic.role == ControlRole::Label
-                && view.find_name("Status") == Some(widget))
+                && (view.find_name("Status") == Some(widget)
+                    || view.find_name("SpatialStatus") == Some(widget)))
                 || ui.notification_message(widget);
             let mut node = Node::new(if status {
                 Role::Status
@@ -117,6 +118,11 @@ impl Accessibility {
                 node.set_value(node.label().unwrap_or_default().to_owned());
             }
             node.set_bounds(bounds(semantic.bounds, scale));
+            if let Some(summary) = ui.spatial_semantic_value(widget) {
+                // Canvas state belongs in the accessible name as well as value:
+                // Windows Narrator does not consistently read a Group's value.
+                node.set_label(format!("{}. {summary}", node.label().unwrap_or_default()));
+            }
             if status {
                 node.set_live(accesskit::Live::Polite);
             } else if semantic.role == ControlRole::StatusBar {

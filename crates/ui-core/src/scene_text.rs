@@ -134,6 +134,7 @@ pub enum DrawCommand {
     Image(usize),
     Rectangle(usize),
     RoundedRectangle(usize),
+    Ellipse(usize),
     StrokePath(usize),
     Text(usize),
 }

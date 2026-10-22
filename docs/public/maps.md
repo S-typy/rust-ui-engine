@@ -63,3 +63,8 @@ without cancelling a live pan gesture. Other application replacements use the
 atomic `edit_spatial` API. The current renderer draws polylines and point
 markers; polygon fills, geographic labels collision management, clustering and
 external network adapters are not included.
+
+Escape, capture loss and window focus loss cancel a live pan; completed tile
+resources remain cached. The canvas accessible name includes zoom, selection,
+tile availability and attribution. The example's synchronized list provides
+full marker coordinates for keyboard navigation and Windows Narrator.

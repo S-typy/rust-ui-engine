@@ -141,10 +141,35 @@ impl RoundedRect {
     }
 }
 
+/// An axis-aligned analytic ellipse, with an optional inset border.
+/// The rectangular clip does not change the ellipse geometry.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ellipse {
+    pub bounds: Rect,
+    pub clip: Rect,
+    pub stroke_width: Option<f32>,
+    pub color: Color,
+}
+impl Ellipse {
+    pub fn is_valid(self) -> bool {
+        self.bounds.width > 0.0
+            && self.bounds.height > 0.0
+            && RoundedRect {
+                bounds: self.bounds,
+                clip: self.clip,
+                radius: 0.0,
+                stroke_width: self.stroke_width,
+                color: self.color,
+            }
+            .is_valid()
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Scene {
     pub rectangles: Vec<SolidRect>,
     pub rounded_rectangles: Vec<RoundedRect>,
+    pub ellipses: Vec<Ellipse>,
     pub stroke_paths: Vec<StrokePath>,
     pub texts: Vec<TextRun>,
     pub images: Vec<ImagePrimitive>,
@@ -153,6 +178,26 @@ pub struct Scene {
 }
 
 impl Scene {
+    /// Add an antialiased ellipse in painter order. `None` fills; `Some(width)`
+    /// draws an inset ring between two concentric ellipses. Invalid geometry,
+    /// zero-width strokes and fully clipped primitives are ignored.
+    pub fn ellipse(&mut self, bounds: Rect, clip: Rect, stroke_width: Option<f32>, color: Color) {
+        if stroke_width.is_some_and(|w| !w.is_finite() || w <= 0.0) {
+            return;
+        }
+        let item = Ellipse {
+            bounds,
+            clip,
+            color,
+            stroke_width: stroke_width.map(|w| w.min(bounds.width.min(bounds.height) * 0.5)),
+        };
+        if item.is_valid() && bounds.intersection(clip).is_some() {
+            self.commands
+                .push(DrawCommand::Ellipse(self.ellipses.len()));
+            self.ellipses.push(item);
+        }
+    }
+
     /// Add a bounded union of straight, round-ended strokes in painter order.
     /// Overlapping segments blend once, including joins and crossings. Geometry
     /// stays unchanged under the rectangular clip. Invalid/empty/over-capacity
@@ -281,6 +326,7 @@ impl Scene {
     pub fn clear(&mut self) {
         self.rectangles.clear();
         self.rounded_rectangles.clear();
+        self.ellipses.clear();
         self.stroke_paths.clear();
         self.texts.clear();
         self.text_spans.clear();
@@ -291,6 +337,8 @@ impl Scene {
     pub fn append(&mut self, other: &Scene) {
         let rectangles = self.rectangles.len();
         let rounded_rectangles = self.rounded_rectangles.len();
+        let ellipses = self.ellipses.len();
+        self.ellipses.extend_from_slice(&other.ellipses);
         let stroke_paths = self.stroke_paths.len();
         let texts = self.texts.len();
         let images = self.images.len();
@@ -312,6 +360,7 @@ impl Scene {
                 DrawCommand::RoundedRectangle(index) => {
                     DrawCommand::RoundedRectangle(rounded_rectangles + index)
                 }
+                DrawCommand::Ellipse(index) => DrawCommand::Ellipse(ellipses + index),
                 DrawCommand::StrokePath(index) => DrawCommand::StrokePath(stroke_paths + index),
                 DrawCommand::Text(index) => DrawCommand::Text(texts + index),
                 DrawCommand::Image(index) => DrawCommand::Image(images + index),
@@ -322,6 +371,43 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ellipse_keeps_geometry_clip_order_and_atomic_transforms() {
+        let bounds = Rect::new(10.0, 20.0, 100.0, 40.0);
+        let clip = Rect::new(30.0, 0.0, 200.0, 200.0);
+        let mut scene = Scene::default();
+        scene.ellipse(bounds, clip, None, Color::rgb(10, 20, 30));
+        scene.ellipse(bounds, clip, Some(2.0), Color::rgb(0, 0, 0));
+        let mut target = Scene::default();
+        target
+            .append_transformed_view(
+                &scene,
+                Point::new(3.0, 4.0),
+                2.0,
+                Rect::new(0.0, 0.0, 400.0, 400.0),
+            )
+            .unwrap();
+        assert_eq!(
+            target.ellipses[0].bounds,
+            Rect::new(23.0, 44.0, 200.0, 80.0)
+        );
+        assert_eq!(target.ellipses[0].clip.x, 63.0);
+        assert_eq!(target.ellipses[1].stroke_width, Some(4.0));
+        assert_eq!(
+            target.commands(),
+            [DrawCommand::Ellipse(0), DrawCommand::Ellipse(1)]
+        );
+        let before = target.clone();
+        scene.ellipses[1].bounds.width = f32::NAN;
+        assert!(target.append_view(&scene, Point::ZERO, clip).is_err());
+        assert_eq!(target, before);
+        target.clear();
+        for width in [0.0, -1.0, f32::NAN] {
+            target.ellipse(bounds, clip, Some(width), Color::rgb(0, 0, 0));
+        }
+        assert!(target.ellipses.is_empty() && target.commands().is_empty());
+    }
 
     #[test]
     fn geometry_is_half_open() {

@@ -45,6 +45,7 @@ impl PrintDocument {
                 let valid = match *command {
                     DrawCommand::Rectangle(i) => i < page.scene.rectangles.len(),
                     DrawCommand::RoundedRectangle(i) => i < page.scene.rounded_rectangles.len(),
+                    DrawCommand::Ellipse(i) => i < page.scene.ellipses.len(),
                     DrawCommand::StrokePath(i) => i < page.scene.stroke_paths.len(),
                     DrawCommand::Image(i) => i < page.scene.images.len(),
                     DrawCommand::Text(i) => page.scene.texts.get(i).is_some_and(|r| {
@@ -67,6 +68,7 @@ impl PrintDocument {
                     .any(|r| !r.is_valid() || r.sensitive)
                 || page.scene.images.iter().any(|r| !r.is_valid())
                 || page.scene.stroke_paths.iter().any(|r| !r.is_valid())
+                || page.scene.ellipses.iter().any(|r| !r.is_valid())
                 || page.scene.rounded_rectangles.iter().any(|r| !r.is_valid())
             {
                 return Err(PageError("Invalid page geometry or protected text".into()));
@@ -136,6 +138,17 @@ pub fn transform_page(
                     out.rounded_stroke(rect(r.bounds), c, r.radius * scale, w * scale, r.color);
                 } else {
                     out.rounded_fill(rect(r.bounds), c, r.radius * scale, r.color);
+                }
+            }
+            DrawCommand::Ellipse(i) => {
+                let r = &source.ellipses[i];
+                if let Some(c) = rect(r.clip).intersection(clip) {
+                    out.ellipse(
+                        rect(r.bounds),
+                        c,
+                        r.stroke_width.map(|w| w * scale),
+                        r.color,
+                    );
                 }
             }
             DrawCommand::StrokePath(i) => {

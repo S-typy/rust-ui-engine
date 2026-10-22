@@ -322,6 +322,11 @@ fn draw(dc: HDC, scene: &Scene, command: DrawCommand, scale: Point) -> Result<()
                         return Err(native("LineTo"));
                     }
                 }
+                DrawCommand::Ellipse(_) => {
+                    return Err(PrintError::Invalid(
+                        "ellipse vector printing is not supported".into(),
+                    ));
+                }
                 DrawCommand::Image(i) => draw_image(dc, &scene.images[i], scale)?,
                 DrawCommand::Text(_) => return Err(PrintError::Invalid("unprepared text".into())),
             }

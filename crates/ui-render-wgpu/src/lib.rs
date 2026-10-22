@@ -79,10 +79,30 @@ fn rounded_coverage(position: vec2<f32>, shape: vec4<f32>, radius: f32) -> f32 {
     return clamp(0.5 - distance, 0.0, 1.0);
 }
 
+// Implicit ellipse distance divided by its gradient gives pixel-sized AA.
+// Normalize first, so highly eccentric shapes never square physical coordinates.
+fn ellipse_coverage(position: vec2<f32>, shape: vec4<f32>) -> f32 {
+    let q = (position - shape.xy) / shape.zw;
+    let k = length(q);
+    if k < 0.000001 { return 1.0; }
+    let gradient = length(q / shape.zw) / k;
+    return clamp(0.5 - (k - 1.0) / max(gradient, 0.00000001), 0.0, 1.0);
+}
+
 @fragment
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     // Negative radius marks an ordinary rectangle; negative stroke width is a
     // rounded fill. Clipping the raster quad never changes the original shape.
+    if input.radius == -2.0 {
+        var coverage = ellipse_coverage(input.position.xy, input.shape);
+        if input.stroke_width >= 0.0 {
+            let inner = input.shape.zw - vec2(input.stroke_width);
+            if min(inner.x, inner.y) > 0.0 {
+                coverage = max(coverage - ellipse_coverage(input.position.xy, vec4(input.shape.xy, inner)), 0.0);
+            }
+        }
+        return vec4(input.color.rgb, input.color.a * coverage);
+    }
     if input.radius < 0.0 {
         return input.color;
     }
@@ -431,6 +451,26 @@ fn rounded_instance(rectangle: &RoundedRect, scale: f32, viewport: Rect) -> Rect
     }
 }
 
+fn ellipse_instance(
+    item: &rust_desktop_ui_core::Ellipse,
+    scale: f32,
+    viewport: Rect,
+) -> RectInstance {
+    let mut instance = rounded_instance(
+        &RoundedRect {
+            bounds: item.bounds,
+            clip: item.clip,
+            radius: 0.0,
+            stroke_width: item.stroke_width,
+            color: item.color,
+        },
+        scale,
+        viewport,
+    );
+    instance.radius = -2.0;
+    instance
+}
+
 // Scene's typed arrays are public for inspection. Validate them again at the
 // backend boundary because direct mutation can bypass Scene::fill/text.
 fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
@@ -438,6 +478,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
         .rectangles
         .len()
         .checked_add(scene.rounded_rectangles.len())
+        .and_then(|count| count.checked_add(scene.ellipses.len()))
         .and_then(|count| count.checked_add(scene.stroke_paths.len()))
         .and_then(|count| count.checked_add(scene.images.len()))
         .ok_or(GpuError::InvalidScene)?;
@@ -450,19 +491,22 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
     }
     let (mut rectangle, mut rounded_rectangle, mut stroke_path, mut text, mut image) =
         (0, 0, 0, 0, 0);
+    let mut ellipse = 0;
     for command in scene.commands() {
         match *command {
             DrawCommand::Rectangle(index) if index == rectangle => rectangle += 1,
             DrawCommand::RoundedRectangle(index) if index == rounded_rectangle => {
                 rounded_rectangle += 1;
             }
+            DrawCommand::Ellipse(index) if index == ellipse => ellipse += 1,
             DrawCommand::Text(index) if index == text => text += 1,
             DrawCommand::StrokePath(index) if index == stroke_path => stroke_path += 1,
             DrawCommand::Image(index) if index == image => image += 1,
             _ => return Err(GpuError::InvalidScene),
         }
     }
-    if rectangle != scene.rectangles.len()
+    if ellipse != scene.ellipses.len()
+        || rectangle != scene.rectangles.len()
         || rounded_rectangle != scene.rounded_rectangles.len()
         || stroke_path != scene.stroke_paths.len()
         || text != scene.texts.len()
@@ -480,6 +524,17 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
             ]
             .into_iter()
             .any(|channel| !channel.is_finite() || !(0.0..=1.0).contains(&channel))
+        {
+            return Err(GpuError::InvalidScene);
+        }
+    }
+    for item in &scene.ellipses {
+        let physical = physical_rect(item.bounds, scale).ok_or(GpuError::InvalidScene)?;
+        if !item.is_valid()
+            || physical.width <= 0.0
+            || physical.height <= 0.0
+            || physical_rect(item.clip, scale).is_none()
+            || item.stroke_width.is_some_and(|w| !(w * scale).is_finite())
         {
             return Err(GpuError::InvalidScene);
         }
@@ -534,6 +589,7 @@ enum DrawBatch {
     Image(u32),
     Rectangles(Range<u32>),
     RoundedRectangles(Range<u32>),
+    Ellipses(Range<u32>),
     StrokePaths(Range<u32>),
     Text(Range<u32>),
 }
@@ -569,6 +625,17 @@ fn next_batch(
                 end = end.checked_add(1).ok_or(GpuError::InvalidScene)?;
             }
             DrawBatch::RoundedRectangles(
+                u32::try_from(start).map_err(|_| GpuError::InvalidScene)?
+                    ..u32::try_from(end).map_err(|_| GpuError::InvalidScene)?,
+            )
+        }
+        DrawCommand::Ellipse(start) => {
+            let mut end = start.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            while commands.peek() == Some(&DrawCommand::Ellipse(end)) {
+                commands.next();
+                end = end.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            }
+            DrawBatch::Ellipses(
                 u32::try_from(start).map_err(|_| GpuError::InvalidScene)?
                     ..u32::try_from(end).map_err(|_| GpuError::InvalidScene)?,
             )
@@ -1006,6 +1073,12 @@ impl GpuRenderer {
                 .iter()
                 .map(|rectangle| rounded_instance(rectangle, scale_factor, viewport)),
         );
+        instances.extend(
+            scene
+                .ellipses
+                .iter()
+                .map(|item| ellipse_instance(item, scale_factor, viewport)),
+        );
         let dimensions = ViewportUniform {
             dimensions: [self.config.width as f32, self.config.height as f32],
             padding: [0.0; 2],
@@ -1059,6 +1132,14 @@ impl GpuRenderer {
                     }
                     DrawBatch::RoundedRectangles(range) => {
                         let offset = scene.rectangles.len() as u32;
+                        pass.set_pipeline(&self.pipeline);
+                        pass.set_vertex_buffer(0, self.rectangles_buffer.slice(..));
+                        pass.draw(0..6, range.start + offset..range.end + offset);
+                        draw_calls += 1;
+                    }
+                    DrawBatch::Ellipses(range) => {
+                        let offset =
+                            (scene.rectangles.len() + scene.rounded_rectangles.len()) as u32;
                         pass.set_pipeline(&self.pipeline);
                         pass.set_vertex_buffer(0, self.rectangles_buffer.slice(..));
                         pass.draw(0..6, range.start + offset..range.end + offset);
@@ -1284,12 +1365,12 @@ mod tests {
         );
         let (device, queue) =
             block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).unwrap();
-        let dimensions = [128_u32, 64_u32];
+        let dimensions = [128_u32, 128_u32];
         let viewport = Rect::new(0.0, 0.0, dimensions[0] as f32, dimensions[1] as f32);
         let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stroke-test-viewport"),
             contents: bytemuck::bytes_of(&ViewportUniform {
-                dimensions: [128.0, 64.0],
+                dimensions: [128.0, 128.0],
                 padding: [0.0; 2],
             }),
             usage: wgpu::BufferUsages::UNIFORM,
@@ -1402,11 +1483,38 @@ mod tests {
             Color::rgb(255, 255, 0),
         );
         check_scene(&scene, 1.0).unwrap();
-        let instances: Vec<_> = scene
+        scene.ellipse(
+            Rect::new(4.0, 72.0, 56.0, 24.0),
+            Rect::new(0.0, 64.0, 128.0, 64.0),
+            None,
+            Color {
+                a: 0.5,
+                ..Color::rgb(255, 255, 255)
+            },
+        );
+        scene.ellipse(
+            Rect::new(68.0, 72.0, 56.0, 24.0),
+            Rect::new(0.0, 64.0, 128.0, 64.0),
+            Some(3.0),
+            Color::rgb(255, 0, 0),
+        );
+        scene.ellipse(
+            Rect::new(4.0, 104.0, 56.0, 20.0),
+            Rect::new(32.0, 100.0, 28.0, 28.0),
+            None,
+            Color::rgb(0, 255, 0),
+        );
+        let mut instances: Vec<_> = scene
             .rounded_rectangles
             .iter()
             .map(|rectangle| rounded_instance(rectangle, 1.0, viewport))
             .collect();
+        instances.extend(
+            scene
+                .ellipses
+                .iter()
+                .map(|item| ellipse_instance(item, 1.0, Rect::new(0.0, 0.0, 128.0, 128.0))),
+        );
         let vertices = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stroke-test-instances"),
             contents: bytemuck::cast_slice(&instances),
@@ -1513,6 +1621,29 @@ mod tests {
             ("square interior", 48, 48, [0, 0, 0, 255]),
             ("huge ring interior", 80, 48, [0, 0, 0, 255]),
             ("huge full-width stroke", 112, 48, [255, 255, 0, 255]),
+            ("ellipse half-alpha center", 32, 84, [188, 188, 188, 255]),
+            (
+                "ellipse continuous interior upper",
+                32,
+                80,
+                [188, 188, 188, 255],
+            ),
+            (
+                "ellipse continuous interior lower",
+                32,
+                87,
+                [188, 188, 188, 255],
+            ),
+            ("ellipse excludes bounding corner", 5, 73, [0, 0, 0, 255]),
+            ("ellipse ring transparent center", 96, 84, [0, 0, 0, 255]),
+            ("ellipse ring border", 96, 73, [255, 0, 0, 255]),
+            ("ellipse clip removes left half", 20, 114, [0, 0, 0, 255]),
+            (
+                "ellipse clip retains original geometry",
+                44,
+                114,
+                [0, 255, 0, 255],
+            ),
         ] {
             let offset = (y * dimensions[0] as usize + x) * 4;
             let actual = &data[offset..offset + 4];

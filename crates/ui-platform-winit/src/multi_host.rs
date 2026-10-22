@@ -1067,6 +1067,19 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
                 AccessibilityWindowEvent::ActionRequested(request)
                     if !state.modal_blocked && state.accessible_nodes.permits(&request) =>
                 {
+                    if request.action == accesskit::Action::Focus {
+                        if !desktop::accessibility_focus(&state.window) {
+                            return Ok(false);
+                        }
+                        if !state.focused {
+                            state.focused = true;
+                            state.dispatch(
+                                app,
+                                clipboard,
+                                PlatformEvent::Input(InputEvent::WindowFocused(true)),
+                            )?;
+                        }
+                    }
                     state.dispatch(app, clipboard, PlatformEvent::Accessibility(request))
                 }
                 AccessibilityWindowEvent::AccessibilityDeactivated => {

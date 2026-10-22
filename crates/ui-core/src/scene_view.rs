@@ -86,6 +86,23 @@ impl Scene {
                         }
                     }
                 }
+                DrawCommand::Ellipse(index) => {
+                    let item = source
+                        .ellipses
+                        .get(index)
+                        .ok_or("Invalid ellipse reference")?;
+                    if !item.is_valid() {
+                        return Err("Invalid scene ellipse");
+                    }
+                    let bounds = translate(item.bounds)?;
+                    let width = item.stroke_width.map(|w| w * scale);
+                    if width.is_some_and(|w| !w.is_finite() || w <= 0.0) {
+                        return Err("Scene ellipse overflow");
+                    }
+                    if let Some(clip) = translate(item.clip)?.intersection(clip) {
+                        view.ellipse(bounds, clip, width, item.color);
+                    }
+                }
                 DrawCommand::StrokePath(index) => {
                     let item = source
                         .stroke_paths

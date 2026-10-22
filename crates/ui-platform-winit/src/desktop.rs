@@ -151,6 +151,17 @@ pub(crate) struct CaptureObserver {
     native: windows::CaptureObserver,
 }
 
+/// A UIA focus request must acquire actual native client focus before the
+/// retained tree accepts it. Foreground activation alone can leave focus null
+/// on Windows (for example after a background window was activated by a tool).
+pub(crate) fn accessibility_focus(window: &Window) -> bool {
+    window.focus_window();
+    #[cfg(target_os = "windows")]
+    return windows::accessibility_focus(window);
+    #[cfg(not(target_os = "windows"))]
+    window.has_focus()
+}
+
 impl CaptureObserver {
     pub(crate) fn pointer_position(
         &self,
@@ -356,6 +367,25 @@ mod windows {
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 
     const SUBCLASS_ID: usize = 0x5255_4950;
+
+    pub(super) fn accessibility_focus(window: &Window) -> bool {
+        use windows_sys::Win32::UI::{
+            Input::KeyboardAndMouse::{GetFocus, SetFocus},
+            WindowsAndMessaging::GetForegroundWindow,
+        };
+        let Ok(handle) = hwnd(window) else {
+            return false;
+        };
+        // SAFETY: this live window belongs to this event thread. Never take
+        // client focus while another process owns the foreground window.
+        unsafe {
+            if GetForegroundWindow() != handle {
+                return false;
+            }
+            SetFocus(handle);
+            GetFocus() == handle
+        }
+    }
 
     fn hwnd(window: &Window) -> Result<HWND, String> {
         let handle = window.window_handle().map_err(|error| error.to_string())?;

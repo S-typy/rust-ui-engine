@@ -99,6 +99,10 @@ pub fn prepare_for_printer(
                     let p = &page.scene.stroke_paths[i];
                     scene.stroke_path(&p.segments, p.clip, p.width, p.color);
                 }
+                DrawCommand::Ellipse(i) => {
+                    let r = &page.scene.ellipses[i];
+                    scene.ellipse(r.bounds, r.clip, r.stroke_width, r.color);
+                }
                 DrawCommand::Image(i) => scene.image(page.scene.images[i].clone()),
             }
             if cancelled() {
@@ -269,6 +273,9 @@ fn page_content(
                     ]);
                 }
                 operations.extend([op("S", vec![]), op("Q", vec![])]);
+            }
+            DrawCommand::Ellipse(_) => {
+                return Err(PdfError::Unsupported("ellipse vector export".into()));
             }
             DrawCommand::Image(i) => emit_image(
                 doc,

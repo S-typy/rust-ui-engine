@@ -586,6 +586,22 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
             AccessibilityWindowEvent::ActionRequested(request)
                 if self.accessible_nodes.permits(&request) =>
             {
+                if request.action == accesskit::Action::Focus {
+                    if !self
+                        .window
+                        .as_ref()
+                        .is_some_and(|w| desktop::accessibility_focus(w))
+                    {
+                        return;
+                    }
+                    if !self.focused {
+                        self.focused = true;
+                        self.dispatch(
+                            event_loop,
+                            PlatformEvent::Input(InputEvent::WindowFocused(true)),
+                        );
+                    }
+                }
                 self.dispatch(event_loop, PlatformEvent::Accessibility(request));
             }
             AccessibilityWindowEvent::AccessibilityDeactivated => self.accessible_nodes.clear(),

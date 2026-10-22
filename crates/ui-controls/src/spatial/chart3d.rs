@@ -186,6 +186,25 @@ impl Chart3D {
             light: Vec3::new(-0.4, 0.8, 0.5),
         })
     }
+    /// Atomically replace data while retaining camera, lighting and selection
+    /// by identity. A missing/null selected point clears selection. Rejected
+    /// coordinates leave both document and view unchanged.
+    pub fn replace_data(
+        &mut self,
+        base: ChartModel,
+        z: impl IntoIterator<Item = (ChartPointKey, f64)>,
+    ) -> Result<(), SpatialError> {
+        let mut candidate = Self::new(base, z)?;
+        candidate.camera = self.camera;
+        candidate.light = self.light;
+        candidate.select(self.selected().filter(|key| candidate.z.contains_key(key)))?;
+        *self = candidate;
+        Ok(())
+    }
+    /// Accepted Z coordinates, keyed by stable series/point identity.
+    pub fn z_values(&self) -> impl Iterator<Item = (ChartPointKey, f64)> + '_ {
+        self.z.iter().map(|(key, value)| (*key, *value))
+    }
     pub fn data(&self) -> &ChartModel {
         &self.base
     }
@@ -421,6 +440,40 @@ impl Chart3D {
 mod tests {
     use super::*;
     use crate::{ChartPoint, ChartSeries, ChartSettings};
+    #[test]
+    fn replacement_preserves_camera_light_selection_and_rejects_bad_z_atomically() {
+        let mut chart = model();
+        let key = ChartPointKey {
+            series: 1,
+            point: 2,
+        };
+        let selected = Some(key);
+        chart.select(selected).unwrap();
+        chart.orbit(0.7, -0.2).unwrap();
+        chart.set_light(Vec3::new(1.0, 0.0, 0.0)).unwrap();
+        let before = chart.clone();
+        assert!(
+            chart
+                .replace_data(before.data().clone(), [(key, f64::NAN)])
+                .is_err()
+        );
+        assert_eq!(chart.camera(), before.camera());
+        assert_eq!(chart.selected(), selected);
+        chart
+            .replace_data(before.data().clone(), before.z_values())
+            .unwrap();
+        assert_eq!(chart.camera(), before.camera());
+        assert_eq!(chart.light, before.light);
+        assert_eq!(chart.selected(), selected);
+        chart
+            .replace_data(
+                ChartModel::new(vec![], ChartSettings::default()).unwrap(),
+                [],
+            )
+            .unwrap();
+        assert_eq!(chart.selected(), None);
+        assert_eq!(chart.camera(), before.camera());
+    }
     fn model() -> Chart3D {
         let base = ChartModel::new(
             vec![ChartSeries {

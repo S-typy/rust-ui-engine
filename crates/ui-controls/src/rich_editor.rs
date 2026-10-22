@@ -854,6 +854,15 @@ fn transform_scene(source: &Scene, scale: f32, x: f32, y: f32) -> Result<Scene, 
                 image.clip = rect(image.clip);
                 out.image(image);
             }
+            DrawCommand::Ellipse(i) => {
+                let r = &source.ellipses[i];
+                out.ellipse(
+                    rect(r.bounds),
+                    rect(r.clip),
+                    r.stroke_width.map(|w| w * scale),
+                    r.color,
+                );
+            }
             DrawCommand::StrokePath(_) => {}
         }
     }

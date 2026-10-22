@@ -39,6 +39,18 @@ coordinates; applications can inspect the resulting routes for obstructions.
 Large/invalid resulting coordinates are rejected atomically. Selection and
 business meaning of nodes belong to the application.
 
+`fit_to_view(viewport, padding)` centres all node bounds with logical padding
+without changing the graph, selection or undo history. Empty graphs reset the
+view. Zoom accepts 0.000001…8; fitting never enlarges above 1. The example fits
+after layout and while resizing in fit mode. Manual pan/zoom exits fit mode;
+«Вписать схему» restores it. A 500-node example exercises layout, virtualized
+record navigation and explicit JSON save/restore.
+
+Ellipses use an analytic GPU fill and inset ring, preserving their geometry
+under clipping. Small overview nodes omit unreadable labels; full labels and
+connections remain available in the adjacent data list. At zoom below 0.5,
+connector captions are also omitted from the overview.
+
 Primary click selects a node; Shift+click toggles membership in the selection.
 Dragging selected nodes moves the set. The bottom-right handle resizes one
 node. Middle/right drag and dragging empty canvas pan. Arrows move selected
@@ -55,9 +67,8 @@ Viewport, selection, history and WidgetId values are not serialized.
 
 Bounds: 1024 nodes, 4096 connectors, 512 UTF-8 bytes per label, coordinates
 within ±1,000,000, node width 32…8192 and height 24…8192 logical pixels, zoom
-0.1…8, and an 8 MiB JSON input limit. Text and strokes use existing GPU Scene
-commands. Ellipse interiors use a bounded geometric strip approximation and
-their contours use 64 line segments.
+0.000001…8, and an 8 MiB JSON input limit. Text, strokes and analytic ellipses
+use GPU Scene commands.
 
 `table` exposes node labels, positions and connection descriptions. The example
 offers a synchronized keyboard-accessible ListBox beside the canvas; the canvas

@@ -243,13 +243,50 @@ impl Diagram {
             || pan.x.abs() > 1e7
             || pan.y.abs() > 1e7
             || !zoom.is_finite()
-            || !(0.1..=8.0).contains(&zoom)
+            || !(0.000001..=8.0).contains(&zoom)
         {
             return Err(SpatialError::InvalidCoordinate);
         }
         self.pan = pan;
         self.zoom = zoom;
         Ok(())
+    }
+    /// Center all node bounds inside the viewport, keeping logical padding.
+    /// Selection, graph and history are unchanged. Empty graphs reset the view.
+    /// Call again after layout/resize when the host is in fit mode; explicit
+    /// pan/zoom can leave fit mode without changing document state.
+    pub fn fit_to_view(&mut self, viewport: Rect, padding: f32) -> Result<(), SpatialError> {
+        valid_viewport(viewport)?;
+        if !padding.is_finite()
+            || padding < 0.0
+            || padding * 2.0 >= viewport.width.min(viewport.height)
+        {
+            return Err(SpatialError::InvalidRange);
+        }
+        if self.graph.nodes.is_empty() {
+            return self.set_view(Point::ZERO, 1.0);
+        }
+        let mut left = f32::INFINITY;
+        let mut top = f32::INFINITY;
+        let mut right = f32::NEG_INFINITY;
+        let mut bottom = f32::NEG_INFINITY;
+        for node in &self.graph.nodes {
+            let r = node.bounds;
+            left = left.min(r.x);
+            top = top.min(r.y);
+            right = right.max(r.x + r.width);
+            bottom = bottom.max(r.y + r.height);
+        }
+        let zoom = ((viewport.width - 2.0 * padding) / (right - left))
+            .min((viewport.height - 2.0 * padding) / (bottom - top))
+            .clamp(0.000001, 1.0);
+        self.set_view(
+            Point::new(
+                (viewport.width - (right - left) * zoom) * 0.5 - left * zoom,
+                (viewport.height - (bottom - top) * zoom) * 0.5 - top * zoom,
+            ),
+            zoom,
+        )
     }
     pub fn world_point(&self, p: Point, b: Rect) -> Point {
         Point::new(
@@ -269,7 +306,7 @@ impl Diagram {
             return Err(SpatialError::InvalidRange);
         }
         let world = self.world_point(anchor, b);
-        let zoom = (self.zoom * factor).clamp(0.1, 8.0);
+        let zoom = (self.zoom * factor).clamp(0.000001, 8.0);
         self.set_view(
             Point::new(
                 anchor.x - b.x - world.x * zoom,
@@ -870,7 +907,9 @@ impl Diagram {
             } else {
                 e.label.clone()
             };
-            if let Some(bounds) = self.connector_label_bounds(&route, b, &caption) {
+            if self.zoom >= 0.5
+                && let Some(bounds) = self.connector_label_bounds(&route, b, &caption)
+            {
                 label(scene, &caption, bounds, clip, color, 11.0);
             }
         }
@@ -896,19 +935,21 @@ impl Diagram {
                 scene.rounded_fill(r, clip, radius, p.surface);
                 scene.rounded_stroke(r, clip, radius, 1.0, p.border);
             }
-            label(
-                scene,
-                &n.label,
-                Rect::new(
-                    r.x + 8.0,
-                    r.y + (r.height - 22.0) * 0.5,
-                    (r.width - 16.0).max(0.0),
-                    22.0,
-                ),
-                clip,
-                p.foreground,
-                (13.0 * self.zoom).clamp(8.0, 26.0),
-            );
+            if r.width >= 48.0 && r.height >= 24.0 {
+                label(
+                    scene,
+                    &n.label,
+                    Rect::new(
+                        r.x + 8.0,
+                        r.y + (r.height - 22.0) * 0.5,
+                        (r.width - 16.0).max(0.0),
+                        22.0,
+                    ),
+                    r.intersection(clip).unwrap(),
+                    p.foreground,
+                    (13.0 * self.zoom).clamp(8.0, 26.0),
+                );
+            }
             if self.selected.contains(&n.id) {
                 scene.rounded_stroke(r, clip, 2.0, 2.0, p.accent);
                 for port in [
@@ -952,48 +993,67 @@ fn segment_distance(p: Point, a: Point, b: Point) -> f32 {
     )
 }
 fn paint_ellipse(scene: &mut Scene, r: Rect, clip: Rect, fill: Color, border: Color) {
-    // A bounded union of horizontal strips produces the same ellipse equation
-    // as hit testing. The renderer performs rasterization; no CPU bitmap exists.
-    let steps = (r.height.ceil() as usize).clamp(8, 256);
-    let step = r.height / steps as f32;
-    for i in 0..steps {
-        let y = -1.0 + (i as f32 + 0.5) * 2.0 / steps as f32;
-        let half = r.width * 0.5 * (1.0 - y * y).max(0.0).sqrt();
-        scene.rounded_fill(
-            Rect::new(
-                r.x + r.width * 0.5 - half,
-                r.y + i as f32 * step,
-                half * 2.0,
-                step + 0.05,
-            ),
-            clip,
-            0.0,
-            fill,
-        );
-    }
-    for i in 0..64 {
-        let a = i as f32 * std::f32::consts::TAU / 64.0;
-        let b = (i + 1) as f32 * std::f32::consts::TAU / 64.0;
-        line(
-            scene,
-            Point::new(
-                r.x + r.width * (0.5 + 0.5 * a.cos()),
-                r.y + r.height * (0.5 + 0.5 * a.sin()),
-            ),
-            Point::new(
-                r.x + r.width * (0.5 + 0.5 * b.cos()),
-                r.y + r.height * (0.5 + 0.5 * b.sin()),
-            ),
-            clip,
-            1.0,
-            border,
-        );
-    }
+    scene.ellipse(r, clip, None, fill);
+    scene.ellipse(r, clip, Some(1.0), border);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fit_large_graph_preserves_document_history_and_centers_extents() {
+        let nodes = (0..500)
+            .map(|i| {
+                node(
+                    i,
+                    -50000.0 + i as f32 * 180.0,
+                    -3000.0 + (i % 20) as f32 * 100.0,
+                )
+            })
+            .collect();
+        let mut diagram = Diagram::new(DiagramGraph {
+            nodes,
+            connectors: vec![],
+        })
+        .unwrap();
+        diagram.select([499]).unwrap();
+        let before = diagram.to_json().unwrap();
+        for b in [
+            Rect::new(30.0, 40.0, 640.0, 400.0),
+            Rect::new(10.0, 10.0, 230.0, 150.0),
+        ] {
+            diagram.fit_to_view(b, 20.0).unwrap();
+            for n in &diagram.graph().nodes {
+                let start = diagram.screen_point(Point::new(n.bounds.x, n.bounds.y), b);
+                let end = diagram.screen_point(
+                    Point::new(n.bounds.x + n.bounds.width, n.bounds.y + n.bounds.height),
+                    b,
+                );
+                assert!(
+                    start.x >= b.x + 19.9
+                        && start.y >= b.y + 19.9
+                        && end.x <= b.x + b.width - 19.9
+                        && end.y <= b.y + b.height - 19.9
+                );
+            }
+            assert_eq!(
+                diagram.selected().iter().copied().collect::<Vec<_>>(),
+                [499]
+            );
+            assert!(!diagram.can_undo());
+        }
+        assert_eq!(
+            diagram.graph(),
+            Diagram::from_json(&before).unwrap().graph()
+        );
+        let pan = diagram.pan_offset();
+        assert!(
+            diagram
+                .fit_to_view(Rect::new(0.0, 0.0, 20.0, 20.0), 20.0)
+                .is_err()
+        );
+        assert_eq!(diagram.pan_offset(), pan);
+    }
     fn node(id: u64, x: f32, y: f32) -> DiagramNode {
         DiagramNode {
             id,

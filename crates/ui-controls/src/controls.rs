@@ -2600,6 +2600,7 @@ impl Controls {
     /// levels, editor drafts, accepted values and IME composition remain intact.
     /// The next update repaints cleared hover, pressed and tooltip feedback.
     pub fn cancel_pointer_interaction(&mut self) -> Result<(), ControlError> {
+        self.cancel_spatial_interaction()?;
         self.cancel_image_gesture()?;
         self.cancel_chart_interaction()?;
         self.cancel_editor_scroll()?;
@@ -4521,7 +4522,13 @@ impl Controls {
             return Ok(());
         }
         match action {
-            SemanticAction::Focus => self.runtime.apply(Mutation::Focus(Some(id)))?,
+            SemanticAction::Focus => {
+                // An accessibility action can outlive native focus loss.
+                if !self.window_focused {
+                    return Ok(());
+                }
+                self.runtime.apply(Mutation::Focus(Some(id)))?;
+            }
             SemanticAction::Activate | SemanticAction::Toggle => self.activate(id)?,
             SemanticAction::Expand if self.expander_expanded(id).is_some() => {
                 self.set_expander_expanded(id, true)?;
@@ -4927,6 +4934,13 @@ fn append_clipped(target: &mut Scene, source: &Scene, clip: Rect) {
                             rounded.color,
                         );
                     }
+                }
+            }
+            rust_desktop_ui_core::DrawCommand::Ellipse(index) => {
+                if let Some(item) = source.ellipses.get(index)
+                    && let Some(effective) = item.clip.intersection(clip)
+                {
+                    target.ellipse(item.bounds, effective, item.stroke_width, item.color);
                 }
             }
             rust_desktop_ui_core::DrawCommand::StrokePath(index) => {

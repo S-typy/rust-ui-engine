@@ -4087,6 +4087,7 @@ dependencies = [
  "rust-desktop-ui-text",
  "rust-desktop-ui-treegrid",
  "rust-desktop-ui-xaml",
+ "serde_json",
 ]
 
 [[package]]

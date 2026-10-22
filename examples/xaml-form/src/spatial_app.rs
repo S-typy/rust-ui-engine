@@ -4,7 +4,7 @@ use rust_desktop_ui_controls::spatial::*;
 use rust_desktop_ui_controls::{
     ChartModel, ChartPoint, ChartPointKey, ChartSeries, ChartSettings, ListItemTemplate,
     ListItemTextSource, ListTemplateKind, ListTemplateNode, SelectionItem, SelectionSettings,
-    SpatialCanvasModel, TextStyle,
+    SpatialCanvasModel, SpatialChangeKind, TextStyle,
 };
 use rust_desktop_ui_core::{Bitmap, LayoutStyle, Length, Point, Scene, Size, WidgetId};
 use rust_desktop_ui_platform_winit::{
@@ -32,6 +32,8 @@ pub(crate) struct SpatialDemo {
     missing: bool,
     diagnostics: bool,
     last: String,
+    fit_diagram: bool,
+    fitted_size: Option<Size>,
 }
 fn err(e: impl ToString) -> String {
     e.to_string()
@@ -197,6 +199,8 @@ impl SpatialDemo {
     pub(crate) fn preview_action(&mut self, index: u32) -> Result<(), String> {
         let count = if self.kind == SpatialDemoKind::Chart3D {
             8
+        } else if self.kind == SpatialDemoKind::Diagram {
+            12
         } else {
             10
         };
@@ -335,6 +339,8 @@ impl SpatialDemo {
                     "Сохранить",
                     "Восстановить",
                     "Сброс",
+                    "Вписать схему",
+                    "Большая схема",
                 ],
             ),
         };
@@ -386,6 +392,8 @@ impl SpatialDemo {
             missing: false,
             diagnostics,
             last: String::new(),
+            fit_diagram: true,
+            fitted_size: None,
         };
         app.refresh()?;
         Ok(app)
@@ -395,6 +403,10 @@ impl SpatialDemo {
             || (self.kind != SpatialDemoKind::Chart3D && index == 9)
         {
             let next = fixture(self.kind, 0)?;
+            self.generation = 0;
+            self.missing = false;
+            self.fit_diagram = true;
+            self.fitted_size = None;
             self.form
                 .ui
                 .edit_spatial(self.canvas, |m| {
@@ -406,11 +418,15 @@ impl SpatialDemo {
         }
         if self.kind == SpatialDemoKind::Chart3D && index == 6 {
             self.generation += 1;
-            let next = fixture(self.kind, self.generation)?;
+            let SpatialCanvasModel::Chart3D(next) = fixture(self.kind, self.generation)? else {
+                unreachable!()
+            };
             self.form
                 .ui
                 .edit_spatial(self.canvas, |m| {
-                    *m = next;
+                    if let SpatialCanvasModel::Chart3D(current) = m {
+                        current.replace_data(next.data().clone(), next.z_values())?;
+                    }
                     Ok(())
                 })
                 .map_err(err)?;
@@ -421,6 +437,54 @@ impl SpatialDemo {
             {
                 self.saved = Some(d.to_json().map_err(err)?);
             }
+            return Ok(());
+        }
+        if self.kind == SpatialDemoKind::Diagram && [3, 10, 11].contains(&index) {
+            self.fit_diagram = true;
+            self.fitted_size = None;
+        }
+        if self.kind == SpatialDemoKind::Diagram && index == 11 {
+            let nodes = (0..500)
+                .map(|i| DiagramNode {
+                    id: i + 1,
+                    label: format!("Узел {}", i + 1),
+                    shape: if i % 3 == 0 {
+                        DiagramShape::Ellipse
+                    } else {
+                        DiagramShape::RoundedRectangle
+                    },
+                    bounds: DiagramRect::new(
+                        (i % 25) as f32 * 180.0,
+                        (i / 25) as f32 * 110.0,
+                        140.0,
+                        64.0,
+                    ),
+                    locked: false,
+                })
+                .collect();
+            let connectors = (1..500)
+                .filter(|i| i % 25 != 0)
+                .map(|i| DiagramConnector {
+                    id: i,
+                    from: DiagramEndpoint {
+                        node: i,
+                        port: DiagramPort::East,
+                    },
+                    to: DiagramEndpoint {
+                        node: i + 1,
+                        port: DiagramPort::West,
+                    },
+                    label: String::new(),
+                })
+                .collect();
+            let next = Diagram::new(DiagramGraph { nodes, connectors }).map_err(err)?;
+            self.form
+                .ui
+                .edit_spatial(self.canvas, |m| {
+                    *m = SpatialCanvasModel::Diagram(next);
+                    Ok(())
+                })
+                .map_err(err)?;
             return Ok(());
         }
         let saved = self.saved.clone();
@@ -692,7 +756,15 @@ impl SpatialDemo {
             .ui
             .set_label(self.form.find_name("SpatialStatus").unwrap(), &summary)
             .map_err(err)?;
-        self.form.ui.take_spatial_changes();
+        if self
+            .form
+            .ui
+            .take_spatial_changes()
+            .iter()
+            .any(|change| change.id == self.canvas && change.kind == SpatialChangeKind::View)
+        {
+            self.fit_diagram = false;
+        }
         Ok(())
     }
     fn offline_tiles(&mut self) -> Result<(), String> {
@@ -739,6 +811,24 @@ impl DesktopApp for SpatialDemo {
     fn update(&mut self, size: Size, scale: f32) -> Result<(), String> {
         self.refresh()?;
         self.form.update(size, scale)?;
+        if self.kind == SpatialDemoKind::Diagram
+            && self.fit_diagram
+            && let Some(bounds) = self.form.ui.runtime.bounds(self.canvas)
+        {
+            let next_size = Size::new(bounds.width, bounds.height);
+            if self.fitted_size != Some(next_size) && bounds.width > 48.0 && bounds.height > 48.0 {
+                self.form
+                    .ui
+                    .edit_spatial(self.canvas, |m| {
+                        if let SpatialCanvasModel::Diagram(d) = m {
+                            d.fit_to_view(bounds, 20.0)?;
+                        }
+                        Ok(())
+                    })
+                    .map_err(err)?;
+                self.fitted_size = Some(next_size);
+            }
+        }
         self.offline_tiles()?;
         self.refresh()?;
         self.form.update(size, scale)?;
@@ -749,18 +839,41 @@ impl DesktopApp for SpatialDemo {
                 self.form.ui.spatial_model(self.canvas).unwrap().summary(),
                 self.preview_description()
             );
-            if self.last != text {
+            let text = format!(
+                "{text} bounds={:?} focus={:?}",
+                self.form.ui.runtime.bounds(self.canvas),
+                self.form.ui.runtime.focused()
+            );
+            let b = self.form.ui.runtime.bounds(self.canvas).unwrap();
+            let details = match self.form.ui.spatial_model(self.canvas).unwrap() {
+                SpatialCanvasModel::Chart3D(c) => {
+                    serde_json::json!({"kind":"chart3d", "camera":format!("{:?}", c.camera()), "selected":c.selected().map(|k|format!("{}:{}",k.series,k.point)),
+                        "points": c.geometry(b).map_err(err)?.points.iter().map(|p|serde_json::json!({"key":format!("{}:{}",p.key.series,p.key.point),"center":[p.center.x,p.center.y],"radius":p.radius})).collect::<Vec<_>>() })
+                }
+                SpatialCanvasModel::Map(m) => {
+                    serde_json::json!({"kind":"map","center":[m.center().longitude,m.center().latitude],"zoom":m.zoom(),"selected":m.selected(),"diagnostics":format!("{:?}",m.diagnostics()),"markers":m.markers().iter().map(|marker|{let p=m.screen_point(marker.position,b).unwrap();serde_json::json!({"id":marker.id,"center":[p.x,p.y]})}).collect::<Vec<_>>()})
+                }
+                SpatialCanvasModel::Diagram(d) => {
+                    serde_json::json!({"kind":"diagram","count":d.graph().nodes.len(),"edges":d.graph().connectors.len(),"zoom":d.zoom(),"pan":[d.pan_offset().x,d.pan_offset().y],"selected":d.selected(),"undo":d.can_undo(),"redo":d.can_redo(),"readonly":d.is_read_only(),"nodes":d.graph().nodes.iter().take(12).map(|n|{let p=d.screen_point(Point::new(n.bounds.x,n.bounds.y),b);serde_json::json!({"id":n.id,"world":[n.bounds.x,n.bounds.y,n.bounds.width,n.bounds.height],"bounds":[p.x,p.y,n.bounds.width*d.zoom(),n.bounds.height*d.zoom()]})}).collect::<Vec<_>>() })
+                }
+            };
+            let frame_key = format!("{text} {details}");
+            if self.last != frame_key {
                 println!("{text}");
+                println!("spatial-details {details}");
                 println!(
                     "batch-state {}",
                     crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view)
                 );
-                self.last = text;
+                self.last = frame_key;
             }
         }
         Ok(())
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
+        if self.diagnostics {
+            println!("spatial-input {event:?}");
+        }
         let mut result = self.form.event(event)?;
         self.refresh()?;
         result.redraw = true;
@@ -792,6 +905,70 @@ impl DesktopApp for SpatialDemo {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn updates_theme_and_dpi_preserve_spatial_identity_and_accepted_state() {
+        for kind in [
+            SpatialDemoKind::Chart3D,
+            SpatialDemoKind::Map,
+            SpatialDemoKind::Diagram,
+        ] {
+            let mut app =
+                SpatialDemo::new(crate::generated_spatial::window_definition(), false, kind)
+                    .unwrap();
+            app.update(Size::new(1200.0, 820.0), 1.0).unwrap();
+            let canvas = app.canvas;
+            app.form
+                .ui
+                .edit_spatial(canvas, |model| {
+                    match model {
+                        SpatialCanvasModel::Chart3D(c) => {
+                            c.select(Some(ChartPointKey {
+                                series: 1,
+                                point: 2,
+                            }))?;
+                            c.orbit(0.7, 0.2)?;
+                        }
+                        SpatialCanvasModel::Map(m) => {
+                            m.select(Some(2))?;
+                            m.pan(Point::new(20.0, 10.0))?;
+                        }
+                        SpatialCanvasModel::Diagram(d) => {
+                            d.select([2])?;
+                            d.edit(DiagramEdit::Move {
+                                nodes: vec![2],
+                                delta: Point::new(12.0, 8.0),
+                            })?;
+                        }
+                    }
+                    Ok(())
+                })
+                .unwrap();
+            let selected = app.form.ui.spatial_model(canvas).unwrap().summary();
+            for (theme, scale) in [
+                (rust_desktop_ui_controls::Theme::FluentDark, 1.5),
+                (rust_desktop_ui_controls::Theme::FluentLight, 2.0),
+            ] {
+                app.form.ui.set_theme(theme).unwrap();
+                app.update(Size::new(950.0, 720.0), scale).unwrap();
+                assert_eq!(app.canvas, canvas);
+                assert_eq!(
+                    app.form.ui.spatial_model(canvas).unwrap().summary(),
+                    selected
+                );
+            }
+            if let SpatialCanvasModel::Chart3D(c) = app.form.ui.spatial_model(canvas).unwrap() {
+                let camera = c.camera();
+                let selected = c.selected();
+                app.action(6).unwrap();
+                let SpatialCanvasModel::Chart3D(c) = app.form.ui.spatial_model(canvas).unwrap()
+                else {
+                    panic!()
+                };
+                assert_eq!(c.camera(), camera);
+                assert_eq!(c.selected(), selected);
+            }
+        }
+    }
     #[test]
     fn fixtures_share_complete_table_identity_and_serialization() {
         for kind in [

@@ -5,6 +5,11 @@ canvas. X/Y values, series labels, stable point keys and selection reuse the
 chart model. Each non-null point additionally requires exactly one finite Z
 value. Duplicate, missing and unknown Z keys fail before construction.
 
+`replace_data(base, z)` validates a replacement atomically while preserving
+camera, lighting and the selected stable key. A removed or null selected point
+clears selection; invalid replacement data leaves the whole model unchanged.
+`z_values()` exposes accepted keyed coordinates for application transformations.
+
 ```rust
 use rust_desktop_ui_controls::{ChartModel, ChartPoint, ChartPointKey, ChartSeries, ChartSettings};
 use rust_desktop_ui_controls::spatial::Chart3D;
@@ -45,7 +50,9 @@ points, with Series/Point/X/Y/Z columns. The example presents these records in
 a keyboard-accessible ListBox and synchronizes its selection with the canvas.
 The visible rows use compact coordinates rounded to two decimal places; the
 selectable row's accessible name retains every field and its original precision.
-The canvas accessible value describes the selected point. This alternative is
+The canvas accessible name and value describe the selected point. The example's
+status announces accepted selection changes, and its list supports keyboard
+navigation with Windows Narrator running. This alternative is
 a list of descriptive records; it does not introduce a native Grid/Table
 accessibility provider.
 
