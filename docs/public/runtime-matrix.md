@@ -40,8 +40,10 @@ Vulkan на NVIDIA GeForce RTX 3090: `wake-smoke` подтвердил worker no
 обновление Observable → Bindings/Grid, два GPU Present и освобождение подписок
 после закрытия окна, без polling timer. Пассивные UI Automation проверки
 Controls/Groups/Data и три снимка прошли; missing glyphs=0, scale=1.5.
-Снимки просмотрены. Native Grid предоставляет SelectionPattern, но текущий
-AccessKit adapter не предоставляет GridPattern/GridItemPattern.
+Снимки просмотрены. В этом запуске native Grid предоставлял SelectionPattern,
+а исходный AccessKit adapter не предоставлял GridPattern/GridItemPattern.
+Позднейшее расширение описано в [ADR-015](adr/ADR-015-windows-table-accessibility.md);
+оно не меняет результаты исторической оконной проверки.
 
 Настоящий системный ввод Windows через SendInput: 32 проверки PASS.
 Подтверждены click/focus, Unicode, Enter/Escape, Ctrl+A/Z/Y, Tab/Shift+Tab,

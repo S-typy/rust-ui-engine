@@ -25,6 +25,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[path = "accessibility_sheet.rs"]
+mod sheet_accessibility;
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum OutputMode {
     Spreadsheet,
@@ -64,6 +67,7 @@ pub(crate) struct OutputDemo {
     waker: Option<platform::AppWaker>,
     diagnostics: bool,
     last: String,
+    sheet_accessible: sheet_accessibility::SheetAccessibility,
 }
 fn err(e: impl ToString) -> String {
     e.to_string()
@@ -217,6 +221,7 @@ impl OutputDemo {
             waker: None,
             diagnostics,
             last: String::new(),
+            sheet_accessible: Default::default(),
         })
     }
     fn message(&mut self, message: impl AsRef<str>) -> Result<(), String> {
@@ -415,6 +420,7 @@ impl OutputDemo {
                             )?;
                         } else {
                             s.replace_workbook(&mut self.form.ui, book).map_err(err)?;
+                            self.sheet_accessible.clear();
                             self.message(format!("XLSX открыт. {}", diagnostics.join("; ")))?;
                         }
                     }
@@ -515,7 +521,15 @@ impl DesktopApp for OutputDemo {
                     self.form.ui.tick(Instant::now()).map_err(err)?;
                 }
                 PlatformEvent::Accessibility(request) => {
-                    self.form.accessible.action(&mut self.form.ui, request)?
+                    let handled = if let View::Sheet(sheet) = &mut self.view {
+                        self.sheet_accessible
+                            .action(sheet, &mut self.form.ui, &request)?
+                    } else {
+                        false
+                    };
+                    if !handled {
+                        self.form.accessible.action(&mut self.form.ui, request)?;
+                    }
                 }
             }
             self.actions()?;
@@ -612,7 +626,20 @@ impl DesktopApp for OutputDemo {
         }
     }
     fn accessibility(&mut self, scale: f32) -> accesskit::TreeUpdate {
-        self.form.accessibility(scale)
+        let mut tree = self.form.accessibility(scale);
+        if let View::Sheet(sheet) = &self.view
+            && let Err(error) = self.sheet_accessible.project(
+                sheet,
+                &self.form.ui,
+                &mut self.form.accessible,
+                &mut tree,
+                scale,
+            )
+        {
+            self.sheet_accessible.clear();
+            eprintln!("Worksheet accessibility: {error}");
+        }
+        tree
     }
     fn pointer_capture_lost(&mut self) -> Result<EventResponse, String> {
         self.form.pointer_capture_lost()
@@ -947,6 +974,100 @@ mod tests {
             unreachable!()
         };
         assert_eq!(sheet.session().entry(), "Товар");
+    }
+
+    #[test]
+    fn spreadsheet_accessibility_merged_cells_headers_selection_and_draft_without_window() {
+        use accesskit::{Action, ActionRequest, Role, TreeId};
+        let mut app = OutputDemo::new(
+            crate::generated_output::window_definition(),
+            false,
+            OutputMode::Spreadsheet,
+        )
+        .unwrap();
+        let address = |s| CellAddress::parse(s).unwrap();
+        let mut book = Workbook::new("Accessible sheet").unwrap();
+        book.apply(&[WorkbookEdit::Merge {
+            sheet: 0,
+            range: CellRange::new(address("A1"), address("B2")).unwrap(),
+        }])
+        .unwrap();
+        let View::Sheet(sheet) = &mut app.view else {
+            unreachable!()
+        };
+        sheet.replace_workbook(&mut app.form.ui, book).unwrap();
+        let formula = sheet.parts.formula;
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        let tree = app.accessibility(1.0);
+        platform::AccessibilitySnapshot::default()
+            .update(tree.clone())
+            .unwrap();
+        let grid = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == Role::Grid)
+            .unwrap();
+        assert_eq!(grid.1.row_count(), Some(MAX_ROWS as usize));
+        assert_eq!(grid.1.column_count(), Some(MAX_COLUMNS as usize));
+        let find = |tree: &accesskit::TreeUpdate, r, c| {
+            tree.nodes
+                .iter()
+                .find(|(_, n)| {
+                    n.role() == Role::Cell
+                        && n.row_index() == Some(r)
+                        && n.column_index() == Some(c)
+                })
+                .unwrap()
+                .0
+        };
+        let merged = find(&tree, 0, 0);
+        let target = find(&tree, 2, 2);
+        let node = &tree.nodes.iter().find(|(id, _)| *id == merged).unwrap().1;
+        assert_eq!((node.row_span(), node.column_span()), (Some(2), Some(2)));
+        assert!(!tree.nodes.iter().any(|(_, n)| n.role() == Role::Cell
+            && n.row_index() == Some(1)
+            && n.column_index() == Some(1)));
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.role() == Role::ColumnHeader && n.label() == Some("C"))
+        );
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.role() == Role::RowHeader && n.label() == Some("3"))
+        );
+        assert!(tree.nodes.len() < 7000);
+        let request = |target| {
+            PlatformEvent::Accessibility(ActionRequest {
+                action: Action::Focus,
+                target_tree: TreeId::ROOT,
+                target_node: target,
+                data: None,
+            })
+        };
+        app.event(request(target)).unwrap();
+        let View::Sheet(sheet) = &app.view else {
+            unreachable!()
+        };
+        assert_eq!(sheet.session().active(), address("C3"));
+        assert_eq!(find(&app.accessibility(1.0), 2, 2), target);
+        app.form.ui.set_text(formula, "pending formula").unwrap();
+        app.event(request(merged)).unwrap();
+        let View::Sheet(sheet) = &app.view else {
+            unreachable!()
+        };
+        assert_eq!(sheet.session().active(), address("C3"));
+        assert_eq!(
+            app.form.ui.document(formula).unwrap().text(),
+            "pending formula"
+        );
+        app.update(Size::new(900.0, 650.0), 1.5).unwrap();
+        let smaller = app.accessibility(1.5);
+        assert_eq!(find(&smaller, 0, 0), merged);
+        platform::AccessibilitySnapshot::default()
+            .update(smaller)
+            .unwrap();
     }
     #[test]
     fn viewer_rejects_stale_load_and_navigation_does_not_recreate_text_editor() {

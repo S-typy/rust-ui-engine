@@ -1,5 +1,6 @@
 [workspace]
 resolver = "3"
+exclude = ["vendor/accesskit_windows"]
 members = [
     "crates/ui-core",
     "crates/ui-layout",
@@ -47,3 +48,6 @@ lopdf = { version = "=0.45.0", default-features = false }
 [profile.release]
 lto = "thin"
 codegen-units = 1
+
+[patch.crates-io]
+accesskit_windows = { path = "vendor/accesskit_windows" }

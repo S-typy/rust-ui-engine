@@ -123,10 +123,14 @@ AccessKit. Доступны выделение, фокус, readonly и ошиб
 сохраняет собственную семантику. Проверка проекции в тестах не означает
 проверку настоящим экранным диктором.
 
-Windows-адаптер `accesskit_windows` версии 0.35.1 предоставляет для DataGrid
-`SelectionPattern`, но не `GridPattern` и `GridItemPattern`. Row/Cell и их индексы
-есть в дереве AccessKit, однако получение ячейки по координатам через эти
-UI Automation patterns пока недоступно.
+Windows-адаптер предоставляет `SelectionPattern`, `GridPattern`, `GridItemPattern`,
+`TablePattern` и `TableItemPattern`. Размеры, координаты, spans и заголовки читаются
+из текущего снимка. `GetItem(row, column)` возвращает подготовленную ячейку;
+для ещё не подготовленной виртуальной области возвращается
+`UIA_E_ELEMENTNOTAVAILABLE`, без прокрутки и создания всего набора строк.
+Прямые COM-тесты проверяют эти интерфейсы без окна. Реальная навигация диктором
+и реализация VirtualizedItem/ItemContainer остаются открытыми.
+Контракт и происхождение адаптера — [ADR-015](adr/ADR-015-windows-table-accessibility.md).
 
 Для native `Cell` значение отображается как read-only `ValuePattern`, даже если
 поле допускает изменение. Описание доступной редактируемой ячейки подсказывает

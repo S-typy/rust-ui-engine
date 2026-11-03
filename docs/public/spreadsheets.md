@@ -35,9 +35,13 @@ The viewport draws only visible cells, with fixed column widths/row heights,
 bold/italic text, wrapping, foreground/background and merged geometry.
 Drag selection, a fill handle, adjustable column widths, full number-format
 presentation and direct in-cell editing are not implemented. The formula editor
-uses the shared accessible text control; the cell canvas does not yet expose
-a Windows UIA Grid/Table provider. Native keyboard, IME, clipboard and screen
-reader acceptance remains outstanding.
+uses the shared accessible text control. `Spreadsheet::semantics` supplies bounded
+visible cells, merged spans, logical counts, row/column headers and selection.
+The example projects this snapshot through the common Windows UIA Grid/Table
+provider. Accessible selection preserves a pending formula draft or IME composition.
+An unmaterialized cell returns ELEMENTNOTAVAILABLE; queries do not scroll or
+materialize the full sheet. Native keyboard, IME, clipboard and screen-reader
+acceptance remains outstanding. See [the table accessibility contract](adr/ADR-015-windows-table-accessibility.md).
 
 These are Rust composition APIs. There is no `<Spreadsheet>` compiled-XAML
 element yet; the example mounts it inside a compiled XAML host.

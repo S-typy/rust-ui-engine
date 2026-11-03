@@ -7,6 +7,9 @@ use rust_desktop_ui_data::{
 };
 use std::collections::BTreeSet;
 
+mod semantics;
+pub use semantics::{SpreadsheetCell, SpreadsheetHeader, SpreadsheetSemantics};
+
 const HEADER: f32 = 28.0;
 const ROW: f32 = 28.0;
 const COLUMN: f32 = 112.0;

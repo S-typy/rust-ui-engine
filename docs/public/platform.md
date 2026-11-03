@@ -66,9 +66,12 @@ Native action допускается только для существующе�
 объявлений и навигации реальным экранным диктором.
 
 Набор нативных UI Automation patterns зависит от платформенного адаптера.
-В используемом `accesskit_windows` 0.35.1 DataGrid предоставляет SelectionPattern,
-но не GridPattern/GridItemPattern; наличие виртуальных Row/Cell в AccessKit
-не добавляет эти patterns. Подробнее — [доступность GridControl](grid-control.md#доступность-и-границы).
+Локальное расширение `accesskit_windows` 0.35.1 добавляет Grid/GridItem и
+Table/TableItem к существующему SelectionPattern. Размеры, spans, заголовки и
+подготовленные ячейки доступны через COM; реализация виртуальных ячеек вне
+снимка и реальная навигация диктором ещё требуют отдельной работы и приёмки.
+Подробнее — [доступность GridControl](grid-control.md#доступность-и-границы)
+и [ADR-015](adr/ADR-015-windows-table-accessibility.md).
 
 ## Минимальное приложение с текстом
 

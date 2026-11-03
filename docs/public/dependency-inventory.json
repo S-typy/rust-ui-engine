@@ -1,11 +1,11 @@
 {
   "schema_version": 1,
-  "review_date": "2026-10-20",
-  "cargo_lock_sha256": "fa1dc1cc03a3fd3dd3932e59851a6b93d850f7b23339868545a476ccb41e3e39",
-  "scope": "All resolved registry packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
+  "review_date": "2026-11-03",
+  "cargo_lock_sha256": "87bd52a243742c57e8d16cdaa73e60a68e57edc9dd0972bd74875bffad17ee79",
+  "scope": "All resolved registry packages and reviewed vendor/ path packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
   "features_scope": "Resolution features reported by cargo metadata for all targets; verify actual compilation features with cargo tree for the selected package and target.",
   "license_scope": "Manifest SPDX declarations, package license/notice file hashes and selected exact-revision upstream evidence. Not a line-by-line copyright or binary redistribution clearance.",
-  "registry_package_count": 423,
+  "registry_package_count": 422,
   "packages": [
     {
       "license_files": [],
@@ -525,101 +525,6 @@
         },
         {
           "package": "zbus@5.19.0",
-          "kinds": [
-            {
-              "kind": null,
-              "target": null
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "license_files": [],
-      "upstream_license_evidence": [
-        {
-          "path": "LICENSE-APACHE",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE",
-          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
-        },
-        {
-          "path": "LICENSE-MIT",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT",
-          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
-        },
-        {
-          "path": "LICENSE.chromium",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium",
-          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
-        },
-        {
-          "path": "AUTHORS",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS",
-          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
-        }
-      ],
-      "source_revision": "ce8164ba92995cfa86005b6259115e08c8244253",
-      "path_in_source_repository": "adapters/windows",
-      "native_source_or_archive_files": [],
-      "name": "accesskit_windows",
-      "version": "0.35.1",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "checksum": "ce63f35d6bdcf59f26b76b3379063f738e6412cef46999cc772d46aa3de35adb",
-      "repository": "https://github.com/AccessKit/accesskit",
-      "license_declared": "MIT OR Apache-2.0",
-      "license_spdx": "MIT OR Apache-2.0",
-      "rust_version_declared": "1.87",
-      "features_all_targets": [],
-      "links": null,
-      "build_scripts": [],
-      "dependencies": [
-        {
-          "package": "accesskit@0.25.1",
-          "kinds": [
-            {
-              "kind": null,
-              "target": null
-            }
-          ]
-        },
-        {
-          "package": "accesskit_consumer@0.39.1",
-          "kinds": [
-            {
-              "kind": null,
-              "target": null
-            }
-          ]
-        },
-        {
-          "package": "hashbrown@0.17.1",
-          "kinds": [
-            {
-              "kind": null,
-              "target": null
-            }
-          ]
-        },
-        {
-          "package": "static_assertions@1.1.0",
-          "kinds": [
-            {
-              "kind": null,
-              "target": null
-            }
-          ]
-        },
-        {
-          "package": "windows-core@0.62.2",
-          "kinds": [
-            {
-              "kind": null,
-              "target": null
-            }
-          ]
-        },
-        {
-          "package": "windows@0.62.2",
           "kinds": [
             {
               "kind": null,
@@ -24422,6 +24327,328 @@
         },
         {
           "package": "winnow@1.0.4",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "vendored_package_count": 1,
+  "vendored_packages": [
+    {
+      "name": "accesskit_windows",
+      "version": "0.35.1",
+      "source": "path",
+      "relative_path": "vendor/accesskit_windows",
+      "repository": "https://github.com/AccessKit/accesskit",
+      "license_declared": "MIT OR Apache-2.0",
+      "license_spdx": "MIT OR Apache-2.0",
+      "license_files": [],
+      "upstream_license_evidence": [
+        {
+          "path": "LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        },
+        {
+          "path": "LICENSE.chromium",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+        },
+        {
+          "path": "AUTHORS",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS",
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
+        }
+      ],
+      "upstream_package_evidence": {
+        "license_files": [],
+        "upstream_license_evidence": [
+          {
+            "path": "LICENSE-APACHE",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE",
+            "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+          },
+          {
+            "path": "LICENSE-MIT",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT",
+            "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+          },
+          {
+            "path": "LICENSE.chromium",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium",
+            "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+          },
+          {
+            "path": "AUTHORS",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS",
+            "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
+          }
+        ],
+        "source_revision": "ce8164ba92995cfa86005b6259115e08c8244253",
+        "path_in_source_repository": "adapters/windows",
+        "native_source_or_archive_files": [],
+        "name": "accesskit_windows",
+        "version": "0.35.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "ce63f35d6bdcf59f26b76b3379063f738e6412cef46999cc772d46aa3de35adb",
+        "repository": "https://github.com/AccessKit/accesskit",
+        "license_declared": "MIT OR Apache-2.0",
+        "license_spdx": "MIT OR Apache-2.0",
+        "rust_version_declared": "1.87",
+        "features_all_targets": [],
+        "links": null,
+        "build_scripts": [],
+        "dependencies": [
+          {
+            "package": "accesskit@0.25.1",
+            "kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "package": "accesskit_consumer@0.39.1",
+            "kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "package": "hashbrown@0.17.1",
+            "kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "package": "static_assertions@1.1.0",
+            "kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "package": "windows-core@0.62.2",
+            "kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          },
+          {
+            "package": "windows@0.62.2",
+            "kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      "provenance": {
+        "source_revision": "ce8164ba92995cfa86005b6259115e08c8244253",
+        "path_in_source_repository": "adapters/windows",
+        "notice": {
+          "path": "BACKPORT.md",
+          "sha256": "d2eb77554a4240a05a6df4aad53405139f16309089791428b8e27b9632290287"
+        }
+      },
+      "file_count": 24,
+      "total_bytes": 251299,
+      "files": [
+        {
+          "path": ".cargo_vcs_info.json",
+          "bytes": 110,
+          "sha256": "907209c630130bd8cc6225facfac28e5e95f2a4ca8e36b933922c5e060eecd96"
+        },
+        {
+          "path": "AUTHORS",
+          "bytes": 346,
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
+        },
+        {
+          "path": "BACKPORT.md",
+          "bytes": 1695,
+          "sha256": "d2eb77554a4240a05a6df4aad53405139f16309089791428b8e27b9632290287"
+        },
+        {
+          "path": "Cargo.lock",
+          "bytes": 50059,
+          "sha256": "09836190f45b5af9d8fd933e876717af5fda9eefb69b87cf60f4d89dfd32125d"
+        },
+        {
+          "path": "Cargo.toml",
+          "bytes": 1973,
+          "sha256": "c054f68241f033daf9bd5086d44ce310d672d94a234c23c5ae2566a8796059f4"
+        },
+        {
+          "path": "Cargo.toml.orig",
+          "bytes": 1204,
+          "sha256": "4db3a53d14e8c55d858ef911e5952f4be053024c719599b735967e4c8e40a381"
+        },
+        {
+          "path": "LICENSE-APACHE",
+          "bytes": 9723,
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "bytes": 1023,
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        },
+        {
+          "path": "LICENSE.chromium",
+          "bytes": 1559,
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+        },
+        {
+          "path": "README.md",
+          "bytes": 172,
+          "sha256": "622db8e92d711b64279a91e25ae9345959c82bb4d47157dbf5c3a6a53f80f6d6"
+        },
+        {
+          "path": "src/adapter.rs",
+          "bytes": 26726,
+          "sha256": "f4342311058a86cb67aa7526bce5f874dddf11c9295c160591b46781387a6376"
+        },
+        {
+          "path": "src/context.rs",
+          "bytes": 3062,
+          "sha256": "c03df25bdec7f70c0b2fd90ea5308d9dc27032bec73005ac57712d33f12e6a73"
+        },
+        {
+          "path": "src/filters.rs",
+          "bytes": 356,
+          "sha256": "744374b547065b153123c80028f129f5c6bb53052660205e1a2f231c3e169f64"
+        },
+        {
+          "path": "src/lib.rs",
+          "bytes": 501,
+          "sha256": "8a6f20ed5354c9834d88a59091c764f65aa31359f81c57386fe06e9d806e9396"
+        },
+        {
+          "path": "src/node/grid/tests.rs",
+          "bytes": 9789,
+          "sha256": "f3b6952724657ea005dc7d6248bfd11d1f721473836fecad42b47f2fbe6426b3"
+        },
+        {
+          "path": "src/node/grid.rs",
+          "bytes": 15418,
+          "sha256": "b0077a565fa668e1996a53b6fc34bb3bf3ddf7b4285e4a514b410e6842be6f7c"
+        },
+        {
+          "path": "src/node.rs",
+          "bytes": 58800,
+          "sha256": "4cff23c62b8e1a575afd43030f550801b943fc3963f2120e144adb1c69e54bba"
+        },
+        {
+          "path": "src/subclass.rs",
+          "bytes": 6721,
+          "sha256": "69bb742d5451f2cff1c2110e77782948cb751aaad3302c5b1453ebf8b3d20a9e"
+        },
+        {
+          "path": "src/tests/mod.rs",
+          "bytes": 11724,
+          "sha256": "de33703d001a741529e6248c5165a5f3effa1115d1ef2db6f115adcc45ca5d04"
+        },
+        {
+          "path": "src/tests/simple.rs",
+          "bytes": 6907,
+          "sha256": "828c3c036bebb9113cb289dd033d6163345c8e746015f4b15fc80fdfc2b5479f"
+        },
+        {
+          "path": "src/tests/subclassed.rs",
+          "bytes": 5483,
+          "sha256": "065da83e1db3e53ccbade3eff8bbbb4891d23085a3a4ac308c513de24d8df80d"
+        },
+        {
+          "path": "src/text.rs",
+          "bytes": 22508,
+          "sha256": "7f2493b559f0b04884e201d897981a3cce47b2c571863d37ffddb1bb695e5c55"
+        },
+        {
+          "path": "src/util.rs",
+          "bytes": 14687,
+          "sha256": "9a8eda748e568ea480d7bc5d406d868f4ca0fd245ed18557707d219d43ddcd9a"
+        },
+        {
+          "path": "src/window_handle.rs",
+          "bytes": 753,
+          "sha256": "dec1d78c81784a18c50f066e89d57d0fe02a7c9199a11e47a0833f8b9113d8c2"
+        }
+      ],
+      "rust_version_declared": "1.87",
+      "features_all_targets": [],
+      "links": null,
+      "build_scripts": [],
+      "dependencies": [
+        {
+          "package": "accesskit@0.25.1",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "accesskit_consumer@0.39.1",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "hashbrown@0.17.1",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "static_assertions@1.1.0",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "windows-core@0.62.2",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        },
+        {
+          "package": "windows@0.62.2",
           "kinds": [
             {
               "kind": null,

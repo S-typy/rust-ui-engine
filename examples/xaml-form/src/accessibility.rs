@@ -59,6 +59,15 @@ impl Accessibility {
         self.widgets.get(&widget).copied()
     }
 
+    pub(crate) fn allocate_virtual_id(&mut self) -> NodeId {
+        let id = NodeId(self.next);
+        self.next = self
+            .next
+            .checked_add(1)
+            .expect("accessibility identity exhausted");
+        id
+    }
+
     pub(crate) fn tree(
         &mut self,
         ui: &Controls,
