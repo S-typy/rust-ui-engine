@@ -27,6 +27,9 @@ enum Action {
     Shift(i64),
     Resize(i64),
     Select(GanttTaskId),
+    Zoom(f64),
+    Pan(f64),
+    Fit,
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct GanttBar {
@@ -58,6 +61,8 @@ pub struct GanttControl {
     commands: Vec<CommandId>,
     bars: BTreeMap<GanttTaskId, (WidgetId, CommandId)>,
     geometry: Vec<GanttBar>,
+    time_zoom: f64,
+    time_offset: f64,
 }
 fn nodes(plan: &GanttPlan) -> Vec<TreeNode> {
     plan.tree_order()
@@ -115,6 +120,11 @@ impl GanttControl {
             ("+1 час", Action::Shift(3600)),
             ("Короче", Action::Resize(-3600)),
             ("Дольше", Action::Resize(3600)),
+            ("Масштаб +", Action::Zoom(2.0)),
+            ("Масштаб −", Action::Zoom(0.5)),
+            ("Влево", Action::Pan(-0.25)),
+            ("Вправо", Action::Pan(0.25)),
+            ("Весь проект", Action::Fit),
         ]
         .into_iter()
         .enumerate()
@@ -229,6 +239,7 @@ impl GanttControl {
                 ..Default::default()
             },
         )?;
+        arrange_planner(ui, container, &[toolbar, body, editor, status], 1)?;
         set_visible(ui, editor, false)?;
         Ok(Self {
             container,
@@ -251,10 +262,47 @@ impl GanttControl {
             commands,
             bars: BTreeMap::new(),
             geometry: Vec::new(),
+            time_zoom: 1.0,
+            time_offset: 0.0,
         })
     }
     pub fn plan(&self) -> &GanttPlan {
         &self.plan
+    }
+    /// Relative project viewport: zoom 1..64 and offset in project fractions.
+    /// Does not change accepted data, draft, row selection or vertical anchor.
+    pub fn time_view(&self) -> (f64, f64) {
+        (self.time_zoom, self.time_offset)
+    }
+    pub fn set_time_view(&mut self, zoom: f64, offset: f64) -> Result<(), ControlError> {
+        if !zoom.is_finite() || !(1.0..=64.0).contains(&zoom) || !offset.is_finite() {
+            return Err(error("Timeline zoom must be finite and between 1 and 64."));
+        }
+        self.time_zoom = zoom;
+        self.time_offset = offset.clamp(0.0, 1.0 - 1.0 / zoom);
+        Ok(())
+    }
+    /// Zoom around a horizontal viewport fraction, preserving the time under it.
+    pub fn zoom_at(&mut self, factor: f64, anchor: f64) -> Result<(), ControlError> {
+        if !factor.is_finite() || factor <= 0.0 || !anchor.is_finite() {
+            return Err(error("Zoom factor must be positive and the anchor finite."));
+        }
+        let anchor = anchor.clamp(0.0, 1.0);
+        let position = self.time_offset + anchor / self.time_zoom;
+        let zoom = (self.time_zoom * factor).clamp(1.0, 64.0);
+        self.set_time_view(zoom, position - anchor / zoom)
+    }
+    fn composing(&self, ui: &Controls) -> bool {
+        composing(
+            ui,
+            &[
+                self.title_editor,
+                self.start_editor,
+                self.duration_editor,
+                self.progress_editor,
+                self.deadline_editor,
+            ],
+        )
     }
     pub fn selected(&self) -> Option<GanttTaskId> {
         self.selected
@@ -325,7 +373,8 @@ impl GanttControl {
             revision: self.plan.revision(),
             generation: self.generation,
         });
-        self.populate(ui)
+        self.populate(ui)?;
+        focus(ui, self.title_editor)
     }
     fn populate(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
         let d = self.draft.as_ref().ok_or_else(|| error("no task draft"))?;
@@ -346,7 +395,8 @@ impl GanttControl {
     pub fn cancel(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
         self.draft = None;
         set_visible(ui, self.editor, false)?;
-        ui.set_label(self.status, "Изменения задачи отменены.")
+        ui.set_label(self.status, "Изменения задачи отменены.")?;
+        focus(ui, self.tree)
     }
     fn read_draft(&mut self, ui: &Controls) -> Result<(), ControlError> {
         let value = |id| {
@@ -373,6 +423,9 @@ impl GanttControl {
         Ok(())
     }
     pub fn apply(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        if self.composing(ui) {
+            return Err(error("Сначала завершите ввод IME."));
+        }
         self.read_draft(ui)?;
         let d = self.draft.as_ref().ok_or_else(|| error("no task draft"))?;
         if d.generation != self.generation {
@@ -385,7 +438,8 @@ impl GanttControl {
         self.replace_plan(ui, candidate)?;
         self.draft = None;
         set_visible(ui, self.editor, false)?;
-        ui.set_label(self.status, "Задача и зависимые сроки пересчитаны.")
+        ui.set_label(self.status, "Задача и зависимые сроки пересчитаны.")?;
+        focus(ui, self.tree)
     }
     fn reorder(&mut self, ui: &mut Controls, direction: i64) -> Result<(), ControlError> {
         let id = self.selected.ok_or_else(|| error("Выберите задачу."))?;
@@ -420,6 +474,11 @@ impl GanttControl {
     }
     fn run(&mut self, ui: &mut Controls, action: Action) -> Result<(), ControlError> {
         match action {
+            Action::Zoom(factor) => self.zoom_at(factor, 0.5)?,
+            Action::Pan(delta) => {
+                self.set_time_view(self.time_zoom, self.time_offset + delta / self.time_zoom)?
+            }
+            Action::Fit => self.set_time_view(1.0, 0.0)?,
             Action::Select(id) => {
                 self.select(ui, Some(id))?;
                 let t = self.plan.task(id).unwrap();
@@ -489,6 +548,7 @@ impl GanttControl {
                     generation: self.generation,
                 });
                 self.populate(ui)?;
+                focus(ui, self.title_editor)?;
             }
         }
         Ok(())
@@ -498,7 +558,31 @@ impl GanttControl {
             .tree_selected_keys(self.tree)
             .and_then(|ids| ids.first().copied())
             .map(|id| GanttTaskId(id.0));
-        self.selected = selected;
+        if self.selected != selected {
+            self.selected = selected;
+            if let Some(id) = selected {
+                let t = self.plan.task(id).unwrap();
+                let p = self.plan.placement(id).unwrap();
+                ui.set_label(
+                    self.status,
+                    format!(
+                        "{}; {} — {}; {}%; {}; срок {}",
+                        t.title,
+                        utc_text(p.start),
+                        utc_text(p.end),
+                        t.progress_percent,
+                        if p.critical {
+                            "Критическая задача"
+                        } else {
+                            "Есть резерв"
+                        },
+                        t.finish_not_after
+                            .map(utc_text)
+                            .unwrap_or_else(|| "не задан".into())
+                    ),
+                )?;
+            }
+        }
         let actions = self.actions.borrow_mut().drain(..).collect::<Vec<_>>();
         for action in actions {
             if let Err(e) = self.run(ui, action) {
@@ -508,14 +592,36 @@ impl GanttControl {
         Ok(())
     }
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if self.composing(ui) {
+            return Ok(false);
+        }
         if let InputEvent::Wheel {
-            position, delta, ..
+            position,
+            delta,
+            modifiers,
+            ..
         } = event
             && ui
                 .runtime
                 .bounds(self.timeline)
                 .is_some_and(|b| b.contains(position.x, position.y))
         {
+            if modifiers.control {
+                let bounds = ui.runtime.bounds(self.timeline).unwrap();
+                self.zoom_at(
+                    if delta.y < 0.0 { 2.0 } else { 0.5 },
+                    f64::from((position.x - bounds.x) / bounds.width.max(1.0)),
+                )?;
+                return Ok(true);
+            }
+            if modifiers.shift || delta.x != 0.0 {
+                let delta = if modifiers.shift { delta.y } else { delta.x };
+                self.set_time_view(
+                    self.time_zoom,
+                    self.time_offset + f64::from(delta) / 600.0 / self.time_zoom,
+                )?;
+                return Ok(true);
+            }
             let (x, y) = ui
                 .tree_model(self.tree)
                 .ok_or_else(|| error("missing task tree"))?
@@ -607,7 +713,8 @@ impl GanttControl {
             .unwrap_or(1);
         let span = (i128::from(max) - i128::from(min)).max(1) as f64;
         let project_x = |v: i64| {
-            8.0 + ((i128::from(v) - i128::from(min)) as f64 / span) as f32
+            8.0 + (((i128::from(v) - i128::from(min)) as f64 / span - self.time_offset)
+                * self.time_zoom) as f32
                 * (bounds.width - 16.0).max(1.0)
         };
         let mut geometry = Vec::new();
@@ -615,7 +722,8 @@ impl GanttControl {
         let mut rules = Vec::new();
         for tick in 0..=4 {
             let x = 8.0 + tick as f32 * (bounds.width - 16.0).max(1.0) / 4.0;
-            let value = (min as f64 + span * tick as f64 / 4.0)
+            let value = (min as f64
+                + span * (self.time_offset + tick as f64 / 4.0 / self.time_zoom))
                 .clamp(i64::MIN as f64, i64::MAX as f64) as i64;
             captions.push(PlannerCaption {
                 bounds: Rect::new(x, 3.0, 140.0, 28.0),
@@ -697,7 +805,7 @@ impl GanttControl {
             ui.set_automation_name(
                 widget,
                 format!(
-                    "{}; {} — {}; {}%; {}",
+                    "{}; {} — {}; {}%; {}; срок {}; {}",
                     t.title,
                     utc_text(p.start),
                     utc_text(p.end),
@@ -706,6 +814,14 @@ impl GanttControl {
                         "Критическая задача"
                     } else {
                         "Есть резерв"
+                    },
+                    t.finish_not_after
+                        .map(utc_text)
+                        .unwrap_or_else(|| "не задан".into()),
+                    if self.selected == Some(bar.task) {
+                        "Выбрана"
+                    } else {
+                        "Не выбрана"
                     }
                 ),
             )?;

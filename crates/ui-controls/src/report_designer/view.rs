@@ -7,6 +7,10 @@ pub struct ReportDesigner {
     pub canvas: WidgetId,
     pub status: WidgetId,
     pub properties: [WidgetId; 5],
+    body: WidgetId,
+    settings_host: crate::ScrollViewer,
+    inspector: Option<super::inspector::Inspector>,
+    items: Vec<(ReportSelection, WidgetId)>,
     session: ReportDesignerSession,
     actions: Vec<(WidgetId, &'static str)>,
     band: ReportBandKind,
@@ -16,6 +20,7 @@ pub struct ReportDesigner {
     geometry: Vec<(ReportSelection, Rect)>,
     loaded: Option<(ReportRevision, Option<ReportSelection>)>,
     drag: Option<(ReportRevision, Point, Rect, bool)>,
+    drag_position: Option<Point>,
     last_bounds: Option<Rect>,
 }
 impl ReportDesigner {
@@ -41,6 +46,9 @@ impl ReportDesigner {
                     ("Отменить", "undo"),
                     ("Повторить", "redo"),
                     ("Просмотр", "preview"),
+                    ("Настройки", "settings"),
+                    ("Применить настройки", "settings_apply"),
+                    ("Отмена настроек", "settings_cancel"),
                 ],
             )?;
             let body = ui.transparent_panel(
@@ -58,6 +66,7 @@ impl ReportDesigner {
                 "",
                 None,
                 LayoutStyle {
+                    kind: LayoutKind::Overlay,
                     padding: Edges::all(0.0),
                     height: Length::Percent(1.0),
                     width: Length::Percent(1.0),
@@ -139,6 +148,22 @@ impl ReportDesigner {
                     ..cell(3, 1)
                 },
             )?;
+            let settings_host = ui.scroll_view(
+                root,
+                LayoutStyle {
+                    height: Length::Percent(1.0),
+                    ..cell(2, 1)
+                },
+                4000.0,
+            )?;
+            ui.configure_scroll_view(
+                settings_host.viewport,
+                crate::ScrollSettings {
+                    horizontal: crate::ScrollBarVisibility::Auto,
+                    vertical: crate::ScrollBarVisibility::Auto,
+                },
+            )?;
+            visible(ui, settings_host.viewport, false)?;
             let mut actions = actions;
             actions.extend([(apply, "apply"), (cancel, "cancel")]);
             Ok(Self {
@@ -146,6 +171,10 @@ impl ReportDesigner {
                 canvas,
                 status,
                 properties: properties.try_into().unwrap(),
+                body,
+                settings_host,
+                inspector: None,
+                items: Vec::new(),
                 session,
                 actions,
                 band: ReportBandKind::Detail,
@@ -155,6 +184,7 @@ impl ReportDesigner {
                 geometry: Vec::new(),
                 loaded: None,
                 drag: None,
+                drag_position: None,
                 last_bounds: None,
             })
         })();
@@ -176,6 +206,44 @@ impl ReportDesigner {
         self.preview = value;
         self.drag = None;
         self.page = 0;
+    }
+    pub fn item_widgets(&self) -> &[(ReportSelection, WidgetId)] {
+        &self.items
+    }
+    pub fn property_grid(&self) -> Option<&crate::PropertyGrid> {
+        self.inspector.as_ref().map(|i| &i.grid)
+    }
+    pub fn property_grid_mut(&mut self) -> Option<&mut crate::PropertyGrid> {
+        self.inspector.as_mut().map(|i| &mut i.grid)
+    }
+    pub fn action_widget(&self, action: &str) -> Option<WidgetId> {
+        self.actions
+            .iter()
+            .find_map(|(id, a)| (*a == action).then_some(*id))
+    }
+    /// Consume PropertyGrid actions before draining the host's generic activations.
+    pub fn process(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        if let Some(i) = &mut self.inspector {
+            i.grid.update(ui)?;
+            i.grid.take_changes();
+        }
+        Ok(())
+    }
+    pub fn cancel_interaction(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        self.drag = None;
+        self.drag_position = None;
+        if ui.runtime.captured() == Some(self.canvas) {
+            ui.runtime.apply(Mutation::CapturePointer(None))?;
+        }
+        Ok(())
+    }
+    fn close_settings(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        if let Some(i) = self.inspector.take() {
+            ui.remove(i.grid.container)?;
+        }
+        visible(ui, self.settings_host.viewport, false)?;
+        visible(ui, self.body, true)?;
+        ui.perform_action(self.canvas, crate::SemanticAction::Focus, None)
     }
     fn selected(&self) -> Option<&ReportItem> {
         let s = self.session.selection()?;
@@ -200,6 +268,9 @@ impl ReportDesigner {
                 width.to_string(),
                 font_size.to_string(),
                 match value {
+                    ReportValue::Literal(s) if s.starts_with(['=', '@', '#', '\'']) => {
+                        format!("'{s}")
+                    }
                     ReportValue::Literal(s) => s.clone(),
                     ReportValue::Expression(e) => {
                         format!("={}", format_expression_text(e).map_err(error)?)
@@ -256,13 +327,23 @@ impl ReportDesigner {
                 *y = numbers[1];
                 *width = numbers[2];
                 *font_size = numbers[3];
-                if let Some(e) = values[4].strip_prefix('=') {
+                let preserve = !matches!(
+                    value,
+                    ReportValue::Literal(_)
+                        | ReportValue::Expression(_)
+                        | ReportValue::Parameter(_)
+                ) && values[4] == format!("#{value:?}");
+                if preserve {
+                    // The opaque display of a total/page/group value is unchanged.
+                } else if let Some(literal) = values[4].strip_prefix('\'') {
+                    *value = ReportValue::Literal(literal.into());
+                } else if let Some(e) = values[4].strip_prefix('=') {
                     *value = ReportValue::Expression(
                         parse_expression_text(self.session.table().schema(), e).map_err(error)?,
                     );
                 } else if let Some(p) = values[4].strip_prefix('@') {
                     *value = ReportValue::Parameter(p.into());
-                } else if !values[4].starts_with('#') {
+                } else {
                     *value = ReportValue::Literal(values[4].clone());
                 }
             }
@@ -273,6 +354,16 @@ impl ReportDesigner {
         self.session.replace_selected(item).map_err(error)
     }
     pub fn activate(&mut self, ui: &mut Controls, id: WidgetId) -> Result<bool, ControlError> {
+        if let Some(selection) = self
+            .items
+            .iter()
+            .find_map(|(s, w)| (*w == id).then_some(*s))
+        {
+            self.session.select(Some(selection)).map_err(error)?;
+            self.band = selection.band;
+            self.load_properties(ui)?;
+            return Ok(true);
+        }
         let Some(action) = self
             .actions
             .iter()
@@ -281,6 +372,25 @@ impl ReportDesigner {
             return Ok(id == self.canvas);
         };
         match action {
+            "settings" => {
+                self.cancel_interaction(ui)?;
+                if self.inspector.is_none() {
+                    self.inspector = Some(super::inspector::Inspector::mount(
+                        ui,
+                        self.settings_host.content,
+                        &self.session,
+                    )?);
+                    visible(ui, self.body, false)?;
+                    visible(ui, self.settings_host.viewport, true)?;
+                }
+            }
+            "settings_apply" => {
+                if let Some(i) = &mut self.inspector {
+                    i.apply(ui, &mut self.session)?;
+                }
+                self.close_settings(ui)?;
+            }
+            "settings_cancel" => self.close_settings(ui)?,
             "text" => self
                 .session
                 .add(
@@ -357,18 +467,38 @@ impl ReportDesigner {
                 self.session.redo().map_err(error)?;
             }
             "preview" => self.set_preview(!self.preview),
-            "apply" => self.apply_properties(ui)?,
-            "cancel" => self.loaded = None,
+            "apply" => {
+                self.apply_properties(ui)?;
+                ui.perform_action(self.canvas, crate::SemanticAction::Focus, None)?;
+            }
+            "cancel" => {
+                self.loaded = None;
+                ui.perform_action(self.canvas, crate::SemanticAction::Focus, None)?;
+            }
             _ => {}
         }
         self.load_properties(ui)?;
         Ok(true)
     }
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if let Some(i) = &mut self.inspector {
+            return i.grid.input(ui, event);
+        }
+        if self
+            .properties
+            .iter()
+            .any(|id| ui.document(*id).is_some_and(|d| d.composition().is_some()))
+        {
+            return Ok(false);
+        }
         match event {
-            InputEvent::WindowFocused(false) | InputEvent::PointerLeft => {
-                self.drag = None;
+            InputEvent::WindowFocused(false) => {
+                self.cancel_interaction(ui)?;
                 Ok(false)
+            }
+            InputEvent::PointerMoved { position } if self.drag.is_some() => {
+                self.drag_position = Some(*position);
+                Ok(true)
             }
             InputEvent::PointerDown {
                 position,
@@ -389,7 +519,10 @@ impl ReportDesigner {
                     self.session.select(Some(selection)).map_err(error)?;
                     self.band = selection.band;
                     self.drag = Some((self.session.revision(), *position, bounds, modifiers.shift));
+                    self.drag_position = Some(*position);
                     ui.runtime.apply(Mutation::Focus(Some(self.canvas)))?;
+                    ui.runtime
+                        .apply(Mutation::CapturePointer(Some(self.canvas)))?;
                     self.load_properties(ui)?;
                 } else {
                     self.session.select(None).map_err(error)?;
@@ -403,6 +536,7 @@ impl ReportDesigner {
                 ..
             } if self.drag.is_some() => {
                 let (revision, start, _, resize) = self.drag.take().unwrap();
+                self.cancel_interaction(ui)?;
                 if revision != self.session.revision() {
                     return Ok(true);
                 }
@@ -415,8 +549,21 @@ impl ReportDesigner {
                 Ok(true)
             }
             InputEvent::KeyDown { key, modifiers, .. }
-                if !self.preview && ui.runtime.focused() == Some(self.canvas) =>
+                if !self.preview
+                    && (ui.runtime.focused() == Some(self.canvas)
+                        || self
+                            .items
+                            .iter()
+                            .any(|(_, id)| Some(*id) == ui.runtime.focused())) =>
             {
+                if let Some(s) = self
+                    .items
+                    .iter()
+                    .find_map(|(s, id)| (Some(*id) == ui.runtime.focused()).then_some(*s))
+                {
+                    self.session.select(Some(s)).map_err(error)?;
+                    self.band = s.band;
+                }
                 let step = if modifiers.control { 1.0 } else { 8.0 };
                 match key {
                     Key::ArrowLeft => self.move_or_resize(-step, 0.0, modifiers.shift)?,
@@ -424,7 +571,7 @@ impl ReportDesigner {
                     Key::ArrowUp => self.move_or_resize(0.0, -step, modifiers.shift)?,
                     Key::ArrowDown => self.move_or_resize(0.0, step, modifiers.shift)?,
                     Key::Delete => self.session.delete_selected().map_err(error)?,
-                    Key::Escape => self.drag = None,
+                    Key::Escape => self.cancel_interaction(ui)?,
                     _ => return Ok(false),
                 }
                 self.load_properties(ui)?;
@@ -466,12 +613,28 @@ impl ReportDesigner {
         self.session.replace_selected(item).map_err(error)
     }
     pub fn refresh(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        if let Some(i) = &mut self.inspector {
+            i.grid.refresh(ui)?;
+            if let (Some(grid), Some(view)) = (
+                ui.runtime.bounds(i.grid.container),
+                ui.runtime.bounds(self.settings_host.viewport),
+            ) {
+                ui.set_scroll_extent_size(
+                    self.settings_host.viewport,
+                    Size::new(view.width.max(760.0), grid.height + 8.0),
+                )?;
+            }
+            return Ok(());
+        }
         self.load_properties(ui)?;
         let Some(bounds) = ui.runtime.bounds(self.canvas) else {
             return Ok(());
         };
         if self.last_bounds != Some(bounds) {
-            self.drag = None;
+            self.cancel_interaction(ui)?;
+        }
+        if self.drag.is_none() && ui.runtime.captured() == Some(self.canvas) {
+            self.cancel_interaction(ui)?;
         }
         self.last_bounds = Some(bounds);
         let tokens = ui.theme().tokens();
@@ -550,7 +713,7 @@ impl ReportDesigner {
                             font_size,
                             color,
                             value,
-                            bold: _,
+                            bold,
                         } => {
                             let r = Rect::new(
                                 x + ix * self.scale,
@@ -565,7 +728,9 @@ impl ReportDesigner {
                                 }
                                 v => format!("{v:?}"),
                             };
-                            text(&mut scene, label, r, *color, *font_size * self.scale);
+                            let mut run = TextRun::new(label, r, *color, *font_size * self.scale);
+                            run.weight = if *bold { 700 } else { 400 };
+                            scene.text(run);
                             r
                         }
                         ReportItem::Rectangle { bounds: r, color } => {
@@ -610,6 +775,20 @@ impl ReportDesigner {
                 y += h;
             }
         }
+        if let (Some((revision, start, rect, resize)), Some(p)) = (self.drag, self.drag_position)
+            && revision == self.session.revision()
+        {
+            let mut r = rect;
+            if resize {
+                r.width = (r.width + p.x - start.x).max(1.0);
+                r.height = (r.height + p.y - start.y).max(1.0);
+            } else {
+                r.x += p.x - start.x;
+                r.y += p.y - start.y;
+            }
+            scene.rounded_stroke(r, bounds, 0.0, 2.0, tokens.focus);
+        }
+        self.refresh_items(ui, bounds)?;
         ui.set_custom_scene(self.canvas, scene)?;
         ui.set_label(
             self.status,
@@ -636,4 +815,123 @@ impl ReportDesigner {
         }
         Ok(())
     }
+    fn refresh_items(&mut self, ui: &mut Controls, bounds: Rect) -> Result<(), ControlError> {
+        let mut retained = Vec::new();
+        for (s, id) in self.items.drain(..) {
+            if self.geometry.iter().any(|(selection, _)| *selection == s) {
+                retained.push((s, id));
+            } else {
+                if ui.runtime.focused() == Some(id) {
+                    ui.perform_action(self.canvas, crate::SemanticAction::Focus, None)?;
+                }
+                ui.remove(id)?;
+            }
+        }
+        self.items = retained;
+        for &(selection, rect) in &self.geometry {
+            let style = LayoutStyle {
+                width: Length::Px(rect.width),
+                height: Length::Px(rect.height),
+                offset: Point::new(rect.x - bounds.x, rect.y - bounds.y),
+                ..Default::default()
+            };
+            let id = if let Some((_, id)) = self.items.iter().find(|(s, _)| *s == selection) {
+                *id
+            } else {
+                let id = ui.button(self.canvas, "", None, style.clone())?;
+                let appearance = crate::ButtonAppearance {
+                    background: Some(Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
+                    border: Some(Color {
+                        r: 0.0,
+                        g: 0.0,
+                        b: 0.0,
+                        a: 0.0,
+                    }),
+                    ..Default::default()
+                };
+                ui.set_button_style(
+                    id,
+                    crate::ButtonStyle {
+                        normal: appearance,
+                        hovered: appearance,
+                        pressed: appearance,
+                        checked: appearance,
+                        disabled: appearance,
+                        padding: Some(Edges::all(0.0)),
+                        ..Default::default()
+                    },
+                )?;
+                self.items.push((selection, id));
+                id
+            };
+            let mut props = ui.runtime.tree().node(id).unwrap().props.clone();
+            if props.style != style {
+                props.style = style;
+                ui.runtime.apply(Mutation::SetProps { node: id, props })?;
+            }
+            let item = &selection.band.band(self.session.definition()).items[selection.item];
+            let description = match item {
+                ReportItem::Text {
+                    value,
+                    x,
+                    y,
+                    width,
+                    font_size,
+                    bold,
+                    ..
+                } => {
+                    let value = match value {
+                        ReportValue::Literal(s) => s.clone(),
+                        ReportValue::Expression(e) => {
+                            format!("Выражение {}", format_expression_text(e).map_err(error)?)
+                        }
+                        ReportValue::Parameter(p) => format!("Параметр {p}"),
+                        ReportValue::GroupKey(i) => format!("Ключ группы {i}"),
+                        ReportValue::GroupTotal(i) => format!("Итог группы {i}"),
+                        ReportValue::Total(i) => format!("Общий итог {i}"),
+                        ReportValue::PageNumber => "Номер страницы".into(),
+                        ReportValue::PageCount => "Количество страниц".into(),
+                    };
+                    format!(
+                        "Текст {value}; X {x}, Y {y}, ширина {width}, размер {font_size}, полужирный {}",
+                        if *bold { "да" } else { "нет" }
+                    )
+                }
+                ReportItem::Rectangle { bounds, .. } => format!("Прямоугольник {bounds:?}"),
+                ReportItem::Image { bounds, .. } => format!("Изображение {bounds:?}"),
+            };
+            ui.set_automation_name(
+                id,
+                format!(
+                    "{}; элемент {}; {}; {}",
+                    selection.band.title(),
+                    selection.item + 1,
+                    description,
+                    if self.session.selection() == Some(selection) {
+                        "Выбран"
+                    } else {
+                        "Не выбран"
+                    }
+                ),
+            )?;
+        }
+        Ok(())
+    }
+}
+fn visible(ui: &mut Controls, id: WidgetId, value: bool) -> Result<(), ControlError> {
+    let mut props = ui
+        .runtime
+        .tree()
+        .node(id)
+        .ok_or_else(|| error("Designer was removed"))?
+        .props
+        .clone();
+    props.collapsed = !value;
+    ui.runtime.apply(Mutation::SetProps { node: id, props })?;
+    Ok(())
 }

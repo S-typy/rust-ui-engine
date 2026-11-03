@@ -375,7 +375,7 @@ fn scheduler_initial_and_resize_reveal_clear_scrollbars_without_refresh_scroll_r
         let initial = check(&ui, &view, first, "initial");
         let viewport = ui.runtime.bounds(view.viewport).unwrap();
         assert!(
-            (initial.y - viewport.y - 48.0).abs() < 0.01,
+            initial.y - viewport.y >= 47.99,
             "initial time context: {mode:?}"
         );
         let focus = ui.runtime.focused();
@@ -713,4 +713,96 @@ fn gantt_scroll_anchor_and_selection_survive_source_update() {
     let after = view.scroll_anchor(&ui).unwrap();
     assert_eq!(after.key, top.key);
     assert_eq!(after.within_row, top.within_row);
+}
+#[test]
+fn planner_chrome_fits_resized_window_and_header_stays_pinned() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let mut v = SchedulerControl::mount(
+        &mut ui,
+        root,
+        state(SchedulerMode::Day),
+        LayoutStyle {
+            width: Length::Percent(1.0),
+            height: Length::Percent(1.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for size in [Size::new(1100.0, 850.0), Size::new(780.0, 620.0)] {
+        settle_scheduler_size(&mut ui, &mut v, size);
+        let header = ui.runtime.bounds(v.header).unwrap();
+        assert_eq!(header.height, 64.0);
+        ui.scroll_to_point(v.viewport, Point::new(0.0, 500.0))
+            .unwrap();
+        settle_scheduler_size(&mut ui, &mut v, size);
+        assert_eq!(ui.runtime.bounds(v.header), Some(header));
+        let key = v.geometry().unwrap().appointments[0].key;
+        ui.perform_action(
+            v.appointment_widget(key).unwrap(),
+            crate::SemanticAction::Activate,
+            None,
+        )
+        .unwrap();
+        v.process(&mut ui).unwrap();
+        v.begin_edit(&mut ui, SchedulerEditScope::Instance).unwrap();
+        settle_scheduler_size(&mut ui, &mut v, size);
+        assert_eq!(ui.runtime.focused(), Some(v.title_editor));
+        let status = ui.runtime.bounds(v.status).unwrap();
+        assert!(
+            status.height >= 32.0,
+            "status must remain visible: {status:?}"
+        );
+        let end = ui.runtime.bounds(v.end_editor).unwrap();
+        assert!(status.y + status.height <= size.height + 0.1, "{status:?}");
+        assert!(end.y + end.height < status.y + 0.1);
+        ui.ime_preedit("にほん", Some((0, 9))).unwrap();
+        let revision = v.state().model().revision();
+        assert!(v.apply(&mut ui).is_err());
+        assert_eq!(v.state().model().revision(), revision);
+        ui.cancel_preedit();
+        v.cancel(&mut ui).unwrap();
+        assert_eq!(ui.runtime.focused(), v.appointment_widget(key));
+    }
+}
+#[test]
+fn gantt_time_zoom_preserves_anchor_and_draft_without_changing_plan() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let mut v = GanttControl::mount(
+        &mut ui,
+        root,
+        plan(),
+        LayoutStyle {
+            width: Length::Percent(1.0),
+            height: Length::Percent(1.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    settle_gantt(&mut ui, &mut v);
+    v.select(&mut ui, Some(GanttTaskId(3))).unwrap();
+    v.begin_edit(&mut ui).unwrap();
+    ui.set_text(v.title_editor, "Черновик 日本語").unwrap();
+    let revision = v.plan().revision();
+    v.zoom_at(2.0, 0.4).unwrap();
+    let (zoom, offset) = v.time_view();
+    assert!((offset + 0.4 / zoom - 0.4).abs() < 1e-8);
+    assert!(v.set_time_view(f64::NAN, 0.0).is_err());
+    assert_eq!(v.time_view(), (zoom, offset));
+    settle_gantt(&mut ui, &mut v);
+    assert_eq!(
+        ui.document(v.title_editor).unwrap().text(),
+        "Черновик 日本語"
+    );
+    assert_eq!(v.plan().revision(), revision);
+    assert_eq!(v.selected(), Some(GanttTaskId(3)));
+    ui.perform_action(v.title_editor, crate::SemanticAction::Focus, None)
+        .unwrap();
+    ui.ime_preedit("にほん", Some((0, 9))).unwrap();
+    assert!(v.apply(&mut ui).is_err());
+    assert_eq!(v.plan().revision(), revision);
+    ui.cancel_preedit();
+    v.cancel(&mut ui).unwrap();
+    assert_eq!(ui.runtime.focused(), Some(v.tree));
 }

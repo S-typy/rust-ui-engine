@@ -312,6 +312,9 @@ impl CompositionDemo {
         Ok(())
     }
     fn actions(&mut self) -> Result<(), String> {
+        if let View::Report(v) = &mut self.view {
+            v.process(&mut self.form.ui).map_err(err)?;
+        }
         for id in self.form.ui.drain_activated() {
             let operation = (|| {
                 if let Some(action) = self
@@ -438,6 +441,79 @@ impl DesktopApp for CompositionDemo {
         }
         self.form.update(size, scale)?;
         if self.diagnostics {
+            if let View::Report(v) = &self.view {
+                self.form
+                    .view
+                    .names
+                    .retain(|name, _| !name.starts_with("Designer"));
+                self.form
+                    .view
+                    .names
+                    .insert("DesignerCanvas".into(), v.canvas);
+                for (i, id) in v.properties.iter().enumerate() {
+                    self.form
+                        .view
+                        .names
+                        .insert(format!("DesignerProperty{i}"), *id);
+                }
+                for (i, (_, id)) in v.item_widgets().iter().enumerate() {
+                    self.form.view.names.insert(format!("DesignerItem{i}"), *id);
+                }
+                for action in [
+                    "text",
+                    "rectangle",
+                    "image",
+                    "band",
+                    "next",
+                    "delete",
+                    "undo",
+                    "redo",
+                    "preview",
+                    "apply",
+                    "cancel",
+                    "settings",
+                    "settings_apply",
+                    "settings_cancel",
+                ] {
+                    if let Some(id) = v.action_widget(action) {
+                        self.form
+                            .view
+                            .names
+                            .insert(format!("DesignerAction_{action}"), id);
+                    }
+                }
+                if let Some(grid) = v.property_grid() {
+                    for field in [
+                        "title",
+                        "width",
+                        "height",
+                        "band3",
+                        "bold",
+                        "red",
+                        "new_name",
+                        "new_type",
+                        "new_value",
+                        "remove_name",
+                    ] {
+                        if let Some(id) = grid.property_editor(field) {
+                            self.form
+                                .view
+                                .names
+                                .insert(format!("DesignerSetting_{field}"), id);
+                        }
+                        if let Some((edit, apply, _)) = grid.property_actions(field) {
+                            self.form
+                                .view
+                                .names
+                                .insert(format!("DesignerSettingEdit_{field}"), edit);
+                            self.form
+                                .view
+                                .names
+                                .insert(format!("DesignerSettingApply_{field}"), apply);
+                        }
+                    }
+                }
+            }
             let signature = match &self.view {
                 View::Report(v) => format!(
                     "report {:?} pages={} preview={}",
@@ -457,9 +533,22 @@ impl DesktopApp for CompositionDemo {
                     v.session().frame().map(|f| f.position)
                 ),
             };
-            if signature != self.last {
+            let snapshot = crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view);
+            let details = match &self.view {
+                View::Report(v) => {
+                    serde_json::json!({"kind":"report","revision":format!("{:?}",v.session().revision()),
+                    "selected":format!("{:?}",v.session().selection()), "preview":v.is_preview(),"settings":v.property_grid().is_some(),
+                    "definition":serde_json::from_str::<serde_json::Value>(&v.session().save().map_err(err)?).map_err(err)?,
+                    "parameters":format!("{:?}",v.session().parameters()),"pages":v.session().preview().document.pages().len()})
+                }
+                _ => serde_json::Value::Null,
+            };
+            let key = format!("{signature} {details} {snapshot}");
+            if key != self.last {
                 println!("composition-state {signature}");
-                self.last = signature;
+                println!("composition-details {details}");
+                println!("batch-state {snapshot}");
+                self.last = key;
             }
         }
         Ok(())
@@ -471,6 +560,9 @@ impl DesktopApp for CompositionDemo {
         self.form.title()
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
+        if self.diagnostics {
+            println!("composition-input {event:?}");
+        }
         let operation = (|| {
             match event {
                 PlatformEvent::Input(input) => {
@@ -605,6 +697,9 @@ impl DesktopApp for CompositionDemo {
         self.form.accessibility(scale)
     }
     fn pointer_capture_lost(&mut self) -> Result<EventResponse, String> {
+        if let View::Report(v) = &mut self.view {
+            v.cancel_interaction(&mut self.form.ui).map_err(err)?;
+        }
         self.form.pointer_capture_lost()
     }
     fn ime_cursor(&self) -> Option<Rect> {

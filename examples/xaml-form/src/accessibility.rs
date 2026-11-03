@@ -97,7 +97,9 @@ impl Accessibility {
             let id = self.widgets[&widget];
             let status = (semantic.role == ControlRole::Label
                 && (view.find_name("Status") == Some(widget)
-                    || view.find_name("SpatialStatus") == Some(widget)))
+                    || view.find_name("SpatialStatus") == Some(widget)
+                    || view.find_name("PlanningStatus") == Some(widget)
+                    || view.find_name("OutputResult") == Some(widget)))
                 || ui.notification_message(widget);
             let mut node = Node::new(if status {
                 Role::Status

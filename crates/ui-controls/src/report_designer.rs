@@ -4,6 +4,7 @@ use rust_desktop_ui_core::*;
 use rust_desktop_ui_data::*;
 use rust_desktop_ui_text::TextEngine;
 use std::collections::{BTreeMap, VecDeque};
+mod inspector;
 mod view;
 pub use view::*;
 
@@ -71,6 +72,7 @@ pub struct ReportRevision(u64);
 #[derive(Clone)]
 struct Snapshot {
     definition: ReportDefinition,
+    parameters: BTreeMap<String, CellValue>,
     selection: Option<ReportSelection>,
     bytes: usize,
 }
@@ -78,7 +80,6 @@ struct Snapshot {
 pub struct ReportDesignerSession {
     current: Snapshot,
     table: DataTable,
-    parameters: BTreeMap<String, CellValue>,
     undo: VecDeque<Snapshot>,
     redo: VecDeque<Snapshot>,
     revision: u64,
@@ -91,13 +92,34 @@ fn error(e: impl ToString) -> ReportError {
         message: e.to_string(),
     }
 }
+fn configuration_bytes(
+    d: &ReportDefinition,
+    parameters: &BTreeMap<String, CellValue>,
+) -> Result<usize, ReportError> {
+    let bytes = d.to_json()?.len()
+        + parameters
+            .iter()
+            .map(|(k, v)| {
+                k.len()
+                    + match v {
+                        CellValue::Text(s) => s.len(),
+                        CellValue::Binary(b) => b.len(),
+                        _ => v.display().len(),
+                    }
+            })
+            .sum::<usize>();
+    if bytes > 16 * 1024 * 1024 {
+        return Err(error("Report configuration exceeds 16 MiB"));
+    }
+    Ok(bytes)
+}
 impl ReportDesignerSession {
     pub fn new(
         definition: ReportDefinition,
         table: DataTable,
         parameters: BTreeMap<String, CellValue>,
     ) -> Result<Self, ReportError> {
-        let bytes = definition.to_json()?.len();
+        let bytes = configuration_bytes(&definition, &parameters)?;
         let preview = ReportEngine::build(
             &definition,
             &table,
@@ -108,11 +130,11 @@ impl ReportDesignerSession {
         Ok(Self {
             current: Snapshot {
                 definition,
+                parameters,
                 selection: None,
                 bytes,
             },
             table,
-            parameters,
             undo: VecDeque::new(),
             redo: VecDeque::new(),
             revision: 0,
@@ -124,6 +146,9 @@ impl ReportDesignerSession {
     }
     pub fn table(&self) -> &DataTable {
         &self.table
+    }
+    pub fn parameters(&self) -> &BTreeMap<String, CellValue> {
+        &self.current.parameters
     }
     pub fn selection(&self) -> Option<ReportSelection> {
         self.current.selection
@@ -162,6 +187,24 @@ impl ReportDesignerSession {
         definition: ReportDefinition,
         selection: Option<ReportSelection>,
     ) -> Result<(), ReportError> {
+        self.accept_configuration(expected, definition, self.parameters().clone(), selection)
+    }
+    /// Page, bands, item styles and parameter values form one undoable transaction.
+    pub fn replace_configuration(
+        &mut self,
+        expected: ReportRevision,
+        definition: ReportDefinition,
+        parameters: BTreeMap<String, CellValue>,
+    ) -> Result<(), ReportError> {
+        self.accept_configuration(expected, definition, parameters, self.selection())
+    }
+    fn accept_configuration(
+        &mut self,
+        expected: ReportRevision,
+        definition: ReportDefinition,
+        parameters: BTreeMap<String, CellValue>,
+        selection: Option<ReportSelection>,
+    ) -> Result<(), ReportError> {
         if expected != self.revision() {
             return Err(error("Stale report edit"));
         }
@@ -169,11 +212,11 @@ impl ReportDesignerSession {
             .revision
             .checked_add(1)
             .ok_or_else(|| error("Revision exhausted"))?;
-        let bytes = definition.to_json()?.len();
+        let bytes = configuration_bytes(&definition, &parameters)?;
         let preview = ReportEngine::build(
             &definition,
             &self.table,
-            &self.parameters,
+            &parameters,
             &mut TextEngine::new(),
             || false,
         )?;
@@ -182,6 +225,7 @@ impl ReportDesignerSession {
             &mut self.current,
             Snapshot {
                 definition,
+                parameters,
                 selection,
                 bytes,
             },
@@ -256,7 +300,7 @@ impl ReportDesignerSession {
         let preview = ReportEngine::build(
             &candidate.definition,
             &self.table,
-            &self.parameters,
+            &candidate.parameters,
             &mut TextEngine::new(),
             || false,
         )?;
@@ -290,6 +334,7 @@ impl ReportDesignerSession {
         table: DataTable,
         parameters: BTreeMap<String, CellValue>,
     ) -> Result<(), ReportError> {
+        let bytes = configuration_bytes(self.definition(), &parameters)?;
         let revision = self
             .revision
             .checked_add(1)
@@ -302,7 +347,8 @@ impl ReportDesignerSession {
             || false,
         )?;
         self.table = table;
-        self.parameters = parameters;
+        self.current.parameters = parameters;
+        self.current.bytes = bytes;
         self.preview = preview;
         self.revision = revision;
         // History may contain bindings absent from the new schema.

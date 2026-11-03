@@ -3,8 +3,8 @@ use crate::{
     ScrollViewer,
 };
 use rust_desktop_ui_core::{
-    Axis, Edges, LayoutKind, LayoutStyle, Length, Mutation, Point, Rect, Scene, Size, TextAlign,
-    TextRun, WidgetId,
+    Axis, Edges, GridPlacement, GridTrack, LayoutKind, LayoutStyle, Length, Mutation, Point, Rect,
+    Scene, Size, TextAlign, TextRun, WidgetId,
 };
 use rust_desktop_ui_data::{DateValue, ScheduleLocal, TimeValue};
 pub(super) fn error(e: impl std::fmt::Display) -> ControlError {
@@ -66,18 +66,77 @@ pub(super) fn set_visible(
 pub(super) fn stack(
     ui: &mut Controls,
     parent: WidgetId,
-    height: f32,
+    _height: f32,
 ) -> Result<WidgetId, ControlError> {
     ui.transparent_panel(
         parent,
         LayoutStyle {
             kind: LayoutKind::Wrap(Axis::Horizontal),
             width: Length::Percent(1.0),
-            height: Length::Px(height),
+            height: Length::Auto,
             gap: 4.0,
             ..Default::default()
         },
     )
+}
+/// Reserve chrome/editor rows before assigning the remaining space to the view.
+pub(super) fn arrange_planner(
+    ui: &mut Controls,
+    container: WidgetId,
+    rows: &[WidgetId],
+    viewport_row: usize,
+) -> Result<(), ControlError> {
+    let mut style = ui
+        .runtime
+        .tree()
+        .node(container)
+        .unwrap()
+        .props
+        .style
+        .clone();
+    style.kind = LayoutKind::Grid;
+    style.grid_columns = vec![GridTrack::Fr(1.0)];
+    style.grid_rows = (0..rows.len())
+        .map(|i| {
+            if i == viewport_row {
+                GridTrack::Fr(1.0)
+            } else {
+                GridTrack::Auto
+            }
+        })
+        .collect();
+    set_style(ui, container, style)?;
+    for (i, &id) in rows.iter().enumerate() {
+        let mut style = ui.runtime.tree().node(id).unwrap().props.style.clone();
+        style.grid_row = GridPlacement {
+            start: Some(i as u16 + 1),
+            span: 1,
+        };
+        style.grid_column = GridPlacement {
+            start: Some(1),
+            span: 1,
+        };
+        style.height = if i == viewport_row {
+            Length::Percent(1.0)
+        } else if i + 1 == rows.len() {
+            // Status labels have no automatic intrinsic height. Preserve their
+            // explicit line area when moving them into an Auto grid track.
+            style.height
+        } else {
+            Length::Auto
+        };
+        set_style(ui, id, style)?;
+    }
+    Ok(())
+}
+pub(super) fn composing(ui: &Controls, editors: &[WidgetId]) -> bool {
+    editors.iter().any(|&id| {
+        ui.document(id)
+            .is_some_and(|doc| doc.composition().is_some())
+    })
+}
+pub(super) fn focus(ui: &mut Controls, id: WidgetId) -> Result<(), ControlError> {
+    ui.perform_action(id, crate::SemanticAction::Focus, None)
 }
 pub(super) fn scroll(
     ui: &mut Controls,

@@ -220,6 +220,30 @@ impl PlanningDemo {
                 .map_err(error)?,
             ))
         };
+        let named = match &view {
+            View::Scheduler(v) => vec![
+                ("PlanningTitleEditor", v.title_editor),
+                ("PlanningStart", v.start_editor),
+                ("PlanningEnd", v.end_editor),
+                ("PlanningResources", v.resources_editor),
+                ("PlanningViewport", v.viewport),
+                ("PlanningHeader", v.header),
+                ("PlanningStatus", v.status),
+            ],
+            View::Gantt(v) => vec![
+                ("PlanningTitleEditor", v.title_editor),
+                ("PlanningStart", v.start_editor),
+                ("PlanningDuration", v.duration_editor),
+                ("PlanningProgress", v.progress_editor),
+                ("PlanningDeadline", v.deadline_editor),
+                ("PlanningTree", v.tree),
+                ("PlanningViewport", v.timeline),
+                ("PlanningStatus", v.status),
+            ],
+        };
+        for (name, id) in named {
+            form.view.names.insert(name.into(), id);
+        }
         Ok(Self {
             form,
             view,
@@ -274,9 +298,36 @@ impl PlanningDemo {
                 v.draft().is_some()
             ),
         };
-        if value != self.last {
+        self.form
+            .view
+            .names
+            .retain(|name, _| !name.starts_with("PlanningItem"));
+        let details = match &self.view {
+            View::Scheduler(v) => {
+                let items = v.geometry().map(|g| g.appointments.iter().enumerate().filter_map(|(i, p)| {
+                    let id = v.appointment_widget(p.key)?;
+                    self.form.view.names.insert(format!("PlanningItem{i}"), id);
+                    Some(serde_json::json!({"id":format!("{id:?}"),"key":format!("{:?}",p.key),"occurrence":format!("{:?}",p.key.occurrence)}))
+                }).collect::<Vec<_>>()).unwrap_or_default();
+                serde_json::json!({"kind":"scheduler","mode":format!("{:?}",v.state().settings().mode),
+                    "revision":v.state().model().revision(),"selected":format!("{:?}",v.state().selected()),
+                    "draft":v.state().draft().is_some(),"items":items,
+                    "occurrences":v.state().occurrences().iter().map(|o|serde_json::json!({"id":format!("{:?}",o.id),"title":o.title,"local":format!("{:?}",o.local)})).collect::<Vec<_>>()})
+            }
+            View::Gantt(v) => {
+                serde_json::json!({"kind":"gantt","revision":v.plan().revision(),"selected":v.selected().map(|id|id.0),
+                "draft":v.draft().is_some(),"time_view":v.time_view(),
+                "tasks":v.plan().tasks().map(|t|serde_json::json!({"id":t.id.0,"title":t.title,"duration":t.work_seconds,"progress":t.progress_percent})).collect::<Vec<_>>(),
+                "items":v.geometry().iter().map(|b|serde_json::json!({"task":b.task.0,"id":format!("{:?}",v.bar_widget(b.task).unwrap()),"critical":b.critical})).collect::<Vec<_>>() })
+            }
+        };
+        let snapshot = crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view);
+        let key = format!("{value} {details} {snapshot}");
+        if key != self.last {
             println!("{value}");
-            self.last = value;
+            println!("planning-details {details}");
+            println!("batch-state {snapshot}");
+            self.last = key;
         }
     }
 }
@@ -305,6 +356,9 @@ impl DesktopApp for PlanningDemo {
         Ok(())
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
+        if self.diagnostics {
+            println!("planning-input {event:?}");
+        }
         if let PlatformEvent::Input(input) = &event {
             let handled = match &mut self.view {
                 View::Scheduler(v) => v.input(&mut self.form.ui, input),

@@ -28,6 +28,7 @@ enum Action {
 pub struct SchedulerControl {
     pub container: WidgetId,
     pub viewport: WidgetId,
+    pub header: WidgetId,
     pub title_editor: WidgetId,
     pub start_editor: WidgetId,
     pub end_editor: WidgetId,
@@ -36,6 +37,7 @@ pub struct SchedulerControl {
     state: SchedulerState,
     scroll: ScrollViewer,
     editor: WidgetId,
+    toolbar: WidgetId,
     actions: Rc<RefCell<VecDeque<Action>>>,
     commands: Vec<CommandId>,
     appointments: BTreeMap<SchedulerPlacementKey, (WidgetId, CommandId)>,
@@ -105,6 +107,7 @@ impl SchedulerControl {
             )?;
             commands.push(cmd);
         }
+        let header = ui.label(container, "", LayoutStyle::default())?;
         let scroll = scroll(ui, container, 420.0)?;
         let editor = ui.transparent_panel(
             container,
@@ -169,10 +172,17 @@ impl SchedulerControl {
                 ..Default::default()
             },
         )?;
+        arrange_planner(
+            ui,
+            container,
+            &[toolbar, header, scroll.viewport, editor, status],
+            2,
+        )?;
         set_visible(ui, editor, false)?;
         Ok(Self {
             container,
             viewport: scroll.viewport,
+            header,
             title_editor,
             start_editor,
             end_editor,
@@ -181,6 +191,7 @@ impl SchedulerControl {
             state,
             scroll,
             editor,
+            toolbar,
             actions,
             commands,
             appointments: BTreeMap::new(),
@@ -222,12 +233,37 @@ impl SchedulerControl {
         scope: SchedulerEditScope,
     ) -> Result<(), ControlError> {
         self.state.begin_edit(scope).map_err(error)?;
-        self.populate(ui)
+        self.populate(ui)?;
+        focus(ui, self.title_editor)
     }
     pub fn cancel(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
         self.state.cancel();
         set_visible(ui, self.editor, false)?;
-        ui.set_label(self.status, "Изменения отменены.")
+        ui.set_label(self.status, "Изменения отменены.")?;
+        self.restore_focus(ui)
+    }
+    fn restore_focus(&self, ui: &mut Controls) -> Result<(), ControlError> {
+        let target = self
+            .appointments
+            .iter()
+            .find(|(key, _)| Some(key.occurrence) == self.state.selected())
+            .map(|(_, (id, _))| *id)
+            .or_else(|| ui.runtime.tree().children(self.toolbar)?.first().copied());
+        if let Some(id) = target {
+            focus(ui, id)?;
+        }
+        Ok(())
+    }
+    fn composing(&self, ui: &Controls) -> bool {
+        composing(
+            ui,
+            &[
+                self.title_editor,
+                self.start_editor,
+                self.end_editor,
+                self.resources_editor,
+            ],
+        )
     }
     fn populate(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
         let Some(draft) = self.state.draft() else {
@@ -299,11 +335,15 @@ impl SchedulerControl {
         Ok(())
     }
     pub fn apply(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        if self.composing(ui) {
+            return Err(error("Сначала завершите ввод IME."));
+        }
         self.read_draft(ui)?;
         self.state.commit().map_err(error)?;
         set_visible(ui, self.editor, false)?;
         ui.set_label(self.status, "Встреча сохранена.")?;
         self.refresh(ui)?;
+        self.restore_focus(ui)?;
         Ok(())
     }
     fn run(&mut self, ui: &mut Controls, action: Action) -> Result<(), ControlError> {
@@ -377,6 +417,7 @@ impl SchedulerControl {
                 };
                 self.state.begin_create(series).map_err(error)?;
                 self.populate(ui)?;
+                focus(ui, self.title_editor)?;
             }
             Action::Edit(scope) => self.begin_edit(ui, scope)?,
             Action::Delete(scope) => {
@@ -408,6 +449,9 @@ impl SchedulerControl {
     /// Call before ordinary dispatch. Tab and Enter/Space activation remain owned
     /// by the existing controls; Escape cancels the whole appointment draft.
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if self.composing(ui) {
+            return Ok(false);
+        }
         let Some(focus) = ui.runtime.focused() else {
             return Ok(false);
         };
@@ -446,14 +490,52 @@ impl SchedulerControl {
         }
     }
     pub fn refresh(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
+        let pinned = matches!(
+            self.state.settings().mode,
+            SchedulerMode::Day | SchedulerMode::Week
+        );
+        let mut header_style = ui
+            .runtime
+            .tree()
+            .node(self.header)
+            .unwrap()
+            .props
+            .style
+            .clone();
+        header_style.height = Length::Px(if pinned { 64.0 } else { 0.0 });
+        let header_changed = set_style(ui, self.header, header_style)?;
+        set_visible(ui, self.header, pinned)?;
         let Some(bounds) = ui.runtime.bounds(self.viewport) else {
-            return Ok(false);
+            return Ok(header_changed);
         };
-        let geometry = self
+        let mut geometry = self
             .state
             .geometry(bounds.width.max(160.0))
             .map_err(error)?;
-        let mut changed = self.geometry.as_ref() != Some(&geometry);
+        let mut headings = Vec::new();
+        if pinned {
+            geometry.captions.retain(|caption| {
+                if caption.bounds.y < 64.0 {
+                    headings.push(caption.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            for caption in &mut geometry.captions {
+                caption.bounds.y -= 64.0;
+            }
+            for appointment in &mut geometry.appointments {
+                appointment.bounds.y -= 64.0;
+            }
+            for rule in &mut geometry.rules {
+                let end = rule.bounds.y + rule.bounds.height - 64.0;
+                rule.bounds.y = (rule.bounds.y - 64.0).max(0.0);
+                rule.bounds.height = (end - rule.bounds.y).max(0.0);
+            }
+            geometry.extent.height -= 64.0;
+        }
+        let mut changed = header_changed || self.geometry.as_ref() != Some(&geometry);
         let removed = self
             .appointments
             .keys()
@@ -599,6 +681,30 @@ impl SchedulerControl {
             &geometry.rules,
         );
         ui.set_custom_scene(self.scroll.content, paint)?;
+        if pinned && let Some(header) = ui.runtime.bounds(self.header) {
+            let offset = ui.scroll_offset(self.viewport).unwrap_or_default();
+            let paint = scene(
+                ui,
+                Point::new(header.x - offset.x, header.y),
+                rust_desktop_ui_core::Size::new(geometry.extent.width, header.height),
+                &headings,
+                &[],
+            );
+            let mut clipped = Scene::default();
+            clipped.fill(header, ui.theme().tokens().surface);
+            clipped
+                .append_view(&paint, Point::ZERO, header)
+                .map_err(error)?;
+            ui.set_custom_scene(self.header, clipped)?;
+            ui.set_automation_name(
+                self.header,
+                headings
+                    .iter()
+                    .map(|c| c.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; "),
+            )?;
+        }
         self.geometry = Some(geometry);
         Ok(changed)
     }

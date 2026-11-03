@@ -52,6 +52,216 @@ fn report() -> ReportDesignerSession {
     };
     ReportDesignerSession::new(d, table(), BTreeMap::new()).unwrap()
 }
+#[test]
+fn report_configuration_parameters_undo_and_invalid_candidate_are_atomic() {
+    let mut s = report();
+    let original = s.save().unwrap();
+    let mut d = s.definition().clone();
+    d.parameters
+        .push(FieldSchema::new("caption", FieldType::Text));
+    if let ReportItem::Text { value, bold, .. } = &mut d.detail.items[0] {
+        *value = ReportValue::Parameter("caption".into());
+        *bold = true;
+    }
+    s.replace_configuration(
+        s.revision(),
+        d.clone(),
+        BTreeMap::from([("caption".into(), CellValue::Text("日本語".into()))]),
+    )
+    .unwrap();
+    let accepted = s.save().unwrap();
+    let revision = s.revision();
+    d.page_size.width = -1.0;
+    assert!(
+        s.replace_configuration(revision, d, BTreeMap::new())
+            .is_err()
+    );
+    assert_eq!(s.revision(), revision);
+    assert_eq!(s.save().unwrap(), accepted);
+    assert_eq!(s.parameters()["caption"], CellValue::Text("日本語".into()));
+    s.undo().unwrap();
+    assert_eq!(s.save().unwrap(), original);
+    assert!(s.parameters().is_empty());
+    s.redo().unwrap();
+    assert_eq!(s.save().unwrap(), accepted);
+    assert_eq!(s.parameters()["caption"], CellValue::Text("日本語".into()));
+}
+fn designer() -> (Controls, ReportDesigner) {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let mut v = ReportDesigner::mount(
+        &mut ui,
+        root,
+        report(),
+        LayoutStyle {
+            width: Length::Percent(1.0),
+            height: Length::Percent(1.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for _ in 0..3 {
+        ui.update(Size::new(1100.0, 900.0)).unwrap();
+        v.refresh(&mut ui).unwrap();
+    }
+    (ui, v)
+}
+#[test]
+fn report_inspector_uses_typed_grid_and_preserves_invalid_draft() {
+    let (mut ui, mut v) = designer();
+    v.session_mut()
+        .select(Some(ReportSelection {
+            band: ReportBandKind::Detail,
+            item: 0,
+        }))
+        .unwrap();
+    v.activate(&mut ui, v.action_widget("settings").unwrap())
+        .unwrap();
+    let set = |v: &mut ReportDesigner, ui: &mut Controls, name: &str, value| {
+        let grid = v.property_grid_mut().unwrap();
+        grid.begin_edit(ui, name).unwrap();
+        grid.set_draft(ui, name, value).unwrap();
+    };
+    set(&mut v, &mut ui, "width", CellValue::Real(-10.0));
+    let saved = v.session().save().unwrap();
+    assert!(
+        v.activate(&mut ui, v.action_widget("settings_apply").unwrap())
+            .is_err()
+    );
+    assert_eq!(v.session().save().unwrap(), saved);
+    assert!(v.property_grid().is_some());
+    set(&mut v, &mut ui, "width", CellValue::Real(640.0));
+    set(&mut v, &mut ui, "bold", CellValue::Bool(true));
+    set(&mut v, &mut ui, "band3", CellValue::Real(48.0));
+    set(&mut v, &mut ui, "new_name", CellValue::Text("limit".into()));
+    set(
+        &mut v,
+        &mut ui,
+        "new_type",
+        CellValue::Text("Integer".into()),
+    );
+    set(&mut v, &mut ui, "new_value", CellValue::Text("42".into()));
+    v.activate(&mut ui, v.action_widget("settings_apply").unwrap())
+        .unwrap();
+    assert!(v.property_grid().is_none());
+    assert_eq!(v.session().definition().page_size.width, 640.0);
+    assert_eq!(v.session().definition().detail.height, 48.0);
+    assert!(matches!(
+        v.session().definition().detail.items[0],
+        ReportItem::Text { bold: true, .. }
+    ));
+    assert_eq!(v.session().parameters()["limit"], CellValue::Integer(42));
+    v.session_mut().undo().unwrap();
+    assert_eq!(v.session().save().unwrap(), saved);
+}
+#[test]
+fn report_canvas_items_focus_capture_cancel_and_composition_keep_document() {
+    let (mut ui, mut v) = designer();
+    let id = v.item_widgets()[0].1;
+    let r = ui.runtime.bounds(id).unwrap();
+    let p = Point::new(r.x + r.width * 0.5, r.y + r.height * 0.5);
+    let saved = v.session().save().unwrap();
+    let press = InputEvent::PointerDown {
+        position: p,
+        button: PointerButton::Primary,
+        modifiers: Default::default(),
+    };
+    assert!(v.input(&mut ui, &press).unwrap());
+    assert_eq!(ui.runtime.captured(), Some(v.canvas));
+    v.input(
+        &mut ui,
+        &InputEvent::PointerMoved {
+            position: Point::new(p.x + 40.0, p.y + 10.0),
+        },
+    )
+    .unwrap();
+    assert_eq!(v.session().save().unwrap(), saved);
+    v.cancel_interaction(&mut ui).unwrap();
+    assert_eq!(ui.runtime.captured(), None);
+    assert_eq!(v.session().save().unwrap(), saved);
+    ui.perform_action(
+        v.properties[4],
+        rust_desktop_ui_controls::SemanticAction::Focus,
+        None,
+    )
+    .unwrap();
+    ui.ime_preedit("にほん", Some((0, 9))).unwrap();
+    assert!(
+        v.activate(&mut ui, v.action_widget("apply").unwrap())
+            .is_err()
+    );
+    assert_eq!(v.session().save().unwrap(), saved);
+    ui.cancel_preedit();
+    for size in [Size::new(700.0, 620.0), Size::new(1500.0, 1100.0)] {
+        for _ in 0..3 {
+            ui.update(size).unwrap();
+            v.refresh(&mut ui).unwrap();
+        }
+        assert_eq!(v.item_widgets()[0].1, id);
+        assert!(
+            ui.semantics()
+                .iter()
+                .any(|s| s.id == id && s.label.contains("элемент 1"))
+        );
+    }
+}
+#[test]
+fn report_property_roundtrip_preserves_literal_prefixes_and_computed_values() {
+    let (mut ui, mut v) = designer();
+    v.session_mut()
+        .select(Some(ReportSelection {
+            band: ReportBandKind::Detail,
+            item: 0,
+        }))
+        .unwrap();
+    for value in [
+        ReportValue::Literal("=amount".into()),
+        ReportValue::Literal("@name".into()),
+        ReportValue::Literal("#номер".into()),
+        ReportValue::Literal("'цитата".into()),
+        ReportValue::PageNumber,
+        ReportValue::PageCount,
+    ] {
+        let mut item = v.session().definition().detail.items[0].clone();
+        if let ReportItem::Text { value: target, .. } = &mut item {
+            *target = value;
+        }
+        v.session_mut().replace_selected(item).unwrap();
+        v.refresh(&mut ui).unwrap();
+        let before = v.session().save().unwrap();
+        v.activate(&mut ui, v.action_widget("apply").unwrap())
+            .unwrap();
+        assert_eq!(v.session().save().unwrap(), before);
+    }
+}
+#[test]
+fn report_inspector_preserves_nullable_read_only_parameter() {
+    let (mut ui, mut v) = designer();
+    let mut definition = v.session().definition().clone();
+    let mut parameter = FieldSchema::new("caption", FieldType::Text);
+    parameter.nullable = true;
+    parameter.read_only = true;
+    definition.parameters.push(parameter);
+    let revision = v.session().revision();
+    v.session_mut()
+        .replace_configuration(
+            revision,
+            definition,
+            BTreeMap::from([("caption".into(), CellValue::Null)]),
+        )
+        .unwrap();
+    v.activate(&mut ui, v.action_widget("settings").unwrap())
+        .unwrap();
+    let field = v
+        .property_grid()
+        .unwrap()
+        .property_editor("parameter0")
+        .unwrap();
+    assert!(!ui.is_text_editable(field));
+    v.activate(&mut ui, v.action_widget("settings_apply").unwrap())
+        .unwrap();
+    assert_eq!(v.session().parameters()["caption"], CellValue::Null);
+}
 fn dashboard() -> DashboardSession {
     let q = QueryRequest {
         aggregates: vec![Aggregate {
