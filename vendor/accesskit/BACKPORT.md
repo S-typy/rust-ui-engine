@@ -22,3 +22,11 @@ uses this source alongside the matching local Windows adapter; native adapters
 for other operating systems retain their existing behavior.
 
 New local changes are Copyright 2026 rust-ui-engine contributors, Apache-2.0.
+
+The 2026-11-04 text-range extension appends
+`ActionData::ScrollTextIntoView { position, align_to_top }`. Windows text-range
+scrolling targets the text owner and retains the exact character index in its
+run. Applications validate the run identity and document version before
+scrolling, without editing, accepting a draft, changing selection or focusing.
+Existing enum variant ordering is retained. The plain ScrollHint payload remains
+available for non-text scrolling and other adapters retain their previous path.

@@ -32,6 +32,18 @@ Changes made 2026-11-04:
 - `src/node.rs` and `src/node/grid.rs` expose the new patterns. The direct COM
   tests add stale/disabled owner, merged enumeration and reentrant dispatch cases.
 
+The same date also adds plain-text range visibility:
+
+- `src/text/visibility.rs` intersects transformed text rectangles with ancestor
+  clips and derives bounded visible character ranges. Empty documents retain a
+  visible caret; fully clipped characters do not appear as visible text.
+- `src/node.rs` supplies GetVisibleRanges through those shared calculations.
+- `src/text.rs` clips GetBoundingRectangles and carries exact range endpoints
+  in the local ScrollTextIntoView payload. It targets the text owner rather
+  than losing the character index in a generic run-level scroll hint.
+- Direct tests check transformed LTR/RTL clips, edge-only intersections, empty
+  documents and COM endpoint transport. Query tests dispatch no native input.
+
 All other upstream implementation files are unchanged. Root `[patch.crates-io]`
 entries select this adapter and the matching AccessKit transport extension.
 The registry and other platform adapters

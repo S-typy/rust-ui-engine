@@ -28,6 +28,9 @@ const MAX_PREPARED_GLYPHS: usize = 65_536;
 const MAX_GRAPHEME_SCALARS: usize = 32;
 const MAX_GRAPHEME_BYTES: usize = 128;
 
+mod accessibility;
+pub use accessibility::AccessibleTextRun;
+
 /// Prepared outputs hold bitmap Arcs independently of the engine cache.
 #[derive(Default)]
 struct RasterBudget {
@@ -142,6 +145,7 @@ pub struct PreparedText {
     graphemes: Arc<[usize]>,
     origin: Point,
     scale: f32,
+    clip: Rect,
 }
 
 // Shaping internals can include protected text. Diagnostics expose metrics,
@@ -160,6 +164,21 @@ impl fmt::Debug for PreparedText {
 }
 
 impl PreparedText {
+    /// Horizontal advance extent, including trailing whitespace, in the same
+    /// physical coordinate space as caret geometry. RTL whitespace may extend
+    /// left of the layout origin. This is an advance extent, not glyph ink.
+    pub fn horizontal_extent(&self) -> Range<f32> {
+        let mut left = self.origin.x;
+        let mut right = left;
+        for line in self.layout.lines() {
+            let metrics = line.metrics();
+            let start = self.origin.x + metrics.offset;
+            left = left.min(start);
+            right = right.max(start + metrics.advance);
+        }
+        left..right
+    }
+
     /// Preserve this affinity when implementing visual bidi arrow navigation.
     pub fn hit_test_caret(&self, position: Point) -> TextCaret {
         if !position.is_finite() {
@@ -364,6 +383,7 @@ pub enum TextError {
     RasterLimit,
     InvalidBitmap,
     FontCatalogLimit,
+    AccessibilityLimit,
 }
 impl fmt::Display for TextError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -376,6 +396,7 @@ impl fmt::Display for TextError {
             Self::UnsupportedFont => "a selected system font could not be read by the rasterizer",
             Self::RasterLimit => "glyph raster dimensions or prepared glyph count exceed the supported limit",
             Self::FontCatalogLimit => "system font catalog exceeds supported bounds",
+            Self::AccessibilityLimit => "text accessibility exceeds 4096 runs or does not match the prepared text",
             Self::InvalidBitmap => "rasterizer produced inconsistent glyph pixels",
         })
     }
@@ -609,6 +630,7 @@ impl TextEngine {
             graphemes,
             origin: Point::new(bounds.x, bounds.y),
             scale,
+            clip,
         })
     }
 

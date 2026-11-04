@@ -32,6 +32,45 @@ finite offset to the currently arranged content. Manual scrolling persists acros
 repaints. Typing, navigation, selection and focus return the caret to view.
 Single-line editors use horizontal caret scrolling.
 
+Horizontal scroll limits include trailing whitespace and the caret width. RTL
+whitespace can require a negative offset. The same limits apply to manual
+scrolling and native text-range requests.
+
+## Native text ranges
+
+`Controls::editor_text_snapshot` exposes the current plain-text document version,
+selection, shaped grapheme geometry and visible clip to a native adapter.
+`PreparedText::accessible_runs` groups logical text by visual line and direction,
+with at most 256 extended graphemes per run and 4,096 runs per editor. Geometry
+uses the same shaping result as painting, including wrapping and bidirectional
+text. The existing admission limits of 32 scalars and 128 UTF-8 bytes per
+grapheme fit the transport's byte-length representation without splitting a
+grapheme. A mismatched layout or exhausted run budget returns an explicit error.
+
+The `xaml-form` Windows projection provides UIA TextPattern for plain TextBox,
+EditBox and visible Memo editors, including the retained spreadsheet editor.
+Document and selection ranges use extended graphemes as Character units.
+Word navigation follows Unicode word starts; Line units follow visual wrapping.
+Empty editors expose an empty range, never their placeholder. Range rectangles
+and visible ranges respect the text clip. Native `ScrollIntoView` carries an
+exact range endpoint, including its position within a run.
+
+`select_editor_text` and `scroll_editor_text_into_view` require the document
+version published with the snapshot. Selection accepts only grapheme edges;
+scrolling changes neither selection nor focus. Both reject stale, disabled,
+hidden, removed or composing editors. Read-only text remains selectable and
+scrollable. These operations do not accept a business value or change undo
+history. Run identities remain stable across selection, scrolling and scaling
+when the document version and run structure match; replacing text invalidates
+old ranges.
+
+Password controls and active IME preedit do not expose this snapshot. A display
+transformation whose text differs from the document is rejected rather than
+publishing incorrect offsets. TextPattern is a plain-text profile: native
+`FindText`, `FindAttribute`, embedded-object ranges and rich formatting are not
+implemented by this adapter. Other platform adapters and native IME candidate
+behavior require their own acceptance checks.
+
 `TextDocument` retains its grapheme index across navigation and rebuilds it after
 text changes and undo/redo. `clear_history` discards undo/redo snapshots while
 preserving text, selection and active composition. `undo_text` and `redo_text`

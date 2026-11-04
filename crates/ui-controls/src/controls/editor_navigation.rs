@@ -353,9 +353,7 @@ impl Controls {
         let control = self.controls.get_mut(&id).unwrap();
         let (x, y) = if control.single_line {
             (
-                offset
-                    .x
-                    .clamp(0.0, (layout.width - viewport.width).max(0.0)),
+                clamp_horizontal_editor_scroll(offset.x, layout, viewport, control.text_scroll_x),
                 0.0,
             )
         } else {

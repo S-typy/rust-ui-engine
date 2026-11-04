@@ -174,9 +174,11 @@ pub use rating::{RatingChanged, RatingPreview, RatingSettings, RatingValidator};
 mod splitter;
 pub use sliders::{RangeSliderSettings, SliderSettings, ThumbCrossing};
 mod custom_measure;
+mod editor_accessibility;
 mod editor_async;
 mod editor_navigation;
 mod editor_text;
+pub use editor_accessibility::EditorTextSnapshot;
 mod password;
 #[cfg(test)]
 mod password_tests;
@@ -4088,7 +4090,8 @@ impl Controls {
                     // Give an unwrapped RTL line its full intrinsic width before
                     // scrolling. Changing this width with the scroll offset would
                     // move Start alignment and cancel the horizontal translation.
-                    run.bounds.width = layout.width.max(text_bounds.width);
+                    let extent = layout.horizontal_extent();
+                    run.bounds.width = (extent.end - extent.start + 1.0).max(text_bounds.width);
                     layout = self
                         .engine
                         .prepare(&run, 1.0)
@@ -4102,9 +4105,12 @@ impl Controls {
                         ..control.caret
                     };
                     let caret = layout.caret_geometry(active);
-                    control.text_scroll_x = control
-                        .text_scroll_x
-                        .clamp(0.0, (layout.width - text_bounds.width).max(0.0));
+                    control.text_scroll_x = clamp_horizontal_editor_scroll(
+                        control.text_scroll_x,
+                        &layout,
+                        text_bounds,
+                        0.0,
+                    );
                     if self.runtime.focused() == Some(id) && control.caret_reveal {
                         control.text_scroll_x =
                             horizontal_caret_scroll(control.text_scroll_x, caret, text_bounds);
@@ -4890,6 +4896,18 @@ fn horizontal_caret_scroll(previous: f32, caret: Rect, viewport: Rect) -> f32 {
     previous
         .max(caret.x + caret.width - viewport.x - viewport.width)
         .min(caret.x - viewport.x)
+}
+
+fn clamp_horizontal_editor_scroll(
+    requested: f32,
+    layout: &PreparedText,
+    viewport: Rect,
+    applied: f32,
+) -> f32 {
+    let extent = layout.horizontal_extent();
+    let minimum = (extent.start + applied - viewport.x).min(0.0);
+    let maximum = (extent.end + applied + 1.0 - viewport.x - viewport.width).max(0.0);
+    requested.clamp(minimum, maximum)
 }
 
 fn fill_clipped(scene: &mut Scene, bounds: Rect, clip: Rect, color: Color) {

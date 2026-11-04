@@ -68,10 +68,18 @@ Native action допускается только для существующе�
 Набор нативных UI Automation patterns зависит от платформенного адаптера.
 Локальное расширение `accesskit_windows` 0.35.1 добавляет Grid/GridItem и
 Table/TableItem к существующему SelectionPattern. Размеры, spans, заголовки и
-подготовленные ячейки доступны через COM; реализация виртуальных ячеек вне
-снимка и реальная навигация диктором ещё требуют отдельной работы и приёмки.
+подготовленные ячейки доступны через COM. Явная реализация виртуальных ячеек
+описана в ADR-016; чтение метаданных не меняет viewport или selection.
 Подробнее — [доступность GridControl](grid-control.md#доступность-и-границы)
 и [ADR-015](adr/ADR-015-windows-table-accessibility.md).
+
+Для plain-text редакторов `xaml-form` публикует shaped TextRun и TextSelection.
+Локальное расширение Windows-адаптера учитывает clips при чтении диапазонов,
+реализует GetVisibleRanges и передаёт точный endpoint в ScrollIntoView.
+`ActionData::ScrollTextIntoView` направляется владельцу текста; приложение
+проверяет ID run и версию документа до прокрутки. Фокус, выделение, accepted
+value и undo от такой прокрутки не меняются. Контракт, бюджеты и ограничения —
+[текстовые редакторы](text-editing.md#native-text-ranges).
 
 ## Минимальное приложение с текстом
 

@@ -3378,6 +3378,14 @@ pub enum ActionData {
         column: usize,
         generation: usize,
     },
+    /// Local extension for [`Action::ScrollIntoView`] on a text owner.
+    /// The range endpoint preserves its character position within a text run.
+    /// Receivers validate the run identity and document version and must not
+    /// change selection, focus, accepted values or the undo history.
+    ScrollTextIntoView {
+        position: TextPosition,
+        align_to_top: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

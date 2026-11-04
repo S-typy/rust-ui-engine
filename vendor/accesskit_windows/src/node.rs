@@ -1457,10 +1457,14 @@ patterns! {
         },
 
         fn GetVisibleRanges(&self) -> Result<*mut SAFEARRAY> {
-            // TBD: Do we need this? The Quorum GUI toolkit, which is our
-            // current point of comparison for text functionality,
-            // doesn't implement it.
-            Ok(std::ptr::null_mut())
+            self.resolve_for_text_pattern(|node| {
+                let ranges = crate::text::visible_ranges(&node)?;
+                let providers: Result<Vec<IUnknown>> = ranges.into_iter().map(|range| {
+                    let provider: ITextRangeProvider = PlatformTextRange::new(&self.context, range).into();
+                    provider.cast()
+                }).collect();
+                Ok(safe_array_from_com_slice(&providers?))
+            })
         },
 
         fn RangeFromChild(&self, _child: Ref<IRawElementProviderSimple>) -> Result<ITextRangeProvider> {

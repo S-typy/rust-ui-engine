@@ -5,7 +5,7 @@
 
 #![allow(non_upper_case_globals)]
 
-use accesskit::{Action, ActionData, ActionRequest, ScrollHint, VerticalOffset};
+use accesskit::{Action, ActionData, ActionRequest, VerticalOffset};
 use accesskit_consumer::{
     NodeRef, TextPosition as Position, TextRange as Range, Tree, TreeState,
     WeakTextRange as WeakRange,
@@ -20,6 +20,9 @@ use windows::{
 };
 
 use crate::{context::Context, util::*};
+
+mod visibility;
+pub(crate) use visibility::visible_ranges;
 
 fn upgrade_range<'a>(weak: &WeakRange, tree_state: &'a TreeState) -> Result<Range<'a>> {
     if let Some(range) = weak.upgrade(tree_state) {
@@ -493,7 +496,7 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
 
     fn GetBoundingRectangles(&self) -> Result<*mut SAFEARRAY> {
         self.read_with_context(|range, context| {
-            let rects = range.bounding_boxes();
+            let rects = visibility::clipped_boxes(&range);
             if rects.is_empty() {
                 return Ok(std::ptr::null_mut());
             }
@@ -620,19 +623,15 @@ impl ITextRangeProvider_Impl for PlatformRange_Impl {
             } else {
                 range.end()
             };
-            let (target_node, target_tree) = tree
-                .state()
-                .locate_node(position.inner_node().id())
-                .unwrap();
+            let (target_node, target_tree) = tree.state().locate_node(range.node().id()).unwrap();
             ActionRequest {
                 action: Action::ScrollIntoView,
                 target_tree,
                 target_node,
-                data: Some(ActionData::ScrollHint(if align_to_top.into() {
-                    ScrollHint::TopEdge
-                } else {
-                    ScrollHint::BottomEdge
-                })),
+                data: Some(ActionData::ScrollTextIntoView {
+                    position: position.to_raw(),
+                    align_to_top: align_to_top.into(),
+                }),
             }
         })
     }

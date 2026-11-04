@@ -18,6 +18,8 @@ mod grid;
 #[cfg(test)]
 #[path = "accessibility_search_tests.rs"]
 mod search_tests;
+#[path = "accessibility_text.rs"]
+mod text;
 #[path = "accessibility_tree.rs"]
 mod tree;
 
@@ -28,6 +30,7 @@ pub(crate) struct Accessibility {
     next: u64,
     grids: grid::GridAccessibility,
     trees: tree::TreeAccessibility,
+    texts: text::TextAccessibility,
 }
 impl Default for Accessibility {
     fn default() -> Self {
@@ -38,6 +41,7 @@ impl Default for Accessibility {
             next: 2,
             grids: grid::GridAccessibility::default(),
             trees: tree::TreeAccessibility::default(),
+            texts: text::TextAccessibility::default(),
         }
     }
 }
@@ -52,6 +56,7 @@ impl Accessibility {
             errors: HashMap::new(),
             grids: grid::GridAccessibility::default(),
             trees: tree::TreeAccessibility::default(),
+            texts: text::TextAccessibility::default(),
         }
     }
 
@@ -81,6 +86,7 @@ impl Accessibility {
         let semantics = ui.semantics();
         self.grids.begin();
         self.trees.begin();
+        self.texts.begin();
         let present: HashSet<_> = semantics.iter().map(|node| node.id).collect();
         self.widgets
             .retain(|widget, _| ui.runtime.tree().node(*widget).is_some());
@@ -360,6 +366,16 @@ impl Accessibility {
                 }
             }
             node.set_children(children);
+            if let Err(error) = self.texts.project(
+                ui,
+                (widget, id),
+                scale,
+                &mut self.next,
+                &mut node,
+                &mut nodes,
+            ) {
+                append_description(&mut node, &format!("Text ranges unavailable: {error}"));
+            }
             if semantic.focused {
                 focus = id;
             }
@@ -379,6 +395,7 @@ impl Accessibility {
         }
         self.grids.finish();
         self.trees.finish();
+        self.texts.finish();
         accesskit::TreeUpdate {
             nodes,
             tree: Some(accesskit::TreeInfo::new(self.root)),
@@ -399,6 +416,9 @@ impl Accessibility {
             return Ok(());
         }
         if self.trees.action(ui, &request)? {
+            return Ok(());
+        }
+        if self.texts.action(ui, &request)? {
             return Ok(());
         }
         let Some(widget) = self
