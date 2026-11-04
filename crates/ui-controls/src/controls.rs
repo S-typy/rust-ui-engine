@@ -33,7 +33,17 @@ mod chart;
 mod rich_editor_adapter;
 mod spatial;
 pub use spatial::{SpatialCanvasChange, SpatialCanvasModel, SpatialChangeKind};
+mod chart_family;
+mod chart_family_geometry;
+#[cfg(test)]
+mod chart_family_tests;
 mod chart_model;
+pub use chart_family::{
+    ChartFamily, ChartFlowLink, ChartFlowNode, ChartHierarchyNode, ChartSlice, HeatmapAxisItem,
+    HeatmapCell, MAX_CHART_DEPTH, MAX_CHART_FLOW_LINKS, MAX_CHART_FLOW_NODES,
+    MAX_CHART_HIERARCHY_NODES,
+};
+pub use chart_family_geometry::{ChartRegion, ChartRegionShape};
 mod gauge;
 pub use chart_model::{
     ChartBar, ChartError, ChartGeometry, ChartLine, ChartMark, ChartModel, ChartPoint,

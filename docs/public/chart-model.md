@@ -1,10 +1,10 @@
-# Cartesian chart data and geometry
+# Chart data and geometry
 
 `ChartModel` contains a bounded accepted snapshot of numeric series, settings and
-an optional selected point. Supported views are `Line`, `Scatter`, `Bar`, and
-`Sparkline`. Sparkline uses the same line geometry with a compact presentation.
-Pie, hierarchical, heatmap, flow, stacked, logarithmic, time and categorical axes
-are not implemented by this profile. It does not provide a general chart suite.
+an optional selected item. Cartesian views are `Line`, `Scatter`, `Bar`, and
+`Sparkline`. Typed `ChartFamily` observations add `Pie`, `Heatmap`, `Treemap`,
+`Sunburst` and `Sankey`. Sparkline uses the same line geometry with a compact
+presentation. Stacking, area, logarithmic and time axes remain outside this profile.
 
 `ChartSeries` has a stable `u64` ID, label and points. Each point has a full signed
 `i64` ID unique within its series, a finite `x` and optional finite `y`. Point order
@@ -64,3 +64,43 @@ The drawing presenter must preflight final composed labels through the text
 engine before replacing its retained control. Model validation does not claim
 font availability or successful native rendering. Data/geometry unit results,
 retained input checks and native visual acceptance are separate evidence.
+
+## Partitions, cells, hierarchies and flows
+
+Use `ChartModel::from_family(data, settings)` and `replace_family` for these
+views. X/Y titles and explicit Cartesian ranges are rejected. `series()` is
+empty and `point()` returns `None`; observations remain available through
+`family()`. The legacy `x_range()` and `y_range()` unit intervals describe no
+data axis for these views. Their geometry contains no numeric axis ticks.
+
+| Family | Observations and limits |
+| --- | --- |
+| Pie | Up to 16 `ChartSlice` values with stable signed IDs, labels and finite nonnegative weights. Zero slices have no region. |
+| Heatmap | Up to 64 named rows and 64 named columns, with up to 4096 uniquely positioned `HeatmapCell` observations. Negative values are valid; `None` produces an empty cell. |
+| Treemap / Sunburst | Up to 128 `ChartHierarchyNode` values, eight levels, 16 roots and 16 children per branch. Leaves supply nonnegative weights; branches use `None` and sum their children. Missing parents and cycles are errors. |
+| Sankey | Up to 64 `ChartFlowNode` and 128 positive `ChartFlowLink` values, arranged in an acyclic graph of at most eight ranks. Missing endpoints, self links and cycles are errors. |
+
+All labels are single-line and at most 256 UTF-8 bytes. Sums must remain finite.
+Every candidate is validated before replacement. Selection survives reordered or
+changed data within the same family while its key remains selectable; switching
+data families clears it. Treemap and Sunburst share hierarchy identities.
+`ChartPointKey.series` is namespace 0 for these items and namespace 1 for Sankey
+links. `describe(key)` returns a slice value and percentage, row/column/value,
+hierarchy path and sum, or flow endpoints/weight and node incoming/outgoing totals.
+
+Treemap uses recursive proportional rectangles, splitting along the longer
+dimension. Branch headers and insets reserve visible space; leaf areas therefore
+represent proportions within their parent's content area. Sunburst uses weighted
+angular spans and equal radial depth bands. Flow ranks follow the longest path
+from a source; stable input order controls vertical order. Node height is the
+larger of incoming and outgoing weight, so an imbalance leaves unused capacity.
+Cycles, automated crossing minimization and interactive node positioning are not
+part of this flow layout. Unconnected zero-weight nodes have no region.
+
+`ChartGeometry.regions` contains the exact rectangles or bounded polygons used by
+painting and hit testing. Curves are sampled into at most 256 edges per polygon.
+The last painted containing region wins; outside a region, marker proximity does
+not select empty space. `points` contains keyboard anchors, not fabricated X/Y
+observations. Subpixel regions may collapse at the final f32 conversion; zero and
+missing partitions are omitted. The shared renderer's per-frame path budget also
+applies when composing multiple diagrams.

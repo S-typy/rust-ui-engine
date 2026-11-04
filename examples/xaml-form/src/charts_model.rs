@@ -4,6 +4,8 @@ use rust_desktop_ui_core::{LayoutStyle, Length, Size, WidgetId};
 use rust_desktop_ui_platform_winit::{DesktopApp, EventResponse, PlatformEvent, accesskit};
 use rust_desktop_ui_xaml::WindowDefinition;
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+#[path = "charts_family_model.rs"]
+mod family;
 fn sample(generation: u32) -> Vec<ChartSeries> {
     use rust_desktop_ui_data::{
         CellValue, DataRow, DataTable, FieldSchema, FieldType, TableSchema,
@@ -108,6 +110,11 @@ impl ChartsDemo {
             ("ChartUpdate", "Обновить"),
             ("ChartRange", "Диапазон"),
             ("ChartReset", "Сбросить"),
+            ("ChartPie", "Доли"),
+            ("ChartHeatmap", "Тепловая карта"),
+            ("ChartTreemap", "Дерево площадей"),
+            ("ChartSunburst", "Кольца дерева"),
+            ("ChartSankey", "Потоки"),
         ]
         .into_iter()
         .enumerate()
@@ -156,7 +163,7 @@ impl ChartsDemo {
                 2 => s.view = ChartView::Bar,
                 3 => s.view = ChartView::Sparkline,
                 4 => self.generation = (self.generation + 1) % 5,
-                5 => {
+                5 if m.family().is_none() => {
                     if s.x_range.is_some() {
                         s.x_range = None;
                         s.y_range = None
@@ -171,13 +178,56 @@ impl ChartsDemo {
                         });
                     }
                 }
-                _ => {
+                6 => {
                     self.generation = 0;
                     s = settings(ChartView::Line);
                 }
+                7 => s.view = ChartView::Pie,
+                8 => s.view = ChartView::Heatmap,
+                9 => s.view = ChartView::Treemap,
+                10 => s.view = ChartView::Sunburst,
+                11 => s.view = ChartView::Sankey,
+                _ => {}
             }
-            m.replace(sample(self.generation), s).map_err(error)?;
+            if matches!(
+                s.view,
+                ChartView::Pie
+                    | ChartView::Heatmap
+                    | ChartView::Treemap
+                    | ChartView::Sunburst
+                    | ChartView::Sankey
+            ) {
+                let view = s.view;
+                m.replace_family(
+                    family::sample(view, self.generation),
+                    ChartSettings {
+                        view,
+                        ..Default::default()
+                    },
+                )
+                .map_err(error)?;
+            } else {
+                if m.family().is_some() {
+                    s = settings(s.view);
+                }
+                m.replace(sample(self.generation), s).map_err(error)?;
+            }
+            let cartesian = m.family().is_none();
             self.form.ui.set_chart_model(self.chart, m).map_err(error)?;
+            let summary = self
+                .form
+                .ui
+                .chart_semantic_value(self.chart)
+                .unwrap()
+                .to_owned();
+            self.form
+                .ui
+                .set_label(self.form.find_name("ChartResult").unwrap(), &summary)
+                .map_err(error)?;
+            self.form
+                .ui
+                .commands_mut()
+                .set_enabled(&"ChartRange".into(), cartesian);
             let mut spark = self.form.ui.chart_model(self.spark).unwrap().clone();
             spark
                 .replace(sample(self.generation), settings(ChartView::Sparkline))
@@ -286,7 +336,17 @@ mod tests {
         let mut app = ChartsDemo::new(crate::generated_charts::window_definition(), false).unwrap();
         app.update(Size::new(1100.0, 900.0), 1.0).unwrap();
         for width in [760.0, 1100.0] {
-            for command in ["ChartLine", "ChartScatter", "ChartBar", "ChartSparkline"] {
+            for command in [
+                "ChartLine",
+                "ChartScatter",
+                "ChartBar",
+                "ChartSparkline",
+                "ChartPie",
+                "ChartHeatmap",
+                "ChartTreemap",
+                "ChartSunburst",
+                "ChartSankey",
+            ] {
                 let b = app
                     .form
                     .ui
@@ -317,6 +377,11 @@ mod tests {
                     "Обновить",
                     "Диапазон",
                     "Сбросить",
+                    "Доли",
+                    "Тепловая карта",
+                    "Дерево площадей",
+                    "Кольца дерева",
+                    "Потоки",
                 ] {
                     assert!(
                         app.form
@@ -366,6 +431,17 @@ mod tests {
                 assert_eq!(
                     app.form.ui.chart_model(app.chart).unwrap().selected(),
                     Some(p.key)
+                );
+                let result = app
+                    .form
+                    .ui
+                    .semantics()
+                    .into_iter()
+                    .find(|node| node.id == app.form.find_name("ChartResult").unwrap())
+                    .unwrap();
+                assert_eq!(
+                    Some(result.label.as_str()),
+                    app.form.ui.chart_semantic_value(app.chart)
                 );
                 app.form.ui.commands_mut().execute(&"ChartUpdate".into());
                 app.update(Size::new(width, 900.0), 1.0).unwrap();

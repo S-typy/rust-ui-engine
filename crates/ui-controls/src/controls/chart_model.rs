@@ -1,4 +1,8 @@
 //! Finite, bounded Cartesian data and the shared drawing/hit-test geometry.
+use super::{
+    chart_family::ChartFamily,
+    chart_family_geometry::{self, ChartRegion},
+};
 use rust_desktop_ui_core::{Point, Rect};
 use rust_desktop_ui_data::{CellValue, DataTable, FieldType};
 use std::collections::HashSet;
@@ -14,6 +18,11 @@ pub enum ChartView {
     Bar,
     /// The same line geometry, without axes or a legend in the presenter.
     Sparkline,
+    Pie,
+    Heatmap,
+    Treemap,
+    Sunburst,
+    Sankey,
 }
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ChartRange {
@@ -105,6 +114,9 @@ pub enum ChartError {
     UnknownPoint,
     UnsupportedField,
     InexactInteger,
+    InvalidView,
+    InvalidWeight,
+    InvalidTopology,
 }
 impl std::fmt::Display for ChartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -188,6 +200,7 @@ impl ChartSeries {
 #[derive(Clone, Debug)]
 pub struct ChartModel {
     series: Vec<ChartSeries>,
+    family: Option<ChartFamily>,
     settings: ChartSettings,
     x_range: ChartRange,
     y_range: ChartRange,
@@ -221,6 +234,12 @@ fn automatic(values: impl Iterator<Item = f64>, zero: bool) -> Result<ChartRange
 }
 impl ChartModel {
     pub fn new(series: Vec<ChartSeries>, settings: ChartSettings) -> Result<Self, ChartError> {
+        if !matches!(
+            settings.view,
+            ChartView::Line | ChartView::Scatter | ChartView::Bar | ChartView::Sparkline
+        ) {
+            return Err(ChartError::InvalidView);
+        }
         if series.len() > MAX_CHART_SERIES {
             return Err(ChartError::Capacity);
         }
@@ -292,11 +311,95 @@ impl ChartModel {
         }
         Ok(Self {
             series,
+            family: None,
             settings,
             x_range,
             y_range,
             selected: None,
         })
+    }
+    /// Construct typed non-Cartesian data. Explicit X/Y ranges and axis titles
+    /// are rejected because they do not describe these observations.
+    pub fn from_family(family: ChartFamily, settings: ChartSettings) -> Result<Self, ChartError> {
+        family.validate(settings.view)?;
+        if settings.x_range.is_some()
+            || settings.y_range.is_some()
+            || !settings.x_title.is_empty()
+            || !settings.y_title.is_empty()
+        {
+            return Err(ChartError::InvalidRange);
+        }
+        Ok(Self {
+            series: vec![],
+            family: Some(family),
+            settings,
+            x_range: ChartRange {
+                minimum: 0.0,
+                maximum: 1.0,
+            },
+            y_range: ChartRange {
+                minimum: 0.0,
+                maximum: 1.0,
+            },
+            selected: None,
+        })
+    }
+    pub fn family(&self) -> Option<&ChartFamily> {
+        self.family.as_ref()
+    }
+    /// Atomically replace a family's accepted data and retain a selectable key.
+    pub fn replace_family(
+        &mut self,
+        family: ChartFamily,
+        settings: ChartSettings,
+    ) -> Result<(), ChartError> {
+        let mut candidate = Self::from_family(family, settings)?;
+        candidate.selected = self.selected.filter(|key| {
+            self.family.as_ref().is_some_and(|old| {
+                std::mem::discriminant(old)
+                    == std::mem::discriminant(candidate.family.as_ref().unwrap())
+            }) && candidate.describe(*key).is_some()
+        });
+        *self = candidate;
+        Ok(())
+    }
+    /// Human-readable values in the observation's own units; used by the view
+    /// and its accessible summary. A missing/zero partition has no selection.
+    pub fn describe(&self, key: ChartPointKey) -> Option<String> {
+        if let Some(family) = &self.family {
+            return family.describe(key);
+        }
+        let series = self.series.iter().find(|s| s.id == key.series)?;
+        let point = self.point(key)?;
+        Some(format!(
+            "{}: X {}, Y {}",
+            series.label,
+            Self::format_number(point.x),
+            Self::format_number(point.y?)
+        ))
+    }
+    /// Legend labels in stable input order. Hierarchies use their root nodes;
+    /// Heatmap uses its numeric scale and Sankey labels nodes on the plot.
+    pub fn legend_labels(&self) -> Vec<&str> {
+        match &self.family {
+            Some(ChartFamily::Pie(slices)) => slices.iter().map(|s| s.label.as_str()).collect(),
+            Some(ChartFamily::Hierarchy(nodes)) => {
+                let roots: Vec<_> = nodes.iter().filter(|n| n.parent.is_none()).collect();
+                if roots.len() == 1 {
+                    let children: Vec<_> = nodes
+                        .iter()
+                        .filter(|n| n.parent == Some(roots[0].id))
+                        .map(|n| n.label.as_str())
+                        .collect();
+                    if !children.is_empty() && children.len() <= MAX_CHART_SERIES {
+                        return children;
+                    }
+                }
+                roots.iter().map(|n| n.label.as_str()).collect()
+            }
+            Some(_) => vec![],
+            None => self.series.iter().map(|s| s.label.as_str()).collect(),
+        }
     }
     pub fn replace(
         &mut self,
@@ -304,9 +407,9 @@ impl ChartModel {
         settings: ChartSettings,
     ) -> Result<(), ChartError> {
         let mut candidate = Self::new(series, settings)?;
-        candidate.selected = self
-            .selected
-            .filter(|key| candidate.point(*key).is_some_and(|p| p.y.is_some()));
+        candidate.selected = self.selected.filter(|key| {
+            self.family.is_none() && candidate.point(*key).is_some_and(|p| p.y.is_some())
+        });
         *self = candidate;
         Ok(())
     }
@@ -334,7 +437,7 @@ impl ChartModel {
             .find(|p| p.id == key.point)
     }
     pub fn select(&mut self, key: Option<ChartPointKey>) -> Result<(), ChartError> {
-        if key.is_some_and(|key| self.point(key).is_none_or(|p| p.y.is_none())) {
+        if key.is_some_and(|key| self.describe(key).is_none()) {
             return Err(ChartError::UnknownPoint);
         }
         self.selected = key;
@@ -376,7 +479,22 @@ impl ChartModel {
             points: Vec::new(),
             segments: Vec::new(),
             bars: Vec::new(),
+            regions: Vec::new(),
         };
+        if let Some(family) = &self.family {
+            result.x_ticks.clear();
+            result.y_ticks.clear();
+            result.regions = chart_family_geometry::geometry(family, self.settings.view, plot)?;
+            result.points = result
+                .regions
+                .iter()
+                .map(|r| ChartMark {
+                    key: r.key,
+                    position: r.anchor,
+                })
+                .collect();
+            return Ok(result);
+        }
         let mut xs: Vec<f64> = self
             .series
             .iter()
@@ -454,6 +572,7 @@ impl ChartModel {
                             });
                         }
                     }
+                    _ => unreachable!("family geometry is handled above"),
                 }
             }
         }
@@ -512,6 +631,7 @@ pub struct ChartGeometry {
     pub points: Vec<ChartMark>,
     pub segments: Vec<ChartLine>,
     pub bars: Vec<ChartBar>,
+    pub regions: Vec<ChartRegion>,
 }
 impl ChartGeometry {
     /// Bars win over markers; equal-distance marks use series/input order.
@@ -526,6 +646,14 @@ impl ChartGeometry {
             || point.y > self.plot.y + self.plot.height
         {
             return None;
+        }
+        if !self.regions.is_empty() {
+            return self
+                .regions
+                .iter()
+                .rev()
+                .find(|r| r.contains(point, self.plot))
+                .map(|r| r.key);
         }
         if let Some(bar) = self
             .bars

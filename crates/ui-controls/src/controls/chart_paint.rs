@@ -6,12 +6,15 @@ pub(super) fn plot(model: &ChartModel, b: Rect) -> Option<Rect> {
             .then(|| Rect::new(b.x + 8.0, b.y + 8.0, b.width - 16.0, b.height - 16.0));
     }
     let rows = if model.settings().legend {
-        model.series().len().div_ceil(4)
+        model.legend_labels().len().div_ceil(4)
     } else {
         0
     };
     let top = 36.0 + rows as f32 * 26.0;
     (b.width >= 520.0 && b.height >= 240.0 + rows as f32 * 26.0).then(|| {
+        if model.family().is_some() && model.settings().view != ChartView::Heatmap {
+            return Rect::new(b.x + 20.0, b.y + top, b.width - 40.0, b.height - top - 38.0);
+        }
         Rect::new(
             b.x + 82.0,
             b.y + top,
@@ -197,7 +200,7 @@ impl Controls {
             )?;
             if model.settings().legend {
                 let width = (bounds.width - 32.0) / 4.0;
-                for (i, s) in model.series().iter().enumerate() {
+                for (i, label) in model.legend_labels().iter().enumerate() {
                     let x = bounds.x + 16.0 + (i % 4) as f32 * width;
                     let y = bounds.y + 30.0 + (i / 4) as f32 * 26.0;
                     self.scene.rounded_fill(
@@ -209,7 +212,7 @@ impl Controls {
                     text(
                         &mut self.scene,
                         &mut self.engine,
-                        &s.label,
+                        label,
                         Rect::new(x + 18.0, y, width - 24.0, 26.0),
                         clip,
                         tokens.text,
@@ -232,6 +235,16 @@ impl Controls {
                 tokens.muted,
                 12.0,
                 TextAlign::Start,
+            )?;
+        }
+        if model.family().is_some() {
+            paint_regions(
+                &mut self.scene,
+                &mut self.engine,
+                model,
+                &geometry,
+                clip,
+                self.theme,
             )?;
         }
         for (i, s) in model.series().iter().enumerate() {
@@ -279,4 +292,219 @@ impl Controls {
         }
         Ok(true)
     }
+}
+
+fn paint_regions(
+    scene: &mut Scene,
+    engine: &mut TextEngine,
+    model: &ChartModel,
+    geometry: &ChartGeometry,
+    clip: Rect,
+    theme: Theme,
+) -> Result<(), ControlError> {
+    let tokens = theme.tokens();
+    let Some(plot_clip) = clip.intersection(geometry.plot) else {
+        return Ok(());
+    };
+    for region in &geometry.regions {
+        let mut brush = color(theme, region.color_index);
+        let hierarchy = matches!(
+            model.settings().view,
+            ChartView::Treemap | ChartView::Sunburst
+        );
+        let flow_link = model.settings().view == ChartView::Sankey && region.key.series == 1;
+        if hierarchy || flow_link {
+            let t = if flow_link {
+                0.27
+            } else {
+                match region.depth {
+                    0 => 0.16,
+                    1 => 0.56,
+                    depth => (0.86 - (depth - 2) as f32 * 0.06).max(0.56),
+                }
+            };
+            brush = Color {
+                r: tokens.surface.r + (brush.r - tokens.surface.r) * t,
+                g: tokens.surface.g + (brush.g - tokens.surface.g) * t,
+                b: tokens.surface.b + (brush.b - tokens.surface.b) * t,
+                a: 1.0,
+            };
+        }
+        if let Some(intensity) = region.intensity {
+            // Opaque interpolation avoids seams where adjacent cells meet.
+            let t = 0.12 + intensity * 0.88;
+            brush = Color {
+                r: tokens.surface.r + (brush.r - tokens.surface.r) * t,
+                g: tokens.surface.g + (brush.g - tokens.surface.g) * t,
+                b: tokens.surface.b + (brush.b - tokens.surface.b) * t,
+                a: 1.0,
+            };
+        }
+        match &region.shape {
+            ChartRegionShape::Rectangle(bounds) => {
+                scene.rounded_fill(*bounds, plot_clip, 0.0, brush);
+                if region.intensity.is_some() || hierarchy {
+                    scene.rounded_stroke(*bounds, plot_clip, 0.0, 0.5, tokens.surface);
+                }
+                if bounds.width >= 38.0 && bounds.height >= 22.0 {
+                    let label_bounds = Rect::new(
+                        bounds.x + 3.0,
+                        region.anchor.y - 11.0,
+                        bounds.width - 6.0,
+                        22.0,
+                    );
+                    // Select black or white from the actual solid background.
+                    let ink = if brush.r * 0.2126 + brush.g * 0.7152 + brush.b * 0.0722 > 0.5 {
+                        Color::rgb(0, 0, 0)
+                    } else {
+                        Color::rgb(255, 255, 255)
+                    };
+                    text(
+                        scene,
+                        engine,
+                        &region.label,
+                        label_bounds,
+                        plot_clip,
+                        ink,
+                        12.0,
+                        TextAlign::Center,
+                    )?;
+                }
+            }
+            ChartRegionShape::Polygon(points) => {
+                scene
+                    .fill_path(region.path(points, plot_clip, brush))
+                    .map_err(|e| ControlError::Invalid(e.into()))?;
+                if matches!(model.settings().view, ChartView::Sunburst | ChartView::Pie) {
+                    let edges: Vec<_> = points
+                        .iter()
+                        .copied()
+                        .zip(points.iter().copied().cycle().skip(1))
+                        .map(|(start, end)| StrokeSegment { start, end })
+                        .collect();
+                    for chunk in edges.chunks(rust_desktop_ui_core::MAX_STROKE_SEGMENTS) {
+                        scene.stroke_path(chunk, plot_clip, 1.0, tokens.surface);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(region) = geometry
+        .regions
+        .iter()
+        .find(|r| Some(r.key) == model.selected())
+    {
+        if let ChartRegionShape::Rectangle(bounds) = region.shape {
+            scene.rounded_stroke(bounds, plot_clip, 0.0, 2.0, tokens.text);
+        } else {
+            let p = region.anchor;
+            scene.rounded_fill(
+                Rect::new(p.x - 7.0, p.y - 7.0, 14.0, 14.0),
+                plot_clip,
+                7.0,
+                tokens.text,
+            );
+            scene.rounded_fill(
+                Rect::new(p.x - 4.0, p.y - 4.0, 8.0, 8.0),
+                plot_clip,
+                4.0,
+                tokens.surface,
+            );
+        }
+    }
+    if let Some(ChartFamily::Heatmap {
+        columns,
+        rows,
+        cells,
+    }) = model.family()
+    {
+        let p = geometry.plot;
+        if model.settings().legend {
+            let lo = cells.iter().filter_map(|c| c.value).reduce(f64::min);
+            let hi = cells.iter().filter_map(|c| c.value).reduce(f64::max);
+            if let (Some(lo), Some(hi)) = (lo, hi) {
+                text(
+                    scene,
+                    engine,
+                    &format!(
+                        "Значение: {} … {}",
+                        ChartModel::format_number(lo),
+                        ChartModel::format_number(hi)
+                    ),
+                    Rect::new(p.x, p.y - 28.0, p.width, 22.0),
+                    clip,
+                    tokens.text,
+                    13.0,
+                    TextAlign::Start,
+                )?;
+            }
+        }
+        for (i, row) in rows.iter().enumerate() {
+            let height = p.height / rows.len() as f32;
+            if height >= 18.0 {
+                text(
+                    scene,
+                    engine,
+                    &row.label,
+                    Rect::new(p.x - 78.0, p.y + i as f32 * height, 72.0, height),
+                    clip,
+                    tokens.text,
+                    12.0,
+                    TextAlign::End,
+                )?;
+            }
+        }
+        for (i, column) in columns.iter().enumerate() {
+            let width = p.width / columns.len() as f32;
+            if width >= 28.0 {
+                text(
+                    scene,
+                    engine,
+                    &column.label,
+                    Rect::new(p.x + i as f32 * width, p.y + p.height + 4.0, width, 22.0),
+                    clip,
+                    tokens.text,
+                    12.0,
+                    TextAlign::Center,
+                )?;
+            }
+        }
+    }
+    if let Some(ChartFamily::Flow { nodes, .. }) = model.family() {
+        let p = geometry.plot;
+        for region in geometry.regions.iter().filter(|r| r.key.series == 0) {
+            let ChartRegionShape::Rectangle(bounds) = region.shape else {
+                continue;
+            };
+            let label = &nodes
+                .iter()
+                .find(|n| n.id == region.key.point)
+                .unwrap()
+                .label;
+            let right_side = bounds.x < p.x + p.width * 0.5;
+            let width = 110.0f32.min((p.width / 8.0).max(36.0));
+            let x = if right_side {
+                bounds.x + bounds.width + 4.0
+            } else {
+                bounds.x - width - 4.0
+            };
+            if bounds.height >= 18.0 {
+                text(
+                    scene,
+                    engine,
+                    label,
+                    Rect::new(x, region.anchor.y - 11.0, width, 22.0),
+                    plot_clip,
+                    tokens.text,
+                    12.0,
+                    if right_side {
+                        TextAlign::Start
+                    } else {
+                        TextAlign::End
+                    },
+                )?;
+            }
+        }
+    }
+    Ok(())
 }

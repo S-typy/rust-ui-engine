@@ -27,14 +27,9 @@ fn error(e: impl std::fmt::Display) -> ControlError {
 impl Controls {
     fn chart_summary(model: &ChartModel) -> String {
         if let Some(key) = model.selected() {
-            let series = model.series().iter().find(|s| s.id == key.series).unwrap();
-            let point = model.point(key).unwrap();
-            format!(
-                "{}: X {}, Y {}",
-                series.label,
-                ChartModel::format_number(point.x),
-                ChartModel::format_number(point.y.unwrap())
-            )
+            model.describe(key).unwrap()
+        } else if model.family().is_some() {
+            "Элемент не выбран".into()
         } else {
             format!("Точка не выбрана. Серий: {}", model.series().len())
         }
@@ -68,6 +63,11 @@ impl Controls {
                 style,
                 false,
             )?;
+        }
+        if let Some(family) = model.family() {
+            for label in family.labels() {
+                self.preflight_new_editor_text(label, style, false)?;
+            }
         }
         for value in model
             .x_range()
