@@ -8,6 +8,7 @@ use rust_desktop_ui_data::{
 use std::collections::BTreeSet;
 
 mod editing;
+mod formatting;
 mod presentation;
 pub use presentation::{CellDisplay, format_cell, format_value};
 mod geometry;
@@ -83,6 +84,8 @@ pub struct SpreadsheetParts {
     pub address: WidgetId,
     pub canvas: WidgetId,
     pub status: WidgetId,
+    pub format: WidgetId,
+    pub format_apply: WidgetId,
 }
 pub struct Spreadsheet {
     pub parts: SpreadsheetParts,
@@ -116,6 +119,7 @@ impl Spreadsheet {
                 kind: LayoutKind::Grid,
                 grid_columns: vec![GridTrack::Fr(1.0)],
                 grid_rows: vec![
+                    GridTrack::Px(36.0),
                     GridTrack::Px(36.0),
                     GridTrack::Px(36.0),
                     GridTrack::Fr(1.0),
@@ -252,11 +256,39 @@ impl Spreadsheet {
                 },
             )?;
             actions.push((apply, "apply"));
+            let formats = ui.transparent_panel(
+                root,
+                LayoutStyle {
+                    kind: LayoutKind::Grid,
+                    grid_columns: vec![
+                        GridTrack::Px(100.0),
+                        GridTrack::Fr(1.0),
+                        GridTrack::Px(100.0),
+                    ],
+                    gap: 6.0,
+                    ..row(3)
+                },
+            )?;
+            ui.label(formats, "Формат", LayoutStyle::default())?;
+            let format = ui
+                .combo_box(
+                    formats,
+                    "Формат ячеек",
+                    formatting::presets(),
+                    crate::ComboBoxSettings::default(),
+                    LayoutStyle {
+                        width: Length::Percent(1.0),
+                        ..Default::default()
+                    },
+                )?
+                .container;
+            let format_apply = ui.button(formats, "Применить", None, LayoutStyle::default())?;
+            actions.push((format_apply, "format"));
             let viewport = ui.transparent_panel(
                 root,
                 LayoutStyle {
                     kind: LayoutKind::Overlay,
-                    ..row(3)
+                    ..row(4)
                 },
             )?;
             let canvas = ui.button(
@@ -269,7 +301,7 @@ impl Spreadsheet {
                     ..Default::default()
                 },
             )?;
-            let status = ui.label(root, "", row(4))?;
+            let status = ui.label(root, "", row(5))?;
             let session = SpreadsheetSession::new(workbook);
             let mut value = Self {
                 parts: SpreadsheetParts {
@@ -278,6 +310,8 @@ impl Spreadsheet {
                     address,
                     canvas,
                     status,
+                    format,
+                    format_apply,
                 },
                 anchor: session.active(),
                 session,
@@ -454,6 +488,7 @@ impl Spreadsheet {
         self.loaded = self.session.entry();
         ui.set_editor_value(self.parts.formula, &self.loaded)?;
         ui.set_label(self.parts.address, self.session.active().a1())?;
+        self.load_format(ui)?;
         Ok(())
     }
     pub fn activate(&mut self, ui: &mut Controls, id: WidgetId) -> Result<bool, ControlError> {
@@ -471,6 +506,14 @@ impl Spreadsheet {
         Ok(true)
     }
     fn command(&mut self, ui: &mut Controls, action: &str) -> Result<(), ControlError> {
+        if action == "format" {
+            let format = ui
+                .selected_keys(self.parts.format)
+                .and_then(|keys| keys.first())
+                .cloned()
+                .ok_or_else(|| err("Выберите формат ячеек"))?;
+            return self.set_number_format(ui, &format);
+        }
         if action == "formula" {
             return self.edit_formula(ui);
         }

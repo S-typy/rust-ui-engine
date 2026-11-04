@@ -174,6 +174,49 @@ impl SpreadsheetSession {
             range: self.selection(),
         }])
     }
+
+    /// Apply one number-format string to selected cell anchors as one undo step.
+    /// Values, formulas and other style fields are preserved. Empty/General
+    /// restores default presentation; equal formats do not create history.
+    pub fn set_number_format(&mut self, format: &str) -> Result<bool, DataError> {
+        let format = if format.eq_ignore_ascii_case("General") {
+            ""
+        } else {
+            format
+        };
+        if format.len() > 256 {
+            return Err(invalid("number format exceeds 256 bytes"));
+        }
+        let range = self.selection();
+        let sheet = &self.workbook().sheets()[self.sheet()];
+        let mut edits = Vec::new();
+        for row in range.start().row()..=range.end().row() {
+            for column in range.start().column()..=range.end().column() {
+                let address = CellAddress::new(row, column)?;
+                if sheet.anchor(address) != address {
+                    continue;
+                }
+                let mut cell = sheet
+                    .cell(address)
+                    .cloned()
+                    .unwrap_or_else(|| WorkbookCell::value(CellValue::Null));
+                if cell.style.number_format == format {
+                    continue;
+                }
+                cell.style.number_format = format.to_owned();
+                edits.push(WorkbookEdit::Set {
+                    sheet: self.sheet(),
+                    address,
+                    cell,
+                });
+            }
+        }
+        if edits.is_empty() {
+            return Ok(false);
+        }
+        self.apply(&edits)?;
+        Ok(true)
+    }
     pub fn merge(&mut self) -> Result<(), DataError> {
         self.apply(&[WorkbookEdit::Merge {
             sheet: self.sheet(),

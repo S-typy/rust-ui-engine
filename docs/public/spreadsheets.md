@@ -2,7 +2,7 @@
 
 `ui_data::spreadsheet::SpreadsheetSession` owns a Workbook, active sheet, range
 selection and bounded undo/redo history. `ui_controls::spreadsheet::Spreadsheet`
-mounts a retained formula editor, toolbar and virtual cell viewport. The host
+mounts a retained formula editor, toolbar, format picker and virtual cell viewport. The host
 routes `input`, `text_input`, `activate` and clipboard requests, then calls
 `refresh` after layout. During a captured gesture, schedule `interaction_tick`
 while `needs_interaction_tick` is true and call `cancel_interaction` on capture
@@ -86,7 +86,29 @@ directives are outside this
 profile. Unsupported formats retain their metadata and display a raw value
 with a diagnostic, rather than a guessed result. Printing uses the same formatter
 and rejects unsupported formats explicitly. Formatting does not alter typed
-clipboard values or formulas. There is no format-picker UI yet.
+clipboard values or formulas.
+
+The format picker shows the active cell's format, including an existing custom
+format that is not among its presets. Choosing a preset only stages the choice;
+«Применить» applies it to every selected anchor. A mixed-format selection shows
+the active cell's format until application. Presets include general, integer,
+two decimal places, percent, scientific/engineering notation, date/time and
+rubles. General restores default presentation. The picker uses the common
+ComboBox keyboard and accessibility contract; it does not accept free-form input.
+
+`SpreadsheetSession::set_number_format` updates only `CellStyle.number_format`
+and returns whether anything changed. Values, formulas, other styles and
+selection remain intact. A range is one undo step; repeating the current format
+adds no history. Merged children are not materialized. A newly formatted empty
+cell counts against the workbook cell limit. The format is bounded to 256 UTF-8
+bytes and must satisfy the workbook XML character checks. Unsupported format
+metadata remains available with the presentation diagnostic described above.
+`Spreadsheet::set_number_format` first validates a candidate containing the
+current draft and format. A bad formula, invalid format or capacity failure
+preserves the live workbook, draft and history. An active IME composition blocks
+application. A changed draft and a format change are separate undo steps when
+both succeed. Undo/redo, cell navigation and sheet changes refresh the picker.
+Numeric values are not converted to typed dates or times by choosing a format.
 The example's «Форматы» worksheet shows date names, clocks, locale overrides
 and engineering rounding alongside their format strings.
 

@@ -272,3 +272,5 @@ Window/Surface и не переносит GPU types в core или controls. П�
 Native CJK candidate window, focus changes во время composition и accessibility
 на каждой ОС остаются отдельными критериями. Контракты alpha 0.1.0 описаны;
 совместимость до 1.0 не гарантируется. Интегрированный пример — `controls-gallery`.
+
+2026-11-05: на Windows/RTX 3090 проверены перетаскивание заголовка мышью, Win+Left Snap, разворачивание системной кнопкой и восстановление через Win+Down. Обычная рамка и TitleBar=Ribbon прошли сценарий на DX12 Light и Vulkan Dark с сохранением некорректного черновика, принятого Unicode-значения, WidgetId и Undo. Эти проверки не включают двойной щелчок заголовка, выбор шаблона Snap, CJK composition и переход главного окна между мониторами с разным DPI.

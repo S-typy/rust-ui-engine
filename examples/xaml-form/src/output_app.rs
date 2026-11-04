@@ -200,6 +200,10 @@ impl OutputDemo {
                     .names
                     .insert("SpreadsheetCanvas".into(), s.parts.canvas);
                 form.view.names.insert("FormulaBar".into(), s.parts.formula);
+                form.view.names.insert("CellFormat".into(), s.parts.format);
+                form.view
+                    .names
+                    .insert("CellFormatApply".into(), s.parts.format_apply);
             }
             View::Pages(v) => {
                 form.view.names.insert("PageCanvas".into(), v.parts.canvas);
@@ -1475,6 +1479,7 @@ mod tests {
             panic!()
         };
         assert!(sheet.commit(&mut app.form.ui).is_err());
+        assert!(sheet.set_number_format(&mut app.form.ui, "0.00").is_err());
         assert!(
             sheet
                 .replace_workbook(&mut app.form.ui, Workbook::new("Other").unwrap())
