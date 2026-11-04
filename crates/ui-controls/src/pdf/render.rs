@@ -1,7 +1,6 @@
 use super::*;
-use lopdf::content::Content;
 use rust_desktop_ui_core::{
-    Bitmap, Color, ImagePrimitive, Point, Scene, Size, StrokeSegment, TextRun,
+    Bitmap, Color, FillRule, ImagePrimitive, ImageSampling, Point, Scene, Size, TextRun,
 };
 use rust_desktop_ui_text::TextEngine;
 
@@ -21,8 +20,69 @@ struct State {
     leading: f32,
     invisible_text: bool,
     text_scale: f32,
+    line_cap: u8,
+    line_join: u8,
 }
 impl State {
+    fn apply_graphics_state(
+        &mut self,
+        doc: &Document,
+        dict: &lopdf::Dictionary,
+        warnings: &mut BTreeSet<String>,
+    ) -> Result<(), PdfError> {
+        for (key, object) in dict.iter() {
+            let value = resolve(doc, object)?;
+            match key.as_slice() {
+                b"Type" => {}
+                b"CA" | b"ca" => {
+                    let alpha = number(value)?;
+                    if !(0.0..=1.0).contains(&alpha) {
+                        return Err(invalid("constant opacity"));
+                    }
+                    if key == b"CA" {
+                        self.stroke.a = alpha;
+                    } else {
+                        self.fill.a = alpha;
+                    }
+                }
+                b"BM" => {
+                    if !matches!(value.as_name(), Ok(b"Normal" | b"Compatible")) {
+                        return Err(PdfError::Unsupported("blend mode".into()));
+                    }
+                }
+                b"SMask" => {
+                    if value.as_name().ok() != Some(b"None") {
+                        return Err(PdfError::Unsupported("graphics-state soft mask".into()));
+                    }
+                }
+                b"AIS" => {
+                    if value.as_bool().map_err(invalid)? {
+                        return Err(PdfError::Unsupported("alpha-is-shape".into()));
+                    }
+                }
+                b"LW" => {
+                    self.width = number(value)?;
+                    if self.width < 0.0 {
+                        return Err(invalid("stroke width"));
+                    }
+                }
+                b"LC" => self.line_cap = line_style(number(value)?)?,
+                b"LJ" => self.line_join = line_style(number(value)?)?,
+                b"ML" => {
+                    if number(value)? < 1.0 {
+                        return Err(invalid("miter limit"));
+                    }
+                }
+                _ => {
+                    warnings.insert(format!(
+                        "Unsupported graphics-state entry {}",
+                        String::from_utf8_lossy(key)
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
     fn point(&self, x: f32, y: f32, h: f32) -> Point {
         Point::new(
             (x * self.matrix[0] + self.matrix[4]) / 0.75,
@@ -81,16 +141,16 @@ pub(super) fn page(
         leading: 14.0,
         invisible_text: false,
         text_scale: 1.0,
+        line_cap: 0,
+        line_join: 0,
     };
     let resources = inherited(doc, id, b"Resources")?.and_then(|o| o.as_dict().ok());
     let data = doc
         .get_page_content_with_limit(id, 4 * 1024 * 1024)
         .map_err(invalid)?;
-    let mut decoded = data.len();
-    let content = Content::decode(&data).map_err(invalid)?;
-    if content.operations.len() > 50_000 {
-        return Err(PdfError::Limit("50000 operations/page"));
-    }
+    let content = super::content::expand(doc, &data, resources, cancelled)?;
+    let mut decoded = content.decoded;
+    let resources = Some(&content.resources);
     let mut scene = Scene::default();
     scene.fill(bounds, Color::rgb(255, 255, 255));
     let mut warnings = BTreeSet::new();
@@ -108,10 +168,7 @@ pub(super) fn page(
     }
     let mut text = Vec::new();
     let mut stack = Vec::new();
-    let mut path = Vec::new();
-    let mut rectangle = None;
-    let mut current = None;
-    let mut start = None;
+    let mut path = super::path::Path::default();
     let mut pending_clip = false;
     let mut actual: Vec<Option<(String, Option<Rect>)>> = Vec::new();
     let mut engine = TextEngine::new();
@@ -170,7 +227,11 @@ pub(super) fn page(
                     r: v[0],
                     g: v[1],
                     b: v[2],
-                    a: 1.0,
+                    a: if op.operator == "rg" {
+                        state.fill.a
+                    } else {
+                        state.stroke.a
+                    },
                 };
                 if op.operator == "rg" {
                     state.fill = c
@@ -187,7 +248,11 @@ pub(super) fn page(
                     r: v,
                     g: v,
                     b: v,
-                    a: 1.0,
+                    a: if op.operator == "g" {
+                        state.fill.a
+                    } else {
+                        state.stroke.a
+                    },
                 };
                 if op.operator == "g" {
                     state.fill = c
@@ -201,80 +266,123 @@ pub(super) fn page(
                     return Err(invalid("stroke width"));
                 }
             }
+            "gs" => {
+                if a.len() != 1 {
+                    return Err(invalid("gs operand count"));
+                }
+                let name = a[0].as_name().map_err(invalid)?;
+                let states = resources
+                    .and_then(|r| r.get(b"ExtGState").ok())
+                    .ok_or_else(|| invalid("ExtGState resources missing"))?;
+                let dict = resolve(doc, states)?.as_dict().map_err(invalid)?;
+                let entry = resolve(doc, dict.get(name).map_err(invalid)?)?
+                    .as_dict()
+                    .map_err(invalid)?;
+                state.apply_graphics_state(doc, entry, &mut warnings)?;
+            }
             "re" => {
                 let v = numbers(4)?;
-                let r = state.rect(v[0], v[1], v[2], v[3], size.height);
-                if rectangle.is_some() || !path.is_empty() {
-                    warnings.insert("Compound filled paths are not rendered".into());
-                }
-                rectangle = Some(r);
+                path.rectangle([
+                    state.point(v[0], v[1], size.height),
+                    state.point(v[0] + v[2], v[1], size.height),
+                    state.point(v[0] + v[2], v[1] + v[3], size.height),
+                    state.point(v[0], v[1] + v[3], size.height),
+                ])?;
             }
             "m" => {
                 let v = numbers(2)?;
                 let p = state.point(v[0], v[1], size.height);
-                current = Some(p);
-                start = Some(p);
+                path.move_to(p)?;
             }
             "l" => {
                 let v = numbers(2)?;
                 let p = state.point(v[0], v[1], size.height);
-                let from = current.ok_or_else(|| invalid("line without move"))?;
-                path.push(StrokeSegment {
-                    start: from,
-                    end: p,
-                });
-                current = Some(p);
+                path.line_to(p)?;
+            }
+            "c" | "v" | "y" => {
+                let v = numbers(if op.operator == "c" { 6 } else { 4 })?;
+                let p = |i| state.point(v[i], v[i + 1], size.height);
+                let (a, b, end) = match op.operator.as_str() {
+                    "c" => (p(0), p(2), p(4)),
+                    "v" => (path.current()?, p(0), p(2)),
+                    _ => (p(0), p(2), p(2)),
+                };
+                path.curve_to(a, b, end)?;
             }
             "h" => {
-                if let (Some(a), Some(b)) = (current, start) {
-                    path.push(StrokeSegment { start: a, end: b });
-                    current = start;
-                }
+                numbers(0)?;
+                path.close();
             }
             "W" | "W*" => {
+                numbers(0)?;
                 pending_clip = true;
             }
-            "n" | "f" | "f*" | "S" | "s" | "B" | "B*" => {
-                if pending_clip {
-                    let r = rectangle
-                        .ok_or_else(|| PdfError::Unsupported("nonrectangular clipping".into()))?;
-                    state.clip = state
-                        .clip
-                        .intersection(r)
-                        .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
-                    pending_clip = false;
+            "n" | "f" | "F" | "f*" | "S" | "s" | "B" | "B*" | "b" | "b*" => {
+                numbers(0)?;
+                if matches!(op.operator.as_str(), "s" | "b" | "b*") {
+                    path.close();
                 }
-                let fill = matches!(op.operator.as_str(), "f" | "f*" | "B" | "B*");
-                let stroke = matches!(op.operator.as_str(), "S" | "s" | "B" | "B*");
-                if let Some(r) = rectangle.take() {
-                    if fill && let Some(r) = r.intersection(state.clip) {
-                        scene.fill(r, state.fill);
-                    }
-                    if stroke {
-                        scene.rounded_stroke(
-                            r,
-                            state.clip,
-                            0.0,
-                            state.width * state.matrix[0].abs() / 0.75,
-                            state.stroke,
-                        );
-                    }
-                } else if fill && !path.is_empty() {
-                    warnings.insert("Nonrectangular filled path omitted".into());
+                let fill = matches!(
+                    op.operator.as_str(),
+                    "f" | "F" | "f*" | "B" | "B*" | "b" | "b*"
+                );
+                let stroke = matches!(op.operator.as_str(), "S" | "s" | "B" | "B*" | "b" | "b*");
+                if fill && stroke && (state.fill.a != 1.0 || state.stroke.a != 1.0) {
+                    return Err(PdfError::Unsupported(
+                        "transparent combined fill/stroke".into(),
+                    ));
+                }
+                if fill {
+                    let rule = if op.operator.ends_with('*') {
+                        FillRule::EvenOdd
+                    } else {
+                        FillRule::NonZero
+                    };
+                    path.fill(&mut scene, state.clip, state.fill, rule)?;
                 }
                 if stroke {
-                    for segments in path.chunks(rust_desktop_ui_core::MAX_STROKE_SEGMENTS) {
+                    let segments = path.segments();
+                    if segments.len() > rust_desktop_ui_core::MAX_STROKE_SEGMENTS
+                        && state.stroke.a != 1.0
+                    {
+                        return Err(PdfError::Unsupported(
+                            "transparent stroke exceeds 16 segments".into(),
+                        ));
+                    }
+                    if (path.has_open_ends() && state.line_cap != 1)
+                        || (path.has_joins() && state.line_join != 1)
+                    {
+                        warnings.insert("Stroke caps/joins use round geometry".into());
+                    }
+                    if state.width == 0.0 {
+                        warnings.insert("Hairline stroke uses one logical pixel".into());
+                    }
+                    if state.matrix[0].abs() != state.matrix[3].abs() {
+                        warnings
+                            .insert("Nonuniform stroke scaling uses the horizontal scale".into());
+                    }
+                    for segments in segments.chunks(rust_desktop_ui_core::MAX_STROKE_SEGMENTS) {
                         scene.stroke_path(
                             segments,
                             state.clip,
-                            state.width * state.matrix[0].abs() / 0.75,
+                            if state.width == 0.0 {
+                                1.0
+                            } else {
+                                state.width * state.matrix[0].abs() / 0.75
+                            },
                             state.stroke,
                         );
                     }
                 }
+                // PDF changes the clip after the path's painting operation.
+                if pending_clip {
+                    state.clip = state
+                        .clip
+                        .intersection(path.clip_rect()?)
+                        .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+                    pending_clip = false;
+                }
                 path.clear();
-                current = None;
-                start = None;
             }
             "BT" => {
                 state.text_x = 0.0;
@@ -427,7 +535,7 @@ pub(super) fn page(
                 if stream.dict.get(b"Subtype").and_then(Object::as_name).ok()
                     != Some(b"Image".as_slice())
                 {
-                    warnings.insert("Form XObject omitted".into());
+                    warnings.insert("Unsupported XObject subtype omitted".into());
                     continue;
                 }
                 let bitmap = image(doc, stream)?;
@@ -441,6 +549,11 @@ pub(super) fn page(
                 let r = state.rect(0.0, 0.0, 1.0, 1.0, size.height);
                 let mut image = ImagePrimitive::new(bitmap, r);
                 image.clip = state.clip;
+                image.opacity = state.fill.a;
+                image.sampling = match stream.dict.get(b"Interpolate") {
+                    Ok(value) if value.as_bool().map_err(invalid)? => ImageSampling::Linear,
+                    _ => ImageSampling::Nearest,
+                };
                 scene.image(image);
                 for (_, bounds) in actual.iter_mut().flatten() {
                     *bounds = Some(bounds.map_or(r, |b| {
@@ -499,8 +612,12 @@ pub(super) fn page(
                 }
                 state.text_scale = scale;
             }
-            "J" | "j" | "M" => {
-                let _ = numbers(1)?;
+            "J" => state.line_cap = line_style(numbers(1)?[0])?,
+            "j" => state.line_join = line_style(numbers(1)?[0])?,
+            "M" => {
+                if numbers(1)?[0] < 1.0 {
+                    return Err(invalid("miter limit"));
+                }
             }
             other => {
                 warnings.insert(format!("Unsupported painting operator {other}"));
@@ -521,6 +638,13 @@ pub(super) fn page(
         warnings.into_iter().collect(),
         decoded,
     ))
+}
+fn line_style(value: f32) -> Result<u8, PdfError> {
+    if matches!(value, 0.0 | 1.0 | 2.0) {
+        Ok(value as u8)
+    } else {
+        Err(invalid("line cap/join style"))
+    }
 }
 fn image(doc: &Document, stream: &lopdf::Stream) -> Result<Bitmap, PdfError> {
     let width = stream

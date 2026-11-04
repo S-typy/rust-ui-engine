@@ -1,6 +1,8 @@
 //! Bounded PDF object loading and an explicit axis-aligned page interpreter.
 //! Original objects are preserved on save. Unsupported painting operations are
 //! diagnosed; JavaScript, launch actions and external resources are never run.
+mod content;
+mod path;
 mod render;
 use lopdf::{Document, Object, ObjectId, dictionary};
 use rust_desktop_ui_core::{
