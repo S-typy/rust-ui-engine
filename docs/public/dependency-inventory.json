@@ -24375,11 +24375,11 @@
         "path_in_source_repository": "accesskit",
         "notice": {
           "path": "BACKPORT.md",
-          "sha256": "1909cf13fab9879e5cedb7b3c717fc1da057f76387a0e5c9c3faf8ff3d76c4c4"
+          "sha256": "50284e1f34719e1cd4f215e570e2e7ce030058d9bbe60aded0479a1c869f0408"
         }
       },
       "file_count": 14,
-      "total_bytes": 211415,
+      "total_bytes": 212321,
       "files": [
         {
           "path": ".cargo_vcs_info.json",
@@ -24393,8 +24393,8 @@
         },
         {
           "path": "BACKPORT.md",
-          "bytes": 1349,
-          "sha256": "1909cf13fab9879e5cedb7b3c717fc1da057f76387a0e5c9c3faf8ff3d76c4c4"
+          "bytes": 1864,
+          "sha256": "50284e1f34719e1cd4f215e570e2e7ce030058d9bbe60aded0479a1c869f0408"
         },
         {
           "path": "Cargo.lock",
@@ -24443,8 +24443,8 @@
         },
         {
           "path": "src/lib.rs",
-          "bytes": 131766,
-          "sha256": "f4374853ac8798e1490c9545809ccd2be5e9de9bfa20aa5530d5ffdb8a5a38b6"
+          "bytes": 132157,
+          "sha256": "70db200232e97358fb4fdc7a2edc812625878fc5c66516c64a5cf4e89b972a5c"
         },
         {
           "path": "src/virtual_cell_tests.rs",
@@ -24599,11 +24599,11 @@
         "path_in_source_repository": "adapters/windows",
         "notice": {
           "path": "BACKPORT.md",
-          "sha256": "c4a27a488934f67f8a2e8d9b8cd8193d9f07603caf7882e84c3577c40ca2e17e"
+          "sha256": "e77ec274cbd76a7b5bc7bd78483600e83da5fa2da862da22154072139dcec2fb"
         }
       },
-      "file_count": 25,
-      "total_bytes": 273088,
+      "file_count": 29,
+      "total_bytes": 301372,
       "files": [
         {
           "path": ".cargo_vcs_info.json",
@@ -24617,8 +24617,8 @@
         },
         {
           "path": "BACKPORT.md",
-          "bytes": 2614,
-          "sha256": "c4a27a488934f67f8a2e8d9b8cd8193d9f07603caf7882e84c3577c40ca2e17e"
+          "bytes": 4094,
+          "sha256": "e77ec274cbd76a7b5bc7bd78483600e83da5fa2da862da22154072139dcec2fb"
         },
         {
           "path": "Cargo.lock",
@@ -24692,8 +24692,8 @@
         },
         {
           "path": "src/node.rs",
-          "bytes": 58828,
-          "sha256": "e32b6f3482aef053040cdea1c770bc816b7b5498268ab63cfd26340b562cb56a"
+          "bytes": 59066,
+          "sha256": "df4e416000599741e03e35c786521d24202257c71e2361dd7da1160625a60ea9"
         },
         {
           "path": "src/subclass.rs",
@@ -24716,9 +24716,29 @@
           "sha256": "065da83e1db3e53ccbade3eff8bbbb4891d23085a3a4ac308c513de24d8df80d"
         },
         {
+          "path": "src/text/attributes.rs",
+          "bytes": 3806,
+          "sha256": "302f83ae565bd2fc183ce617f61d1eebddaecd01bee26c5ad67e453d69dd735a"
+        },
+        {
+          "path": "src/text/search/tests.rs",
+          "bytes": 10798,
+          "sha256": "d538bd7c5b468e6e2eb7b98bdc44beb19a14305305813162cbfe74a1b0edf30a"
+        },
+        {
+          "path": "src/text/search.rs",
+          "bytes": 6715,
+          "sha256": "6ee387a05d3ecb9ab23079f847559876a2f76a7d6ef3afbe16718fa408715584"
+        },
+        {
+          "path": "src/text/visibility.rs",
+          "bytes": 8387,
+          "sha256": "59eec1ca2120a84db1e5f167bfc32bc13b1e03b678cb1800d08ab0e974fd7327"
+        },
+        {
           "path": "src/text.rs",
-          "bytes": 22508,
-          "sha256": "7f2493b559f0b04884e201d897981a3cce47b2c571863d37ffddb1bb695e5c55"
+          "bytes": 19368,
+          "sha256": "d84c27d9d38b7b08bc608c3dc3bbea41936b0be0e6521228becef75b70b3e1b3"
         },
         {
           "path": "src/util.rs",

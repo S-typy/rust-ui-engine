@@ -66,10 +66,9 @@ old ranges.
 
 Password controls and active IME preedit do not expose this snapshot. A display
 transformation whose text differs from the document is rejected rather than
-publishing incorrect offsets. TextPattern is a plain-text profile: native
-`FindText`, `FindAttribute`, embedded-object ranges and rich formatting are not
-implemented by this adapter. Other platform adapters and native IME candidate
-behavior require their own acceptance checks.
+publishing incorrect offsets. TextPattern is a plain-text profile: embedded-object
+ranges and rich formatting are not implemented by this adapter. Other platform
+adapters and native IME candidate behavior require their own acceptance checks.
 
 `TextDocument` retains its grapheme index across navigation and rebuilds it after
 text changes and undo/redo. `clear_history` discards undo/redo snapshots while
@@ -169,3 +168,27 @@ editing, incremental text shaping, rich-text editing or platform-specific text
 services beyond the host's existing IME/clipboard/accessibility integration.
 Glyph bitmap and aggregate frame budgets still apply independently of layout
 validation; see [text preparation](text.md).
+
+## Native text searches on Windows
+
+`FindText` searches the caller's range forward or backward, including text
+outside the current viewport. Case-insensitive matching uses Windows ordinal
+rules; it does not normalize accents or apply language-specific collation.
+Matches retain whole graphemes, including combining marks and supplementary
+characters. Empty or invalid UTF-16 queries are rejected. A missing match
+returns a null range. See the [Windows search contract](https://learn.microsoft.com/en-us/windows/win32/api/uiautomationcore/nf-uiautomationcore-itextrangeprovider-findtext)
+and [ordinal comparison rules](https://learn.microsoft.com/en-us/windows/win32/api/libloaderapi/nf-libloaderapi-findstringordinal).
+
+`FindAttribute` uses the same scalar attributes as `GetAttributeValue`:
+read-only state, culture, font name/size/weight, italic, colors, decorations,
+alignment and subscript/superscript. The value must have the attribute's COM
+type. Adjacent runs with the same requested value form one match; other styling
+differences do not split it. Missing metadata or unsupported attributes produce
+no match. Caret position is evaluated for the supplied range. Font information
+is available only when the semantic tree publishes it.
+
+Both operations preserve text, selection, focus and scroll. Removed or replaced
+text runs invalidate old ranges. Content searches inspect at most 1,048,576
+UTF-16 units and 65,536 runs; exceeding the bound returns an explicit error.
+Embedded objects and rich-document editing remain outside this plain-text
+provider's profile.

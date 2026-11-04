@@ -44,6 +44,18 @@ The same date also adds plain-text range visibility:
 - Direct tests check transformed LTR/RTL clips, edge-only intersections, empty
   documents and COM endpoint transport. Query tests dispatch no native input.
 
+The same date adds passive text searches:
+
+- `src/text/search.rs` implements bounded `FindText` and `FindAttribute` within
+  an existing valid range, without dispatching an action. Text uses Windows
+  ordinal matching in either direction and retains complete graphemes.
+- `src/text/attributes.rs` extracts the existing attribute conversion into a
+  shared mapping for whole ranges and individual runs. Adjacent matching runs
+  merge even when another attribute differs. `src/text/search/tests.rs` covers
+  Unicode, partial ranges, types, limits and direct COM lifetime behavior.
+- Search does not use the consumer's format-unit grouping, which currently
+  does not distinguish italic flags. The consumer dependency remains unchanged.
+
 All other upstream implementation files are unchanged. Root `[patch.crates-io]`
 entries select this adapter and the matching AccessKit transport extension.
 The registry and other platform adapters
