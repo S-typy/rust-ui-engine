@@ -86,6 +86,8 @@ pub struct SpreadsheetParts {
     pub status: WidgetId,
     pub format: WidgetId,
     pub format_apply: WidgetId,
+    pub format_code: WidgetId,
+    pub format_code_apply: WidgetId,
 }
 pub struct Spreadsheet {
     pub parts: SpreadsheetParts,
@@ -121,7 +123,7 @@ impl Spreadsheet {
                 grid_rows: vec![
                     GridTrack::Px(36.0),
                     GridTrack::Px(36.0),
-                    GridTrack::Px(36.0),
+                    GridTrack::Px(78.0),
                     GridTrack::Fr(1.0),
                     GridTrack::Px(28.0),
                 ],
@@ -265,6 +267,7 @@ impl Spreadsheet {
                         GridTrack::Fr(1.0),
                         GridTrack::Px(100.0),
                     ],
+                    grid_rows: vec![GridTrack::Px(36.0); 2],
                     gap: 6.0,
                     ..row(3)
                 },
@@ -284,6 +287,20 @@ impl Spreadsheet {
                 .container;
             let format_apply = ui.button(formats, "Применить", None, LayoutStyle::default())?;
             actions.push((format_apply, "format"));
+            ui.label(formats, "Код", LayoutStyle::default())?;
+            let format_code = ui.text_box(
+                formats,
+                "Код числового формата",
+                "General",
+                LayoutStyle {
+                    width: Length::Percent(1.0),
+                    ..Default::default()
+                },
+            )?;
+            let format_code_apply =
+                ui.button(formats, "Применить", None, LayoutStyle::default())?;
+            ui.set_automation_name(format_code_apply, "Применить код формата")?;
+            actions.push((format_code_apply, "format-code"));
             let viewport = ui.transparent_panel(
                 root,
                 LayoutStyle {
@@ -312,6 +329,8 @@ impl Spreadsheet {
                     status,
                     format,
                     format_apply,
+                    format_code,
+                    format_code_apply,
                 },
                 anchor: session.active(),
                 session,
@@ -461,9 +480,9 @@ impl Spreadsheet {
         Ok(true)
     }
     fn guard_composition(&self, ui: &Controls) -> Result<(), ControlError> {
-        if ui
-            .document(self.parts.formula)
-            .is_some_and(|d| d.composition().is_some())
+        if [self.parts.formula, self.parts.format_code]
+            .into_iter()
+            .any(|id| ui.document(id).is_some_and(|d| d.composition().is_some()))
         {
             return Err(err("Finish or cancel text composition first"));
         }
@@ -506,6 +525,9 @@ impl Spreadsheet {
         Ok(true)
     }
     fn command(&mut self, ui: &mut Controls, action: &str) -> Result<(), ControlError> {
+        if action == "format-code" {
+            return self.apply_format_code(ui);
+        }
         if action == "format" {
             let format = ui
                 .selected_keys(self.parts.format)
@@ -572,6 +594,25 @@ impl Spreadsheet {
     /// Intercept before Controls::dispatch. Native text and IME remain with the
     /// formula editor; canvas navigation changes only logical selection.
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if ui.runtime.focused() == Some(self.parts.format_code)
+            && ui.is_enabled(self.parts.format_code)
+            && let InputEvent::KeyDown { key, .. } = event
+            && ui
+                .document(self.parts.format_code)
+                .is_none_or(|d| d.composition().is_none())
+        {
+            match key {
+                Key::Enter => {
+                    self.apply_format_code(ui)?;
+                    return Ok(true);
+                }
+                Key::Escape => {
+                    self.load_format(ui)?;
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
         if self.gesture_input(ui, event)? {
             return Ok(true);
         }

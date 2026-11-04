@@ -23,11 +23,12 @@ pub(super) fn presets() -> Vec<crate::SelectionItem> {
 
 impl Spreadsheet {
     pub(super) fn load_format(&self, ui: &mut Controls) -> Result<(), ControlError> {
-        Self::load_session_format(ui, self.parts.format, &self.session)
+        Self::load_session_format(ui, self.parts.format, self.parts.format_code, &self.session)
     }
     fn load_session_format(
         ui: &mut Controls,
         id: WidgetId,
+        code: WidgetId,
         session: &SpreadsheetSession,
     ) -> Result<(), ControlError> {
         let current = session.workbook().sheets()[session.sheet()]
@@ -51,7 +52,20 @@ impl Spreadsheet {
         }
         ui.set_selection_items(id, items)?;
         ui.set_selected_keys(id, &[current.into()])?;
+        ui.set_editor_value(code, current)?;
         Ok(())
+    }
+
+    /// Apply the format-code draft explicitly. Enter is equivalent to the code
+    /// Apply button; neither typing nor leaving this editor changes the workbook.
+    pub fn apply_format_code(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        self.guard_composition(ui)?;
+        let code = ui
+            .document(self.parts.format_code)
+            .ok_or_else(|| err("Format code editor removed"))?
+            .text()
+            .to_owned();
+        self.set_number_format(ui, &code)
     }
 
     /// Commit a valid current draft, then apply display metadata to the selected
@@ -75,7 +89,7 @@ impl Spreadsheet {
         next.set_number_format(format).map_err(err)?;
         self.cancel_interaction(ui)?;
         self.return_editor(ui)?;
-        Self::load_session_format(ui, self.parts.format, &next)?;
+        Self::load_session_format(ui, self.parts.format, self.parts.format_code, &next)?;
         self.session = next;
         self.loaded = text;
         self.refresh(ui)

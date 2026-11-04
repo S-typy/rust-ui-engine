@@ -94,7 +94,16 @@ format that is not among its presets. Choosing a preset only stages the choice;
 the active cell's format until application. Presets include general, integer,
 two decimal places, percent, scientific/engineering notation, date/time and
 rubles. General restores default presentation. The picker uses the common
-ComboBox keyboard and accessibility contract; it does not accept free-form input.
+ComboBox keyboard and accessibility contract.
+
+The separate format-code editor accepts custom strings. Typing and leaving it do
+not change the workbook. Its Apply button or Enter calls `apply_format_code`;
+Escape restores the active cell's accepted format. Applying a preset refreshes
+both the picker and the code editor. A rejected code or formula preserves both
+drafts and the workbook/history. Unsupported but valid format syntax retains the
+metadata and produces the diagnostic described above. A code-editor IME preedit
+blocks format application and workbook replacement until it finishes. These are
+separate retained editors: the formula editor keeps its identity and draft.
 
 `SpreadsheetSession::set_number_format` updates only `CellStyle.number_format`
 and returns whether anything changed. Values, formulas, other styles and

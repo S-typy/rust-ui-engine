@@ -203,6 +203,12 @@ impl OutputDemo {
                 form.view.names.insert("CellFormat".into(), s.parts.format);
                 form.view
                     .names
+                    .insert("CellFormatCode".into(), s.parts.format_code);
+                form.view
+                    .names
+                    .insert("CellFormatCodeApply".into(), s.parts.format_code_apply);
+                form.view
+                    .names
                     .insert("CellFormatApply".into(), s.parts.format_apply);
             }
             View::Pages(v) => {

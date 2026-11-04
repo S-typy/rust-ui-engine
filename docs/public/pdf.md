@@ -79,9 +79,13 @@ truncated above 1 MiB; the document and search stay intact.
 
 Run `cargo run --locked -p xaml-form -- --pdf`. Open/Save and explicit printer
 commands run in the host. The example never opens a file or submits a print
-job merely by starting. Canvas text hit-selection, link actions, all form types
-and native keyboard/screen reader acceptance remain outstanding. The viewer is
-a Rust-mounted control, not a compiled `<PdfViewer>` element.
+job merely by starting. Windows DX12/Vulkan checks cover page keys, search,
+bookmarks, flat text fields, notes and explicit file dialogs. Saved Unicode
+field values and notes were reopened by an independent PDF parser. Windows
+Narrator reading was verified for the separate extracted-text and field editors.
+Canvas text hit-selection, link actions, additional form types, a rich PDF
+document text provider and other OS reader checks remain outstanding. The
+viewer is a Rust-mounted control, not a compiled `<PdfViewer>` element.
 
 The `document_output_codec` example provides explicit-path `sample`, `inspect`
 and `edit` operations without opening windows or printing. PDF export is
