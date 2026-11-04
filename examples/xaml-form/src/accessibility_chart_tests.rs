@@ -61,6 +61,17 @@ fn chart_name_tracks_selection_without_losing_identity_custom_label_or_focus() {
         assert_eq!(tree.focus, id);
         assert_eq!(tree.nodes.len(), empty.nodes.len());
     }
+    ui.zoom_chart(chart, 2.0, (0.5, 0.5)).unwrap();
+    let tree = a11y.tree(&ui, &view, "Charts", 1.5);
+    let node = &tree.nodes.iter().find(|(n, _)| *n == id).unwrap().1;
+    assert_eq!(
+        node.label(),
+        Some("Sales. Revenue: X 2, Y -5. Видимый диапазон: X 1.25 … 1.75; Y -1.75 … 4.75")
+    );
+    assert_eq!(node.value(), Some("Revenue: X 2, Y -5"));
+    assert_eq!(tree.focus, id);
+    assert_eq!(tree.nodes.len(), empty.nodes.len());
+    ui.reset_chart_view(chart).unwrap();
     ui.set_chart_selected(chart, None).unwrap();
     let tree = a11y.tree(&ui, &view, "Charts", 1.5);
     assert_eq!(

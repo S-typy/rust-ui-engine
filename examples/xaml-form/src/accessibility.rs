@@ -146,6 +146,11 @@ impl Accessibility {
                 // Windows Narrator does not consistently read a Group's value.
                 node.set_label(format!("{}. {summary}", node.label().unwrap_or_default()));
             }
+            if let Some(range) = ui.chart_view_description(widget) {
+                // Keep view bounds discoverable through Narrator's current item;
+                // FullDescription alone is not consistently spoken for Groups.
+                node.set_label(format!("{}. {range}", node.label().unwrap_or_default()));
+            }
             if status {
                 node.set_live(accesskit::Live::Polite);
             } else if semantic.role == ControlRole::StatusBar {

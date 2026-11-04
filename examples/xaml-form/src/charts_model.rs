@@ -262,7 +262,7 @@ impl ChartsDemo {
         }
         let m = self.form.ui.chart_model(self.chart).unwrap();
         let state = format!(
-            "chart-state view={:?} selected={:?} generation={} range={} status={:?}",
+            "chart-state view={:?} selected={:?} generation={} range={} status={:?} x={:?} y={:?}",
             m.settings().view,
             m.selected(),
             self.generation,
@@ -271,7 +271,9 @@ impl ChartsDemo {
             } else {
                 "auto"
             },
-            self.form.ui.chart_display_status(self.chart)
+            self.form.ui.chart_display_status(self.chart),
+            m.x_range(),
+            m.y_range()
         );
         let snapshot = crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view);
         let combined = format!("{state}{snapshot}");

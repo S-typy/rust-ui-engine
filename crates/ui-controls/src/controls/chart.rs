@@ -1,5 +1,7 @@
 //! Read-only chart data with independent pointer/keyboard point selection.
 use super::*;
+#[path = "chart_navigation_view.rs"]
+mod navigation;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChartDisplayStatus {
     Full,
@@ -20,6 +22,16 @@ pub(super) struct ChartState {
 pub(super) struct ChartPress {
     owner: WidgetId,
     key: Option<ChartPointKey>,
+    pan: Option<ChartPan>,
+}
+#[derive(Clone, Copy)]
+struct ChartPan {
+    start: Point,
+    plot: Rect,
+    x: ChartRange,
+    y: ChartRange,
+    original_x: Option<ChartRange>,
+    original_y: Option<ChartRange>,
 }
 fn error(e: impl std::fmt::Display) -> ControlError {
     ControlError::Invalid(e.to_string())
@@ -117,11 +129,34 @@ impl Controls {
         Ok(id)
     }
     pub(super) fn chart_accessible_description(&self, id: WidgetId) -> Option<String> {
-        match (self.chart_semantic_value(id), self.badge_description(id)) {
+        let mut value = self.chart_semantic_value(id).map(str::to_owned);
+        if let Some(range) = self.chart_view_description(id)
+            && let Some(value) = &mut value
+        {
+            value.push_str(&format!(". {range}"));
+        }
+        match (value, self.badge_description(id)) {
             (Some(a), Some(b)) => Some(format!("{a}. {b}")),
-            (Some(a), None) => Some(a.into()),
+            (Some(a), None) => Some(a),
             (None, b) => b,
         }
+    }
+    /// Readable manual viewport bounds, separate from the selected observation.
+    /// Automatic ranges and non-Cartesian families have no view override.
+    pub fn chart_view_description(&self, id: WidgetId) -> Option<String> {
+        let model = self.chart_model(id)?;
+        if model.settings().x_range.is_none() && model.settings().y_range.is_none() {
+            return None;
+        }
+        let x = model.x_range();
+        let y = model.y_range();
+        Some(format!(
+            "Видимый диапазон: X {} … {}; Y {} … {}",
+            ChartModel::format_number(x.minimum),
+            ChartModel::format_number(x.maximum),
+            ChartModel::format_number(y.minimum),
+            ChartModel::format_number(y.maximum),
+        ))
     }
     pub fn chart_model(&self, id: WidgetId) -> Option<&ChartModel> {
         self.charts.get(&id).map(|s| &s.model)
@@ -200,6 +235,16 @@ impl Controls {
             return Ok(());
         }
         let mut model = entry.model.clone();
+        if !user
+            && let Some(pan) = self
+                .chart_press
+                .filter(|p| p.owner == id)
+                .and_then(|p| p.pan)
+        {
+            model
+                .set_view_ranges(pan.original_x, pan.original_y)
+                .map_err(error)?;
+        }
         model.select(key).map_err(error)?;
         let summary = Self::chart_summary(&model);
         self.measure_text(&summary, 4096.0, false)?;
@@ -236,16 +281,28 @@ impl Controls {
         Ok(())
     }
     pub(super) fn cancel_chart_interaction(&mut self) -> Result<(), ControlError> {
-        if let Some(p) = self.chart_press.take()
-            && self.runtime.captured() == Some(p.owner)
-        {
-            self.runtime.apply(Mutation::CapturePointer(None))?;
+        if let Some(p) = self.chart_press.take() {
+            if self.runtime.captured() == Some(p.owner) {
+                self.runtime.apply(Mutation::CapturePointer(None))?;
+            }
+            if let Some(pan) = p.pan
+                && self.runtime.tree().contains(p.owner)
+                && let Some(model) = self.chart_model(p.owner)
+            {
+                let mut next = model.clone();
+                next.set_view_ranges(pan.original_x, pan.original_y)
+                    .map_err(error)?;
+                self.publish_chart_view(p.owner, next, false)?;
+            }
         }
         Ok(())
     }
     pub(super) fn sync_charts(&mut self) -> Result<(), ControlError> {
         if let Some(p) = self.chart_press
-            && (!self.is_enabled(p.owner) || self.runtime.captured() != Some(p.owner))
+            && (!self.is_enabled(p.owner)
+                || self.runtime.captured() != Some(p.owner)
+                || p.pan
+                    .is_some_and(|pan| self.chart_plot(p.owner) != Some(pan.plot)))
         {
             self.cancel_chart_interaction()?;
         }
@@ -279,6 +336,9 @@ impl Controls {
         {
             self.popup_pointer_down(*position)?;
             self.update(self.viewport)?;
+        }
+        if self.chart_navigation_input(event)? {
+            return Ok(true);
         }
         if let Some(p) = self.chart_press {
             match event {
@@ -332,7 +392,11 @@ impl Controls {
                     }
                     self.synchronize_editor_focus()?;
                     self.runtime.apply(Mutation::CapturePointer(Some(id)))?;
-                    self.chart_press = Some(ChartPress { owner: id, key });
+                    self.chart_press = Some(ChartPress {
+                        owner: id,
+                        key,
+                        pan: None,
+                    });
                     return Ok(true);
                 }
             }

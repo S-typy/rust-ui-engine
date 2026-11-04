@@ -72,6 +72,22 @@ but no marker is fabricated at the clip boundary. Keyboard navigation continues
 to use visible observation markers. Fill contours are grouped into bounded paths
 without changing their geometry or the shared renderer's path limits.
 
+## View transforms
+
+`set_view_ranges(x, y)` sets each explicit range or uses `None` to restore the
+range derived from the observations. `zoom_at(factor, anchor)` scales both spans:
+values above one zoom in, and the normalized anchor `(0, 0)` is the lower-left,
+`(1, 1)` the upper-right data-space corner. `pan(x, y)` shifts each range by that
+fraction of its current span; positive offsets move toward larger coordinates.
+
+Transforms validate a complete candidate before publication. Factors must be
+finite and positive, anchors finite and within `[0, 1]`, and offsets finite.
+Collapsed, overflowing or ill-conditioned ranges are rejected by the common
+range/geometry validation. Finite very wide ranges are allowed. An unchanged
+candidate returns `false`; a unit zoom or zero pan does not pin automatic axes.
+Source observations and selected keys remain unchanged, including selections
+outside the new view. Non-Cartesian families return `InvalidView`.
+
 ## Snapshot adapter and limits
 
 `ChartSeries::from_table` reads an existing `DataTable` using explicit x/y field

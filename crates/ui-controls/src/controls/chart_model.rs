@@ -9,6 +9,8 @@ use std::collections::HashSet;
 #[path = "chart_cartesian.rs"]
 mod cartesian;
 pub use cartesian::ChartArea;
+#[path = "chart_navigation.rs"]
+mod navigation;
 
 pub const MAX_CHART_SERIES: usize = 16;
 pub const MAX_CHART_POINTS: usize = 4096;
