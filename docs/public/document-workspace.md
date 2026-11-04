@@ -91,13 +91,21 @@ Native Windows input, rendering and screen-reader evidence is recorded separatel
 model tests alone do not establish those results. Linux/macOS runtime, physical
 mixed-DPI monitor transfer and persistence of MDI rectangles are not claimed here.
 
-## Long-running native-window limitation
+## Repeated native-window transitions
 
-On Windows with Vulkan, repeated `Tabbed` / `Mdi` / `Windowed` transitions
-can leave an increasing process handle count after the floating HWNDs have been
-destroyed. The checked runs preserved document identities, drafts and accepted
-values, and the remaining count increase persisted through a bounded idle period.
-Its allocator and cause have not been identified. Sharing the GPU device does not
-establish resource stability for a long-running windowed document session; that
-profile remains a known limitation. These observations do not establish that
-other resource classes or backends are free of leaks.
+The Windows Vulkan renderer prefers `Mailbox` presentation when advertised by
+the surface. Repeated concurrent surfaces on the checked NVIDIA driver previously
+increased the process handle count with the default presentation mode; device
+sharing and waiting for retired GPU work did not remove that increase.
+
+The revised policy was checked on Windows with an RTX 3090 (driver 32.0.16.1692):
+30 `Tabbed` / `Mdi` / `Windowed` cycles for each combination of Vulkan/DX12 and
+Light/Dark. Document identities, drafts and accepted values survived; floating
+HWNDs were destroyed. After warmup, Vulkan handles went from 581 to 570, DX12
+from 633 to 624; neither retained the previous per-cycle growth. Controlled
+single/multiple-window GPU recreation also preserved retained text and images.
+
+These bounded checks cover this adapter and driver. Surfaces without `Mailbox`
+use their first advertised presentation mode; that fallback and other drivers
+require their own resource measurements. These results do not claim universal
+absence of resource leaks.

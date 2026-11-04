@@ -281,6 +281,7 @@ impl<A: DesktopApp> Host<A> {
                     "GPU adapter={:?} backend={:?} type={:?}",
                     info.name, info.backend, info.device_type
                 );
+                eprintln!("GPU presentation={:?}", renderer.present_mode());
                 self.renderer = Some(renderer);
                 self.redraw();
             }

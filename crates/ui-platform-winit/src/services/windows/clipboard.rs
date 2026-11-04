@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(test)]
+mod native_tests;
 use windows_sys::Win32::{
     Foundation::{GlobalFree, HGLOBAL},
     System::{DataExchange::*, Memory::*},

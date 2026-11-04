@@ -236,6 +236,22 @@ fn srgb_surface_format(formats: &[wgpu::TextureFormat]) -> Result<wgpu::TextureF
         .ok_or(GpuError::UnsupportedSurface)
 }
 
+fn surface_present_mode(
+    backend: wgpu::Backend,
+    windows: bool,
+    modes: &[wgpu::PresentMode],
+) -> Result<wgpu::PresentMode, GpuError> {
+    // Mailbox keeps the newest retained frame synchronized to the display. On
+    // Windows/Vulkan it also avoids the FIFO presentation path that accumulates
+    // process handles when several native surfaces are repeatedly retired on
+    // the checked NVIDIA driver. Always honor the surface's actual capabilities.
+    if windows && backend == wgpu::Backend::Vulkan && modes.contains(&wgpu::PresentMode::Mailbox) {
+        Ok(wgpu::PresentMode::Mailbox)
+    } else {
+        modes.first().copied().ok_or(GpuError::UnsupportedSurface)
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
 struct ViewportUniform {
@@ -862,7 +878,13 @@ impl GpuRenderer {
         let mut config = surface
             .get_default_config(adapter, physical.width.max(1), physical.height.max(1))
             .ok_or(GpuError::UnsupportedSurface)?;
-        config.format = srgb_surface_format(&surface.get_capabilities(adapter).formats)?;
+        let capabilities = surface.get_capabilities(adapter);
+        config.format = srgb_surface_format(&capabilities.formats)?;
+        config.present_mode = surface_present_mode(
+            gpu_info.backend,
+            cfg!(target_os = "windows"),
+            &capabilities.present_modes,
+        )?;
         config.usage = wgpu::TextureUsages::RENDER_ATTACHMENT;
         // Configuration is deferred until a nonzero frame; minimized windows stay parked.
         let viewport_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -934,6 +956,12 @@ impl GpuRenderer {
 
     pub fn adapter_info(&self) -> &wgpu::AdapterInfo {
         &self.adapter_info
+    }
+
+    /// The supported presentation mode selected for this native surface.
+    /// Windows/Vulkan prefers synchronized Mailbox when it is advertised.
+    pub fn present_mode(&self) -> wgpu::PresentMode {
+        self.config.present_mode
     }
 
     pub fn stats(&self) -> RendererStats {
@@ -1192,6 +1220,38 @@ impl GpuRenderer {
 mod tests {
     use super::*;
     use rust_desktop_ui_core::{Color, TextRun};
+
+    #[test]
+    fn native_presentation_uses_supported_mailbox_only_for_windows_vulkan() {
+        use wgpu::{Backend, PresentMode};
+        let modes = [
+            PresentMode::Fifo,
+            PresentMode::Mailbox,
+            PresentMode::Immediate,
+        ];
+        assert_eq!(
+            surface_present_mode(Backend::Vulkan, true, &modes).unwrap(),
+            PresentMode::Mailbox
+        );
+        for (backend, windows) in [
+            (Backend::Vulkan, false),
+            (Backend::Dx12, true),
+            (Backend::Metal, false),
+        ] {
+            assert_eq!(
+                surface_present_mode(backend, windows, &modes).unwrap(),
+                PresentMode::Fifo
+            );
+        }
+        assert_eq!(
+            surface_present_mode(Backend::Vulkan, true, &[PresentMode::Fifo]).unwrap(),
+            PresentMode::Fifo
+        );
+        assert!(matches!(
+            surface_present_mode(Backend::Vulkan, true, &[]),
+            Err(GpuError::UnsupportedSurface)
+        ));
+    }
 
     #[test]
     fn corrupted_images_and_order_are_rejected_before_upload() {

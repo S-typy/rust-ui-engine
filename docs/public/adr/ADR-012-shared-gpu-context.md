@@ -52,6 +52,8 @@ instances or cross-adapter migration is introduced by this decision.
 
 Controlled single/multiple-window recovery has been checked on Windows DX12 and
 Vulkan, including actual Present and one image upload per device generation in
-each window. Repeated window retirement still shows residual Windows/Vulkan
-process-handle growth. This decision improves device lifetime but does not close
-that [long-running host limitation](../document-workspace.md#long-running-native-window-limitation).
+each window. Windows/Vulkan now prefers an advertised Mailbox presentation mode.
+That policy removed the observed per-cycle process-handle growth on the checked
+adapter; device sharing alone had not. The repeated-window measurements and
+their driver-specific boundary are recorded in
+[DocumentWorkspace](../document-workspace.md#repeated-native-window-transitions).

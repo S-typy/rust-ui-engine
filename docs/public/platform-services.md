@@ -100,3 +100,15 @@ owner revocation and a reentrant waker. These tests do not replace native shell
 or clipboard checks. Windows availability and visual behavior must be checked
 on the actual desktop. Linux/macOS rich clipboard and shell implementations
 and native verification remain outside the implemented profile.
+
+The explicit ignored test `interactive_native_roundtrip` exercises the real
+Windows clipboard: simultaneous Unicode/HTML/RGBA formats, supplementary Unicode,
+straight alpha, replacement/absent formats, invalid-input atomicity and reading
+through a second HWND. It replaces the interactive clipboard and must only be
+run with its owner's permission. Its bounded retries apply only to `Busy`
+before any formats were transferred; a partially successful write is never retried.
+
+`isolated_native_roundtrip` runs the same assertions in a child process using a
+new noninteractive window station. Creation is exclusive; an existing station
+or insufficient rights causes failure before clipboard access. This alternative
+requires the OS to permit station creation. Neither test runs by default.

@@ -539,6 +539,11 @@ impl WindowState {
             "WINDOW {:?} GPU adapter={:?} backend={:?} type={:?}",
             self.spec.key, info.name, info.backend, info.device_type
         );
+        eprintln!(
+            "WINDOW {:?} GPU presentation={:?}",
+            self.spec.key,
+            renderer.present_mode()
+        );
         self.renderer = Some(renderer);
         self.window.request_redraw();
         Ok(())

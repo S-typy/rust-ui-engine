@@ -10,6 +10,9 @@ const WINDOW: NodeId = NodeId(1);
 #[cfg(test)]
 #[path = "accessibility_badge_tests.rs"]
 mod badge_tests;
+#[cfg(test)]
+#[path = "accessibility_chart_tests.rs"]
+mod chart_tests;
 #[path = "accessibility_grid.rs"]
 mod grid;
 #[cfg(test)]
@@ -129,7 +132,10 @@ impl Accessibility {
                 node.set_value(node.label().unwrap_or_default().to_owned());
             }
             node.set_bounds(bounds(semantic.bounds, scale));
-            if let Some(summary) = ui.spatial_semantic_value(widget) {
+            if let Some(summary) = ui
+                .spatial_semantic_value(widget)
+                .or_else(|| ui.chart_semantic_value(widget))
+            {
                 // Canvas state belongs in the accessible name as well as value:
                 // Windows Narrator does not consistently read a Group's value.
                 node.set_label(format!("{}. {summary}", node.label().unwrap_or_default()));

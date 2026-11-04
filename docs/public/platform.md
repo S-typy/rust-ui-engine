@@ -248,14 +248,12 @@ Window/Surface и не переносит GPU types в core или controls. П�
 проверяет кадры и native resize с ограниченным временем выполнения; это не
 тест реального IME, clipboard, screen reader или hardware device loss.
 
-В Windows-профиле Vulkan повторное создание и закрытие окон документов
-сопровождается ростом числа дескрипторов процесса, сохраняющимся после
-уничтожения floating HWND и ограниченного периода ожидания. Сохранность
-документов и закрытие HWND проверяются отдельно от стабильности ресурсов.
-Общий GPU device не устраняет этот оставшийся рост; его источник и конкретный
-владелец выделений пока не установлены. Стабильность ресурсов длительной
-сессии с частыми оконными переходами не подтверждена; подробнее —
-[ограничение DocumentWorkspace](document-workspace.md#long-running-native-window-limitation).
+В Windows/Vulkan renderer выбирает Mailbox, если surface сообщает его поддержку;
+иначе сохраняется первый доступный режим. На проверенном RTX 3090 это устранило
+наблюдавшийся рост дескрипторов при повторных переходах документов между окнами.
+Четыре прогона по 30 циклов (Vulkan/DX12, Light/Dark) сохранили документы и
+закрыли floating HWND без прежнего линейного роста. Адаптер, драйвер и границы
+проверки приведены в [DocumentWorkspace](document-workspace.md#repeated-native-window-transitions).
 
 Текущие результаты и ручной протокол — в [runtime matrix](runtime-matrix.md).
 Native CJK candidate window, focus changes во время composition и accessibility
