@@ -24,3 +24,7 @@ Shared pages permit future exporters without duplicating pagination.
 The current native printing adapter is Windows-only. Actual device output and
 native accessibility require independent acceptance beyond compilation and
 page-scene tests.
+
+The 2026-11-04 extension in [ADR-017](ADR-017-windowless-scene-output.md) permits
+the Windows transport to use the shared GPU renderer for original page Scenes,
+including text, before opaque bitmap transfer to drivers without pixel alpha.

@@ -15,8 +15,9 @@ it rejects merged sheets and does not reproduce spreadsheet viewport styling.
 ## Export and Windows printing
 
 `printing::export_pdf` writes page vectors and raster images. Text is shaped
-with the normal text engine and exported as glyph images at 192 DPI with
-`ActualText` marked content. Font binaries are not embedded. This preserves
+with the normal text engine and exported as glyph images at 192 DPI. Each
+shaped line also has invisible text with Unicode `ActualText`; the visible
+glyph images are marked as artifacts. Font binaries are not embedded. This preserves
 visual glyphs but does not promise outline-text quality at arbitrary zoom or
 text extraction in every external reader. Unsupported rounded geometry,
 cropped image sources or transparent vector ink returns an error.
@@ -25,19 +26,37 @@ Cancellation returns no partial byte buffer.
 `FillPath` contours retain their `NonZero` or `EvenOdd` rule and rectangular
 clip in PDF output. The exporter writes closed vector paths without rasterizing
 them. Opaque contours use the same winding rule in Windows GDI printing.
-Transparent polygon ink is rejected before starting a Windows print job.
+Windows `Auto` printing composites transparent polygon ink with the GPU.
+The explicit `Native` profile rejects transparent vector ink before starting a job.
 This geometry support does not establish physical printer output acceptance.
 
-`printing::prepare_for_printer` replaces text with glyph bitmaps.
+`printing::prepare_for_printer` replaces text with glyph bitmaps for the explicit
+native profile. The default transport accepts original text runs directly.
 `ui_platform_winit::printing::printers` enumerates configured printers without
 opening one. `PrintTicket` selects an explicit printer, zero-based page indices,
-copy count, fit-to-printable-area and an optional absolute output filename.
+copy count, fit-to-printable-area, rendering policy, raster DPI and an optional
+absolute output filename.
 `print` uses Windows GDI/spooler APIs on a worker, validates the ticket and
 driver capabilities before starting a job, and calls AbortDoc when cancelled
 or failed. Cancellation cannot retract pages a device has already printed.
-The current image transport requires driver pixel-alpha support; vectors must
-be opaque and image source coordinates integral. Other platforms return
-`Unsupported`.
+`PrintRenderMode::Auto` keeps opaque vector pages in GDI. Pages containing text,
+images, ellipses or transparent vectors use the shared windowless GPU renderer;
+the driver receives an opaque bitmap through `StretchDIBits`, without requiring
+pixel-alpha support. This preserves the UI's linear-light blending. Each page
+has a white background and a bounded raster resolution: `raster_dpi` defaults
+to 192, accepts 96..=600, and must fit 8192 pixels per dimension and 64 MiB RGBA.
+Resolution is never silently reduced. Only one completed page bitmap is cached;
+GPU preparation or later page failures abort the outstanding job. A successful
+receipt means submission to the spooler, not physical paper delivery.
+
+`PrintRenderMode::Native` requires prepared text, opaque vectors, integral
+image source coordinates and driver pixel-alpha support for images. Ellipses
+are rejected before submission. Other platforms return `Unsupported`.
+
+The semantic PDF layer supports line-level search/copy, not precise per-character
+selection geometry or a complete tagged PDF accessibility tree. Partly clipped
+lines retain their full Unicode text; clipping is not redaction. Direct PDF
+DeviceRGB transparency and GPU linear-light compositing can differ in color.
 
 Run `xaml-form --print-preview` or `--report`. Select “Принтеры” to enumerate,
 enter/accept a printer name, then explicitly press “Печатать”. No job is

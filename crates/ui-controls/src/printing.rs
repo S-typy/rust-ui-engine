@@ -1,4 +1,4 @@
-//! Shared page export. PDF text uses shaped glyph images with ActualText;
+//! Shared page export. PDF text uses shaped glyph images and invisible ActualText;
 //! no system font binaries are embedded. The page UI still renders through Scene.
 use crate::pdf::{PdfError, invalid};
 use lopdf::{
@@ -232,6 +232,7 @@ fn page_content(
 ) -> Result<(Vec<u8>, Dictionary), PdfError> {
     let mut operations = Vec::new();
     let mut objects = Dictionary::new();
+    let mut fonts = Dictionary::new();
     let h = page.size.height;
     for command in page.scene.commands() {
         if cancelled() {
@@ -324,13 +325,10 @@ fn page_content(
             )?,
             DrawCommand::Text(i) => {
                 let run = &page.scene.texts[i];
-                operations.push(op(
-                    "BDC",
-                    vec![
-                        Object::Name(b"Span".to_vec()),
-                        dictionary! {"ActualText"=>lopdf::text_string(&run.text)}.into(),
-                    ],
-                ));
+                // The bitmap appearance is an artifact. A separate invisible text
+                // object carries each shaped line's Unicode replacement and bounds.
+                // Image-only ActualText is ignored by common text extractors.
+                operations.push(op("BMC", vec![Object::Name(b"Artifact".to_vec())]));
                 let one = PrintDocument::new(
                     "text",
                     vec![PrintPage {
@@ -349,6 +347,65 @@ fn page_content(
                     emit_image(doc, image, h, &mut operations, &mut objects, budget)?;
                 }
                 operations.push(op("EMC", vec![]));
+                let prepared = engine
+                    .prepare_styled(run, page.scene.text_spans(i), 1.0)
+                    .map_err(invalid)?;
+                if !fonts.has(b"Semantic") {
+                    let font = doc.add_object(dictionary! {"Type"=>"Font", "Subtype"=>"Type1",
+                    "BaseFont"=>"Courier", "Encoding"=>"WinAnsiEncoding"});
+                    fonts.set("Semantic", font);
+                }
+                for line in prepared.line_metrics() {
+                    let value = &run.text[line.text_range];
+                    let Some(visible) = line.bounds.intersection(run.clip).and_then(|r| {
+                        r.intersection(Rect::new(0.0, 0.0, page.size.width, page.size.height))
+                    }) else {
+                        continue;
+                    };
+                    if value.is_empty() || visible.width <= 0.0 {
+                        continue;
+                    }
+                    operations.extend([
+                        op("q", vec![]),
+                        rectangle(run.clip, h),
+                        op("W", vec![]),
+                        op("n", vec![]),
+                        op(
+                            "BDC",
+                            vec![
+                                Object::Name(b"Span".to_vec()),
+                                dictionary! {"ActualText"=>lopdf::text_string(value)}.into(),
+                            ],
+                        ),
+                        op("BT", vec![]),
+                        op(
+                            "Tf",
+                            vec![Object::Name(b"Semantic".to_vec()), real(run.font_size)],
+                        ),
+                        op("Tr", vec![3.into()]),
+                        // Courier's advance is 600/1000 em. One nonpainting glyph
+                        // spans the shaped line; ActualText supplies the actual text.
+                        op(
+                            "Tz",
+                            vec![raw(line.bounds.width / (run.font_size * 0.6) * 100.0)],
+                        ),
+                        op(
+                            "Tm",
+                            vec![
+                                1.into(),
+                                0.into(),
+                                0.into(),
+                                1.into(),
+                                real(line.bounds.x),
+                                real(h - line.baseline),
+                            ],
+                        ),
+                        op("Tj", vec![Object::string_literal("x")]),
+                        op("ET", vec![]),
+                        op("EMC", vec![]),
+                        op("Q", vec![]),
+                    ]);
+                }
             }
         }
         if operations.len() > 200_000 {
@@ -357,7 +414,7 @@ fn page_content(
     }
     Ok((
         Content { operations }.encode().map_err(invalid)?,
-        dictionary! {"XObject"=>objects},
+        dictionary! {"XObject"=>objects, "Font"=>fonts},
     ))
 }
 fn emit_image(

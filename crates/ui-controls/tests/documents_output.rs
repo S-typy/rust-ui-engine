@@ -39,6 +39,64 @@ fn pdf_export_reopens_with_unicode_search_and_visible_images() {
     assert!((opened.pages()[0].content.size.width - 400.0).abs() < 0.01);
 }
 #[test]
+fn pdf_semantic_lines_remain_invisible_and_do_not_duplicate_visual_text() {
+    let mut scene = Scene::default();
+    let value = "Первая строка Cafe\u{301}\nВторая строка 😀";
+    let mut run = TextRun::new(
+        value,
+        Rect::new(20.0, 20.0, 350.0, 100.0),
+        Color::rgb(0, 0, 0),
+        18.0,
+    );
+    run.wrap = true;
+    scene.text(run);
+    let mut hidden = TextRun::new(
+        "Outside page",
+        Rect::new(20.0, 600.0, 200.0, 32.0),
+        Color::rgb(0, 0, 0),
+        18.0,
+    );
+    hidden.clip = Rect::new(0.0, 0.0, 400.0, 500.0);
+    scene.text(hidden);
+    let source = PrintDocument::new(
+        "Unicode lines",
+        vec![PrintPage {
+            size: Size::new(400.0, 500.0),
+            scene,
+        }],
+    )
+    .unwrap();
+    let bytes = export_pdf(&source, &mut TextEngine::new(), || false).unwrap();
+    let opened = PdfDocument::open(&bytes).unwrap();
+    assert!(
+        opened.diagnostics().is_empty(),
+        "{:?}",
+        opened.diagnostics()
+    );
+    let page = &opened.pages()[0];
+    assert!(
+        page.content.scene.texts.is_empty(),
+        "invisible semantic markers must never paint"
+    );
+    assert!(!page.content.scene.images.is_empty());
+    assert_eq!(page.text.len(), 2);
+    assert_eq!(
+        page.text
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect::<String>(),
+        value
+    );
+    assert!(page.text[0].bounds.y < page.text[1].bounds.y);
+    assert!(
+        page.text
+            .iter()
+            .all(|t| t.bounds.width > 100.0 && t.bounds.height < 60.0)
+    );
+    assert!(opened.search("Outside").unwrap().is_empty());
+    assert_eq!(opened.search("Вторая").unwrap().len(), 1);
+}
+#[test]
 fn annotations_are_transactional_and_survive_save() {
     let bytes = export_pdf(&page(), &mut TextEngine::new(), || false).unwrap();
     let mut pdf = PdfDocument::open(&bytes).unwrap();

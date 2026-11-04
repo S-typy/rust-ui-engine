@@ -14,6 +14,12 @@ page/item indices, UTF-8 byte ranges and item bounds. Unicode field edits
 regenerate an appearance; adding/removing a note and saving retains unrelated
 original objects.
 
+Invisible text mode (`Tr 3`) participates in extraction without adding painted
+Scene text. `ActualText` replaces the marked content once; horizontal text
+scaling contributes to extraction bounds. Visible scaled text still uses
+system fallback metrics and reports that limitation. This supports the
+exporter's line-level Unicode layer without painting duplicate glyphs.
+
 The reader is bounded to 16 MiB input, 20,000 objects, 512 pages, 4 MiB decoded
 content per page, 50,000 page operators and 128 MiB total decoded content.
 Page-tree cycles/shared nodes, invalid dimensions, encrypted input, unsupported

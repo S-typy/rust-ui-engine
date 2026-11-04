@@ -347,15 +347,8 @@ impl OutputDemo {
                             }
                             let document = self.pages()?;
                             self.spawn(move |cancelled| {
-                                let prepared = printing::prepare_for_printer(
-                                    &document,
-                                    &mut TextEngine::new(),
-                                    2.0,
-                                    || cancelled.load(Ordering::Acquire),
-                                )
-                                .map_err(err)?;
                                 let result = platform::printing::print(
-                                    &prepared,
+                                    &document,
                                     &platform::printing::PrintTicket::new(printer),
                                     &cancelled,
                                 )

@@ -19,6 +19,8 @@ struct State {
     font: Vec<u8>,
     size: f32,
     leading: f32,
+    invisible_text: bool,
+    text_scale: f32,
 }
 impl State {
     fn point(&self, x: f32, y: f32, h: f32) -> Point {
@@ -77,6 +79,8 @@ pub(super) fn page(
         font: Vec::new(),
         size: 12.0,
         leading: 14.0,
+        invisible_text: false,
+        text_scale: 1.0,
     };
     let resources = inherited(doc, id, b"Resources")?.and_then(|o| o.as_dict().ok());
     let data = doc
@@ -337,7 +341,9 @@ pub(super) fn page(
                 let encoding = font
                     .get_font_encoding_with_limit(doc, 1024 * 1024)
                     .map_err(invalid)?;
-                warnings.insert("PDF fonts are shaped with system fallback; exact embedded-font metrics are not implemented".into());
+                if !state.invisible_text {
+                    warnings.insert("PDF fonts are shaped with system fallback; exact embedded-font metrics are not implemented".into());
+                }
                 for item in items {
                     if let Object::String(bytes, _) = item {
                         let value = Document::decode_text(&encoding, bytes).map_err(invalid)?;
@@ -365,19 +371,42 @@ pub(super) fn page(
                         let rect = Rect::new(
                             p.x,
                             p.y - font_size,
-                            prepared.width.max(1.0),
+                            (prepared.width * state.text_scale).max(1.0),
                             prepared.height.max(1.0),
                         );
-                        state.text_x += prepared.width * 0.75 / state.matrix[0].abs().max(0.001);
+                        state.text_x += prepared.width * state.text_scale * 0.75
+                            / state.matrix[0].abs().max(0.001);
+                        if let Some(clipped) = rect.intersection(state.clip) {
+                            for (_, bounds) in actual.iter_mut().flatten() {
+                                *bounds = Some(bounds.map_or(clipped, |b| {
+                                    Rect::new(
+                                        b.x.min(clipped.x),
+                                        b.y.min(clipped.y),
+                                        (b.x + b.width).max(clipped.x + clipped.width)
+                                            - b.x.min(clipped.x),
+                                        (b.y + b.height).max(clipped.y + clipped.height)
+                                            - b.y.min(clipped.y),
+                                    )
+                                }));
+                            }
+                        }
                         if actual.iter().all(Option::is_none) {
                             text.push(PdfText {
                                 bounds: rect,
                                 text: value,
                             });
                         }
-                        scene.text(run);
+                        if !state.invisible_text {
+                            if state.text_scale != 1.0 {
+                                warnings.insert(
+                                    "Visible horizontal text scaling uses system fallback metrics"
+                                        .into(),
+                                );
+                            }
+                            scene.text(run);
+                        }
                     } else {
-                        state.text_x -= number(item)? / 1000.0 * state.size;
+                        state.text_x -= number(item)? / 1000.0 * state.size * state.text_scale;
                     }
                 }
             }
@@ -455,8 +484,21 @@ pub(super) fn page(
                 }
             }
             // Defaults only: these are common explicit no-op settings.
-            "Tc" | "Tw" | "Ts" | "Tr" if numbers(1)?[0] == 0.0 => {}
-            "Tz" if numbers(1)?[0] == 100.0 => {}
+            "Tc" | "Tw" | "Ts" if numbers(1)?[0] == 0.0 => {}
+            "Tr" => {
+                state.invisible_text = match numbers(1)?[0] {
+                    0.0 => false,
+                    3.0 => true,
+                    _ => return Err(PdfError::Unsupported("text rendering mode".into())),
+                };
+            }
+            "Tz" => {
+                let scale = numbers(1)?[0] / 100.0;
+                if !scale.is_finite() || !(0.000001..=1_000_000.0).contains(&scale) {
+                    return Err(invalid("text horizontal scale"));
+                }
+                state.text_scale = scale;
+            }
             "J" | "j" | "M" => {
                 let _ = numbers(1)?;
             }

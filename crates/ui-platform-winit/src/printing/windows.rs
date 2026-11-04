@@ -1,5 +1,6 @@
 use super::*;
 use rust_desktop_ui_core::*;
+use rust_desktop_ui_render_wgpu::OffscreenRenderer;
 use std::{
     mem::{size_of, zeroed},
     ptr::{null, null_mut},
@@ -133,8 +134,18 @@ pub(super) fn print(
         if dpi_x <= 0.0 || dpi_y <= 0.0 || width <= 0.0 || height <= 0.0 {
             return Err(native("printer capabilities"));
         }
-        if document.pages().iter().any(|p| !p.scene.images.is_empty())
-            && GetDeviceCaps(dc.0, SHADEBLENDCAPS as i32) as u32 & SB_PIXEL_ALPHA == 0
+        let raster = pages
+            .iter()
+            .any(|i| ticket.uses_gpu(&document.pages()[*i].scene));
+        if raster && GetDeviceCaps(dc.0, RASTERCAPS as i32) as u32 & RC_STRETCHDIB == 0 {
+            return Err(PrintError::Unsupported(
+                "printer driver lacks bitmap transfer".into(),
+            ));
+        }
+        if pages.iter().any(|i| {
+            let scene = &document.pages()[*i].scene;
+            !ticket.uses_gpu(scene) && !scene.images.is_empty()
+        }) && GetDeviceCaps(dc.0, SHADEBLENDCAPS as i32) as u32 & SB_PIXEL_ALPHA == 0
         {
             return Err(PrintError::Unsupported(
                 "printer driver lacks pixel alpha blending".into(),
@@ -150,6 +161,37 @@ pub(super) fn print(
                 "page exceeds printable area at actual size".into(),
             ));
         }
+        if cancelled.load(Ordering::Acquire) {
+            return Err(PrintError::Cancelled);
+        }
+        // Prepare the first GPU page before submitting any job. Keep only one bitmap;
+        // subsequent page failures abort the outstanding job through the Job guard.
+        let gpu_error =
+            |e: rust_desktop_ui_render_wgpu::GpuError| PrintError::Native(e.to_string());
+        let mut renderer = if raster {
+            Some(pollster::block_on(OffscreenRenderer::new()).map_err(gpu_error)?)
+        } else {
+            None
+        };
+        let mut cached = if let Some(renderer) = &mut renderer {
+            let index = *pages
+                .iter()
+                .find(|i| ticket.uses_gpu(&document.pages()[**i].scene))
+                .unwrap();
+            let page = &document.pages()[index];
+            Some((
+                index,
+                renderer
+                    .render(
+                        &page.scene,
+                        ticket.raster_size(page)?,
+                        f32::from(ticket.raster_dpi) / 96.0,
+                    )
+                    .map_err(gpu_error)?,
+            ))
+        } else {
+            None
+        };
         if cancelled.load(Ordering::Acquire) {
             return Err(PrintError::Cancelled);
         }
@@ -190,14 +232,58 @@ pub(super) fn print(
                     1.0
                 };
                 let scale = Point::new(dpi_x / 96.0 * factor, dpi_y / 96.0 * factor);
+                if ticket.uses_gpu(&page.scene) && cached.as_ref().is_none_or(|(i, _)| i != index) {
+                    cached.take();
+                    let bitmap = renderer
+                        .as_mut()
+                        .unwrap()
+                        .render(
+                            &page.scene,
+                            ticket.raster_size(page)?,
+                            f32::from(ticket.raster_dpi) / 96.0,
+                        )
+                        .map_err(gpu_error)?;
+                    cached = Some((*index, bitmap));
+                }
+                if cancelled.load(Ordering::Acquire) {
+                    return Err(PrintError::Cancelled);
+                }
                 if StartPage(dc.0) <= 0 {
                     return Err(native("StartPage"));
                 }
-                for command in page.scene.commands() {
-                    if cancelled.load(Ordering::Acquire) {
-                        return Err(PrintError::Cancelled);
+                if ticket.uses_gpu(&page.scene) {
+                    draw_bitmap(dc.0, &cached.as_ref().unwrap().1, page.size, scale)?;
+                } else {
+                    // Both paths are clipped to the declared page, even when the
+                    // physical printer's printable area is larger.
+                    let saved = SaveDC(dc.0);
+                    if saved == 0 {
+                        return Err(native("SaveDC page"));
                     }
-                    draw(dc.0, &page.scene, *command, scale)?;
+                    let result = (|| {
+                        if IntersectClipRect(
+                            dc.0,
+                            0,
+                            0,
+                            (page.size.width * scale.x).round() as i32,
+                            (page.size.height * scale.y).round() as i32,
+                        ) == 0
+                        {
+                            return Err(native("page clip"));
+                        }
+                        for command in page.scene.commands() {
+                            if cancelled.load(Ordering::Acquire) {
+                                return Err(PrintError::Cancelled);
+                            }
+                            draw(dc.0, &page.scene, *command, scale)?;
+                        }
+                        Ok(())
+                    })();
+                    let restored = RestoreDC(dc.0, saved);
+                    result?;
+                    if restored == 0 {
+                        return Err(native("RestoreDC page"));
+                    }
                 }
                 if EndPage(dc.0) <= 0 {
                     return Err(native("EndPage"));
@@ -217,6 +303,45 @@ pub(super) fn print(
             pages_submitted: submitted,
         })
     }
+}
+/// Only channel conversion happens on CPU. The opaque page has already been
+/// composited by the shared GPU renderer, so the printer needs no AlphaBlend.
+fn draw_bitmap(dc: HDC, bitmap: &Bitmap, size: Size, scale: Point) -> Result<(), PrintError> {
+    let mut bgra = bitmap.pixels().to_vec();
+    for pixel in bgra.chunks_exact_mut(4) {
+        pixel.swap(0, 2);
+    }
+    unsafe {
+        let mut info: BITMAPINFO = zeroed();
+        info.bmiHeader = BITMAPINFOHEADER {
+            biSize: size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: bitmap.width() as i32,
+            biHeight: -(bitmap.height() as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            ..zeroed()
+        };
+        let copied = StretchDIBits(
+            dc,
+            0,
+            0,
+            (size.width * scale.x).round() as i32,
+            (size.height * scale.y).round() as i32,
+            0,
+            0,
+            bitmap.width() as i32,
+            bitmap.height() as i32,
+            bgra.as_ptr().cast(),
+            &info,
+            DIB_RGB_COLORS,
+            SRCCOPY,
+        );
+        if copied == 0 || copied == -1 {
+            return Err(native("StretchDIBits"));
+        }
+    }
+    Ok(())
 }
 fn rgb(c: Color) -> u32 {
     (c.r * 255.0).round() as u32
