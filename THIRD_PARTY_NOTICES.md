@@ -1,7 +1,7 @@
 # Third-party notices
 
-Snapshot: 2026-11-03. The project code is licensed under Apache-2.0. Dependencies
-retain the licenses declared below. The table covers all 422 registry packages in
+Snapshot: 2026-11-04. The project code is licensed under Apache-2.0. Dependencies
+retain the licenses declared below. The table covers all 421 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
 
@@ -58,7 +58,6 @@ not constitute a complete binary redistribution review.
 
 | Crate | Version | Declared SPDX expression | License / source evidence |
 |---|---|---|---|
-| accesskit | 0.25.1 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT), [LICENSE.chromium (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium), [AUTHORS (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS) |
 | accesskit_atspi_common | 0.21.0 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT), [LICENSE.chromium (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium), [AUTHORS (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS) |
 | accesskit_consumer | 0.39.1 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT), [LICENSE.chromium (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium), [AUTHORS (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS) |
 | accesskit_ios | 0.2.1 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT), [LICENSE.chromium (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium), [AUTHORS (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS) |
@@ -488,4 +487,5 @@ file hash, the original registry license evidence and the local modification not
 
 | Crate | Version | Declared SPDX expression | Local license / provenance |
 |---|---|---|---|
+| accesskit | 0.25.1 | MIT OR Apache-2.0 | [Modification notice](vendor/accesskit/BACKPORT.md), [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT), [LICENSE.chromium (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium), [AUTHORS (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS) |
 | accesskit_windows | 0.35.1 | MIT OR Apache-2.0 | [Modification notice](vendor/accesskit_windows/BACKPORT.md), [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT), [LICENSE.chromium (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium), [AUTHORS (upstream)](https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS) |

@@ -843,6 +843,72 @@ impl Controls {
     pub fn grid_focused_column(&self, id: WidgetId) -> Option<ColumnId> {
         self.grids.get(&id).and_then(|g| g.model.focused_column())
     }
+    /// Logical coordinate identity, unaffected by selection and scrolling.
+    pub fn grid_structure_revision(&self, id: WidgetId) -> Option<(u64, u64, u64)> {
+        self.grids.get(&id).map(|g| g.model.structure_revision())
+    }
+    /// Visible columns in logical accessibility order, including offscreen ones.
+    pub fn grid_accessible_columns(&self, id: WidgetId) -> Option<Vec<ColumnId>> {
+        let grid = self.grids.get(&id)?;
+        Some(
+            grid.model
+                .columns()
+                .iter()
+                .filter(|c| c.pinned)
+                .chain(grid.model.columns().iter().filter(|c| !c.pinned))
+                .map(|c| c.id)
+                .collect(),
+        )
+    }
+    /// Materialize a logical cell without focusing/selecting or accepting an
+    /// editor. An active edit prevents viewport relocation and remains intact.
+    pub fn grid_realize_cell(
+        &mut self,
+        id: WidgetId,
+        row: usize,
+        column: ColumnId,
+    ) -> Result<bool, ControlError> {
+        if !self.is_enabled(id) || !self.semantics().iter().any(|node| node.id == id) {
+            return Ok(false);
+        }
+        let grid = self
+            .grids
+            .get_mut(&id)
+            .ok_or_else(|| error("Unknown GridControl"))?;
+        if grid.session.is_some()
+            || grid.source.presentation.view == GridViewMode::Cards
+            || row >= grid.model.row_count()
+        {
+            return Ok(false);
+        }
+        // A data notification can still be queued behind the AT request.
+        // Never interpret old coordinates against a newly published source.
+        if grid.source.handle.try_borrow().ok().is_none_or(|source| {
+            source.revision() != grid.source.revision || source.query() != &grid.source.data_query
+        }) {
+            return Ok(false);
+        }
+        let Some(target) = grid.model.columns().iter().find(|c| c.id == column) else {
+            return Ok(false);
+        };
+        let x = if target.pinned {
+            grid.model.scroll_offset().0
+        } else {
+            grid.model
+                .columns()
+                .iter()
+                .filter(|c| !c.pinned)
+                .take_while(|c| c.id != column)
+                .map(|c| f64::from(c.width))
+                .sum()
+        };
+        grid.model
+            .scroll_to(x, row as f64 * f64::from(grid.model.config().row_height))
+            .map_err(error)?;
+        grid.reveal_selected = false;
+        self.scene_dirty = true;
+        Ok(true)
+    }
     pub fn grid_error(&self, id: WidgetId) -> Option<&str> {
         self.grids
             .get(&id)

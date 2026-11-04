@@ -39,9 +39,13 @@ uses the shared accessible text control. `Spreadsheet::semantics` supplies bound
 visible cells, merged spans, logical counts, row/column headers and selection.
 The example projects this snapshot through the common Windows UIA Grid/Table
 provider. Accessible selection preserves a pending formula draft or IME composition.
-An unmaterialized cell returns ELEMENTNOTAVAILABLE; queries do not scroll or
-materialize the full sheet. Native keyboard, IME, clipboard and screen-reader
-acceptance remains outstanding. See [the table accessibility contract](adr/ADR-015-windows-table-accessibility.md).
+ItemContainer enumerates virtual cells without scrolling; Realize or an explicit
+Grid.GetItem request can reveal a bounded viewport. Neither operation changes
+selection, focus or accepted values. An active formula draft or IME composition
+blocks realization. Merged coordinates resolve to their anchor; stale workbook
+generations are rejected. Ordinary property queries do not materialize the full
+sheet. Native keyboard, IME, clipboard and full editing acceptance remain separate
+from the table provider. See [the virtual table contract](adr/ADR-016-virtual-table-accessibility.md).
 
 These are Rust composition APIs. There is no `<Spreadsheet>` compiled-XAML
 element yet; the example mounts it inside a compiled XAML host.

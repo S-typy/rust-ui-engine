@@ -807,7 +807,8 @@ fn enqueue_property_change(
     IGridProvider,
     IGridItemProvider,
     ITableProvider,
-    ITableItemProvider
+    ITableItemProvider,
+    IItemContainerProvider
 )]
 pub(crate) struct PlatformNode {
     pub(crate) context: Weak<Context>,

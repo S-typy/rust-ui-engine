@@ -1,6 +1,7 @@
 # Windows table accessibility
 
-Status: accepted, 2026-11-03.
+Status: accepted, 2026-11-03. Virtualization is extended by
+[ADR-016](ADR-016-virtual-table-accessibility.md).
 
 ## Decision
 
@@ -36,7 +37,8 @@ and [GridItem provider contract](https://learn.microsoft.com/en-us/windows/win32
 
 ## Limits and validation
 
-VirtualizedItem/ItemContainer realization is not implemented. A query does not
+The initial contract covers materialized cells; ADR-016 adds opt-in
+VirtualizedItem/ItemContainer realization. A plain query does not
 scroll, mutate selection, commit a draft or allocate an entire virtual table.
 Direct COM tests exercise patterns, properties, headers, spans, updates and
 lifetime with a null window handle and no native input. Projection tests cover

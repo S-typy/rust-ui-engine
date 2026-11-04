@@ -175,6 +175,7 @@ pub struct TreeGrid {
     model_id: u64,
     epoch: u64,
     sequence: u64,
+    structure_epoch: u64,
     index: SparseIndex,
     loaded: HashMap<RowKey, Vec<RowKey>>,
     locations: Locations,
@@ -225,6 +226,10 @@ impl TreeGrid {
         let index =
             crate::index::SparseIndex::rebuild(source, &expanded, &self.loaded, &self.locations)?;
         let anchor = self.capture_scroll_anchor(source);
+        self.structure_epoch = self
+            .structure_epoch
+            .checked_add(1)
+            .ok_or(GridError::Capacity)?;
         self.expanded = expanded;
         self.index = index;
         self.restore_scroll_anchor(source, anchor)?;
@@ -268,6 +273,7 @@ impl TreeGrid {
             anchor: None,
             model_id,
             epoch: 0,
+            structure_epoch: 0,
             sequence: 0,
             index: SparseIndex::default(),
             loaded: HashMap::new(),
@@ -282,6 +288,12 @@ impl TreeGrid {
 
     pub fn columns(&self) -> &[GridColumn] {
         &self.columns
+    }
+
+    /// Identity of logical row coordinates. Viewport and selection changes do
+    /// not invalidate it; source refresh and expansion/lazy-load changes do.
+    pub fn structure_revision(&self) -> (u64, u64, u64) {
+        (self.model_id, self.epoch, self.structure_epoch)
     }
     pub fn set_column_editable(&mut self, id: ColumnId, editable: bool) -> Result<(), GridError> {
         let column = self
@@ -827,6 +839,10 @@ impl TreeGrid {
         } else {
             None
         };
+        self.structure_epoch = self
+            .structure_epoch
+            .checked_add(1)
+            .ok_or(GridError::Capacity)?;
         self.expanded = next_expanded;
         self.index = next_index;
         if expanded {
@@ -1367,7 +1383,12 @@ impl TreeGrid {
     }
 
     fn reindex(&mut self, source: &impl TreeDataSource) -> Result<(), GridError> {
-        self.index = SparseIndex::rebuild(source, &self.expanded, &self.loaded, &self.locations)?;
+        let index = SparseIndex::rebuild(source, &self.expanded, &self.loaded, &self.locations)?;
+        self.structure_epoch = self
+            .structure_epoch
+            .checked_add(1)
+            .ok_or(GridError::Capacity)?;
+        self.index = index;
         self.clamp_scroll();
         Ok(())
     }

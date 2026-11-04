@@ -27,14 +27,38 @@ pub(super) struct GridAccessibility {
     ids: HashMap<Key, NodeId>,
     seen: HashSet<Key>,
     identities: HashMap<(WidgetId, RowKey), GridRowKind>,
+    virtuals: HashMap<WidgetId, VirtualGrid>,
+    virtual_seen: HashSet<WidgetId>,
+    focused_rows: HashMap<WidgetId, FocusedRow>,
+}
+
+struct FocusedRow {
+    generation: usize,
+    selected: Option<i64>,
+    column: Option<ColumnId>,
+    root: NodeId,
+    focus: NodeId,
+    keys: Vec<Key>,
+    nodes: Vec<(NodeId, Node)>,
+}
+
+struct VirtualGrid {
+    revision: (u64, u64, u64),
+    columns: Vec<ColumnId>,
+    generation: usize,
 }
 
 impl GridAccessibility {
     pub(super) fn begin(&mut self) {
         self.seen.clear();
+        self.virtual_seen.clear();
     }
 
     pub(super) fn finish(&mut self) {
+        self.virtuals
+            .retain(|widget, _| self.virtual_seen.contains(widget));
+        self.focused_rows
+            .retain(|widget, _| self.virtual_seen.contains(widget));
         // Only materialized rows/cells survive. Scrolling an arbitrarily large
         // source cannot grow this map with every previously visited row.
         self.ids.retain(|key, _| self.seen.contains(key));
@@ -102,6 +126,37 @@ impl GridAccessibility {
         let focused_column = ui.grid_focused_column(widget);
         node.set_row_count(frame.semantics.row_count);
         node.set_column_count(frame.semantics.column_count);
+        if !cards
+            && let (Some(revision), Some(columns)) = (
+                ui.grid_structure_revision(widget),
+                ui.grid_accessible_columns(widget),
+            )
+        {
+            self.virtual_seen.insert(widget);
+            if self
+                .virtuals
+                .get(&widget)
+                .is_none_or(|old| old.revision != revision || old.columns != columns)
+                && let (Ok(generation), Some(following)) =
+                    (usize::try_from(*next), next.checked_add(1))
+            {
+                *next = following;
+                self.virtuals.insert(
+                    widget,
+                    VirtualGrid {
+                        revision,
+                        columns,
+                        generation,
+                    },
+                );
+            }
+            if let Some(state) = self.virtuals.get(&widget) {
+                node.set_virtualization_generation(state.generation);
+                if enabled && ui.grid_editor(widget).is_none() {
+                    node.add_action(Action::RealizeCell);
+                }
+            }
+        }
         if settings.is_read_only {
             node.set_read_only();
         }
@@ -286,6 +341,80 @@ impl GridAccessibility {
                 }
             }
         }
+        // Realization changes the viewport, not keyboard focus. Retain at most
+        // its old cell and parent row to avoid a spurious root-focus event while
+        // a native reader is navigating to another logical cell.
+        if let Some(generation) = self.virtuals.get(&widget).map(|v| v.generation) {
+            if has_focus
+                && let Some(old) = self.focused_rows.get(&widget)
+                && old.generation == generation
+                && old.selected == ui.grid_selected_key(widget)
+                && old.column == focused_column
+                && !nodes.iter().any(|(id, _)| *id == old.focus)
+            {
+                self.seen.extend(old.keys.iter().copied());
+                for (id, old_node) in &old.nodes {
+                    if !nodes.iter().any(|(current, _)| current == id) {
+                        let mut retained = old_node.clone();
+                        retained.clear_bounds();
+                        nodes.push((*id, retained));
+                    }
+                }
+                if !children.contains(&old.root) {
+                    children.push(old.root);
+                }
+                if old.focus != old.root
+                    && let Some((_, row)) = nodes.iter_mut().find(|(id, _)| *id == old.root)
+                    && !row.children().contains(&old.focus)
+                {
+                    row.push_child(old.focus);
+                }
+                focus = Some(old.focus);
+            }
+            if has_focus
+                && let Some(focus_id) = focus
+                && let Some(key) = self
+                    .seen
+                    .iter()
+                    .find(|key| self.ids.get(key) == Some(&focus_id))
+                    .copied()
+                && let Part::Row(row) | Part::Cell(row, _) = key.part
+            {
+                let row_key = Key {
+                    widget,
+                    part: Part::Row(row),
+                };
+                let root = self.ids[&row_key];
+                let mut retained: Vec<_> = nodes
+                    .iter()
+                    .filter(|(id, _)| *id == root || *id == focus_id)
+                    .cloned()
+                    .collect();
+                for (id, node) in &mut retained {
+                    if *id == root {
+                        node.set_children(if root == focus_id {
+                            vec![]
+                        } else {
+                            vec![focus_id]
+                        });
+                    }
+                }
+                self.focused_rows.insert(
+                    widget,
+                    FocusedRow {
+                        generation,
+                        selected: ui.grid_selected_key(widget),
+                        column: focused_column,
+                        root,
+                        focus: focus_id,
+                        keys: vec![row_key, key],
+                        nodes: retained,
+                    },
+                );
+            } else {
+                self.focused_rows.remove(&widget);
+            }
+        }
         node.set_children(children);
         focus
     }
@@ -397,6 +526,38 @@ impl GridAccessibility {
                 }
             }
             _ => {}
+        }
+        Ok(true)
+    }
+
+    pub(super) fn realize(
+        &self,
+        ui: &mut Controls,
+        widget: WidgetId,
+        request: &ActionRequest,
+    ) -> Result<bool, String> {
+        if request.action != Action::RealizeCell {
+            return Ok(false);
+        }
+        let Some(state) = self.virtuals.get(&widget) else {
+            return Ok(true);
+        };
+        let Some(ActionData::RealizeCell {
+            row,
+            column,
+            generation,
+        }) = request.data
+        else {
+            return Ok(true);
+        };
+        if generation != state.generation
+            || ui.grid_structure_revision(widget) != Some(state.revision)
+            || ui.grid_accessible_columns(widget).as_ref() != Some(&state.columns)
+        {
+            return Ok(true);
+        }
+        if let Some(column) = state.columns.get(column) {
+            ignore_invalid(ui.grid_realize_cell(widget, row, *column).map(|_| ()))?;
         }
         Ok(true)
     }

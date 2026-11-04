@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-exclude = ["vendor/accesskit_windows"]
+exclude = ["vendor/accesskit", "vendor/accesskit_windows"]
 members = [
     "crates/ui-core",
     "crates/ui-layout",
@@ -50,4 +50,5 @@ lto = "thin"
 codegen-units = 1
 
 [patch.crates-io]
+accesskit = { path = "vendor/accesskit" }
 accesskit_windows = { path = "vendor/accesskit_windows" }

@@ -2,6 +2,8 @@
 // Licensed under Apache-2.0. Upstream files retain their original licenses.
 //! UIA table patterns over the current materialized AccessKit snapshot.
 use super::*;
+mod virtualization;
+use virtualization::*;
 
 fn container_role(node: &NodeRef<'_>) -> bool {
     matches!(node.role(), Role::Grid | Role::TreeGrid | Role::Table)
@@ -214,11 +216,27 @@ impl PlatformNode_Impl {
     ) -> Option<Result<IUnknown>> {
         if !matches!(
             pattern,
-            UIA_GridPatternId | UIA_GridItemPatternId | UIA_TablePatternId | UIA_TableItemPatternId
+            UIA_GridPatternId
+                | UIA_GridItemPatternId
+                | UIA_TablePatternId
+                | UIA_TableItemPatternId
+                | UIA_ItemContainerPatternId
+                | UIA_VirtualizedItemPatternId
         ) {
             return None;
         }
-        Some(self.resolve(|node| match pattern {
+        Some(self.resolve_with_context(|node, context| match pattern {
+            UIA_ItemContainerPatternId if virtual_generation(&node).is_some() => {
+                self.to_interface::<IItemContainerProvider>().cast()
+            }
+            UIA_VirtualizedItemPatternId if cell(&node).is_some() => {
+                let grid = containing_grid(&node).ok_or_else(not_supported)?;
+                let generation = virtual_generation(&grid).ok_or_else(not_supported)?;
+                let c = cell(&node).ok_or_else(not_supported)?;
+                VirtualCell::new(context, grid.id(), generation, c.row, c.column)
+                    .into_interface::<IVirtualizedItemProvider>()
+                    .cast()
+            }
             UIA_GridPatternId if dimensions(&node).is_some() => {
                 self.to_interface::<IGridProvider>().cast()
             }
@@ -236,6 +254,20 @@ impl PlatformNode_Impl {
     }
 
     pub(super) fn grid_property_value(&self, property: UIA_PROPERTY_ID) -> Option<Result<VARIANT>> {
+        if property == UIA_IsItemContainerPatternAvailablePropertyId {
+            return Some(
+                self.resolve(|node| Ok(VARIANT::from(virtual_generation(&node).is_some()))),
+            );
+        }
+        if property == UIA_IsVirtualizedItemPatternAvailablePropertyId {
+            return Some(self.resolve(|node| {
+                Ok(VARIANT::from(
+                    cell(&node).is_some()
+                        && containing_grid(&node)
+                            .is_some_and(|grid| virtual_generation(&grid).is_some()),
+                ))
+            }));
+        }
         if !matches!(
             property,
             UIA_IsGridPatternAvailablePropertyId
@@ -346,7 +378,7 @@ impl IGridProvider_Impl for PlatformNode_Impl {
         self.resolve(|node| dimensions(&node).map(|d| d.1).ok_or_else(not_supported))
     }
     fn GetItem(&self, row: i32, column: i32) -> Result<IRawElementProviderSimple> {
-        self.resolve_with_context(|node, context| {
+        let (materialized, pending) = self.resolve_with_context(|node, context| {
             let (rows, columns) = dimensions(&node).ok_or_else(not_supported)?;
             if row < 0 || column < 0 || row >= rows || column >= columns {
                 return Err(invalid_arg());
@@ -365,11 +397,36 @@ impl IGridProvider_Impl for PlatformNode_Impl {
                     found = Some(child.id());
                 }
             }
-            // An unmaterialized cell is unavailable, never a fabricated empty
-            // value. Realization/ItemContainer is a separate future contract.
-            let id = found.ok_or_else(element_not_available)?;
-            Ok(context.get_or_create_platform_node(id).into_interface())
-        })
+            if let Some(id) = found {
+                return Ok((
+                    Some(context.get_or_create_platform_node(id).into_interface()),
+                    None,
+                ));
+            }
+            let generation = virtual_generation(&node).ok_or_else(element_not_available)?;
+            let c = virtual_span(&node, row, column)?;
+            Ok((
+                None,
+                Some(VirtualCell::new(
+                    context,
+                    node.id(),
+                    generation,
+                    c.row,
+                    c.column,
+                )),
+            ))
+        })?;
+        if let Some(cell) = materialized {
+            return Ok(cell);
+        }
+        let pending = pending.ok_or_else(element_not_available)?;
+        // GetItem is an explicit logical-cell navigation request. Some native
+        // readers require a full fragment here and do not realize placeholders.
+        // Enumeration stays passive through ItemContainer. Dispatch only after
+        // dropping the tree read lock; selection/focus/drafts are unchanged.
+        let realization = pending.to_interface::<IVirtualizedItemProvider>();
+        unsafe { realization.Realize()? };
+        pending.materialized()
     }
 }
 

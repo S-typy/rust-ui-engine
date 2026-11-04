@@ -11,6 +11,119 @@ use std::{cell::RefCell, rc::Rc};
 
 const VIEWPORT: Size = Size::new(620.0, 260.0);
 
+#[test]
+fn virtual_realization_reaches_far_rows_without_changing_selection_or_committing() {
+    let mut fixture = Fixture::new(10_000);
+    fixture.tree();
+    let focused_cell = fixture.id(key(0), Some(1));
+    fixture.action(focused_cell, Action::Focus, None);
+    let tree = fixture.tree();
+    assert_eq!(tree.focus, focused_cell);
+    let root = fixture.accessibility.id(fixture.grid).unwrap();
+    let generation = node(&tree, root).virtualization_generation().unwrap();
+    let selected = fixture.ui.grid_selected_key(fixture.grid);
+    let focus = fixture.ui.runtime.focused();
+    fixture.action(
+        root,
+        Action::RealizeCell,
+        Some(ActionData::RealizeCell {
+            row: 9999,
+            column: 1,
+            generation,
+        }),
+    );
+    let tree = fixture.tree();
+    assert!(
+        tree.nodes
+            .iter()
+            .any(|(_, n)| n.row_index() == Some(9999) && n.column_index() == Some(1))
+    );
+    assert_eq!(
+        node(&tree, root).virtualization_generation(),
+        Some(generation)
+    );
+    assert_eq!(fixture.ui.grid_selected_key(fixture.grid), selected);
+    assert_eq!(fixture.ui.runtime.focused(), focus);
+    assert_eq!(tree.focus, focused_cell);
+    assert!(node(&tree, focused_cell).bounds().is_none());
+    assert!(tree.nodes.len() < 100);
+    fixture
+        .ui
+        .begin_grid_edit(fixture.grid, 9999, "Name")
+        .unwrap();
+    let editor = fixture.ui.grid_editor(fixture.grid).unwrap();
+    fixture.ui.set_text(editor, "unaccepted draft").unwrap();
+    fixture.action(
+        root,
+        Action::RealizeCell,
+        Some(ActionData::RealizeCell {
+            row: 0,
+            column: 0,
+            generation,
+        }),
+    );
+    let tree = fixture.tree();
+    assert!(
+        tree.nodes
+            .iter()
+            .any(|(_, n)| n.row_index() == Some(9999) && n.column_index() == Some(1))
+    );
+    assert_eq!(
+        fixture.ui.document(editor).unwrap().text(),
+        "unaccepted draft"
+    );
+    assert_eq!(
+        fixture.source.borrow().value(9999, "Name"),
+        Some(&CellValue::Text("Row 9999".into()))
+    );
+    assert!(!node(&tree, root).supports_action(Action::RealizeCell));
+}
+
+#[test]
+fn virtual_realization_rejects_unpublished_data_changes_and_old_generation() {
+    let mut fixture = Fixture::new(100);
+    let tree = fixture.tree();
+    let root = fixture.accessibility.id(fixture.grid).unwrap();
+    let generation = node(&tree, root).virtualization_generation().unwrap();
+    let query = DataQuery {
+        sort: vec![SortDescriptor {
+            field: "Name".into(),
+            direction: SortDirection::Descending,
+        }],
+        ..Default::default()
+    };
+    fixture.source.borrow_mut().set_query(query).unwrap();
+    fixture.action(
+        root,
+        Action::RealizeCell,
+        Some(ActionData::RealizeCell {
+            row: 99,
+            column: 0,
+            generation,
+        }),
+    );
+    let tree = fixture.tree();
+    assert_ne!(
+        node(&tree, root).virtualization_generation(),
+        Some(generation)
+    );
+    let first = fixture.ui.grid_frame(fixture.grid).unwrap().semantics.rows[0].index;
+    fixture.action(
+        root,
+        Action::RealizeCell,
+        Some(ActionData::RealizeCell {
+            row: 99,
+            column: 0,
+            generation,
+        }),
+    );
+    fixture.tree();
+    assert_eq!(
+        fixture.ui.grid_frame(fixture.grid).unwrap().semantics.rows[0].index,
+        first
+    );
+}
+
 struct Fixture {
     ui: Controls,
     view: MountedView,

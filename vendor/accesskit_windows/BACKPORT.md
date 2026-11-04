@@ -19,14 +19,28 @@ Changes made 2026-11-03:
 - `src/node/grid/tests.rs` checks the COM contract without creating a window or
   dispatching input, focus, UIA events or screen-reader actions.
 
-All other upstream implementation files are unchanged. The root `[patch.crates-io]`
-entry affects only this Windows adapter. The registry and other platform adapters
+Changes made 2026-11-04:
+
+- `src/node/grid/virtualization.rs` implements ItemContainer enumeration and
+  generation-checked VirtualizedItem realization using the matching local
+  AccessKit extension. An unrealized cell is a Simple-only placeholder, without
+  a Fragment interface or synthetic runtime identity. Merged ranges enumerate
+  once per anchor. Other properties delegate only after materialization.
+- Explicit Grid.GetItem realizes a requested logical cell outside the viewport
+  and returns its full provider. Counts, headers and ItemContainer enumeration
+  stay passive. Draft/generation guards apply to both realization entry points.
+- `src/node.rs` and `src/node/grid.rs` expose the new patterns. The direct COM
+  tests add stale/disabled owner, merged enumeration and reentrant dispatch cases.
+
+All other upstream implementation files are unchanged. Root `[patch.crates-io]`
+entries select this adapter and the matching AccessKit transport extension.
+The registry and other platform adapters
 are not modified. Remove the patch only after validating an upstream replacement.
 
 Run the local read-only COM tests with:
 
 ```text
-cargo test --manifest-path vendor/accesskit_windows/Cargo.toml --lib node::grid::tests --locked -- --test-threads=1
+cargo test --manifest-path vendor/accesskit_windows/Cargo.toml --config 'patch.crates-io.accesskit.path="/absolute/project/vendor/accesskit"' --lib node::grid::tests --locked -- --test-threads=1
 ```
 
 Other upstream test filters may create native windows. No live screen-reader or

@@ -28,6 +28,32 @@ pub struct SpreadsheetSemantics {
 }
 
 impl Spreadsheet {
+    /// Whether accessibility can reveal cells without replacing a formula draft.
+    pub fn can_realize_accessible_cell(&self, ui: &Controls) -> bool {
+        ui.is_enabled(self.parts.canvas)
+            && ui.semantics().iter().any(|n| n.id == self.parts.canvas)
+            && ui
+                .document(self.parts.formula)
+                .is_some_and(|doc| doc.composition().is_none() && doc.text() == self.loaded)
+    }
+
+    /// Reveal a logical cell while preserving selection, focus and the formula
+    /// draft. Draft text and IME composition prevent viewport movement.
+    pub fn realize_accessible_cell(
+        &mut self,
+        ui: &mut Controls,
+        address: CellAddress,
+    ) -> Result<bool, ControlError> {
+        if !self.can_realize_accessible_cell(ui) {
+            return Ok(false);
+        }
+        let address = self.session.workbook().sheets()[self.session.sheet()].anchor(address);
+        self.first_row = address.row();
+        self.first_column = address.column();
+        self.refresh(ui)?;
+        Ok(true)
+    }
+
     /// Produce the same visible merged geometry used by the renderer. This does
     /// not focus, scroll, commit the formula draft, or allocate an entire sheet.
     pub fn semantics(&self, ui: &Controls) -> Result<SpreadsheetSemantics, ControlError> {

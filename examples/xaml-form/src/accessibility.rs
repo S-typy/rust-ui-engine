@@ -402,6 +402,9 @@ impl Accessibility {
         else {
             return Ok(());
         };
+        if self.grids.realize(ui, widget, &request)? {
+            return Ok(());
+        }
         if grid::scroll(ui, widget, request.action)? {
             return Ok(());
         }

@@ -1,62 +1,12 @@
 {
   "schema_version": 1,
-  "review_date": "2026-11-03",
-  "cargo_lock_sha256": "87bd52a243742c57e8d16cdaa73e60a68e57edc9dd0972bd74875bffad17ee79",
+  "review_date": "2026-11-04",
+  "cargo_lock_sha256": "82e570838157cc2c834ef7d68bfaef1565696e9c4755d3c13c5b9cbc0c962486",
   "scope": "All resolved registry packages and reviewed vendor/ path packages from cargo metadata --locked --format-version 1; includes target-specific and build dependencies, not a binary bill of materials.",
   "features_scope": "Resolution features reported by cargo metadata for all targets; verify actual compilation features with cargo tree for the selected package and target.",
   "license_scope": "Manifest SPDX declarations, package license/notice file hashes and selected exact-revision upstream evidence. Not a line-by-line copyright or binary redistribution clearance.",
-  "registry_package_count": 422,
+  "registry_package_count": 421,
   "packages": [
-    {
-      "license_files": [],
-      "upstream_license_evidence": [
-        {
-          "path": "LICENSE-APACHE",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE",
-          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
-        },
-        {
-          "path": "LICENSE-MIT",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT",
-          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
-        },
-        {
-          "path": "LICENSE.chromium",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium",
-          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
-        },
-        {
-          "path": "AUTHORS",
-          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS",
-          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
-        }
-      ],
-      "source_revision": "ce8164ba92995cfa86005b6259115e08c8244253",
-      "path_in_source_repository": "accesskit",
-      "native_source_or_archive_files": [],
-      "name": "accesskit",
-      "version": "0.25.1",
-      "source": "registry+https://github.com/rust-lang/crates.io-index",
-      "checksum": "ad442f58ee04714aaa0ba0a2768c1ea1935b29507bb22ddece8cbbc76db02932",
-      "repository": "https://github.com/AccessKit/accesskit",
-      "license_declared": "MIT OR Apache-2.0",
-      "license_spdx": "MIT OR Apache-2.0",
-      "rust_version_declared": "1.87",
-      "features_all_targets": [],
-      "links": null,
-      "build_scripts": [],
-      "dependencies": [
-        {
-          "package": "uuid@1.27.0",
-          "kinds": [
-            {
-              "kind": null,
-              "target": null
-            }
-          ]
-        }
-      ]
-    },
     {
       "license_files": [],
       "upstream_license_evidence": [
@@ -24337,8 +24287,187 @@
       ]
     }
   ],
-  "vendored_package_count": 1,
+  "vendored_package_count": 2,
   "vendored_packages": [
+    {
+      "name": "accesskit",
+      "version": "0.25.1",
+      "source": "path",
+      "relative_path": "vendor/accesskit",
+      "repository": "https://github.com/AccessKit/accesskit",
+      "license_declared": "MIT OR Apache-2.0",
+      "license_spdx": "MIT OR Apache-2.0",
+      "license_files": [],
+      "upstream_license_evidence": [
+        {
+          "path": "LICENSE-APACHE",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE",
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT",
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        },
+        {
+          "path": "LICENSE.chromium",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium",
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+        },
+        {
+          "path": "AUTHORS",
+          "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS",
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
+        }
+      ],
+      "upstream_package_evidence": {
+        "license_files": [],
+        "upstream_license_evidence": [
+          {
+            "path": "LICENSE-APACHE",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-APACHE",
+            "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+          },
+          {
+            "path": "LICENSE-MIT",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE-MIT",
+            "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+          },
+          {
+            "path": "LICENSE.chromium",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/LICENSE.chromium",
+            "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+          },
+          {
+            "path": "AUTHORS",
+            "url": "https://raw.githubusercontent.com/AccessKit/accesskit/ce8164ba92995cfa86005b6259115e08c8244253/AUTHORS",
+            "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
+          }
+        ],
+        "source_revision": "ce8164ba92995cfa86005b6259115e08c8244253",
+        "path_in_source_repository": "accesskit",
+        "native_source_or_archive_files": [],
+        "name": "accesskit",
+        "version": "0.25.1",
+        "source": "registry+https://github.com/rust-lang/crates.io-index",
+        "checksum": "ad442f58ee04714aaa0ba0a2768c1ea1935b29507bb22ddece8cbbc76db02932",
+        "repository": "https://github.com/AccessKit/accesskit",
+        "license_declared": "MIT OR Apache-2.0",
+        "license_spdx": "MIT OR Apache-2.0",
+        "rust_version_declared": "1.87",
+        "features_all_targets": [],
+        "links": null,
+        "build_scripts": [],
+        "dependencies": [
+          {
+            "package": "uuid@1.27.0",
+            "kinds": [
+              {
+                "kind": null,
+                "target": null
+              }
+            ]
+          }
+        ]
+      },
+      "provenance": {
+        "source_revision": "ce8164ba92995cfa86005b6259115e08c8244253",
+        "path_in_source_repository": "accesskit",
+        "notice": {
+          "path": "BACKPORT.md",
+          "sha256": "1909cf13fab9879e5cedb7b3c717fc1da057f76387a0e5c9c3faf8ff3d76c4c4"
+        }
+      },
+      "file_count": 14,
+      "total_bytes": 211415,
+      "files": [
+        {
+          "path": ".cargo_vcs_info.json",
+          "bytes": 103,
+          "sha256": "23c48895b7c1b08bece340b5c6fdaef1ac0c37e9f4aed082fb884ad00bbd93b7"
+        },
+        {
+          "path": "AUTHORS",
+          "bytes": 346,
+          "sha256": "3bab8c36f6a85657504aaefb37c7ff34e29b8c917290f3d28a1f0920c992e502"
+        },
+        {
+          "path": "BACKPORT.md",
+          "bytes": 1349,
+          "sha256": "1909cf13fab9879e5cedb7b3c717fc1da057f76387a0e5c9c3faf8ff3d76c4c4"
+        },
+        {
+          "path": "Cargo.lock",
+          "bytes": 6966,
+          "sha256": "a55c0bf4857eab8a2f547268e6aa4b93cb25242173cd2b559934e2e1de538363"
+        },
+        {
+          "path": "Cargo.toml",
+          "bytes": 1703,
+          "sha256": "4622b7e8e02906e376ac9f4eb5d954237d35477ed760476cc0f97188a56da1a5"
+        },
+        {
+          "path": "Cargo.toml.orig",
+          "bytes": 955,
+          "sha256": "5f6e2e9473f6a3a69b6216c1d45521edbb9b2200bfec0a6ce342a12dabf64b4f"
+        },
+        {
+          "path": "CHANGELOG.md",
+          "bytes": 30628,
+          "sha256": "ed90bab5113e9bc8aa0aa9da8824aea47922b513bf8c27e73e9b4cdce0f06499"
+        },
+        {
+          "path": "LICENSE-APACHE",
+          "bytes": 9723,
+          "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+        },
+        {
+          "path": "LICENSE-MIT",
+          "bytes": 1023,
+          "sha256": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3"
+        },
+        {
+          "path": "LICENSE.chromium",
+          "bytes": 1559,
+          "sha256": "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
+        },
+        {
+          "path": "README.md",
+          "bytes": 1168,
+          "sha256": "2b34ef14578b0f9a86c20f47120cd26f1a8a56ca748fde347498d4166c0f2ebb"
+        },
+        {
+          "path": "src/geometry.rs",
+          "bytes": 22258,
+          "sha256": "2f2c37da6a856f1463c593bd2c01d07f237951556c3f72594cb05a2561afa7ed"
+        },
+        {
+          "path": "src/lib.rs",
+          "bytes": 131766,
+          "sha256": "f4374853ac8798e1490c9545809ccd2be5e9de9bfa20aa5530d5ffdb8a5a38b6"
+        },
+        {
+          "path": "src/virtual_cell_tests.rs",
+          "bytes": 1868,
+          "sha256": "6da160f5ac4f05181b9b3801163c77e9ca16691e8ccbcec8944669cafb71a114"
+        }
+      ],
+      "rust_version_declared": "1.87",
+      "features_all_targets": [],
+      "links": null,
+      "build_scripts": [],
+      "dependencies": [
+        {
+          "package": "uuid@1.27.0",
+          "kinds": [
+            {
+              "kind": null,
+              "target": null
+            }
+          ]
+        }
+      ]
+    },
     {
       "name": "accesskit_windows",
       "version": "0.35.1",
@@ -24470,11 +24599,11 @@
         "path_in_source_repository": "adapters/windows",
         "notice": {
           "path": "BACKPORT.md",
-          "sha256": "d2eb77554a4240a05a6df4aad53405139f16309089791428b8e27b9632290287"
+          "sha256": "c4a27a488934f67f8a2e8d9b8cd8193d9f07603caf7882e84c3577c40ca2e17e"
         }
       },
-      "file_count": 24,
-      "total_bytes": 251299,
+      "file_count": 25,
+      "total_bytes": 273088,
       "files": [
         {
           "path": ".cargo_vcs_info.json",
@@ -24488,13 +24617,13 @@
         },
         {
           "path": "BACKPORT.md",
-          "bytes": 1695,
-          "sha256": "d2eb77554a4240a05a6df4aad53405139f16309089791428b8e27b9632290287"
+          "bytes": 2614,
+          "sha256": "c4a27a488934f67f8a2e8d9b8cd8193d9f07603caf7882e84c3577c40ca2e17e"
         },
         {
           "path": "Cargo.lock",
-          "bytes": 50059,
-          "sha256": "09836190f45b5af9d8fd933e876717af5fda9eefb69b87cf60f4d89dfd32125d"
+          "bytes": 49916,
+          "sha256": "050fcef4ddd7ebe4f4751d3985977282fb2c5645793fa9f5430fee65c577d323"
         },
         {
           "path": "Cargo.toml",
@@ -24548,18 +24677,23 @@
         },
         {
           "path": "src/node/grid/tests.rs",
-          "bytes": 9789,
-          "sha256": "f3b6952724657ea005dc7d6248bfd11d1f721473836fecad42b47f2fbe6426b3"
+          "bytes": 17529,
+          "sha256": "b50f08bec01ea8adbae8b5f33c2c6f4125c58019b2dfbdf59d19ee589476064b"
+        },
+        {
+          "path": "src/node/grid/virtualization.rs",
+          "bytes": 10819,
+          "sha256": "30b6d841e7bf9f50af1060d141c4d67b01e1ed21ea6874600611633c46609e99"
         },
         {
           "path": "src/node/grid.rs",
-          "bytes": 15418,
-          "sha256": "b0077a565fa668e1996a53b6fc34bb3bf3ddf7b4285e4a514b410e6842be6f7c"
+          "bytes": 17844,
+          "sha256": "629ae320ba303a62851a08b7f4250e8279c282e9b165ec58acafc050edfb3cf1"
         },
         {
           "path": "src/node.rs",
-          "bytes": 58800,
-          "sha256": "4cff23c62b8e1a575afd43030f550801b943fc3963f2120e144adb1c69e54bba"
+          "bytes": 58828,
+          "sha256": "e32b6f3482aef053040cdea1c770bc816b7b5498268ab63cfd26340b562cb56a"
         },
         {
           "path": "src/subclass.rs",

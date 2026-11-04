@@ -1070,6 +1070,127 @@ mod tests {
             .unwrap();
     }
     #[test]
+    fn spreadsheet_virtual_realization_preserves_selection_and_rejects_draft_navigation() {
+        use accesskit::{Action, ActionData, ActionRequest, Role, TreeId};
+        let mut app = OutputDemo::new(
+            crate::generated_output::window_definition(),
+            false,
+            OutputMode::Spreadsheet,
+        )
+        .unwrap();
+        app.update(Size::new(1000.0, 750.0), 1.0).unwrap();
+        let tree = app.accessibility(1.0);
+        let focused_cell = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| {
+                n.role() == Role::Cell && n.row_index() == Some(0) && n.column_index() == Some(0)
+            })
+            .unwrap()
+            .0;
+        app.event(PlatformEvent::Accessibility(ActionRequest {
+            action: Action::Focus,
+            target_tree: TreeId::ROOT,
+            target_node: focused_cell,
+            data: None,
+        }))
+        .unwrap();
+        let tree = app.accessibility(1.0);
+        assert_eq!(tree.focus, focused_cell);
+        let (root, grid) = tree
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == Role::Grid)
+            .unwrap();
+        let root = *root;
+        let generation = grid.virtualization_generation().unwrap();
+        let request = |row, column| {
+            PlatformEvent::Accessibility(ActionRequest {
+                action: Action::RealizeCell,
+                target_tree: TreeId::ROOT,
+                target_node: root,
+                data: Some(ActionData::RealizeCell {
+                    row,
+                    column,
+                    generation,
+                }),
+            })
+        };
+        let View::Sheet(sheet) = &app.view else {
+            unreachable!()
+        };
+        let active = sheet.session().active();
+        let selection = sheet.session().selection();
+        let revision = sheet.session().generation();
+        let formula = sheet.parts.formula;
+        let focus = app.form.ui.runtime.focused();
+        app.event(request(100_000, 150)).unwrap();
+        app.update(Size::new(1000.0, 750.0), 1.0).unwrap();
+        let tree = app.accessibility(1.0);
+        assert_eq!(tree.focus, focused_cell);
+        assert!(
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == focused_cell)
+                .unwrap()
+                .1
+                .bounds()
+                .is_none()
+        );
+        assert!(tree.nodes.iter().any(|(_, n)| n.role() == Role::Cell
+            && n.row_index() == Some(100_000)
+            && n.column_index() == Some(150)));
+        assert!(tree.nodes.len() < 7000);
+        assert_eq!(
+            tree.nodes
+                .iter()
+                .find(|(id, _)| *id == root)
+                .unwrap()
+                .1
+                .virtualization_generation(),
+            Some(generation)
+        );
+        let View::Sheet(sheet) = &app.view else {
+            unreachable!()
+        };
+        assert_eq!(
+            (
+                sheet.session().active(),
+                sheet.session().selection(),
+                sheet.session().generation()
+            ),
+            (active, selection, revision)
+        );
+        assert_eq!(app.form.ui.runtime.focused(), focus);
+        app.form
+            .ui
+            .set_text(formula, "pending =SUM(A1:A3)")
+            .unwrap();
+        app.event(request(0, 0)).unwrap();
+        let tree = app.accessibility(1.0);
+        assert!(
+            !tree
+                .nodes
+                .iter()
+                .find(|(id, _)| *id == root)
+                .unwrap()
+                .1
+                .supports_action(accesskit::Action::RealizeCell)
+        );
+        assert!(
+            tree.nodes
+                .iter()
+                .any(|(_, n)| n.role() == Role::Cell && n.row_index() == Some(100_000))
+        );
+        assert_eq!(
+            app.form.ui.document(formula).unwrap().text(),
+            "pending =SUM(A1:A3)"
+        );
+        platform::AccessibilitySnapshot::default()
+            .update(tree)
+            .unwrap();
+    }
+    #[test]
     fn viewer_rejects_stale_load_and_navigation_does_not_recreate_text_editor() {
         let mut app = OutputDemo::new(
             crate::generated_output::window_definition(),
