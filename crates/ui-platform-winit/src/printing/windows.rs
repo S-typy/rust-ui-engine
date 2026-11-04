@@ -6,10 +6,14 @@ use std::{
     sync::atomic::Ordering,
 };
 use windows_sys::Win32::{
-    Foundation::RECT,
+    Foundation::{POINT, RECT},
     Graphics::{Gdi::*, Printing::*},
     Storage::Xps::*,
 };
+
+#[cfg(test)]
+#[path = "windows_fill_tests.rs"]
+mod fill_tests;
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
@@ -326,6 +330,52 @@ fn draw(dc: HDC, scene: &Scene, command: DrawCommand, scale: Point) -> Result<()
                     return Err(PrintError::Invalid(
                         "ellipse vector printing is not supported".into(),
                     ));
+                }
+                DrawCommand::FillPath(i) => {
+                    let path = &scene.fill_paths[i];
+                    if !path.is_valid() || path.color.a != 1.0 {
+                        return Err(PrintError::Invalid(
+                            "printer polygon requires valid opaque geometry".into(),
+                        ));
+                    }
+                    let mut points = Vec::with_capacity(path.edge_count().unwrap());
+                    for p in path.contours.iter().flatten() {
+                        let (x, y) = (p.x * scale.x, p.y * scale.y);
+                        if !x.is_finite() || !y.is_finite() || x.abs() > 1.0e9 || y.abs() > 1.0e9 {
+                            return Err(PrintError::Invalid(
+                                "printer polygon coordinate overflow".into(),
+                            ));
+                        }
+                        points.push(POINT {
+                            x: x.round() as i32,
+                            y: y.round() as i32,
+                        });
+                    }
+                    let counts: Vec<_> = path.contours.iter().map(|p| p.len() as i32).collect();
+                    let clip = rect(path.clip, scale);
+                    if IntersectClipRect(dc, clip.left, clip.top, clip.right, clip.bottom) == 0 {
+                        return Err(native("IntersectClipRect"));
+                    }
+                    let mode = match path.rule {
+                        FillRule::NonZero => WINDING,
+                        FillRule::EvenOdd => ALTERNATE,
+                    };
+                    if SetPolyFillMode(dc, mode) == 0 {
+                        return Err(native("SetPolyFillMode"));
+                    }
+                    let brush = Gdi(CreateSolidBrush(rgb(path.color)));
+                    if brush.0.is_null() {
+                        return Err(native("CreateSolidBrush"));
+                    }
+                    let old_brush = SelectObject(dc, brush.0);
+                    let old_pen = SelectObject(dc, GetStockObject(NULL_PEN));
+                    let success =
+                        PolyPolygon(dc, points.as_ptr(), counts.as_ptr(), counts.len() as i32);
+                    SelectObject(dc, old_pen);
+                    SelectObject(dc, old_brush);
+                    if success == 0 {
+                        return Err(native("PolyPolygon"));
+                    }
                 }
                 DrawCommand::Image(i) => draw_image(dc, &scene.images[i], scale)?,
                 DrawCommand::Text(_) => return Err(PrintError::Invalid("unprepared text".into())),

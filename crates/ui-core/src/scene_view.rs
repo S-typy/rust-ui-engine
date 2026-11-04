@@ -140,6 +140,24 @@ impl Scene {
                         view.stroke_path(&translated.segments, clip, translated.width, item.color);
                     }
                 }
+                DrawCommand::FillPath(index) => {
+                    let item = source
+                        .fill_paths
+                        .get(index)
+                        .ok_or("Invalid fill reference")?;
+                    if !item.is_valid() {
+                        return Err("Invalid scene fill");
+                    }
+                    if let Some(clip) = translate(item.clip)?.intersection(clip) {
+                        let mut item = item.clone();
+                        for point in item.contours.iter_mut().flatten() {
+                            *point =
+                                Point::new(point.x * scale + offset.x, point.y * scale + offset.y);
+                        }
+                        item.clip = clip;
+                        view.fill_path(item)?;
+                    }
+                }
                 DrawCommand::Text(index) => {
                     let item = source.texts.get(index).ok_or("Invalid text reference")?;
                     let mut item = item.clone();

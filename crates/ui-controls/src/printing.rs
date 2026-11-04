@@ -12,6 +12,10 @@ use rust_desktop_ui_core::{
 };
 use rust_desktop_ui_text::TextEngine;
 
+#[cfg(test)]
+#[path = "printing_fill_tests.rs"]
+mod fill_tests;
+
 pub fn from_rich_document(
     document: &crate::rich_document::RichDocument,
     engine: &mut TextEngine,
@@ -98,6 +102,11 @@ pub fn prepare_for_printer(
                 DrawCommand::StrokePath(i) => {
                     let p = &page.scene.stroke_paths[i];
                     scene.stroke_path(&p.segments, p.clip, p.width, p.color);
+                }
+                DrawCommand::FillPath(i) => {
+                    scene
+                        .fill_path(page.scene.fill_paths[i].clone())
+                        .map_err(invalid)?;
                 }
                 DrawCommand::Ellipse(i) => {
                     let r = &page.scene.ellipses[i];
@@ -276,6 +285,34 @@ fn page_content(
             }
             DrawCommand::Ellipse(_) => {
                 return Err(PdfError::Unsupported("ellipse vector export".into()));
+            }
+            DrawCommand::FillPath(i) => {
+                let path = &page.scene.fill_paths[i];
+                operations.extend([
+                    op("q", vec![]),
+                    rectangle(path.clip, h),
+                    op("W", vec![]),
+                    op("n", vec![]),
+                    color(path.color, false)?,
+                ]);
+                for contour in &path.contours {
+                    operations.push(op("m", vec![real(contour[0].x), real(h - contour[0].y)]));
+                    for point in &contour[1..] {
+                        operations.push(op("l", vec![real(point.x), real(h - point.y)]));
+                    }
+                    operations.push(op("h", vec![]));
+                }
+                operations.extend([
+                    op(
+                        if path.rule == rust_desktop_ui_core::FillRule::EvenOdd {
+                            "f*"
+                        } else {
+                            "f"
+                        },
+                        vec![],
+                    ),
+                    op("Q", vec![]),
+                ]);
             }
             DrawCommand::Image(i) => emit_image(
                 doc,

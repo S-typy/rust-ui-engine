@@ -96,6 +96,7 @@ impl PrintTicket {
                     .iter()
                     .any(|r| r.color.a != 1.0)
                 || page.scene.stroke_paths.iter().any(|r| r.color.a != 1.0)
+                || page.scene.fill_paths.iter().any(|r| r.color.a != 1.0)
             {
                 return Err(PrintError::Unsupported("transparent vector ink".into()));
             }

@@ -22,6 +22,12 @@ text extraction in every external reader. Unsupported rounded geometry,
 cropped image sources or transparent vector ink returns an error.
 Cancellation returns no partial byte buffer.
 
+`FillPath` contours retain their `NonZero` or `EvenOdd` rule and rectangular
+clip in PDF output. The exporter writes closed vector paths without rasterizing
+them. Opaque contours use the same winding rule in Windows GDI printing.
+Transparent polygon ink is rejected before starting a Windows print job.
+This geometry support does not establish physical printer output acceptance.
+
 `printing::prepare_for_printer` replaces text with glyph bitmaps.
 `ui_platform_winit::printing::printers` enumerates configured printers without
 opening one. `PrintTicket` selects an explicit printer, zero-based page indices,

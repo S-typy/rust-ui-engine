@@ -5,7 +5,7 @@ use crate::rich_document::*;
 use crate::{ControlError, Controls};
 use rust_desktop_ui_core::{
     Axis, DrawCommand, GridPlacement, GridTrack, InputEvent, Key, LayoutKind, LayoutStyle, Length,
-    Rect, Scene, WidgetId,
+    Point, Rect, Scene, WidgetId,
 };
 use rust_desktop_ui_text::{Selection, TextDocument, TextEngine};
 
@@ -863,7 +863,27 @@ fn transform_scene(source: &Scene, scale: f32, x: f32, y: f32) -> Result<Scene, 
                     r.color,
                 );
             }
-            DrawCommand::StrokePath(_) => {}
+            DrawCommand::StrokePath(i) => {
+                let path = &source.stroke_paths[i];
+                let segments = path
+                    .segments
+                    .iter()
+                    .map(|s| rust_desktop_ui_core::StrokeSegment {
+                        start: Point::new(s.start.x * scale + x, s.start.y * scale + y),
+                        end: Point::new(s.end.x * scale + x, s.end.y * scale + y),
+                    })
+                    .collect::<Vec<_>>();
+                out.stroke_path(&segments, rect(path.clip), path.width * scale, path.color);
+            }
+            DrawCommand::FillPath(i) => {
+                let mut path = source.fill_paths[i].clone();
+                path.clip = rect(path.clip);
+                for p in path.contours.iter_mut().flatten() {
+                    *p = Point::new(p.x * scale + x, p.y * scale + y);
+                }
+                out.fill_path(path)
+                    .map_err(|error| ControlError::Invalid(error.into()))?;
+            }
         }
     }
     Ok(out)

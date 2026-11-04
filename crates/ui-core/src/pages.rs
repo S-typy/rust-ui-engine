@@ -47,6 +47,7 @@ impl PrintDocument {
                     DrawCommand::RoundedRectangle(i) => i < page.scene.rounded_rectangles.len(),
                     DrawCommand::Ellipse(i) => i < page.scene.ellipses.len(),
                     DrawCommand::StrokePath(i) => i < page.scene.stroke_paths.len(),
+                    DrawCommand::FillPath(i) => i < page.scene.fill_paths.len(),
                     DrawCommand::Image(i) => i < page.scene.images.len(),
                     DrawCommand::Text(i) => page.scene.texts.get(i).is_some_and(|r| {
                         crate::valid_text_spans(&r.text, page.scene.text_spans(i))
@@ -68,6 +69,7 @@ impl PrintDocument {
                     .any(|r| !r.is_valid() || r.sensitive)
                 || page.scene.images.iter().any(|r| !r.is_valid())
                 || page.scene.stroke_paths.iter().any(|r| !r.is_valid())
+                || page.scene.fill_paths.iter().any(|r| !r.is_valid())
                 || page.scene.ellipses.iter().any(|r| !r.is_valid())
                 || page.scene.rounded_rectangles.iter().any(|r| !r.is_valid())
             {
@@ -166,6 +168,23 @@ pub fn transform_page(
                     })
                     .collect::<Vec<_>>();
                 out.stroke_path(&segments, c, p.width * scale, p.color);
+            }
+            DrawCommand::FillPath(i) => {
+                let mut path = source
+                    .fill_paths
+                    .get(i)
+                    .ok_or_else(|| PageError("Invalid fill reference".into()))?
+                    .clone();
+                if !path.is_valid() {
+                    return Err(PageError("Invalid page fill".into()));
+                }
+                if let Some(c) = rect(path.clip).intersection(clip) {
+                    for point in path.contours.iter_mut().flatten() {
+                        *point = Point::new(offset.x + point.x * scale, offset.y + point.y * scale);
+                    }
+                    path.clip = c;
+                    out.fill_path(path).map_err(|e| PageError(e.into()))?;
+                }
             }
             DrawCommand::Text(i) => {
                 let mut r = source.texts[i].clone();

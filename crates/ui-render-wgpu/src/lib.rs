@@ -8,11 +8,13 @@
 //! wide-gamut conversion is performed.
 
 use bytemuck::{Pod, Zeroable};
+mod fills;
 mod glyphs;
 #[cfg(test)]
 mod image_gpu_tests;
 mod images;
 mod strokes;
+use fills::FillRenderer;
 use glyphs::GlyphRenderer;
 use images::ImageRenderer;
 use rust_desktop_ui_core::{Color, DrawCommand, Rect, RoundedRect, Scene};
@@ -496,6 +498,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
         .checked_add(scene.rounded_rectangles.len())
         .and_then(|count| count.checked_add(scene.ellipses.len()))
         .and_then(|count| count.checked_add(scene.stroke_paths.len()))
+        .and_then(|count| count.checked_add(scene.fill_paths.len()))
         .and_then(|count| count.checked_add(scene.images.len()))
         .ok_or(GpuError::InvalidScene)?;
     check_frame_inputs(rectangle_count, scale)?;
@@ -508,6 +511,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
     let (mut rectangle, mut rounded_rectangle, mut stroke_path, mut text, mut image) =
         (0, 0, 0, 0, 0);
     let mut ellipse = 0;
+    let mut fill_path = 0;
     for command in scene.commands() {
         match *command {
             DrawCommand::Rectangle(index) if index == rectangle => rectangle += 1,
@@ -517,6 +521,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
             DrawCommand::Ellipse(index) if index == ellipse => ellipse += 1,
             DrawCommand::Text(index) if index == text => text += 1,
             DrawCommand::StrokePath(index) if index == stroke_path => stroke_path += 1,
+            DrawCommand::FillPath(index) if index == fill_path => fill_path += 1,
             DrawCommand::Image(index) if index == image => image += 1,
             _ => return Err(GpuError::InvalidScene),
         }
@@ -525,6 +530,7 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
         || rectangle != scene.rectangles.len()
         || rounded_rectangle != scene.rounded_rectangles.len()
         || stroke_path != scene.stroke_paths.len()
+        || fill_path != scene.fill_paths.len()
         || text != scene.texts.len()
         || image != scene.images.len()
     {
@@ -574,6 +580,14 @@ fn check_scene(scene: &Scene, scale: f32) -> Result<(), GpuError> {
     {
         return Err(GpuError::InvalidScene);
     }
+    if scene.fill_paths.len() > fills::MAX_FILL_PATHS
+        || !scene
+            .fill_paths
+            .iter()
+            .all(|p| fills::valid_physical_path(p, scale))
+    {
+        return Err(GpuError::InvalidScene);
+    }
     let mut text_bytes = 0usize;
     for image in &scene.images {
         if !image.is_valid()
@@ -607,6 +621,7 @@ enum DrawBatch {
     RoundedRectangles(Range<u32>),
     Ellipses(Range<u32>),
     StrokePaths(Range<u32>),
+    FillPaths(Range<u32>),
     Text(Range<u32>),
 }
 
@@ -663,6 +678,17 @@ fn next_batch(
                 end = end.checked_add(1).ok_or(GpuError::InvalidScene)?;
             }
             DrawBatch::StrokePaths(
+                u32::try_from(start).map_err(|_| GpuError::InvalidScene)?
+                    ..u32::try_from(end).map_err(|_| GpuError::InvalidScene)?,
+            )
+        }
+        DrawCommand::FillPath(start) => {
+            let mut end = start.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            while commands.peek() == Some(&DrawCommand::FillPath(end)) {
+                commands.next();
+                end = end.checked_add(1).ok_or(GpuError::InvalidScene)?;
+            }
+            DrawBatch::FillPaths(
                 u32::try_from(start).map_err(|_| GpuError::InvalidScene)?
                     ..u32::try_from(end).map_err(|_| GpuError::InvalidScene)?,
             )
@@ -747,6 +773,7 @@ pub struct GpuRenderer {
     health: Arc<Mutex<DeviceHealth>>,
     glyphs: GlyphRenderer,
     strokes: StrokeRenderer,
+    fills: FillRenderer,
     images: ImageRenderer,
     stats: RendererStats,
 }
@@ -760,6 +787,7 @@ pub struct RendererStats {
     pub uploaded_images: usize,
     pub rectangles: usize,
     pub stroke_paths: usize,
+    pub fill_paths: usize,
     pub glyphs: usize,
     pub text_runs: usize,
     pub cached_glyphs: usize,
@@ -925,6 +953,7 @@ impl GpuRenderer {
         });
         let glyphs = GlyphRenderer::new(&device, config.format, &viewport_layout);
         let strokes = StrokeRenderer::new(&device, config.format, &viewport_layout);
+        let fills = FillRenderer::new(&device, config.format, &viewport_layout);
         let images = ImageRenderer::new(&device, config.format, &viewport_layout);
         let renderer = Self {
             context_generation,
@@ -942,6 +971,7 @@ impl GpuRenderer {
             health,
             glyphs,
             strokes,
+            fills,
             images,
             stats: RendererStats::default(),
         };
@@ -1048,6 +1078,8 @@ impl GpuRenderer {
             .prepare(scene, scale_factor, viewport, &self.queue)?;
         self.strokes
             .prepare(&scene.stroke_paths, scale_factor, viewport, &self.queue)?;
+        self.fills
+            .prepare(&scene.fill_paths, scale_factor, viewport, &self.queue)?;
         self.images.prepare(
             &scene.images,
             scale_factor,
@@ -1177,6 +1209,10 @@ impl GpuRenderer {
                         self.strokes.draw(&mut pass, range);
                         draw_calls += 1;
                     }
+                    DrawBatch::FillPaths(range) => {
+                        self.fills.draw(&mut pass, range);
+                        draw_calls += 1;
+                    }
                     DrawBatch::Text(range) => {
                         if !range.is_empty() {
                             self.glyphs.draw(&mut pass, range);
@@ -1192,6 +1228,7 @@ impl GpuRenderer {
                 uploaded_images: self.images.uploaded,
                 rectangles: instances.len(),
                 stroke_paths: scene.stroke_paths.len(),
+                fill_paths: scene.fill_paths.len(),
                 glyphs: self.glyphs.len(),
                 text_runs: scene.texts.len(),
                 cached_glyphs: self.glyphs.cached(),

@@ -2,6 +2,49 @@ use super::*;
 use crate::Theme;
 use rust_desktop_ui_core::{Mutation, Size};
 
+#[test]
+fn preview_transform_keeps_vector_paths_in_painter_order() {
+    use rust_desktop_ui_core::{Color, FillPath, FillRule, StrokeSegment};
+    let clip = Rect::new(0.0, 0.0, 100.0, 100.0);
+    let mut scene = Scene::default();
+    scene.stroke_path(
+        &[StrokeSegment {
+            start: Point::new(1.0, 2.0),
+            end: Point::new(8.0, 9.0),
+        }],
+        clip,
+        2.0,
+        Color::rgb(10, 20, 30),
+    );
+    scene
+        .fill_path(FillPath {
+            contours: vec![vec![
+                Point::new(1.0, 2.0),
+                Point::new(8.0, 2.0),
+                Point::new(1.0, 9.0),
+            ]],
+            clip,
+            rule: FillRule::EvenOdd,
+            color: Color::rgb(20, 40, 60),
+        })
+        .unwrap();
+    let transformed = transform_scene(&scene, 2.0, 10.0, 20.0).unwrap();
+    assert_eq!(transformed.commands(), scene.commands());
+    assert_eq!(
+        transformed.stroke_paths[0].segments[0].start,
+        Point::new(12.0, 24.0)
+    );
+    assert_eq!(transformed.stroke_paths[0].width, 4.0);
+    assert_eq!(
+        transformed.fill_paths[0].contours[0][0],
+        Point::new(12.0, 24.0)
+    );
+    assert_eq!(
+        transformed.fill_paths[0].clip,
+        Rect::new(10.0, 20.0, 200.0, 200.0)
+    );
+}
+
 fn mount() -> (Controls, RichEditor) {
     let mut ui = Controls::new(Theme::FluentLight).unwrap();
     let root = ui.root();

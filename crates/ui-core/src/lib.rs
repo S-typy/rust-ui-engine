@@ -10,6 +10,7 @@ pub mod media;
 mod model;
 pub mod pages;
 mod runtime;
+mod scene_fill;
 mod scene_image;
 mod scene_stroke;
 mod scene_text;
@@ -26,6 +27,7 @@ pub use drag_drop::*;
 pub use input::*;
 pub use model::*;
 pub use runtime::*;
+pub use scene_fill::*;
 pub use scene_image::*;
 pub use scene_stroke::*;
 pub use scene_text::*;
@@ -171,6 +173,7 @@ pub struct Scene {
     pub rounded_rectangles: Vec<RoundedRect>,
     pub ellipses: Vec<Ellipse>,
     pub stroke_paths: Vec<StrokePath>,
+    pub fill_paths: Vec<FillPath>,
     pub texts: Vec<TextRun>,
     pub images: Vec<ImagePrimitive>,
     text_spans: std::collections::BTreeMap<usize, Vec<TextSpan>>,
@@ -328,6 +331,7 @@ impl Scene {
         self.rounded_rectangles.clear();
         self.ellipses.clear();
         self.stroke_paths.clear();
+        self.fill_paths.clear();
         self.texts.clear();
         self.text_spans.clear();
         self.images.clear();
@@ -340,12 +344,14 @@ impl Scene {
         let ellipses = self.ellipses.len();
         self.ellipses.extend_from_slice(&other.ellipses);
         let stroke_paths = self.stroke_paths.len();
+        let fill_paths = self.fill_paths.len();
         let texts = self.texts.len();
         let images = self.images.len();
         self.rectangles.extend_from_slice(&other.rectangles);
         self.rounded_rectangles
             .extend_from_slice(&other.rounded_rectangles);
         self.stroke_paths.extend_from_slice(&other.stroke_paths);
+        self.fill_paths.extend_from_slice(&other.fill_paths);
         self.texts.extend_from_slice(&other.texts);
         self.text_spans.extend(
             other
@@ -362,6 +368,7 @@ impl Scene {
                 }
                 DrawCommand::Ellipse(index) => DrawCommand::Ellipse(ellipses + index),
                 DrawCommand::StrokePath(index) => DrawCommand::StrokePath(stroke_paths + index),
+                DrawCommand::FillPath(index) => DrawCommand::FillPath(fill_paths + index),
                 DrawCommand::Text(index) => DrawCommand::Text(texts + index),
                 DrawCommand::Image(index) => DrawCommand::Image(images + index),
             }));

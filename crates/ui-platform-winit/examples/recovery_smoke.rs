@@ -1,5 +1,7 @@
 //! Passive Windows diagnostic for real single/multiple host GPU recreation.
-use rust_desktop_ui_core::{Bitmap, Color, ImagePrimitive, Point, Rect, Scene, Size, TextRun};
+use rust_desktop_ui_core::{
+    Bitmap, Color, FillPath, FillRule, ImagePrimitive, Point, Rect, Scene, Size, TextRun,
+};
 use rust_desktop_ui_platform_winit::{
     DesktopApp, DesktopApplication, EventResponse, PlatformEvent, RendererStats, RunOptions,
     WindowKey, WindowSpec, run, run_multi,
@@ -28,6 +30,25 @@ impl View {
             bitmap,
             Rect::new(24.0, 48.0, 160.0, 160.0),
         ));
+        let square = |x: f32, y: f32, size: f32| {
+            vec![
+                Point::new(x, y),
+                Point::new(x + size, y),
+                Point::new(x + size, y + size),
+                Point::new(x, y + size),
+            ]
+        };
+        scene
+            .fill_path(FillPath {
+                contours: vec![square(240.0, 48.0, 160.0), square(280.0, 88.0, 80.0)],
+                clip: Rect::new(0.0, 0.0, 600.0, 400.0),
+                rule: FillRule::EvenOdd,
+                color: Color {
+                    a: 0.6,
+                    ..Color::rgb(0, 95, 184)
+                },
+            })
+            .unwrap();
         scene.text(TextRun::new(
             "Retained image and text survive GPU recreation",
             Rect::new(24.0, 12.0, 480.0, 28.0),
@@ -125,9 +146,9 @@ fn main() -> Result<(), String> {
     for (index, counter) in counts.iter().enumerate() {
         let frames = counter.lock().unwrap();
         if frames.len() < 4
-            || frames
-                .iter()
-                .any(|s| s.images != 1 || s.glyphs == 0 || s.missing_glyphs != 0)
+            || frames.iter().any(|s| {
+                s.images != 1 || s.fill_paths != 1 || s.glyphs == 0 || s.missing_glyphs != 0
+            })
             || frames.iter().filter(|s| s.uploaded_images == 1).count() != 2
         {
             return Err(format!(
@@ -153,7 +174,7 @@ fn main() -> Result<(), String> {
             }
         }
         println!(
-            "RECOVERY APP PASS: window={index} frames={} same retained Scene; two bitmap uploads; glyphs={}; missing=0",
+            "RECOVERY APP PASS: window={index} frames={} same retained Scene; two bitmap uploads; fill_paths=1; glyphs={}; missing=0",
             frames.len(),
             frames.last().unwrap().glyphs
         );

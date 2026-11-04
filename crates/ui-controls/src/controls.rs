@@ -4950,6 +4950,15 @@ fn append_clipped(target: &mut Scene, source: &Scene, clip: Rect) {
                     target.stroke_path(&path.segments, effective, path.width, path.color);
                 }
             }
+            rust_desktop_ui_core::DrawCommand::FillPath(index) => {
+                if let Some(path) = source.fill_paths.get(index)
+                    && let Some(effective) = path.clip.intersection(clip)
+                {
+                    let mut path = path.clone();
+                    path.clip = effective;
+                    let _ = target.fill_path(path);
+                }
+            }
             rust_desktop_ui_core::DrawCommand::Image(index) => {
                 if let Some(image) = source.images.get(index)
                     && let Some(effective) = image.clip.intersection(clip)
