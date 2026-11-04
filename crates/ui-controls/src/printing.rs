@@ -12,6 +12,11 @@ use rust_desktop_ui_core::{
 };
 use rust_desktop_ui_text::TextEngine;
 
+mod workbook;
+pub use workbook::{SheetPrintOptions, from_workbook};
+mod pdf_geometry;
+use pdf_geometry::ink;
+
 #[cfg(test)]
 #[path = "printing_fill_tests.rs"]
 mod fill_tests;
@@ -212,17 +217,6 @@ fn rectangle(r: Rect, h: f32) -> Operation {
         ],
     )
 }
-fn color(c: Color, stroke: bool) -> Result<Operation, PdfError> {
-    if c.a != 1.0 {
-        return Err(PdfError::Unsupported(
-            "transparent vector fill in PDF export".into(),
-        ));
-    }
-    Ok(op(
-        if stroke { "RG" } else { "rg" },
-        vec![raw(c.r), raw(c.g), raw(c.b)],
-    ))
-}
 fn page_content(
     doc: &mut Document,
     page: &PrintPage,
@@ -233,6 +227,7 @@ fn page_content(
     let mut operations = Vec::new();
     let mut objects = Dictionary::new();
     let mut fonts = Dictionary::new();
+    let mut states = Dictionary::new();
     let h = page.size.height;
     for command in page.scene.commands() {
         if cancelled() {
@@ -241,29 +236,28 @@ fn page_content(
         match *command {
             DrawCommand::Rectangle(i) => {
                 let r = &page.scene.rectangles[i];
-                operations.push(color(r.color, false)?);
+                operations.push(op("q", vec![]));
+                operations.extend(ink(r.color, false, &mut states)?);
                 operations.push(rectangle(r.bounds, h));
                 operations.push(op("f", vec![]));
+                operations.push(op("Q", vec![]));
             }
             DrawCommand::RoundedRectangle(i) => {
                 let r = &page.scene.rounded_rectangles[i];
-                if r.radius != 0.0 {
-                    return Err(PdfError::Unsupported(
-                        "rounded vector rectangle export".into(),
-                    ));
-                }
                 operations.extend([
                     op("q", vec![]),
                     rectangle(r.clip, h),
                     op("W", vec![]),
                     op("n", vec![]),
                 ]);
-                operations.push(color(r.color, r.stroke_width.is_some())?);
-                if let Some(w) = r.stroke_width {
-                    operations.push(op("w", vec![real(w)]));
+                operations.extend(ink(r.color, false, &mut states)?);
+                pdf_geometry::rounded(r.bounds, r.radius, h, &mut operations);
+                if let Some(w) = r.stroke_width
+                    && let Some(inner) = pdf_geometry::inset(r.bounds, w)
+                {
+                    pdf_geometry::rounded(inner, (r.radius - w).max(0.0), h, &mut operations);
                 }
-                operations.push(rectangle(r.bounds, h));
-                operations.push(op(if r.stroke_width.is_some() { "S" } else { "f" }, vec![]));
+                operations.push(op("f*", vec![]));
                 operations.push(op("Q", vec![]));
             }
             DrawCommand::StrokePath(i) => {
@@ -273,9 +267,10 @@ fn page_content(
                     rectangle(p.clip, h),
                     op("W", vec![]),
                     op("n", vec![]),
-                    color(p.color, true)?,
                     op("w", vec![real(p.width)]),
+                    op("J", vec![1.into()]),
                 ]);
+                operations.extend(ink(p.color, true, &mut states)?);
                 for s in &p.segments {
                     operations.extend([
                         op("m", vec![real(s.start.x), real(h - s.start.y)]),
@@ -284,8 +279,22 @@ fn page_content(
                 }
                 operations.extend([op("S", vec![]), op("Q", vec![])]);
             }
-            DrawCommand::Ellipse(_) => {
-                return Err(PdfError::Unsupported("ellipse vector export".into()));
+            DrawCommand::Ellipse(i) => {
+                let r = &page.scene.ellipses[i];
+                operations.extend([
+                    op("q", vec![]),
+                    rectangle(r.clip, h),
+                    op("W", vec![]),
+                    op("n", vec![]),
+                ]);
+                operations.extend(ink(r.color, false, &mut states)?);
+                pdf_geometry::ellipse(r.bounds, h, &mut operations);
+                if let Some(w) = r.stroke_width
+                    && let Some(inner) = pdf_geometry::inset(r.bounds, w)
+                {
+                    pdf_geometry::ellipse(inner, h, &mut operations);
+                }
+                operations.extend([op("f*", vec![]), op("Q", vec![])]);
             }
             DrawCommand::FillPath(i) => {
                 let path = &page.scene.fill_paths[i];
@@ -294,8 +303,8 @@ fn page_content(
                     rectangle(path.clip, h),
                     op("W", vec![]),
                     op("n", vec![]),
-                    color(path.color, false)?,
                 ]);
+                operations.extend(ink(path.color, false, &mut states)?);
                 for contour in &path.contours {
                     operations.push(op("m", vec![real(contour[0].x), real(h - contour[0].y)]));
                     for point in &contour[1..] {
@@ -414,7 +423,7 @@ fn page_content(
     }
     Ok((
         Content { operations }.encode().map_err(invalid)?,
-        dictionary! {"XObject"=>objects, "Font"=>fonts},
+        dictionary! {"XObject"=>objects, "Font"=>fonts, "ExtGState"=>states},
     ))
 }
 fn emit_image(
@@ -426,9 +435,31 @@ fn emit_image(
     budget: &mut usize,
 ) -> Result<(), PdfError> {
     let b = &image.bitmap;
-    if image.source != Rect::new(0.0, 0.0, b.width() as f32, b.height() as f32) {
-        return Err(PdfError::Unsupported("cropped source image export".into()));
+    let Some(clip) = image.clip.intersection(image.bounds) else {
+        return Ok(());
+    };
+    let sx = f64::from(image.bounds.width) / f64::from(image.source.width);
+    let sy = f64::from(image.bounds.height) / f64::from(image.source.height);
+    let geometry = [
+        f64::from(image.bounds.x) - f64::from(image.source.x) * sx,
+        f64::from(image.bounds.y) - f64::from(image.source.y) * sy,
+        f64::from(b.width()) * sx,
+        f64::from(b.height()) * sy,
+    ];
+    if geometry
+        .iter()
+        .any(|n| !n.is_finite() || n.abs() > 10_000_000.0)
+    {
+        return Err(PdfError::Unsupported(
+            "image crop exceeds PDF coordinate budget".into(),
+        ));
     }
+    let r = Rect::new(
+        geometry[0] as f32,
+        geometry[1] as f32,
+        geometry[2] as f32,
+        geometry[3] as f32,
+    );
     *budget = budget
         .checked_add(b.pixels().len())
         .ok_or(PdfError::Limit("image bytes"))?;
@@ -448,15 +479,15 @@ fn emit_image(
     ));
     let id = doc.add_object(Stream::new(
         dictionary! {"Type"=>"XObject","Subtype"=>"Image","Width"=>b.width() as i64,
-        "Height"=>b.height() as i64,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8,"SMask"=>mask},
+        "Height"=>b.height() as i64,"ColorSpace"=>"DeviceRGB","BitsPerComponent"=>8,"SMask"=>mask,
+        "Interpolate"=>image.sampling==ImageSampling::Linear},
         rgb,
     ));
     let name = format!("I{}", objects.len());
     objects.set(name.clone(), id);
-    let r = image.bounds;
     operations.extend([
         op("q", vec![]),
-        rectangle(image.clip, h),
+        rectangle(clip, h),
         op("W", vec![]),
         op("n", vec![]),
         op(

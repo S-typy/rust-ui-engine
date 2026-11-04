@@ -236,7 +236,13 @@ impl OutputDemo {
             View::Pages(v) => Ok(v.document().clone()),
             View::Sheet(s) => {
                 s.commit(&mut self.form.ui).map_err(err)?;
-                sheet_report(s.session().workbook(), s.session().sheet()).map(|r| r.document)
+                printing::from_workbook(
+                    s.session().workbook(),
+                    s.session().sheet(),
+                    printing::SheetPrintOptions::default(),
+                    || false,
+                )
+                .map_err(err)
             }
         }
     }
@@ -836,69 +842,6 @@ pub(crate) fn sample_report() -> Result<ReportResult, String> {
                 ),
                 text(600.0, 50.0, ReportValue::PageNumber, false),
             ],
-        },
-        ..Default::default()
-    };
-    ReportEngine::build(&d, &table, &BTreeMap::new(), &mut TextEngine::new(), || {
-        false
-    })
-    .map_err(err)
-}
-fn sheet_report(book: &Workbook, index: usize) -> Result<ReportResult, String> {
-    let sheet = &book.sheets()[index];
-    let rows = sheet.cells().keys().map(|a| a.row() + 1).max().unwrap_or(1);
-    let cols = sheet
-        .cells()
-        .keys()
-        .map(|a| a.column() + 1)
-        .max()
-        .unwrap_or(1);
-    if rows > 1000 || cols > 12 {
-        return Err("Профиль печати листа: до 1000 строк и 12 столбцов".into());
-    }
-    if !sheet.merges().is_empty() {
-        return Err("Печать объединённых ячеек листа пока не поддерживается".into());
-    }
-    let schema = TableSchema::new(
-        (0..cols)
-            .map(|c| FieldSchema::new(format!("c{c}"), FieldType::Text))
-            .collect(),
-    )
-    .map_err(err)?;
-    let table = DataTable::new(
-        schema,
-        (0..rows)
-            .map(|r| {
-                Ok(DataRow::new(
-                    i64::from(r),
-                    (0..cols)
-                        .map(|c| {
-                            book.value(index, CellAddress::new(r, c)?)
-                                .map(|v| CellValue::Text(v.display()))
-                        })
-                        .collect::<Result<Vec<_>, DataError>>()?,
-                ))
-            })
-            .collect::<Result<Vec<_>, DataError>>()
-            .map_err(err)?,
-    )
-    .map_err(err)?;
-    let width = 698.0 / cols as f32;
-    let d = ReportDefinition {
-        title: sheet.name().into(),
-        detail: ReportBand {
-            height: 26.0,
-            items: (0..cols)
-                .map(|c| ReportItem::Text {
-                    x: c as f32 * width,
-                    y: 0.0,
-                    width: width - 8.0,
-                    font_size: 14.0,
-                    bold: false,
-                    color: Color::rgb(0, 0, 0),
-                    value: ReportValue::Expression(QueryExpression::field(format!("c{c}"))),
-                })
-                .collect(),
         },
         ..Default::default()
     };

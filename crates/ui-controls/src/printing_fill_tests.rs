@@ -1,6 +1,45 @@
 use super::*;
 
 #[test]
+fn output_budgets_reject_opacity_excess_and_explosive_image_crop() {
+    let mut scene = Scene::default();
+    for index in 1..=1025 {
+        scene.fill(
+            Rect::new(0.0, 0.0, 1.0, 1.0),
+            Color {
+                a: index as f32 / 2048.0,
+                ..Color::rgb(0, 0, 255)
+            },
+        );
+    }
+    let document = |scene| {
+        PrintDocument::new(
+            "budget",
+            vec![PrintPage {
+                size: Size::new(100.0, 100.0),
+                scene,
+            }],
+        )
+        .unwrap()
+    };
+    assert!(matches!(
+        export_pdf(&document(scene), &mut TextEngine::new(), || false),
+        Err(PdfError::Limit(_))
+    ));
+    let mut image = ImagePrimitive::new(
+        Bitmap::new_rgba8(1, 1, vec![255; 4]).unwrap(),
+        Rect::new(0.0, 0.0, 100.0, 100.0),
+    );
+    image.source = Rect::new(0.0, 0.0, 1e-20, 1e-20);
+    let mut scene = Scene::default();
+    scene.image(image);
+    assert!(matches!(
+        export_pdf(&document(scene), &mut TextEngine::new(), || false),
+        Err(PdfError::Unsupported(_))
+    ));
+}
+
+#[test]
 fn polygon_export_preserves_contours_winding_and_clip_without_rasterization() {
     let mut scene = Scene::default();
     let path = FillPath {

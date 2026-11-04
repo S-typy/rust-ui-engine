@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 /// Rendering policy for printer transport. File export is independent of this policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PrintRenderMode {
-    /// Keep opaque vector pages native; composite text, images and transparency on GPU.
+    /// Keep opaque rectangle/polygon fills native; composite other pages on GPU.
     #[default]
     Auto,
     /// Require the bounded GDI profile, including prepared text and driver alpha support.
@@ -135,9 +135,9 @@ impl PrintTicket {
             && (!scene.texts.is_empty()
                 || !scene.images.is_empty()
                 || !scene.ellipses.is_empty()
+                || !scene.rounded_rectangles.is_empty()
+                || !scene.stroke_paths.is_empty()
                 || scene.rectangles.iter().any(|r| r.color.a != 1.0)
-                || scene.rounded_rectangles.iter().any(|r| r.color.a != 1.0)
-                || scene.stroke_paths.iter().any(|r| r.color.a != 1.0)
                 || scene.fill_paths.iter().any(|r| r.color.a != 1.0))
     }
     pub(crate) fn raster_size(
@@ -275,6 +275,26 @@ mod tests {
             ticket.render_mode = PrintRenderMode::Native;
             assert!(ticket.validate(&document).is_err());
         }
+    }
+
+    #[test]
+    fn default_uses_shared_gpu_for_inset_borders_and_stroke_caps() {
+        let ticket = PrintTicket::new("test");
+        let bounds = Rect::new(0.0, 0.0, 40.0, 40.0);
+        let mut scene = Scene::default();
+        scene.rounded_stroke(bounds, bounds, 8.0, 4.0, Color::rgb(0, 0, 0));
+        assert!(ticket.uses_gpu(&scene));
+        scene.clear();
+        scene.stroke_path(
+            &[rust_desktop_ui_core::StrokeSegment {
+                start: rust_desktop_ui_core::Point::new(4.0, 4.0),
+                end: rust_desktop_ui_core::Point::new(30.0, 30.0),
+            }],
+            bounds,
+            3.0,
+            Color::rgb(0, 0, 0),
+        );
+        assert!(ticket.uses_gpu(&scene));
     }
 
     #[test]

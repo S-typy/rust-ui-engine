@@ -17,6 +17,60 @@ const ROW_HEADER: f32 = 60.0;
 fn err(e: impl ToString) -> ControlError {
     ControlError::Invalid(e.to_string())
 }
+
+pub(crate) fn cell_text_run(
+    value: String,
+    rect: Rect,
+    clip: Rect,
+    color: Color,
+    scale: f32,
+) -> TextRun {
+    let mut run = TextRun::new(
+        value,
+        Rect::new(
+            rect.x + 6.0 * scale,
+            rect.y + 5.0 * scale,
+            (rect.width - 12.0 * scale).max(1.0),
+            (rect.height - 7.0 * scale).max(1.0),
+        ),
+        color,
+        14.0 * scale,
+    );
+    run.clip = clip;
+    run
+}
+
+/// Static typography shared by the viewport and immutable printed pages.
+pub(crate) fn paint_cell_text(
+    scene: &mut Scene,
+    mut run: TextRun,
+    style: Option<&CellStyle>,
+) -> Result<(), ControlError> {
+    if let Some(style) = style {
+        run.weight = if style.bold { 700 } else { 400 };
+        run.wrap = style.wrap;
+        if let Some(color) = style.foreground {
+            run.color = Color::rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
+        }
+        if style.italic && !run.text.is_empty() {
+            let span = TextSpan {
+                range: 0..run.text.len(),
+                font: Some(FontDescriptor {
+                    size: run.font_size,
+                    weight: run.weight,
+                    slant: FontSlant::Italic,
+                    ..Default::default()
+                }),
+                font_size: None,
+                weight: None,
+                color: None,
+            };
+            return scene.styled_text(run, vec![span]).map_err(err);
+        }
+    }
+    scene.text(run);
+    Ok(())
+}
 #[derive(Clone, Copy, Debug)]
 pub struct SpreadsheetParts {
     pub root: WidgetId,
@@ -593,43 +647,8 @@ impl Spreadsheet {
                     .value(self.session.sheet(), anchor)
                     .map_err(err)?
                     .display();
-                let mut run = TextRun::new(
-                    value,
-                    Rect::new(
-                        rect.x + 6.0,
-                        rect.y + 5.0,
-                        (rect.width - 12.0).max(1.0),
-                        (rect.height - 7.0).max(1.0),
-                    ),
-                    tokens.text,
-                    14.0,
-                );
-                run.clip = clip;
-                if let Some(cell) = sheet.cell(anchor) {
-                    run.weight = if cell.style.bold { 700 } else { 400 };
-                    run.wrap = cell.style.wrap;
-                    if let Some(color) = cell.style.foreground {
-                        run.color =
-                            Color::rgb((color >> 16) as u8, (color >> 8) as u8, color as u8);
-                    }
-                    if cell.style.italic && !run.text.is_empty() {
-                        let span = TextSpan {
-                            range: 0..run.text.len(),
-                            font: Some(FontDescriptor {
-                                size: run.font_size,
-                                weight: run.weight,
-                                slant: FontSlant::Italic,
-                                ..Default::default()
-                            }),
-                            font_size: None,
-                            weight: None,
-                            color: None,
-                        };
-                        scene.styled_text(run, vec![span]).map_err(err)?;
-                        continue;
-                    }
-                }
-                scene.text(run);
+                let run = cell_text_run(value, rect, clip, tokens.text, 1.0);
+                paint_cell_text(&mut scene, run, sheet.cell(anchor).map(|c| &c.style))?;
             }
         }
         let range = self.session.selection();

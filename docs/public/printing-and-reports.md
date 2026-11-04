@@ -8,9 +8,20 @@ bitmap payload. `PageViewer::print_preview`, PDF export and native printing
 consume the same snapshot. See [ADR-013](adr/ADR-013-document-output.md).
 
 `printing::from_rich_document` adapts paginated rich documents.
-`ReportEngine::build` produces pages from a typed table. The Spreadsheet example
-provides a separate tabular print adapter for at most 1,000 rows and 12 columns;
-it rejects merged sheets and does not reproduce spreadsheet viewport styling.
+`ReportEngine::build` produces pages from a typed table. `printing::from_workbook`
+produces worksheet pages with the same static typography as the Spreadsheet:
+bold/italic/wrap, explicit foreground/background and merged cells. Selection and
+focus decoration are excluded. Formula cells use the current evaluated value.
+Number-format metadata is not yet applied by the worksheet presentation.
+
+`SheetPrintOptions` defaults to a 794×1123 logical-pixel page, 48-pixel margins,
+112-pixel columns and 28-pixel rows. Optional fit-width uniformly shrinks
+columns and typography; it never enlarges them or shrinks below 5%. The used
+extent includes empty merged ranges and is bounded to 1,000 rows and 12 columns.
+Page breaks move before a merge that crosses the boundary. A connected merged
+block taller than one page is rejected; its text is never silently dropped or
+duplicated. Invalid options, unknown sheets, exhausted budgets and cancellation
+return an error without changing the workbook or returning partial pages.
 
 ## Export and Windows printing
 
@@ -19,8 +30,12 @@ with the normal text engine and exported as glyph images at 192 DPI. Each
 shaped line also has invisible text with Unicode `ActualText`; the visible
 glyph images are marked as artifacts. Font binaries are not embedded. This preserves
 visual glyphs but does not promise outline-text quality at arbitrary zoom or
-text extraction in every external reader. Unsupported rounded geometry,
-cropped image sources or transparent vector ink returns an error.
+text extraction in every external reader. Rounded rectangles and ellipses use
+cubic vector paths; inset borders use outer/inner even-odd contours. Transparent
+vector ink uses isolated Normal-blend opacity states, bounded to 1,024 per page.
+Image sources support integral and fractional crops, preserving the source
+bitmap and clipping its transformed placement to destination bounds. Placements
+beyond the explicit 10,000,000-unit coordinate budget return an error.
 Cancellation returns no partial byte buffer.
 
 `FillPath` contours retain their `NonZero` or `EvenOdd` rule and rectangular
@@ -39,8 +54,9 @@ absolute output filename.
 `print` uses Windows GDI/spooler APIs on a worker, validates the ticket and
 driver capabilities before starting a job, and calls AbortDoc when cancelled
 or failed. Cancellation cannot retract pages a device has already printed.
-`PrintRenderMode::Auto` keeps opaque vector pages in GDI. Pages containing text,
-images, ellipses or transparent vectors use the shared windowless GPU renderer;
+`PrintRenderMode::Auto` keeps opaque rectangle/polygon fill pages in GDI. Pages
+containing text, images, rounded shapes, ellipses, strokes or transparency use
+the shared windowless GPU renderer;
 the driver receives an opaque bitmap through `StretchDIBits`, without requiring
 pixel-alpha support. This preserves the UI's linear-light blending. Each page
 has a white background and a bounded raster resolution: `raster_dpi` defaults
