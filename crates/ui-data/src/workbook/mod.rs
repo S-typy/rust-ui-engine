@@ -3,7 +3,11 @@
 //! Cell coordinates are zero based; A1 formulas use conventional one-based rows.
 //! Formula failures are cell results. Invalid edits leave the workbook unchanged.
 
+mod dimensions;
 mod formula;
+pub use dimensions::{
+    DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, MAX_DIMENSIONS, WorksheetDimensions,
+};
 #[cfg(test)]
 mod tests;
 mod xlsx;
@@ -215,8 +219,12 @@ pub struct Worksheet {
     name: String,
     cells: BTreeMap<CellAddress, WorkbookCell>,
     merges: Vec<CellRange>,
+    dimensions: WorksheetDimensions,
 }
 impl Worksheet {
+    pub fn dimensions(&self) -> &WorksheetDimensions {
+        &self.dimensions
+    }
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -246,6 +254,23 @@ pub struct WorkbookCellId {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkbookEdit {
+    /// Set sparse dimensions in logical pixels; None restores the sheet default.
+    RowHeight {
+        sheet: usize,
+        row: u32,
+        height: Option<f64>,
+    },
+    ColumnWidth {
+        sheet: usize,
+        column: u32,
+        width: Option<f64>,
+    },
+    /// Replace the defaults without changing explicit per-axis overrides.
+    DefaultDimensions {
+        sheet: usize,
+        row_height: f64,
+        column_width: f64,
+    },
     /// Merge only when no non-anchor cell contains a value. No data is discarded.
     Merge {
         sheet: usize,
@@ -290,6 +315,8 @@ impl Workbook {
             .iter()
             .map(|s| {
                 s.name.len()
+                    + s.dimensions.count() * 64
+                    + 64
                     + s.merges.len() * 32
                     + s.cells
                         .values()
@@ -318,6 +345,7 @@ impl Workbook {
                 name,
                 cells: BTreeMap::new(),
                 merges: Vec::new(),
+                dimensions: WorksheetDimensions::default(),
             }],
             values: BTreeMap::new(),
             dependencies: BTreeMap::new(),
@@ -355,12 +383,34 @@ impl Workbook {
         if edits.is_empty() {
             return Ok(());
         }
-        if edits.len() > MAX_CELLS + MAX_SHEETS + 2048 {
+        if edits.len() > MAX_CELLS + MAX_DIMENSIONS + MAX_SHEETS * 2 + 2048 {
             return Err(invalid("edit batch exceeds capacity"));
         }
         let mut next = self.clone();
         for edit in edits {
             match edit {
+                WorkbookEdit::RowHeight { sheet, row, height } => {
+                    next.sheet(*sheet)?;
+                    next.sheets[*sheet].dimensions.set(true, *row, *height)?;
+                }
+                WorkbookEdit::ColumnWidth {
+                    sheet,
+                    column,
+                    width,
+                } => {
+                    next.sheet(*sheet)?;
+                    next.sheets[*sheet].dimensions.set(false, *column, *width)?;
+                }
+                WorkbookEdit::DefaultDimensions {
+                    sheet,
+                    row_height,
+                    column_width,
+                } => {
+                    next.sheet(*sheet)?;
+                    next.sheets[*sheet]
+                        .dimensions
+                        .set_default(*row_height, *column_width)?;
+                }
                 WorkbookEdit::Merge { sheet, range } => {
                     next.sheet(*sheet)?;
                     if range.len() < 2 || next.sheets[*sheet].merges.len() >= 1024 {
@@ -421,6 +471,7 @@ impl Workbook {
                         name: name.clone(),
                         cells: BTreeMap::new(),
                         merges: Vec::new(),
+                        dimensions: WorksheetDimensions::default(),
                     });
                 }
                 WorkbookEdit::Copy {
@@ -491,6 +542,15 @@ impl Workbook {
                         }
                     }
                 }
+            }
+            if next
+                .sheets
+                .iter()
+                .map(|s| s.dimensions.count())
+                .sum::<usize>()
+                > MAX_DIMENSIONS
+            {
+                return Err(invalid("workbook dimension capacity exceeded"));
             }
             if next.sheets.iter().map(|s| s.cells.len()).sum::<usize>() > MAX_CELLS {
                 return Err(invalid("workbook cell capacity exceeded"));

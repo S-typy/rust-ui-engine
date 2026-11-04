@@ -79,8 +79,6 @@ fn omitted_visual_and_metadata_features_are_reported_without_losing_cell_value()
     for feature in [
         "sheetViews",
         "hidden",
-        "customHeight",
-        "ht",
         "vm",
         "custom",
         "defaultThemeVersion",
@@ -178,5 +176,67 @@ fn duplicate_style_tables_and_duplicate_cell_alignment_reject_import() {
     ] {
         let styles = format!("<styleSheet xmlns=\"{NS}\">{content}</styleSheet>");
         assert!(Workbook::from_xlsx(&package_with_styles(&styles)).is_err());
+    }
+}
+
+#[test]
+fn dimensions_validate_ranges_values_and_empty_rows() {
+    for body in [
+        "<cols><col min=\"0\" max=\"2\" width=\"10\"/></cols><sheetData/>",
+        "<cols><col min=\"1\" max=\"16385\" width=\"10\"/></cols><sheetData/>",
+        "<cols><col min=\"1\" max=\"2\" width=\"10\"/><col min=\"2\" max=\"3\" width=\"20\"/></cols><sheetData/>",
+        "<sheetFormatPr defaultRowHeight=\"NaN\"/><sheetData/>",
+        "<sheetData><row r=\"1\" ht=\"20\" customHeight=\"yes\"/></sheetData>",
+        "<cols><col min=\"1\" max=\"1\" width=\"20\" customWidth=\"2\"/></cols><sheetData/>",
+        "<sheetData><row r=\"1\" ht=\"-1\"/></sheetData>",
+        "<sheetData><row ht=\"20\"/></sheetData>",
+    ] {
+        assert!(Workbook::from_xlsx(&package(body, "")).is_err(), "{body}");
+    }
+    let imported=Workbook::from_xlsx(&package("<cols><col min=\"1\" max=\"3\" width=\"20\"/></cols><sheetData><row r=\"1048576\" ht=\"42\" customHeight=\"1\"/></sheetData>", "")).unwrap();
+    let sizes = imported.workbook.sheets()[0].dimensions();
+    assert_eq!(sizes.column_width(2), Some(140.0));
+    assert_eq!(sizes.row_height(MAX_ROWS - 1), Some(56.0));
+    assert!(
+        imported.diagnostics.is_empty(),
+        "{:?}",
+        imported.diagnostics
+    );
+}
+
+#[test]
+fn builtin_numeric_formats_survive_import_and_export() {
+    for (id, expected) in [
+        (3, "#,##0"),
+        (4, "#,##0.00"),
+        (11, "0.00E+00"),
+        (40, "#,##0.00;[Red](#,##0.00)"),
+    ] {
+        let styles = format!(
+            "<styleSheet xmlns=\"{NS}\"><cellXfs count=\"1\"><xf numFmtId=\"{id}\"/></cellXfs></styleSheet>"
+        );
+        let imported = Workbook::from_xlsx(&package_with_styles(&styles)).unwrap();
+        let address = CellAddress::parse("A1").unwrap();
+        assert_eq!(
+            imported.workbook.sheets()[0]
+                .cell(address)
+                .unwrap()
+                .style
+                .number_format,
+            expected
+        );
+        let again = Workbook::from_xlsx(&imported.workbook.to_xlsx().unwrap()).unwrap();
+        assert_eq!(
+            again.workbook.sheets()[0]
+                .cell(address)
+                .unwrap()
+                .style
+                .number_format,
+            expected
+        );
+        assert_eq!(
+            again.workbook.value(0, address).unwrap(),
+            WorkbookValue::Scalar(CellValue::Integer(42))
+        );
     }
 }

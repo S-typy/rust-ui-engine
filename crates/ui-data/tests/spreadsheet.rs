@@ -145,3 +145,50 @@ fn overlap_copy_snapshots_source_and_keeps_merge_integrity() {
     );
     assert_eq!(b, before);
 }
+
+#[test]
+fn rectangular_fill_uses_original_pattern_and_one_undo_step() {
+    let mut s = SpreadsheetSession::new(book());
+    s.enter("7").unwrap();
+    s.select(a("B1"), a("B1")).unwrap();
+    s.enter("=$A$1+A1").unwrap();
+    s.select(a("A1"), a("B1")).unwrap();
+    let before = s.workbook().clone();
+    s.fill_to(r("A1", "D3")).unwrap();
+    assert_eq!(s.selection(), r("A1", "D3"));
+    assert_eq!(
+        s.workbook().sheets()[0].cell(a("D3")).unwrap().input,
+        CellInput::Formula("=($A$1+C3)".into())
+    );
+    assert_eq!(
+        s.workbook().value(0, a("D3")).unwrap(),
+        WorkbookValue::Scalar(CellValue::Real(14.0))
+    );
+    assert!(s.undo().unwrap());
+    assert_eq!(s.workbook(), &before);
+    assert_eq!(s.selection(), r("A1", "B1"));
+    assert!(s.redo().unwrap());
+    assert_eq!(s.selection(), r("A1", "D3"));
+    let before = s.workbook().clone();
+    assert!(s.fill_to(r("B1", "D3")).is_err());
+    assert_eq!(s.workbook(), &before);
+}
+
+#[test]
+fn fill_rejects_merges_and_select_range_keeps_an_explicit_active_cell() {
+    let mut s = SpreadsheetSession::new(book());
+    s.apply(&[WorkbookEdit::Merge {
+        sheet: 0,
+        range: r("B3", "C3"),
+    }])
+    .unwrap();
+    s.select(a("A1"), a("A1")).unwrap();
+    let before = s.workbook().clone();
+    assert!(s.fill_to(r("A1", "C4")).is_err());
+    assert_eq!(s.workbook(), &before);
+    s.select_range(r("A1", "C4"), a("A2")).unwrap();
+    assert_eq!(s.active(), a("A2"));
+    assert_eq!(s.selection(), r("A1", "C4"));
+    assert!(s.select_range(r("A1", "A1"), a("B1")).is_err());
+    assert_eq!(s.active(), a("A2"));
+}

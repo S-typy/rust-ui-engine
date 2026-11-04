@@ -82,7 +82,11 @@ impl SpreadsheetSession {
         result
     }
     /// Expand the selection to include every merged cell it intersects.
-    pub fn select(&mut self, anchor: CellAddress, focus: CellAddress) -> Result<(), DataError> {
+    pub fn selection_range(
+        &self,
+        anchor: CellAddress,
+        focus: CellAddress,
+    ) -> Result<CellRange, DataError> {
         let sheet = &self.workbook().sheets()[self.sheet()];
         let mut range = CellRange::new(
             CellAddress::new(
@@ -112,7 +116,19 @@ impl SpreadsheetSession {
                 break;
             }
         }
-        let active = sheet.anchor(focus);
+        Ok(range)
+    }
+    pub fn select(&mut self, anchor: CellAddress, focus: CellAddress) -> Result<(), DataError> {
+        let range = self.selection_range(anchor, focus)?;
+        self.select_range(range, focus)
+    }
+    /// Restore an explicit range and active cell without changing workbook history.
+    pub fn select_range(&mut self, range: CellRange, active: CellAddress) -> Result<(), DataError> {
+        let range = self.selection_range(range.start(), range.end())?;
+        let active = self.workbook().sheets()[self.sheet()].anchor(active);
+        if !range.contains(active) {
+            return Err(invalid("active cell is outside selection"));
+        }
         self.bump()?;
         self.current.active = active;
         self.current.selection = range;
@@ -269,6 +285,49 @@ impl SpreadsheetSession {
         self.apply(&edits)?;
         self.current.active = destination;
         self.current.selection = range;
+        Ok(())
+    }
+    /// Repeat the current range into a containing rectangle using an immutable
+    /// source snapshot. Formula references translate; the whole fill is one undo.
+    pub fn fill_to(&mut self, target: CellRange) -> Result<(), DataError> {
+        let source = self.selection();
+        if !target.contains_range(source) {
+            return Err(invalid("fill target must contain the source"));
+        }
+        let sheet = &self.workbook().sheets()[self.sheet()];
+        if sheet.merges().iter().any(|r| r.intersects(target)) {
+            return Err(invalid("unmerge the fill range first"));
+        }
+        let rows = i64::from(source.end().row() - source.start().row() + 1);
+        let columns = i64::from(source.end().column() - source.start().column() + 1);
+        let mut edits = Vec::new();
+        for address in target.addresses().filter(|a| !source.contains(*a)) {
+            let origin = CellAddress::new(
+                source.start().row()
+                    + (i64::from(address.row()) - i64::from(source.start().row())).rem_euclid(rows)
+                        as u32,
+                source.start().column()
+                    + (i64::from(address.column()) - i64::from(source.start().column()))
+                        .rem_euclid(columns) as u32,
+            )?;
+            if let Some(cell) = sheet.cell(origin) {
+                edits.push(WorkbookEdit::Set {
+                    sheet: self.sheet(),
+                    address,
+                    cell: cell.translated(
+                        i64::from(address.row()) - i64::from(origin.row()),
+                        i64::from(address.column()) - i64::from(origin.column()),
+                    )?,
+                });
+            } else {
+                edits.push(WorkbookEdit::Clear {
+                    sheet: self.sheet(),
+                    range: CellRange::new(address, address)?,
+                });
+            }
+        }
+        self.apply(&edits)?;
+        self.current.selection = target;
         Ok(())
     }
     /// Repeat the top row down or left column right, translating formula references.

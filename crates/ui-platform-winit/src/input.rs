@@ -1,7 +1,7 @@
-use rust_desktop_ui_core::{Key, Point, PointerButton};
+use rust_desktop_ui_core::{Key, Modifiers, Point, PointerButton};
 use winit::{
     event::{MouseButton, MouseScrollDelta},
-    keyboard::{Key as NativeKey, NamedKey},
+    keyboard::{Key as NativeKey, KeyCode, NamedKey, PhysicalKey},
 };
 
 pub(crate) fn key(key: &NativeKey) -> Key {
@@ -30,6 +30,26 @@ pub(crate) fn key(key: &NativeKey) -> Key {
         NativeKey::Character(s) => Key::Character(s.to_string()),
         _ => Key::Other,
     }
+}
+
+/// Preserve layout-aware Latin shortcuts, with a physical Latin fallback when
+/// a non-Latin layout is active. AltGr and ordinary text never use the fallback.
+pub(crate) fn command_key(logical: &NativeKey, physical: PhysicalKey, modifiers: Modifiers) -> Key {
+    if (modifiers.control || modifiers.super_key)
+        && !modifiers.alt
+        && matches!(logical, NativeKey::Character(text) if !text.is_ascii())
+        && let PhysicalKey::Code(code) = physical
+    {
+        use KeyCode::*;
+        let letters = [
+            KeyA, KeyB, KeyC, KeyD, KeyE, KeyF, KeyG, KeyH, KeyI, KeyJ, KeyK, KeyL, KeyM, KeyN,
+            KeyO, KeyP, KeyQ, KeyR, KeyS, KeyT, KeyU, KeyV, KeyW, KeyX, KeyY, KeyZ,
+        ];
+        if let Some(index) = letters.iter().position(|&letter| letter == code) {
+            return Key::Character(char::from(b'a' + index as u8).to_string());
+        }
+    }
+    key(logical)
 }
 
 pub(crate) fn button(button: MouseButton) -> PointerButton {
@@ -62,6 +82,42 @@ pub(crate) fn wheel(delta: MouseScrollDelta, scale: f64) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn non_latin_shortcuts_preserve_text_altgr_and_latin_layouts() {
+        let control = Modifiers {
+            control: true,
+            ..Default::default()
+        };
+        let physical = PhysicalKey::Code(KeyCode::KeyA);
+        let russian = NativeKey::Character("ф".into());
+        assert_eq!(
+            command_key(&russian, physical, control),
+            Key::Character("a".into())
+        );
+        assert_eq!(
+            command_key(&russian, physical, Modifiers::default()),
+            Key::Character("ф".into())
+        );
+        assert_eq!(
+            command_key(
+                &russian,
+                physical,
+                Modifiers {
+                    alt: true,
+                    ..control
+                }
+            ),
+            Key::Character("ф".into())
+        );
+        assert_eq!(
+            command_key(&NativeKey::Character("q".into()), physical, control),
+            Key::Character("q".into())
+        );
+        assert_eq!(
+            command_key(&NativeKey::Named(NamedKey::F2), physical, control),
+            Key::F2
+        );
+    }
     #[test]
     fn pixel_wheel_uses_logical_coordinates_and_keeps_both_axes() {
         let p = winit::dpi::PhysicalPosition::new(30.0, -60.0);

@@ -47,6 +47,13 @@ Clear/copy reject operations that cut a merged range; copy translates complete
 merges and formulas atomically. The interactive editing session and viewport
 are documented in [Spreadsheet](spreadsheets.md).
 
+`Worksheet::dimensions` stores defaults and sparse row/column overrides in
+logical pixels (96 per inch). `RowHeight`, `ColumnWidth` and `DefaultDimensions`
+edits are atomic and participate in session undo. Sizes must be finite and in
+1..4096; `None` removes an override. Defaults are 28 high and 112 wide.
+Up to 16,384 dimension overrides are allowed across the workbook, separately
+from the cell budget. An empty last row with a custom height creates no cells.
+
 Limits: 64 sheets, 16,384 stored cells across the workbook, 16 MiB of cell and
 formula text, 32 KiB per text cell, 4 KiB per formula and 262,144 dependency
 edges. Coordinates cover 1,048,576 rows and 16,384 columns. A single enumerated
@@ -89,6 +96,13 @@ and the [SpreadsheetML document structure](https://learn.microsoft.com/en-us/off
 The supported profile contains multiple sheets, inline/shared strings, booleans,
 finite numbers, dates, times, normal cell formulas and basic cell styles:
 bold, italic, opaque RGB foreground/background, wrapping and number-format code.
+Sheet defaults, column ranges and explicit row heights also round-trip. Heights
+convert between logical pixels and points. Column widths use the declared
+Calibri 11 Normal profile's seven-pixel character unit; this is a bounded width
+profile, not exact arbitrary-font sizing. Hidden axes, autosize and alternate
+font metrics are not represented. Overlapping column ranges, invalid sizes and
+invalid custom-size booleans reject import. Common built-in numeric format IDs
+are resolved to their format strings; unsupported IDs are diagnosed.
 Exports use inline strings and cached formula results; imports always recalculate
 formulas with this evaluator. Numeric storage distinguishes integral and fractional
 values by their lexical representation on import. Dates and times use ISO cell

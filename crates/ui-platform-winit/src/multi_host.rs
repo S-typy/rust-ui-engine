@@ -945,8 +945,8 @@ impl WindowState {
                 is_synthetic: false,
                 ..
             } => {
-                let key = input::key(&event.logical_key);
                 let modifiers = self.modifiers;
+                let key = input::command_key(&event.logical_key, event.physical_key, modifiers);
                 if event.state == ElementState::Pressed {
                     let mut redraw = self.dispatch(
                         app,

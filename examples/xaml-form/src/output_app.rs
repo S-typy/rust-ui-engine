@@ -67,6 +67,7 @@ pub(crate) struct OutputDemo {
     waker: Option<platform::AppWaker>,
     diagnostics: bool,
     last: String,
+    last_snapshot: String,
     sheet_accessible: sheet_accessibility::SheetAccessibility,
 }
 fn err(e: impl ToString) -> String {
@@ -221,6 +222,7 @@ impl OutputDemo {
             waker: None,
             diagnostics,
             last: String::new(),
+            last_snapshot: String::new(),
             sheet_accessible: Default::default(),
         })
     }
@@ -236,10 +238,11 @@ impl OutputDemo {
             View::Pages(v) => Ok(v.document().clone()),
             View::Sheet(s) => {
                 s.commit(&mut self.form.ui).map_err(err)?;
-                printing::from_workbook(
+                printing::from_workbook_with_culture(
                     s.session().workbook(),
                     s.session().sheet(),
                     printing::SheetPrintOptions::default(),
+                    s.culture(),
                     || false,
                 )
                 .map_err(err)
@@ -465,6 +468,45 @@ impl DesktopApp for OutputDemo {
         }
         self.form.update(size, scale)?;
         if self.diagnostics {
+            if let View::Sheet(sheet) = &self.view {
+                use crate::popup_diagnostics::{rectangle, string};
+                let cells = sheet
+                    .semantics(&self.form.ui)
+                    .map_err(err)?
+                    .cells
+                    .into_iter()
+                    .map(|c| {
+                        format!(
+                            "{{\"address\":{},\"bounds\":{},\"value\":{},\"selected\":{}}}",
+                            string(&c.address.a1()),
+                            rectangle(c.bounds),
+                            string(&c.value),
+                            c.selected
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                let details = format!(
+                    "{{\"active\":{},\"revision\":{},\"ime\":{},\"ime_target\":{},\"ime_cursor\":{},\"entry\":{},\"cells\":[{}]}}",
+                    string(&sheet.session().active().a1()),
+                    sheet.session().workbook().revision(),
+                    self.form
+                        .ui
+                        .document(sheet.parts.formula)
+                        .is_some_and(|d| d.composition().is_some()),
+                    self.form.ime_target().is_some(),
+                    self.form.ime_cursor().map_or("null".into(), rectangle),
+                    string(&sheet.session().entry()),
+                    cells
+                );
+                let batch = crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view);
+                let snapshot = format!("{details}\n{batch}");
+                if snapshot != self.last_snapshot {
+                    println!("worksheet-state {details}");
+                    println!("batch-state {batch}");
+                    self.last_snapshot = snapshot;
+                }
+            }
             let signature = match &self.view {
                 View::Sheet(s) => format!(
                     "sheet={} selection={}:{} generation={}",
@@ -489,6 +531,10 @@ impl DesktopApp for OutputDemo {
         self.form.title()
     }
     fn event(&mut self, event: PlatformEvent) -> Result<EventResponse, String> {
+        if self.diagnostics {
+            println!("output-event {event:?}");
+        }
+
         let action = (|| {
             match event {
                 PlatformEvent::Input(input) => {
@@ -510,13 +556,25 @@ impl DesktopApp for OutputDemo {
                         self.form.ui.paste_input(&text).map_err(err)?;
                     }
                 }
-                PlatformEvent::Text(text) => self.form.ui.text_input(&text).map_err(err)?,
+                PlatformEvent::Text(text) => {
+                    let handled = if let View::Sheet(sheet) = &mut self.view {
+                        sheet.text_input(&mut self.form.ui, &text).map_err(err)?
+                    } else {
+                        false
+                    };
+                    if !handled {
+                        self.form.ui.text_input(&text).map_err(err)?;
+                    }
+                }
                 PlatformEvent::ImePreedit(text, cursor) => {
                     self.form.ui.ime_preedit(&text, cursor).map_err(err)?
                 }
                 PlatformEvent::ImeCommit(text) => self.form.ui.ime_commit(&text).map_err(err)?,
                 PlatformEvent::ImeCancel => self.form.ui.cancel_preedit(),
                 PlatformEvent::Tick => {
+                    if let View::Sheet(sheet) = &mut self.view {
+                        sheet.interaction_tick(&mut self.form.ui).map_err(err)?;
+                    }
                     self.form.ui.tick(Instant::now()).map_err(err)?;
                 }
                 PlatformEvent::Accessibility(request) => {
@@ -618,6 +676,9 @@ impl DesktopApp for OutputDemo {
         Ok(EventResponse::redraw())
     }
     fn wake_after(&self) -> Option<Duration> {
+        if matches!(&self.view,View::Sheet(sheet) if sheet.needs_interaction_tick()) {
+            return Some(Duration::from_millis(50));
+        }
         if self.busy {
             Some(Duration::from_millis(50))
         } else {
@@ -641,6 +702,9 @@ impl DesktopApp for OutputDemo {
         tree
     }
     fn pointer_capture_lost(&mut self) -> Result<EventResponse, String> {
+        if let View::Sheet(sheet) = &mut self.view {
+            sheet.cancel_interaction(&mut self.form.ui).map_err(err)?;
+        }
         self.form.pointer_capture_lost()
     }
     fn ime_cursor(&self) -> Option<Rect> {
@@ -1167,5 +1231,204 @@ mod tests {
         assert!(bounds(app.printer).height >= 30.0);
         assert!(bounds(app.printer).y < bounds(view.parts.search).y);
         assert!(app.take_dialog_request().is_none());
+    }
+    #[test]
+    fn spreadsheet_pointer_range_fill_resize_cancel_and_undo_share_geometry() {
+        fn send(app: &mut OutputDemo, event: InputEvent) {
+            app.event(PlatformEvent::Input(event)).unwrap();
+            app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        }
+        fn sheet(app: &OutputDemo) -> &Spreadsheet {
+            let View::Sheet(sheet) = &app.view else {
+                panic!()
+            };
+            sheet
+        }
+        fn cell(app: &OutputDemo, address: &str) -> Rect {
+            sheet(app)
+                .semantics(&app.form.ui)
+                .unwrap()
+                .cells
+                .into_iter()
+                .find(|c| c.address == CellAddress::parse(address).unwrap())
+                .unwrap()
+                .bounds
+        }
+        fn center(rect: Rect) -> Point {
+            Point::new(rect.x + rect.width / 2.0, rect.y + rect.height / 2.0)
+        }
+        fn down(position: Point) -> InputEvent {
+            InputEvent::PointerDown {
+                position,
+                button: PointerButton::Primary,
+                modifiers: Modifiers::default(),
+            }
+        }
+        fn up(position: Point) -> InputEvent {
+            InputEvent::PointerUp {
+                position,
+                button: PointerButton::Primary,
+                modifiers: Modifiers::default(),
+            }
+        }
+        let mut app = OutputDemo::new(
+            crate::generated_output::window_definition(),
+            false,
+            OutputMode::Spreadsheet,
+        )
+        .unwrap();
+        let mut book = Workbook::new("Gestures").unwrap();
+        book.apply(&[WorkbookEdit::Set {
+            sheet: 0,
+            address: CellAddress::parse("A1").unwrap(),
+            cell: WorkbookCell::value(CellValue::Integer(7)),
+        }])
+        .unwrap();
+        if let View::Sheet(sheet) = &mut app.view {
+            sheet.replace_workbook(&mut app.form.ui, book).unwrap();
+        }
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        let original = sheet(&app).session().workbook().clone();
+        let a1 = cell(&app, "A1");
+        let b2 = center(cell(&app, "B2"));
+        send(&mut app, down(center(a1)));
+        send(&mut app, InputEvent::PointerMoved { position: b2 });
+        assert_eq!(sheet(&app).session().selection().end().a1(), "B2");
+        send(
+            &mut app,
+            InputEvent::KeyDown {
+                key: Key::Escape,
+                modifiers: Modifiers::default(),
+                repeat: false,
+            },
+        );
+        assert_eq!(sheet(&app).session().selection().end().a1(), "A1");
+        assert!(app.form.ui.runtime.captured().is_none());
+        let edge = Point::new(a1.x + a1.width, a1.y - 14.0);
+        let moved = Point::new(edge.x + 55.0, edge.y);
+        send(&mut app, down(edge));
+        send(&mut app, InputEvent::PointerMoved { position: moved });
+        assert_eq!(sheet(&app).session().workbook(), &original);
+        assert!((cell(&app, "A1").width - 167.0).abs() < 0.01);
+        app.pointer_capture_lost().unwrap();
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        assert_eq!(cell(&app, "A1").width, 112.0);
+        send(&mut app, down(edge));
+        send(&mut app, up(moved));
+        assert_eq!(
+            sheet(&app).session().workbook().sheets()[0]
+                .dimensions()
+                .column_width(0),
+            Some(167.0)
+        );
+        send(
+            &mut app,
+            InputEvent::KeyDown {
+                key: Key::Character("z".into()),
+                modifiers: Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                repeat: false,
+            },
+        );
+        assert_eq!(cell(&app, "A1").width, 112.0);
+        let handle = Point::new(a1.x + a1.width - 2.0, a1.y + a1.height - 2.0);
+        let target = center(cell(&app, "A4"));
+        send(&mut app, down(handle));
+        send(&mut app, InputEvent::PointerMoved { position: target });
+        assert_eq!(sheet(&app).session().workbook(), &original);
+        send(&mut app, up(target));
+        assert_eq!(
+            sheet(&app)
+                .session()
+                .workbook()
+                .value(0, CellAddress::parse("A4").unwrap())
+                .unwrap(),
+            rust_desktop_ui_data::workbook::WorkbookValue::Scalar(CellValue::Integer(7))
+        );
+        send(
+            &mut app,
+            InputEvent::KeyDown {
+                key: Key::Character("z".into()),
+                modifiers: Modifiers {
+                    control: true,
+                    ..Default::default()
+                },
+                repeat: false,
+            },
+        );
+        assert_eq!(sheet(&app).session().workbook(), &original);
+    }
+    #[test]
+    fn spreadsheet_cell_and_formula_bar_share_draft_identity_and_ime_guards() {
+        let mut app = OutputDemo::new(
+            crate::generated_output::window_definition(),
+            false,
+            OutputMode::Spreadsheet,
+        )
+        .unwrap();
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        let View::Sheet(sheet) = &mut app.view else {
+            panic!()
+        };
+        let id = sheet.parts.formula;
+        let home = app.form.ui.runtime.bounds(id).unwrap();
+        let original = sheet.session().workbook().clone();
+        sheet.begin_cell_edit(&mut app.form.ui).unwrap();
+        assert!(!sheet.can_realize_accessible_cell(&app.form.ui));
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        let inside = app.form.ui.runtime.bounds(id).unwrap();
+        assert!(inside.y > home.y);
+        app.form.ui.set_text(id, "Unicode Ω").unwrap();
+        let View::Sheet(sheet) = &mut app.view else {
+            panic!()
+        };
+        sheet.edit_formula(&mut app.form.ui).unwrap();
+        assert_eq!(app.form.ui.document(id).unwrap().text(), "Unicode Ω");
+        assert_eq!(sheet.session().workbook(), &original);
+        sheet.begin_cell_edit(&mut app.form.ui).unwrap();
+        app.event(PlatformEvent::ImePreedit("にほんご".into(), Some((0, 0))))
+            .unwrap();
+        let View::Sheet(sheet) = &mut app.view else {
+            panic!()
+        };
+        assert!(sheet.commit(&mut app.form.ui).is_err());
+        assert!(
+            sheet
+                .replace_workbook(&mut app.form.ui, Workbook::new("Other").unwrap())
+                .is_err()
+        );
+        assert_eq!(sheet.session().workbook(), &original);
+        app.event(PlatformEvent::ImeCancel).unwrap();
+        app.update(Size::new(80.0, 120.0), 1.0).unwrap();
+        assert_eq!(app.form.ui.document(id).unwrap().text(), "Unicode Ω");
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        app.event(PlatformEvent::Input(InputEvent::KeyDown {
+            key: Key::Escape,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }))
+        .unwrap();
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        assert_eq!(app.form.ui.runtime.bounds(id).unwrap(), home);
+        assert_eq!(app.form.ui.document(id).unwrap().text(), "Товар");
+        app.event(PlatformEvent::Text("Прямой ввод".into()))
+            .unwrap();
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        assert_eq!(app.form.ui.document(id).unwrap().text(), "Прямой ввод");
+        app.event(PlatformEvent::Input(InputEvent::KeyDown {
+            key: Key::Enter,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }))
+        .unwrap();
+        app.update(Size::new(1280.0, 900.0), 1.0).unwrap();
+        let View::Sheet(sheet) = &app.view else {
+            panic!()
+        };
+        assert_eq!(sheet.parts.formula, id);
+        assert_eq!(sheet.session().entry(), "Прямой ввод");
+        assert_eq!(app.form.ui.runtime.bounds(id).unwrap(), home);
     }
 }

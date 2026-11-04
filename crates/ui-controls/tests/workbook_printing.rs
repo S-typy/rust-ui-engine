@@ -249,3 +249,53 @@ fn worksheet_output_rejects_invalid_geometry_range_and_cancel_without_mutation()
     );
     assert_eq!(book, original);
 }
+
+#[test]
+fn worksheet_dimensions_control_printed_coordinates_and_page_breaks() {
+    let mut book = Workbook::new("Variable geometry").unwrap();
+    let mut edits = vec![
+        WorkbookEdit::ColumnWidth {
+            sheet: 0,
+            column: 0,
+            width: Some(200.0),
+        },
+        WorkbookEdit::RowHeight {
+            sheet: 0,
+            row: 0,
+            height: Some(60.0),
+        },
+    ];
+    for row in 0..3 {
+        edits.push(WorkbookEdit::Set {
+            sheet: 0,
+            address: address(row, 1),
+            cell: WorkbookCell::value(CellValue::Text(format!("row{row}"))),
+        });
+    }
+    book.apply(&edits).unwrap();
+    let options = SheetPrintOptions {
+        page_size: Size::new(400.0, 120.0),
+        margin: 10.0,
+        fit_width: false,
+        ..Default::default()
+    };
+    let printed = from_workbook(&book, 0, options, || false).unwrap();
+    assert_eq!(printed.pages().len(), 2);
+    let first = printed.pages()[0]
+        .scene
+        .texts
+        .iter()
+        .find(|t| t.text == "row0")
+        .unwrap();
+    assert_eq!(
+        first.clip,
+        rust_desktop_ui_core::Rect::new(210.0, 10.0, 112.0, 60.0)
+    );
+    assert!(
+        printed.pages()[1]
+            .scene
+            .texts
+            .iter()
+            .any(|t| t.text == "row2")
+    );
+}

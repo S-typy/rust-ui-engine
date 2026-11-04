@@ -50,53 +50,83 @@ impl Workbook {
             rels.push_str(&format!("<Relationship Id=\"sheet{n}\" Type=\"{REL}/worksheet\" Target=\"worksheets/sheet{n}.xml\"/>"));
             content.push_str(&format!("<Override PartName=\"/xl/worksheets/sheet{n}.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>"));
             let mut data = String::new();
-            let mut open_row = None;
-            for (address, cell) in &sheet.cells {
-                if matches!(
-                    cell.input,
-                    CellInput::Error(FormulaError::Cycle | FormulaError::Limit)
-                ) {
-                    return Err(invalid(
-                        "internal cycle/limit literals have no portable XLSX error type",
-                    ));
+            let dimensions = &sheet.dimensions;
+            let rows: BTreeSet<_> = sheet
+                .cells
+                .keys()
+                .map(|a| a.row())
+                .chain(dimensions.rows().keys().copied())
+                .collect();
+            for row in rows {
+                data.push_str(&format!("<row r=\"{}\"", row + 1));
+                if let Some(height) = dimensions.rows().get(&row) {
+                    data.push_str(&format!(" ht=\"{}\" customHeight=\"1\"", height * 0.75));
                 }
-                if open_row != Some(address.row) {
-                    if open_row.is_some() {
-                        data.push_str("</row>");
+                data.push('>');
+                let start = CellAddress::new(row, 0)?;
+                let end = CellAddress::new(row, MAX_COLUMNS - 1)?;
+                for (address, cell) in sheet.cells.range(start..=end) {
+                    if matches!(
+                        cell.input,
+                        CellInput::Error(FormulaError::Cycle | FormulaError::Limit)
+                    ) {
+                        return Err(invalid(
+                            "internal cycle/limit literals have no portable XLSX error type",
+                        ));
                     }
-                    data.push_str(&format!("<row r=\"{}\">", address.row + 1));
-                    open_row = Some(address.row);
+                    let style = styles
+                        .iter()
+                        .position(|s| *s == effective_style(cell))
+                        .unwrap();
+                    let result = self.value(index, *address)?;
+                    let (mut kind, value) = value_xml(&result)?;
+                    if matches!(cell.input, CellInput::Formula(_))
+                        && matches!(result, WorkbookValue::Scalar(CellValue::Text(_)))
+                    {
+                        kind = " t=\"str\"".into();
+                    }
+                    data.push_str(&format!("<c r=\"{}\" s=\"{style}\"{kind}>", address.a1()));
+                    if let CellInput::Formula(text) = &cell.input {
+                        data.push_str(&format!(
+                            "<f>{}</f>",
+                            escape(text.strip_prefix('=').unwrap_or(text))
+                        ));
+                    }
+                    if matches!(result, WorkbookValue::Scalar(CellValue::Text(_)))
+                        && !matches!(cell.input, CellInput::Formula(_))
+                    {
+                        data.push_str(&format!("<is><t xml:space=\"preserve\">{value}</t></is>"));
+                    } else if !value.is_empty() {
+                        data.push_str(&format!("<v>{value}</v>"));
+                    }
+                    data.push_str("</c>");
                 }
-                let style = styles
-                    .iter()
-                    .position(|s| *s == effective_style(cell))
-                    .unwrap();
-                let result = self.value(index, *address)?;
-                let (mut kind, value) = value_xml(&result)?;
-                if matches!(cell.input, CellInput::Formula(_))
-                    && matches!(result, WorkbookValue::Scalar(CellValue::Text(_)))
-                {
-                    kind = " t=\"str\"".into();
-                }
-                data.push_str(&format!("<c r=\"{}\" s=\"{style}\"{kind}>", address.a1()));
-                if let CellInput::Formula(text) = &cell.input {
-                    data.push_str(&format!(
-                        "<f>{}</f>",
-                        escape(text.strip_prefix('=').unwrap_or(text))
-                    ));
-                }
-                if matches!(result, WorkbookValue::Scalar(CellValue::Text(_)))
-                    && !matches!(cell.input, CellInput::Formula(_))
-                {
-                    data.push_str(&format!("<is><t xml:space=\"preserve\">{value}</t></is>"));
-                } else if !value.is_empty() {
-                    data.push_str(&format!("<v>{value}</v>"));
-                }
-                data.push_str("</c>");
-            }
-            if open_row.is_some() {
                 data.push_str("</row>");
             }
+            // Width uses the declared Calibri 11 Normal profile (7 logical pixels
+            // per maximum digit at 96 DPI). Arbitrary imported fonts are diagnosed.
+            let format = format!(
+                "<sheetFormatPr defaultRowHeight=\"{}\" defaultColWidth=\"{}\"/>",
+                dimensions.default_row_height() * 0.75,
+                dimensions.default_column_width() / 7.0
+            );
+            let columns = if dimensions.columns().is_empty() {
+                String::new()
+            } else {
+                format!(
+                    "<cols>{}</cols>",
+                    dimensions
+                        .columns()
+                        .iter()
+                        .map(|(column, width)| format!(
+                            "<col min=\"{}\" max=\"{}\" width=\"{}\" customWidth=\"1\"/>",
+                            column + 1,
+                            column + 1,
+                            width / 7.0
+                        ))
+                        .collect::<String>()
+                )
+            };
             let merges = if sheet.merges.is_empty() {
                 String::new()
             } else {
@@ -111,7 +141,7 @@ impl Workbook {
                 )
             };
             let xml = format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"{NS}\"><sheetData>{data}</sheetData>{merges}</worksheet>"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"{NS}\">{format}{columns}<sheetData>{data}</sheetData>{merges}</worksheet>"
             );
             parts.insert(format!("xl/worksheets/sheet{n}.xml"), xml.into_bytes());
         }
@@ -818,6 +848,7 @@ fn read_sheet(
             "dimension",
             "sheetViews",
             "sheetFormatPr",
+            "cols",
             "pageMargins",
             "mergeCells",
         ],
@@ -827,12 +858,110 @@ fn read_sheet(
         if !node.has_tag_name((NS, "sheetData"))
             && !node.has_tag_name((NS, "dimension"))
             && !node.has_tag_name((NS, "mergeCells"))
+            && !node.has_tag_name((NS, "sheetFormatPr"))
+            && !node.has_tag_name((NS, "cols"))
         {
             warning(
                 diagnostics,
                 path,
                 format!("unsupported worksheet element {}", node.tag_name().name()),
             );
+        }
+    }
+    let mut dimension_count = edits
+        .iter()
+        .filter(|e| {
+            matches!(
+                e,
+                WorkbookEdit::RowHeight { .. } | WorkbookEdit::ColumnWidth { .. }
+            )
+        })
+        .count();
+    if let Some(format) = child(root, "sheetFormatPr") {
+        attribute_diagnostics(
+            format,
+            &[
+                ("defaultRowHeight", None),
+                ("defaultColWidth", None),
+                ("baseColWidth", None),
+            ],
+            path,
+            diagnostics,
+        );
+        let row_height = format
+            .attribute("defaultRowHeight")
+            .map(|s| s.parse::<f64>().map(|n| n / 0.75).map_err(package_error))
+            .transpose()?
+            .unwrap_or(DEFAULT_ROW_HEIGHT);
+        let column_width = format
+            .attribute("defaultColWidth")
+            .map(|s| s.parse::<f64>().map(|n| n * 7.0).map_err(package_error))
+            .transpose()?
+            .unwrap_or(DEFAULT_COLUMN_WIDTH);
+        if format.attribute("baseColWidth").is_some()
+            && format.attribute("defaultColWidth").is_none()
+        {
+            warning(
+                diagnostics,
+                path,
+                "baseColWidth alone does not define the displayed column width",
+            );
+        }
+        edits.push(WorkbookEdit::DefaultDimensions {
+            sheet,
+            row_height,
+            column_width,
+        });
+    }
+    if let Some(columns) = child(root, "cols") {
+        attribute_diagnostics(columns, &[], path, diagnostics);
+        let mut seen_columns = BTreeSet::new();
+        for col in columns.children().filter(|n| n.is_element()) {
+            if !col.has_tag_name((NS, "col")) {
+                return Err(invalid("invalid column dimension element"));
+            }
+            attribute_diagnostics(
+                col,
+                &[
+                    ("min", None),
+                    ("max", None),
+                    ("width", None),
+                    ("customWidth", None),
+                ],
+                path,
+                diagnostics,
+            );
+            let min = attr(col, "min")?.parse::<u32>().map_err(package_error)?;
+            if col
+                .attribute("customWidth")
+                .is_some_and(|v| !matches!(v, "0" | "1" | "false" | "true"))
+            {
+                return Err(invalid("invalid customWidth boolean"));
+            }
+            let max = attr(col, "max")?.parse::<u32>().map_err(package_error)?;
+            if min == 0 || max < min || max > MAX_COLUMNS {
+                return Err(invalid("invalid column dimension range"));
+            }
+            let width = col
+                .attribute("width")
+                .map(|s| s.parse::<f64>().map(|n| n * 7.0).map_err(package_error))
+                .transpose()?;
+            for index in min - 1..max {
+                if !seen_columns.insert(index) {
+                    return Err(invalid("overlapping column dimensions"));
+                }
+                if let Some(width) = width {
+                    dimension_count += 1;
+                    if dimension_count > MAX_DIMENSIONS {
+                        return Err(invalid("XLSX dimension capacity exceeded"));
+                    }
+                    edits.push(WorkbookEdit::ColumnWidth {
+                        sheet,
+                        column: index,
+                        width: Some(width),
+                    });
+                }
+            }
         }
     }
     let data = child(root, "sheetData").ok_or_else(|| invalid("worksheet sheetData missing"))?;
@@ -850,14 +979,44 @@ fn read_sheet(
     let mut seen = BTreeSet::new();
     let mut seen_rows = BTreeSet::new();
     for row in children(data, "row") {
-        attribute_diagnostics(row, &[("r", None), ("spans", None)], path, diagnostics);
+        attribute_diagnostics(
+            row,
+            &[
+                ("r", None),
+                ("spans", None),
+                ("ht", None),
+                ("customHeight", None),
+            ],
+            path,
+            diagnostics,
+        );
         let row_index = row
             .attribute("r")
             .map(|value| value.parse::<u32>().map_err(package_error))
             .transpose()?;
+        if row
+            .attribute("customHeight")
+            .is_some_and(|v| !matches!(v, "0" | "1" | "false" | "true"))
+        {
+            return Err(invalid("invalid customHeight boolean"));
+        }
         if row_index.is_some_and(|index| index == 0 || index > MAX_ROWS || !seen_rows.insert(index))
         {
             return Err(invalid("invalid or duplicate worksheet row"));
+        }
+        if let Some(height) = row.attribute("ht") {
+            let row =
+                row_index.ok_or_else(|| invalid("row height requires an explicit row index"))? - 1;
+            dimension_count += 1;
+            if dimension_count > MAX_DIMENSIONS {
+                return Err(invalid("XLSX dimension capacity exceeded"));
+            }
+            let height = height.parse::<f64>().map_err(package_error)? / 0.75;
+            edits.push(WorkbookEdit::RowHeight {
+                sheet,
+                row,
+                height: Some(height),
+            });
         }
         for node in row
             .children()
@@ -870,7 +1029,7 @@ fn read_sheet(
             );
         }
         for node in children(row, "c") {
-            if edits.len() >= MAX_CELLS {
+            if seen.len() >= MAX_CELLS {
                 return Err(invalid("XLSX cell capacity exceeded"));
             }
             let address = CellAddress::parse(attr(node, "r")?)?;
@@ -1255,12 +1414,31 @@ fn read_styles(
                 0 => "",
                 1 => "0",
                 2 => "0.00",
+                3 => "#,##0",
+                4 => "#,##0.00",
                 9 => "0%",
                 10 => "0.00%",
+                11 => "0.00E+00",
+                12 => "# ?/?",
+                13 => "# ??/??",
                 14 => "mm-dd-yy",
-                20 => "hh:mm",
-                21 => "hh:mm:ss",
+                15 => "d-mmm-yy",
+                16 => "d-mmm",
+                17 => "mmm-yy",
+                18 => "h:mm AM/PM",
+                19 => "h:mm:ss AM/PM",
+                20 => "h:mm",
+                21 => "h:mm:ss",
                 22 => "m/d/yy h:mm",
+                37 => "#,##0 ;(#,##0)",
+                38 => "#,##0 ;[Red](#,##0)",
+                39 => "#,##0.00;(#,##0.00)",
+                40 => "#,##0.00;[Red](#,##0.00)",
+                45 => "mm:ss",
+                46 => "[h]:mm:ss",
+                47 => "mmss.0",
+                48 => "##0.0E+0",
+                49 => "@",
                 _ => {
                     warning(
                         diagnostics,

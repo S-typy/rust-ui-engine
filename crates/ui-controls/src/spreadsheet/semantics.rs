@@ -7,6 +7,7 @@ pub struct SpreadsheetCell {
     pub range: CellRange,
     pub bounds: Rect,
     pub value: String,
+    pub format_diagnostic: Option<String>,
     pub selected: bool,
 }
 
@@ -30,7 +31,9 @@ pub struct SpreadsheetSemantics {
 impl Spreadsheet {
     /// Whether accessibility can reveal cells without replacing a formula draft.
     pub fn can_realize_accessible_cell(&self, ui: &Controls) -> bool {
-        ui.is_enabled(self.parts.canvas)
+        self.drag.is_none()
+            && !self.cell_editing
+            && ui.is_enabled(self.parts.canvas)
             && ui.semantics().iter().any(|n| n.id == self.parts.canvas)
             && ui
                 .document(self.parts.formula)
@@ -69,19 +72,10 @@ impl Spreadsheet {
         }) else {
             return Ok(result);
         };
-        let body = Rect::new(
-            bounds.x + ROW_HEADER,
-            bounds.y + HEADER,
-            (bounds.width - ROW_HEADER).max(0.0),
-            (bounds.height - HEADER).max(0.0),
-        );
-        let rows =
-            ((body.height / ROW).ceil().clamp(0.0, 100.0) as u32).min(MAX_ROWS - self.first_row);
-        let columns = ((body.width / COLUMN).ceil().clamp(0.0, 64.0) as u32)
-            .min(MAX_COLUMNS - self.first_column);
-        for column in 0..columns {
-            let index = self.first_column + column;
-            let rect = Rect::new(body.x + column as f32 * COLUMN, bounds.y, COLUMN, HEADER);
+        let geometry = self.geometry(bounds)?;
+        let body = geometry.body;
+        for index in geometry.visible_columns.clone() {
+            let rect = geometry.column_header(index);
             if let Some(bounds) = rect.intersection(bounds) {
                 result.columns.push(SpreadsheetHeader {
                     index,
@@ -96,9 +90,8 @@ impl Spreadsheet {
         }
         let sheet = &self.session.workbook().sheets()[self.session.sheet()];
         let mut seen = BTreeSet::new();
-        for row in 0..rows {
-            let index = self.first_row + row;
-            let rect = Rect::new(bounds.x, body.y + row as f32 * ROW, ROW_HEADER, ROW);
+        for index in geometry.visible_rows.clone() {
+            let rect = geometry.row_header(index);
             if let Some(bounds) = rect.intersection(bounds) {
                 result.rows.push(SpreadsheetHeader {
                     index,
@@ -106,8 +99,8 @@ impl Spreadsheet {
                     bounds,
                 });
             }
-            for column in 0..columns {
-                let address = CellAddress::new(index, self.first_column + column).map_err(err)?;
+            for column in geometry.visible_columns.clone() {
+                let address = CellAddress::new(index, column).map_err(err)?;
                 let anchor = sheet.anchor(address);
                 if !seen.insert(anchor) {
                     continue;
@@ -118,25 +111,20 @@ impl Spreadsheet {
                     .find(|r| r.contains(address))
                     .copied()
                     .unwrap_or(CellRange::new(address, address).map_err(err)?);
-                let rect = Rect::new(
-                    body.x
-                        + (range.start().column() as f64 - self.first_column as f64) as f32
-                            * COLUMN,
-                    body.y + (range.start().row() as f64 - self.first_row as f64) as f32 * ROW,
-                    (range.end().column() - range.start().column() + 1) as f32 * COLUMN,
-                    (range.end().row() - range.start().row() + 1) as f32 * ROW,
-                );
+                let rect = geometry.range(range);
                 if let Some(bounds) = rect.intersection(body) {
+                    let display = format_cell(
+                        self.session.workbook(),
+                        self.session.sheet(),
+                        anchor,
+                        self.culture(),
+                    )?;
                     result.cells.push(SpreadsheetCell {
                         address: anchor,
                         range,
                         bounds,
-                        value: self
-                            .session
-                            .workbook()
-                            .value(self.session.sheet(), anchor)
-                            .map_err(err)?
-                            .display(),
+                        value: display.text,
+                        format_diagnostic: display.diagnostic,
                         selected: self.session.selection().intersects(range),
                     });
                 }
@@ -152,7 +140,8 @@ impl Spreadsheet {
         ui: &mut Controls,
         address: CellAddress,
     ) -> Result<bool, ControlError> {
-        if !ui.is_enabled(self.parts.canvas)
+        if self.drag.is_some()
+            || !ui.is_enabled(self.parts.canvas)
             || !ui
                 .semantics()
                 .iter()

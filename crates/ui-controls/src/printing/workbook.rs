@@ -1,12 +1,16 @@
 //! Immutable worksheet pages preserving static cell styling and merged ranges.
 use super::*;
-use rust_desktop_ui_data::workbook::{CellAddress, CellRange, Workbook};
+use rust_desktop_ui_data::workbook::{
+    CellAddress, CellRange, DEFAULT_COLUMN_WIDTH, DEFAULT_ROW_HEIGHT, Workbook,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SheetPrintOptions {
     pub page_size: Size,
     pub margin: f32,
+    /// Baseline width: 112 preserves worksheet widths; other values scale them.
     pub column_width: f32,
+    /// Baseline height: 28 preserves worksheet heights; other values scale them.
     pub row_height: f32,
     pub fit_width: bool,
 }
@@ -56,6 +60,22 @@ pub fn from_workbook(
     book: &Workbook,
     sheet_index: usize,
     options: SheetPrintOptions,
+    cancelled: impl FnMut() -> bool,
+) -> Result<PrintDocument, PdfError> {
+    from_workbook_with_culture(
+        book,
+        sheet_index,
+        options,
+        crate::UiCulture::Russian,
+        cancelled,
+    )
+}
+/// Snapshot worksheet pages using the same culture and cell formatter as the view.
+pub fn from_workbook_with_culture(
+    book: &Workbook,
+    sheet_index: usize,
+    options: SheetPrintOptions,
+    culture: crate::UiCulture,
     mut cancelled: impl FnMut() -> bool,
 ) -> Result<PrintDocument, PdfError> {
     if cancelled() {
@@ -79,7 +99,16 @@ pub fn from_workbook(
             "worksheet print profile: 1000 rows / 12 columns",
         ));
     }
-    let width = columns as f32 * options.column_width;
+    let dimensions = sheet.dimensions();
+    let mut x = vec![0.0];
+    for column in 0..columns {
+        x.push(
+            x.last().unwrap()
+                + dimensions.column_width(column).unwrap() as f32 * options.column_width
+                    / DEFAULT_COLUMN_WIDTH as f32,
+        );
+    }
+    let width = *x.last().unwrap();
     let scale = if options.fit_width {
         (body.width / width).min(1.0)
     } else {
@@ -88,11 +117,17 @@ pub fn from_workbook(
     if width * scale > body.width + 0.001 || scale < 0.05 {
         return Err(invalid("worksheet columns do not fit the page"));
     }
-    let row_height = options.row_height * scale;
-    let column_width = options.column_width * scale;
-    let capacity = (body.height / row_height).floor() as u32;
-    if capacity == 0 {
-        return Err(invalid("worksheet row is taller than printable area"));
+    for offset in &mut x {
+        *offset *= scale;
+    }
+    let mut y = vec![0.0];
+    for row in 0..rows {
+        y.push(
+            y.last().unwrap()
+                + dimensions.row_height(row).unwrap() as f32 * options.row_height
+                    / DEFAULT_ROW_HEIGHT as f32
+                    * scale,
+        );
     }
     let mut first = 0;
     let mut pages = Vec::new();
@@ -102,7 +137,13 @@ pub fn from_workbook(
         if cancelled() {
             return Err(PdfError::Cancelled);
         }
-        let mut end = first.saturating_add(capacity).min(rows);
+        let mut end = first;
+        while end < rows && y[end as usize + 1] - y[first as usize] <= body.height + 0.001 {
+            end += 1;
+        }
+        if end == first {
+            return Err(invalid("worksheet row is taller than printable area"));
+        }
         // Every moved break can intersect a merge in another column; repeat
         // until all ranges on the page are whole. Progress is strictly decreasing.
         loop {
@@ -140,10 +181,10 @@ pub fn from_workbook(
                     .copied()
                     .unwrap_or(CellRange::new(address, address).map_err(invalid)?);
                 let rect = Rect::new(
-                    body.x + column as f32 * column_width,
-                    body.y + (row - first) as f32 * row_height,
-                    (range.end().column() - column + 1) as f32 * column_width,
-                    (range.end().row() - row + 1) as f32 * row_height,
+                    body.x + x[column as usize],
+                    body.y + y[row as usize] - y[first as usize],
+                    x[range.end().column() as usize + 1] - x[column as usize],
+                    y[range.end().row() as usize + 1] - y[row as usize],
                 );
                 let cell = sheet.cell(address);
                 let rgb = |v: u32| Color::rgb((v >> 16) as u8, (v >> 8) as u8, v as u8);
@@ -151,7 +192,12 @@ pub fn from_workbook(
                     scene.fill(rect, rgb(color));
                 }
                 scene.rounded_stroke(rect, body, 0.0, 0.5 * scale, Color::rgb(210, 210, 210));
-                let value = book.value(sheet_index, address).map_err(invalid)?.display();
+                let display = crate::spreadsheet::format_cell(book, sheet_index, address, culture)
+                    .map_err(invalid)?;
+                if let Some(message) = display.diagnostic {
+                    return Err(invalid(message));
+                }
+                let value = display.text;
                 text_bytes = text_bytes
                     .checked_add(value.len())
                     .ok_or(PdfError::Limit("worksheet text"))?;
@@ -168,7 +214,11 @@ pub fn from_workbook(
                     Color::rgb(0, 0, 0),
                     scale,
                 );
-                crate::spreadsheet::paint_cell_text(&mut scene, run, cell.map(|c| &c.style))
+                let mut style = cell.map(|c| c.style.clone()).unwrap_or_default();
+                if let Some(color) = display.foreground {
+                    style.foreground = Some(color);
+                }
+                crate::spreadsheet::paint_cell_text(&mut scene, run, Some(&style))
                     .map_err(invalid)?;
             }
         }

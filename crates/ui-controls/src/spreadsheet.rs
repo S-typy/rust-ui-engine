@@ -7,12 +7,17 @@ use rust_desktop_ui_data::{
 };
 use std::collections::BTreeSet;
 
+mod editing;
+mod presentation;
+pub use presentation::{CellDisplay, format_cell, format_value};
+mod geometry;
+mod gestures;
+use gestures::{Drag, DragKind};
 mod semantics;
+use geometry::SheetGeometry;
 pub use semantics::{SpreadsheetCell, SpreadsheetHeader, SpreadsheetSemantics};
 
 const HEADER: f32 = 28.0;
-const ROW: f32 = 28.0;
-const COLUMN: f32 = 112.0;
 const ROW_HEADER: f32 = 60.0;
 fn err(e: impl ToString) -> ControlError {
     ControlError::Invalid(e.to_string())
@@ -90,6 +95,13 @@ pub struct Spreadsheet {
     first_column: u32,
     anchor: CellAddress,
     loaded: String,
+    drag: Option<Drag>,
+    viewport: WidgetId,
+    formula_home: (WidgetId, LayoutStyle),
+    formula_mirror: WidgetId,
+    cell_editing: bool,
+    culture: crate::UiCulture,
+    last_click: Option<(CellAddress, std::time::Instant)>,
 }
 impl Spreadsheet {
     pub fn mount(
@@ -185,11 +197,10 @@ impl Spreadsheet {
                     ..Default::default()
                 },
             )?;
-            let formula = ui.text_box(
+            let formula_host = ui.transparent_panel(
                 entry,
-                "Cell value or formula",
-                "",
                 LayoutStyle {
+                    kind: LayoutKind::Overlay,
                     grid_column: GridPlacement {
                         start: Some(2),
                         span: 1,
@@ -197,6 +208,37 @@ impl Spreadsheet {
                     ..Default::default()
                 },
             )?;
+            let fill = LayoutStyle {
+                width: Length::Percent(1.0),
+                height: Length::Percent(1.0),
+                ..Default::default()
+            };
+            let formula = ui.text_box(formula_host, "Cell value or formula", "", fill.clone())?;
+            let formula_home = (
+                formula_host,
+                ui.runtime
+                    .tree()
+                    .node(formula)
+                    .expect("mounted editor")
+                    .props
+                    .style
+                    .clone(),
+            );
+            let formula_mirror = ui.button(formula_host, " ", None, fill)?;
+            let mut props = ui
+                .runtime
+                .tree()
+                .node(formula_mirror)
+                .expect("mounted mirror")
+                .props
+                .clone();
+            props.visible = false;
+            ui.runtime.apply(Mutation::SetProps {
+                node: formula_mirror,
+                props,
+            })?;
+            ui.set_automation_name(formula_mirror, "Formula preview")?;
+            actions.push((formula_mirror, "formula"));
             let apply = ui.button(
                 entry,
                 "Apply",
@@ -210,14 +252,21 @@ impl Spreadsheet {
                 },
             )?;
             actions.push((apply, "apply"));
-            let canvas = ui.button(
+            let viewport = ui.transparent_panel(
                 root,
+                LayoutStyle {
+                    kind: LayoutKind::Overlay,
+                    ..row(3)
+                },
+            )?;
+            let canvas = ui.button(
+                viewport,
                 "",
                 None,
                 LayoutStyle {
                     width: Length::Percent(1.0),
                     height: Length::Percent(1.0),
-                    ..row(3)
+                    ..Default::default()
                 },
             )?;
             let status = ui.label(root, "", row(4))?;
@@ -239,6 +288,13 @@ impl Spreadsheet {
                 first_row: 0,
                 first_column: 0,
                 loaded: String::new(),
+                drag: None,
+                viewport,
+                formula_home,
+                formula_mirror,
+                cell_editing: false,
+                culture: crate::UiCulture::Russian,
+                last_click: None,
             };
             value.load_entry(ui)?;
             Ok(value)
@@ -247,6 +303,83 @@ impl Spreadsheet {
             let _ = ui.remove(root);
         }
         result
+    }
+    fn geometry(&self, bounds: Rect) -> Result<SheetGeometry, ControlError> {
+        SheetGeometry::with_override(
+            bounds,
+            self.first_row,
+            self.first_column,
+            self.session.workbook().sheets()[self.session.sheet()].dimensions(),
+            self.drag.and_then(|d| match d.kind {
+                DragKind::Resize {
+                    row, index, extent, ..
+                } => Some((row, index, extent)),
+                _ => None,
+            }),
+        )
+    }
+    fn apply_dimensions(
+        &mut self,
+        ui: &mut Controls,
+        edit: WorkbookEdit,
+    ) -> Result<(), ControlError> {
+        self.cancel_interaction(ui)?;
+        let mut next = self.session.workbook().clone();
+        next.apply(std::slice::from_ref(&edit)).map_err(err)?;
+        if let Some(bounds) = ui.runtime.bounds(self.parts.canvas) {
+            SheetGeometry::new(
+                bounds,
+                self.first_row,
+                self.first_column,
+                next.sheets()[self.session.sheet()].dimensions(),
+            )?;
+        }
+        self.commit(ui)?;
+        self.session.apply(&[edit]).map_err(err)?;
+        self.refresh(ui)
+    }
+    /// Change one column width through the same undo history as cell edits.
+    pub fn set_column_width(
+        &mut self,
+        ui: &mut Controls,
+        column: u32,
+        width: Option<f64>,
+    ) -> Result<(), ControlError> {
+        self.apply_dimensions(
+            ui,
+            WorkbookEdit::ColumnWidth {
+                sheet: self.session.sheet(),
+                column,
+                width,
+            },
+        )
+    }
+    /// Change one row height; None restores the worksheet default.
+    pub fn set_row_height(
+        &mut self,
+        ui: &mut Controls,
+        row: u32,
+        height: Option<f64>,
+    ) -> Result<(), ControlError> {
+        self.apply_dimensions(
+            ui,
+            WorkbookEdit::RowHeight {
+                sheet: self.session.sheet(),
+                row,
+                height,
+            },
+        )
+    }
+    pub fn culture(&self) -> crate::UiCulture {
+        self.culture
+    }
+    pub fn set_culture(
+        &mut self,
+        ui: &mut Controls,
+        culture: crate::UiCulture,
+    ) -> Result<(), ControlError> {
+        self.culture = culture;
+        self.refresh(ui)
     }
     pub fn session(&self) -> &SpreadsheetSession {
         &self.session
@@ -257,6 +390,8 @@ impl Spreadsheet {
         workbook: Workbook,
     ) -> Result<(), ControlError> {
         self.guard_composition(ui)?;
+        self.cancel_interaction(ui)?;
+        self.return_editor(ui)?;
         self.session = SpreadsheetSession::new(workbook);
         self.pending_paste = None;
         self.first_row = 0;
@@ -280,6 +415,13 @@ impl Spreadsheet {
         {
             return Err(err("Clipboard target changed before paste completed"));
         }
+        self.guard_composition(ui)?;
+        if ui
+            .document(self.parts.formula)
+            .is_some_and(|d| d.text() != self.loaded)
+        {
+            return Err(err("Clipboard target acquired an uncommitted editor draft"));
+        }
         self.session.paste_text(text, false).map_err(err)?;
         self.load_entry(ui)?;
         Ok(true)
@@ -294,6 +436,7 @@ impl Spreadsheet {
         Ok(())
     }
     pub fn commit(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        self.cancel_interaction(ui)?;
         self.guard_composition(ui)?;
         let text = ui
             .document(self.parts.formula)
@@ -304,6 +447,7 @@ impl Spreadsheet {
             self.session.enter(&text).map_err(err)?;
             self.loaded = text;
         }
+        self.return_editor(ui)?;
         Ok(())
     }
     fn load_entry(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
@@ -327,6 +471,10 @@ impl Spreadsheet {
         Ok(true)
     }
     fn command(&mut self, ui: &mut Controls, action: &str) -> Result<(), ControlError> {
+        if action == "formula" {
+            return self.edit_formula(ui);
+        }
+        self.cancel_interaction(ui)?;
         self.commit(ui)?;
         match action {
             "apply" => {}
@@ -381,38 +529,22 @@ impl Spreadsheet {
     /// Intercept before Controls::dispatch. Native text and IME remain with the
     /// formula editor; canvas navigation changes only logical selection.
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if self.gesture_input(ui, event)? {
+            return Ok(true);
+        }
+        if !ui.is_enabled(self.parts.canvas) {
+            return Ok(false);
+        }
         let Some(bounds) = ui.runtime.bounds(self.parts.canvas) else {
             return Ok(false);
         };
         match event {
-            InputEvent::PointerDown {
-                position,
-                button: PointerButton::Primary,
-                modifiers,
-            } if bounds.contains(position.x, position.y) => {
-                let x = position.x - bounds.x - ROW_HEADER;
-                let y = position.y - bounds.y - HEADER;
-                if x >= 0.0 && y >= 0.0 {
-                    self.commit(ui)?;
-                    let address = CellAddress::new(
-                        (self.first_row + (y / ROW) as u32).min(MAX_ROWS - 1),
-                        (self.first_column + (x / COLUMN) as u32).min(MAX_COLUMNS - 1),
-                    )
-                    .map_err(err)?;
-                    if !modifiers.shift {
-                        self.anchor = address;
-                    }
-                    self.session.select(self.anchor, address).map_err(err)?;
-                    ui.runtime.apply(Mutation::Focus(Some(self.parts.canvas)))?;
-                    self.load_entry(ui)?;
-                }
-                Ok(true)
-            }
             InputEvent::Wheel {
                 position,
                 delta,
                 modifiers,
             } if bounds.contains(position.x, position.y) => {
+                self.commit(ui)?;
                 let step = if delta.y < 0.0 { 3 } else { -3 };
                 if modifiers.shift {
                     self.first_column = self
@@ -441,6 +573,7 @@ impl Spreadsheet {
                     }
                     Key::Escape => {
                         self.load_entry(ui)?;
+                        self.return_editor(ui)?;
                         ui.runtime.apply(Mutation::Focus(Some(self.parts.canvas)))?;
                         Ok(true)
                     }
@@ -487,8 +620,7 @@ impl Spreadsheet {
                         return Ok(true);
                     }
                     Key::F2 | Key::Enter => {
-                        ui.runtime
-                            .apply(Mutation::Focus(Some(self.parts.formula)))?;
+                        self.begin_cell_edit(ui)?;
                         return Ok(true);
                     }
                     _ => return Ok(false),
@@ -517,16 +649,7 @@ impl Spreadsheet {
                     self.anchor = next;
                 }
                 self.session.select(self.anchor, next).map_err(err)?;
-                let rows = ((bounds.height - HEADER) / ROW).floor().max(1.0) as u32;
-                let cols = ((bounds.width - ROW_HEADER) / COLUMN).floor().max(1.0) as u32;
-                self.first_row = self
-                    .first_row
-                    .min(next.row())
-                    .max(next.row().saturating_sub(rows - 1));
-                self.first_column = self
-                    .first_column
-                    .min(next.column())
-                    .max(next.column().saturating_sub(cols - 1));
+                (self.first_row, self.first_column) = self.geometry(bounds)?.reveal(next);
                 self.load_entry(ui)?;
                 Ok(true)
             }
@@ -534,20 +657,16 @@ impl Spreadsheet {
         }
     }
     pub fn refresh(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        self.validate_interaction(ui)?;
+        self.position_editor(ui)?;
         let Some(bounds) = ui.runtime.bounds(self.parts.canvas) else {
             return Ok(());
         };
         let tokens = ui.theme().tokens();
         let mut scene = Scene::default();
         scene.fill(bounds, tokens.surface);
-        let body = Rect::new(
-            bounds.x + ROW_HEADER,
-            bounds.y + HEADER,
-            (bounds.width - ROW_HEADER).max(0.0),
-            (bounds.height - HEADER).max(0.0),
-        );
-        let rows = (body.height / ROW).ceil().clamp(0.0, 100.0) as u32;
-        let cols = (body.width / COLUMN).ceil().clamp(0.0, 64.0) as u32;
+        let geometry = self.geometry(bounds)?;
+        let body = geometry.body;
         let text = |scene: &mut Scene, label: String, rect: Rect, color: Color| {
             if let Some(clip) = rect.intersection(bounds) {
                 let mut run = TextRun::new(
@@ -565,38 +684,27 @@ impl Spreadsheet {
                 scene.text(run);
             }
         };
-        for col in 0..cols {
-            if self.first_column + col >= MAX_COLUMNS {
-                break;
-            }
-            let a = CellAddress::new(0, self.first_column + col)
-                .map_err(err)?
-                .a1();
+        for col in geometry.visible_columns.clone() {
+            let a = CellAddress::new(0, col).map_err(err)?.a1();
             text(
                 &mut scene,
                 a.trim_end_matches('1').into(),
-                Rect::new(body.x + col as f32 * COLUMN, bounds.y, COLUMN, HEADER),
+                geometry.column_header(col),
                 tokens.muted,
             );
         }
         let sheet = &self.session.workbook().sheets()[self.session.sheet()];
         let mut painted = BTreeSet::new();
-        for row in 0..rows {
-            if self.first_row + row >= MAX_ROWS {
-                break;
-            }
+        let mut diagnostics = BTreeSet::new();
+        for row in geometry.visible_rows.clone() {
             text(
                 &mut scene,
-                (self.first_row + row + 1).to_string(),
-                Rect::new(bounds.x, body.y + row as f32 * ROW, ROW_HEADER, ROW),
+                (row + 1).to_string(),
+                geometry.row_header(row),
                 tokens.muted,
             );
-            for col in 0..cols {
-                if self.first_column + col >= MAX_COLUMNS {
-                    break;
-                }
-                let a =
-                    CellAddress::new(self.first_row + row, self.first_column + col).map_err(err)?;
+            for col in geometry.visible_columns.clone() {
+                let a = CellAddress::new(row, col).map_err(err)?;
                 let anchor = sheet.anchor(a);
                 if !painted.insert(anchor) {
                     continue;
@@ -607,14 +715,7 @@ impl Spreadsheet {
                     .find(|r| r.contains(a))
                     .copied()
                     .unwrap_or(CellRange::new(a, a).map_err(err)?);
-                let rect = Rect::new(
-                    body.x
-                        + (range.start().column() as f64 - self.first_column as f64) as f32
-                            * COLUMN,
-                    body.y + (range.start().row() as f64 - self.first_row as f64) as f32 * ROW,
-                    (range.end().column() - range.start().column() + 1) as f32 * COLUMN,
-                    (range.end().row() - range.start().row() + 1) as f32 * ROW,
-                );
+                let rect = geometry.range(range);
                 let Some(clip) = rect.intersection(body) else {
                     continue;
                 };
@@ -641,15 +742,37 @@ impl Spreadsheet {
                         tokens.border
                     },
                 );
-                let value = self
-                    .session
-                    .workbook()
-                    .value(self.session.sheet(), anchor)
-                    .map_err(err)?
-                    .display();
-                let run = cell_text_run(value, rect, clip, tokens.text, 1.0);
-                paint_cell_text(&mut scene, run, sheet.cell(anchor).map(|c| &c.style))?;
+                let display = format_cell(
+                    self.session.workbook(),
+                    self.session.sheet(),
+                    anchor,
+                    self.culture(),
+                )?;
+                if let Some(message) = display.diagnostic {
+                    diagnostics.insert(message);
+                }
+                let run = cell_text_run(display.text, rect, clip, tokens.text, 1.0);
+                let mut style = sheet
+                    .cell(anchor)
+                    .map(|c| c.style.clone())
+                    .unwrap_or_default();
+                if let Some(color) = display.foreground {
+                    style.foreground = Some(color);
+                }
+                paint_cell_text(&mut scene, run, Some(&style))?;
             }
+        }
+        if let Some(Drag {
+            kind: DragKind::Fill { target, .. },
+            ..
+        }) = self.drag
+        {
+            scene.rounded_stroke(geometry.range(target), body, 0.0, 2.0, tokens.focus);
+        }
+        if let Some(handle) = geometry.fill_handle(self.session.selection())
+            && let Some(clip) = handle.intersection(body)
+        {
+            scene.fill(clip, tokens.focus);
         }
         let range = self.session.selection();
         ui.set_label(
@@ -662,17 +785,25 @@ impl Spreadsheet {
                 range.len()
             ),
         )?;
+        if let Some(message) = diagnostics.iter().next() {
+            ui.set_label(
+                self.parts.status,
+                format!("{} · {}", self.session.active().a1(), message),
+            )?;
+        }
         ui.set_automation_name(
             self.parts.canvas,
             format!(
                 "Worksheet {}. Selected {}. Value {}. Range {}:{}",
                 sheet.name(),
                 self.session.active().a1(),
-                self.session
-                    .workbook()
-                    .value(self.session.sheet(), self.session.active())
-                    .map_err(err)?
-                    .display(),
+                format_cell(
+                    self.session.workbook(),
+                    self.session.sheet(),
+                    self.session.active(),
+                    self.culture()
+                )?
+                .text,
                 range.start().a1(),
                 range.end().a1()
             ),

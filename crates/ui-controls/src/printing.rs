@@ -13,7 +13,7 @@ use rust_desktop_ui_core::{
 use rust_desktop_ui_text::TextEngine;
 
 mod workbook;
-pub use workbook::{SheetPrintOptions, from_workbook};
+pub use workbook::{SheetPrintOptions, from_workbook, from_workbook_with_culture};
 mod pdf_geometry;
 use pdf_geometry::ink;
 

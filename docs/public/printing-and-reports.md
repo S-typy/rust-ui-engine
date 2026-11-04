@@ -12,10 +12,14 @@ consume the same snapshot. See [ADR-013](adr/ADR-013-document-output.md).
 produces worksheet pages with the same static typography as the Spreadsheet:
 bold/italic/wrap, explicit foreground/background and merged cells. Selection and
 focus decoration are excluded. Formula cells use the current evaluated value.
-Number-format metadata is not yet applied by the worksheet presentation.
+The [bounded number-format profile](spreadsheets.md) is shared with the viewport.
+`from_workbook` uses Russian presentation; `from_workbook_with_culture` takes an
+explicit culture. Unsupported formats fail page construction with a diagnostic.
 
 `SheetPrintOptions` defaults to a 794×1123 logical-pixel page, 48-pixel margins,
-112-pixel columns and 28-pixel rows. Optional fit-width uniformly shrinks
+112-pixel columns and 28-pixel rows. These options scale the worksheet's actual
+sparse dimensions relative to those defaults, preserving custom sizes and
+variable-height pagination. Optional fit-width uniformly shrinks
 columns and typography; it never enlarges them or shrinks below 5%. The used
 extent includes empty merged ranges and is bounded to 1,000 rows and 12 columns.
 Page breaks move before a merge that crosses the boundary. A connected merged
