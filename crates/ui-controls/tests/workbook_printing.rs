@@ -299,3 +299,62 @@ fn worksheet_dimensions_control_printed_coordinates_and_page_breaks() {
             .any(|t| t.text == "row2")
     );
 }
+
+#[test]
+fn formatted_dates_times_and_engineering_values_survive_xlsx_and_print() {
+    use rust_desktop_ui_data::{DateValue, TimeValue};
+    let mut book = Workbook::new("Formatted").unwrap();
+    let fixtures = [
+        (
+            CellValue::Date(DateValue::new(2026, 11, 4).unwrap()),
+            "[$-en-US]dddd, mmmm d, yyyy",
+            "Wednesday, November 4, 2026",
+        ),
+        (
+            CellValue::Time(TimeValue::new(16, 5, 0, 0).unwrap()),
+            "h:mm AM/PM",
+            "4:05 PM",
+        ),
+        (CellValue::Real(12_200_000.0), "##0.00E+00", "12,20E+06"),
+    ];
+    let mut edits = vec![WorkbookEdit::ColumnWidth {
+        sheet: 0,
+        column: 0,
+        width: Some(370.0),
+    }];
+    for (row, (value, format, _)) in fixtures.iter().enumerate() {
+        let mut cell = WorkbookCell::value(value.clone());
+        cell.style.number_format = (*format).into();
+        edits.push(WorkbookEdit::Set {
+            sheet: 0,
+            address: address(row as u32, 0),
+            cell,
+        });
+    }
+    book.apply(&edits).unwrap();
+    let imported = Workbook::from_xlsx(&book.to_xlsx().unwrap()).unwrap();
+    assert!(
+        imported.diagnostics.is_empty(),
+        "{:?}",
+        imported.diagnostics
+    );
+    let document = from_workbook(&imported.workbook, 0, options(), || false).unwrap();
+    for (row, (_, _, expected)) in fixtures.iter().enumerate() {
+        let display = rust_desktop_ui_controls::spreadsheet::format_cell(
+            &imported.workbook,
+            0,
+            address(row as u32, 0),
+            rust_desktop_ui_controls::UiCulture::Russian,
+        )
+        .unwrap();
+        assert_eq!(display.text, *expected);
+        assert!(display.diagnostic.is_none());
+        assert!(
+            document
+                .pages()
+                .iter()
+                .any(|p| p.scene.texts.iter().any(|t| t.text == *expected)),
+            "{expected}"
+        );
+    }
+}

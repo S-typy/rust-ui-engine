@@ -793,6 +793,7 @@ fn sample_workbook() -> Result<Workbook, String> {
         name: "Примечания".into(),
     });
     book.apply(&edits).map_err(err)?;
+    append_format_examples(&mut book)?;
     Ok(book)
 }
 pub(crate) fn sample_report() -> Result<ReportResult, String> {
@@ -913,6 +914,86 @@ pub(crate) fn sample_report() -> Result<ReportResult, String> {
         false
     })
     .map_err(err)
+}
+
+fn append_format_examples(book: &mut Workbook) -> Result<(), String> {
+    use rust_desktop_ui_data::{DateValue, TimeValue};
+    let date = CellValue::Date(DateValue::new(2026, 11, 4).map_err(err)?);
+    let time = CellValue::Time(TimeValue::new(16, 5, 8, 123_000_000).map_err(err)?);
+    let sheet = book.sheets().len();
+    let mut edits = vec![WorkbookEdit::AddSheet {
+        name: "Форматы".into(),
+    }];
+    for (column, (title, width)) in [
+        ("Значение", 240.0),
+        ("Представление", 400.0),
+        ("Формат", 280.0),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        edits.push(WorkbookEdit::ColumnWidth {
+            sheet,
+            column: column as u32,
+            width: Some(width),
+        });
+        let mut cell = WorkbookCell::value(CellValue::Text(title.into()));
+        cell.style.bold = true;
+        edits.push(WorkbookEdit::Set {
+            sheet,
+            address: CellAddress::new(0, column as u32).map_err(err)?,
+            cell,
+        });
+    }
+    for (index, (label, value, format)) in [
+        ("Дата", date.clone(), "dddd, d mmmm yyyy"),
+        (
+            "Дата · English",
+            date.clone(),
+            "[$-en-US]dddd, mmmm d, yyyy",
+        ),
+        ("Месяц", date, "mmmm yyyy"),
+        ("Время · 12 часов", time.clone(), "h:mm:ss.000 am/pm"),
+        ("Время · 24 часа", time, "hh:mm:ss"),
+        (
+            "Инженерная запись",
+            CellValue::Integer(12_200_000),
+            "##0.00E+00",
+        ),
+        (
+            "Десятичный разделитель",
+            CellValue::Real(1234.5),
+            "[$-en-US]#,##0.00",
+        ),
+        (
+            "Округление порядка",
+            CellValue::Decimal("999.995".parse().map_err(err)?),
+            "##0.00E+00",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let row = index as u32 + 1;
+        let mut formatted = WorkbookCell::value(value);
+        formatted.style.number_format = format.into();
+        for (column, cell) in [
+            WorkbookCell::value(CellValue::Text(label.into())),
+            formatted,
+            WorkbookCell::value(CellValue::Text(format.into())),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            edits.push(WorkbookEdit::Set {
+                sheet,
+                address: CellAddress::new(row, column as u32).map_err(err)?,
+                cell,
+            });
+        }
+    }
+    book.apply(&edits).map_err(err)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,7 +1,9 @@
 //! Bounded cell presentation, independent of input/formula storage.
+mod temporal;
 use super::*;
 use crate::UiCulture;
 use rust_desktop_ui_data::CellValue;
+use temporal::date_time;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CellDisplay {
@@ -131,14 +133,49 @@ fn color(tokens: &mut Vec<Token>) -> Result<Option<u32>, &'static str> {
         "magenta" => 0xff00ff,
         "cyan" => 0x00ffff,
         _ => {
-            return Err(
-                "Conditional, locale and elapsed-time modifiers are outside the display profile",
-            );
+            return Err("Unsupported color, condition or elapsed-time modifier");
         }
     };
     tokens.drain(..=end);
     Ok(Some(rgb))
 }
+fn directives(
+    tokens: &mut Vec<Token>,
+    mut culture: UiCulture,
+) -> Result<(Option<u32>, UiCulture), &'static str> {
+    let mut rgb = None;
+    let mut localized = false;
+    while tokens.first().and_then(code) == Some('[') {
+        let end = tokens
+            .iter()
+            .position(|t| code(t) == Some(']'))
+            .ok_or("Unclosed format modifier")?;
+        let name = tokens[1..end]
+            .iter()
+            .map(|t| code(t).ok_or("Invalid format modifier"))
+            .collect::<Result<String, _>>()?;
+        if let Some(tag) = name.strip_prefix("$-") {
+            if localized {
+                return Err("Duplicate locale modifier");
+            }
+            culture = match tag.to_ascii_lowercase().as_str() {
+                "409" | "0409" | "en-us" => UiCulture::English,
+                "419" | "0419" | "ru-ru" => UiCulture::Russian,
+                "401" | "0401" | "ar-sa" => UiCulture::Arabic,
+                _ => return Err("Unsupported format locale"),
+            };
+            localized = true;
+            tokens.drain(..=end);
+        } else {
+            if rgb.is_some() {
+                return Err("Duplicate color modifier");
+            }
+            rgb = color(tokens)?;
+        }
+    }
+    Ok((rgb, culture))
+}
+
 fn literal(tokens: &[Token], text: Option<&str>) -> Result<String, &'static str> {
     let mut result = String::new();
     for t in tokens {
@@ -168,13 +205,13 @@ fn formatted(
             return Ok((text.clone(), None));
         }
         let mut part = parts.pop().unwrap();
-        let rgb = color(&mut part)?;
+        let (rgb, _) = directives(&mut part, culture)?;
         return Ok((literal(&part, Some(text))?, rgb));
     }
     if matches!(value, CellValue::Date(_) | CellValue::Time(_)) {
         let mut part = parts.remove(0);
-        let rgb = color(&mut part)?;
-        return Ok((date_time(value, &part)?, rgb));
+        let (rgb, culture) = directives(&mut part, culture)?;
+        return Ok((date_time(value, &part, culture)?, rgb));
     }
     let mut number = Number::new(&value.display())?;
     let negative = number.negative && number.digits != "0";
@@ -186,7 +223,7 @@ fn formatted(
         0
     };
     let mut part = parts[index].clone();
-    let rgb = color(&mut part)?;
+    let (rgb, culture) = directives(&mut part, culture)?;
     if part.is_empty() {
         return Ok((String::new(), rgb));
     }
@@ -323,18 +360,11 @@ fn decimal(culture: UiCulture) -> (&'static str, &'static str) {
     }
 }
 fn numeric(mut number: Number, mask: &str, culture: UiCulture) -> Result<String, &'static str> {
+    let exponent_character = if mask.contains('e') { 'e' } else { 'E' };
     let (mask, exponent_format) = mask
         .split_once(['e', 'E'])
         .map_or((mask, None), |(a, b)| (a, Some(b)));
     let mut exponent = 0;
-    if exponent_format.is_some() {
-        exponent = if number.digits == "0" {
-            0
-        } else {
-            number.digits.len() as i32 - number.scale - 1
-        };
-        number.scale = number.digits.len() as i32 - 1;
-    }
     let (integer, fraction) = mask.split_once('.').unwrap_or((mask, ""));
     if integer.is_empty()
         || !integer.chars().all(|c| matches!(c, '0' | '#' | ','))
@@ -344,18 +374,30 @@ fn numeric(mut number: Number, mask: &str, culture: UiCulture) -> Result<String,
     {
         return Err("Unsupported numeric placeholder pattern");
     }
-    if exponent_format.is_some() && integer != "0" {
-        return Err("Scientific format requires one integer placeholder");
+    let exponent_step = integer.len() as i32;
+    if exponent_format.is_some() {
+        if integer.len() > 6
+            || integer.contains(',')
+            || integer.contains("0#")
+            || !integer.contains('0')
+        {
+            return Err("Scientific format requires one to six ordered #/0 integer placeholders");
+        }
+        if number.digits != "0" {
+            exponent = (number.digits.len() as i32 - number.scale - 1).div_euclid(exponent_step)
+                * exponent_step;
+            number.scale += exponent;
+        }
     }
     let places = fraction.len();
     let required = fraction.bytes().filter(|b| *b == b'0').count();
     let (mut whole, mut frac) = number.rounded(places)?;
-    if exponent_format.is_some() && whole.len() > 1 {
-        exponent += whole.len() as i32 - 1;
+    if exponent_format.is_some() && whole.len() > integer.len() {
+        exponent += exponent_step;
         number = Number {
             negative: false,
             digits: format!("{whole}{frac}"),
-            scale: (whole.len() + frac.len() - 1) as i32,
+            scale: frac.len() as i32 + exponent_step,
         };
         (whole, frac) = number.rounded(places)?;
     }
@@ -382,11 +424,11 @@ fn numeric(mut number: Number, mask: &str, culture: UiCulture) -> Result<String,
         result.push_str(&frac);
     }
     if let Some(pattern) = exponent_format {
-        let digits = pattern.trim_start_matches(['+', '-']);
+        let digits = pattern.strip_prefix(['+', '-']).unwrap_or(pattern);
         if digits.is_empty() || digits.len() > 6 || !digits.bytes().all(|b| b == b'0') {
             return Err("Invalid exponent format");
         }
-        result.push('E');
+        result.push(exponent_character);
         if exponent < 0 {
             result.push('-');
         } else if pattern.starts_with('+') {
@@ -397,75 +439,6 @@ fn numeric(mut number: Number, mask: &str, culture: UiCulture) -> Result<String,
             exponent.unsigned_abs(),
             width = digits.len()
         ));
-    }
-    Ok(result)
-}
-
-fn date_time(value: &CellValue, tokens: &[Token]) -> Result<String, &'static str> {
-    let date = if let CellValue::Date(v) = value {
-        Some(*v)
-    } else {
-        None
-    };
-    let time = if let CellValue::Time(v) = value {
-        Some(*v)
-    } else {
-        None
-    };
-    let mut result = String::new();
-    let mut i = 0;
-    while i < tokens.len() {
-        let Some(ch) = code(&tokens[i]) else {
-            if let Token::Literal(c) = tokens[i] {
-                result.push(c);
-            }
-            i += 1;
-            continue;
-        };
-        if ch.is_ascii_alphabetic() {
-            let field = ch.to_ascii_lowercase();
-            let start = i;
-            while i < tokens.len() && code(&tokens[i]).is_some_and(|c| c.eq_ignore_ascii_case(&ch))
-            {
-                i += 1;
-            }
-            let count = i - start;
-            let value = match field {
-                'y' if count == 2 || count == 4 => {
-                    let y = date.ok_or("Date field on a time value")?.year();
-                    if count == 2 {
-                        u32::from(y % 100)
-                    } else {
-                        u32::from(y)
-                    }
-                }
-                'd' if count <= 2 => u32::from(date.ok_or("Date field on a time value")?.day()),
-                'm' if count <= 2 => {
-                    if let Some(t) = time {
-                        u32::from(t.minute())
-                    } else {
-                        u32::from(date.unwrap().month())
-                    }
-                }
-                'h' if count <= 2 => u32::from(time.map_or(0, |t| t.hour())),
-                's' if count <= 2 => u32::from(time.map_or(0, |t| t.second())),
-                _ => return Err("Unsupported date/time field"),
-            };
-            result.push_str(&format!("{value:0width$}", width = count));
-        } else if ch == '0' && time.is_some() && i > 0 && code(&tokens[i - 1]) == Some('.') {
-            let start = i;
-            while i < tokens.len() && code(&tokens[i]) == Some('0') {
-                i += 1;
-            }
-            if i - start > 9 {
-                return Err("Fractional seconds exceed nanosecond precision");
-            }
-            let fraction = format!("{:09}", time.unwrap().nanosecond());
-            result.push_str(&fraction[..i - start]);
-        } else {
-            result.push_str(&literal(&tokens[i..i + 1], None)?);
-            i += 1;
-        }
     }
     Ok(result)
 }

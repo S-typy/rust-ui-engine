@@ -1574,8 +1574,11 @@ fn read_color(
 }
 fn serial_value(n: f64, format: &str, date1904: bool) -> Result<Option<CellValue>, DataError> {
     let lower = format_tokens(format)?;
-    let has_date = lower.contains('y') || lower.contains('d');
-    let has_time = lower.contains('h') || lower.contains('s');
+    let has_time = lower.contains('h')
+        || lower.contains('s')
+        || lower.contains("am/pm")
+        || lower.contains("a/p");
+    let has_date = lower.contains('y') || lower.contains('d') || (!has_time && lower.contains('m'));
     if !has_date && !has_time {
         return Ok(None);
     }
@@ -1714,6 +1717,25 @@ pub(super) fn test_package(parts: &[(&str, &str)]) -> Vec<u8> {
 #[cfg(test)]
 mod serial_tests {
     use super::*;
+    #[test]
+    fn named_months_and_standalone_periods_keep_temporal_types() {
+        for format in ["mmmm", "[$-409]mmm", "[Blue]mmmmm"] {
+            assert_eq!(
+                serial_value(1.0, format, false).unwrap(),
+                Some(CellValue::Date(crate::DateValue::new(1900, 1, 1).unwrap())),
+                "{format}"
+            );
+        }
+        for format in ["AM/PM", "[$-409]a/p"] {
+            assert_eq!(
+                serial_value(0.5, format, false).unwrap(),
+                Some(CellValue::Time(crate::TimeValue::new(12, 0, 0, 0).unwrap())),
+                "{format}"
+            );
+        }
+        assert_eq!(serial_value(2.0, "0 \"mmmm AM/PM\"", false).unwrap(), None);
+        assert!(serial_value(1.25, "mmmm", false).is_err());
+    }
     #[test]
     fn formats_ignore_literals_colors_and_escaped_letters() {
         for format in ["0 \"day\"", "[Red]0.00", "0.00 \"USD\"", "0 \\d"] {

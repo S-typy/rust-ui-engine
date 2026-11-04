@@ -59,18 +59,36 @@ without losing the draft. There is no autosize or hidden-axis UI.
 and a diagnostic. `Spreadsheet::set_culture` selects Russian (default), English
 or Arabic separators without changing stored values. The bounded format profile
 supports `0`/`#` decimal placeholders, grouping, percent, comma scaling,
-single-integer-placeholder scientific notation, up to four sign/text sections,
+scientific and engineering notation, up to four sign/text sections,
 quoted/escaped literals, `@` and eight named colors. Integer/Decimal rounding
-does not convert through floating point. Typed dates support numeric year,
-month and day fields; typed times support hour/minute/second and fractional
-seconds. Defaults are DD.MM.YYYY and HH:MM.
+does not convert through floating point. Scientific masks allow one to six
+integer placeholders, with optional `#` before required `0`. Their count sets
+the exponent step: `##0.00E+00` uses powers of three. Rounding can advance the
+exponent; `e` and `E` retain their case.
 
-Conditional/locale directives, fractions, elapsed-time formats, alignment
-directives, month/day names, AM/PM and engineering notation are outside this
+Typed dates support numeric year/month/day fields, `mmm`/`mmmm` month names,
+`mmmmm` initial letters and `ddd`/`dddd` weekday names. Names use the selected
+culture and the Gregorian calendar. Russian full month names use the genitive
+form when a numeric day is present. Arabic short names use the full name.
+Typed times support hour/minute/second, fractional seconds and `AM/PM` or `A/P`
+markers in either case. An unquoted marker switches hours to 1..12; quoted
+text does not change the clock. Fractional seconds retain the requested leading
+nanosecond digits. Defaults remain DD.MM.YYYY and HH:MM.
+
+A leading `[$-en-US]`, `[$-ru-RU]` or `[$-ar-SA]` selects the culture for that
+section. Hexadecimal aliases `409`/`0409`, `419`/`0419` and `401`/`0401` are also
+accepted. The directive may accompany one named color. It changes presentation
+only, with Gregorian dates and Latin numeric digits; currency-bearing directives,
+other locale IDs and alternative calendars are not supported.
+
+Conditional directives, fractions, elapsed-time formats and alignment
+directives are outside this
 profile. Unsupported formats retain their metadata and display a raw value
 with a diagnostic, rather than a guessed result. Printing uses the same formatter
 and rejects unsupported formats explicitly. Formatting does not alter typed
 clipboard values or formulas. There is no format-picker UI yet.
+The example's «Форматы» worksheet shows date names, clocks, locale overrides
+and engineering rounding alongside their format strings.
 
 The formula editor uses the shared accessible text control.
 `Spreadsheet::semantics` supplies bounded

@@ -109,6 +109,9 @@ values by their lexical representation on import. Dates and times use ISO cell
 values on export; recognized numeric date/time formats are imported using the
 1900 or 1904 system. The fictional 1900-02-29 is rejected. Combined timestamps
 are not a separate workbook value type.
+Month-only formats such as `mmmm` are recognized as dates, while standalone
+`AM/PM` and `A/P` formats are recognized as time-of-day values. Display uses the
+shared [cell formatter](spreadsheets.md), including supported locale overrides.
 
 Integers exceeding 15 decimal digits and exact decimal values cannot be exported
 as spreadsheet numbers without an explicit application conversion to number or

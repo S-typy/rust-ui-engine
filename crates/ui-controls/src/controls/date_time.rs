@@ -129,7 +129,7 @@ impl DateValue {
         }
     }
     /// Monday is zero. The arithmetic covers the proleptic Gregorian calendar.
-    pub(super) fn weekday(self) -> u8 {
+    pub(crate) fn weekday(self) -> u8 {
         let offsets = [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
         let y = self.year - i32::from(self.month < 3);
         ((y + y / 4 - y / 100 + y / 400 + offsets[self.month as usize - 1] + self.day as i32 + 6)
