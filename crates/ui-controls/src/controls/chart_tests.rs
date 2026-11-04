@@ -74,7 +74,13 @@ fn fixture(view: ChartView) -> (Controls, WidgetId) {
 #[test]
 fn chart_actual_scene_has_full_labels_legend_and_finite_clipped_geometry() {
     for theme in [Theme::FluentLight, Theme::FluentDark] {
-        for view in [ChartView::Line, ChartView::Scatter, ChartView::Bar] {
+        for view in [
+            ChartView::Line,
+            ChartView::Scatter,
+            ChartView::Bar,
+            ChartView::StackedBar,
+            ChartView::Area,
+        ] {
             let (mut ui, id) = fixture(view);
             ui.set_theme(theme).unwrap();
             for size in [Size::new(760.0, 480.0), Size::new(1100.0, 600.0)] {
@@ -134,6 +140,46 @@ fn chart_pointer_selection_once_and_capture_loss_cancel() {
     assert_eq!(ui.chart_model(id).unwrap().selected(), Some(mark.key));
     assert_eq!(ui.take_chart_selection_changes().len(), 1);
     assert!(ui.take_chart_selection_changes().is_empty());
+}
+
+#[test]
+fn stacked_selection_marker_is_above_the_following_span() {
+    use rust_desktop_ui_core::DrawCommand;
+    let (mut ui, id) = fixture(ChartView::StackedBar);
+    let key = ChartPointKey {
+        series: 1,
+        point: i64::MAX,
+    };
+    ui.set_chart_selected(id, Some(key)).unwrap();
+    ui.update(Size::new(760.0, 480.0)).unwrap();
+    let geometry = ui.chart_geometry(id).unwrap().unwrap();
+    let selected = geometry
+        .points
+        .iter()
+        .find(|p| p.key == key)
+        .unwrap()
+        .position;
+    let marker = Rect::new(selected.x - 7.0, selected.y - 7.0, 14.0, 14.0);
+    let upper = geometry
+        .bars
+        .iter()
+        .find(|b| {
+            b.key
+                == ChartPointKey {
+                    series: 2,
+                    point: 10,
+                }
+        })
+        .unwrap()
+        .bounds;
+    let scene = ui.scene();
+    let position = |bounds| {
+        scene.commands().iter().position(|command| matches!(command,DrawCommand::RoundedRectangle(index) if scene.rounded_rectangles[*index].bounds==bounds)).unwrap()
+    };
+    assert!(
+        position(marker) > position(upper),
+        "Selection must not be overpainted by a later stack"
+    );
 }
 #[test]
 fn chart_keyboard_uses_visible_geometry_and_live_replace_preserves_key() {

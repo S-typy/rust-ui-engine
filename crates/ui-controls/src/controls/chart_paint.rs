@@ -247,6 +247,61 @@ impl Controls {
                 self.theme,
             )?;
         }
+        // Fill all series before drawing lines/markers, so selection anchors
+        // remain visible even where independent areas overlap.
+        for (i, series) in model.series().iter().enumerate() {
+            let source = color(self.theme, i);
+            let weight = if self.theme.is_high_contrast() {
+                0.22
+            } else {
+                0.30
+            };
+            let brush = Color {
+                r: tokens.surface.r + (source.r - tokens.surface.r) * weight,
+                g: tokens.surface.g + (source.g - tokens.surface.g) * weight,
+                b: tokens.surface.b + (source.b - tokens.surface.b) * weight,
+                a: 1.0,
+            };
+            let mut contours = Vec::new();
+            let mut edges = 0;
+            for area in geometry
+                .areas
+                .iter()
+                .filter(|a| a.start.series == series.id)
+            {
+                if edges + area.contour.len() > rust_desktop_ui_core::MAX_FILL_EDGES {
+                    self.scene
+                        .fill_path(rust_desktop_ui_core::FillPath {
+                            contours: std::mem::take(&mut contours),
+                            clip: plot_clip,
+                            rule: rust_desktop_ui_core::FillRule::NonZero,
+                            color: brush,
+                        })
+                        .map_err(|e| ControlError::Invalid(e.into()))?;
+                    edges = 0;
+                }
+                edges += area.contour.len();
+                contours.push(area.contour.clone());
+            }
+            if !contours.is_empty() {
+                self.scene
+                    .fill_path(rust_desktop_ui_core::FillPath {
+                        contours,
+                        clip: plot_clip,
+                        rule: rust_desktop_ui_core::FillRule::NonZero,
+                        color: brush,
+                    })
+                    .map_err(|e| ControlError::Invalid(e.into()))?;
+            }
+        }
+        // Complete all stacked spans before drawing any selection marker.
+        // Otherwise a later segment can cover the marker on their shared edge.
+        for (i, series) in model.series().iter().enumerate() {
+            for bar in geometry.bars.iter().filter(|v| v.key.series == series.id) {
+                self.scene
+                    .rounded_fill(bar.bounds, plot_clip, 1.0, color(self.theme, i));
+            }
+        }
         for (i, s) in model.series().iter().enumerate() {
             let color = color(self.theme, i);
             let lines: Vec<_> = geometry
@@ -260,9 +315,6 @@ impl Controls {
                 .collect();
             for chunk in lines.chunks(rust_desktop_ui_core::MAX_STROKE_SEGMENTS) {
                 self.scene.stroke_path(chunk, plot_clip, 2.0, color)
-            }
-            for bar in geometry.bars.iter().filter(|v| v.key.series == s.id) {
-                self.scene.rounded_fill(bar.bounds, plot_clip, 1.0, color)
             }
             for p in geometry.points.iter().filter(|v| v.key.series == s.id) {
                 let selected = model.selected() == Some(p.key);
@@ -280,7 +332,11 @@ impl Controls {
                         tokens.surface,
                     );
                 }
-                if model.settings().view != ChartView::Bar || selected {
+                if !matches!(
+                    model.settings().view,
+                    ChartView::Bar | ChartView::StackedBar
+                ) || selected
+                {
                     self.scene.rounded_fill(
                         Rect::new(p.position.x - 3.0, p.position.y - 3.0, 6.0, 6.0),
                         clip,

@@ -57,7 +57,7 @@ impl Controls {
         for series in model.series() {
             self.preflight_new_editor_text(
                 &format!(
-                    "Компактная диаграмма. {}: X -1.797e308, Y -1.797e308",
+                    "Компактная диаграмма. {}: X -1.797e308, Y -1.797e308; интервал -1.797e308 … -1.797e308",
                     series.label
                 ),
                 style,

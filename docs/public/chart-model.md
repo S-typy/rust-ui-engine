@@ -2,9 +2,9 @@
 
 `ChartModel` contains a bounded accepted snapshot of numeric series, settings and
 an optional selected item. Cartesian views are `Line`, `Scatter`, `Bar`, and
-`Sparkline`. Typed `ChartFamily` observations add `Pie`, `Heatmap`, `Treemap`,
+`Sparkline`, `StackedBar` and `Area`. Typed `ChartFamily` observations add `Pie`, `Heatmap`, `Treemap`,
 `Sunburst` and `Sankey`. Sparkline uses the same line geometry with a compact
-presentation. Stacking, area, logarithmic and time axes remain outside this profile.
+presentation. Stacked areas, logarithmic and time axes remain outside this profile.
 
 `ChartSeries` has a stable `u64` ID, label and points. Each point has a full signed
 `i64` ID unique within its series, a finite `x` and optional finite `y`. Point order
@@ -45,6 +45,32 @@ the actual bar center. The same returned geometry drives drawing and hit tests.
 within a finite nonnegative radius. Equal marker distances use series/input
 order. Plot endpoints are inclusive for hit testing. Out-of-plot input returns
 no point. There is no interpolation, decimation or hidden data aggregation.
+
+### Accumulation and filled areas
+
+`StackedBar` aligns equal numeric X values across series; their input order sets
+stack order. Positive and negative observations accumulate independently from
+zero. NULL or absent categories add no span. Duplicate X in one series is an
+error, including +0/-0. The automatic Y range includes cumulative endpoints.
+Finite overflow and a nonzero addition rounded entirely away are rejected before
+publication. The original Y remains unchanged; `describe` adds the cumulative
+interval. Explicit ranges clip each interval, including spans entirely above or
+below zero. Bars share category width, and the containing visible span is selected.
+
+`Area` requires strictly increasing X in each series, including NULL positions.
+It fills each adjacent non-NULL pair to zero and keeps the line and point markers.
+Zero crossings split the fill into two simple polygons. Explicit ranges clip the
+polygons before conversion to f32; visible fill can remain when both observations
+are offscreen. Independent series overlap in series order. Fills are painted
+first, then lines and markers. NULL breaks both the line and the area.
+
+`ChartGeometry.areas` exposes the same clipped contours used for painting and
+hit testing. Marker proximity takes precedence; a click inside a fill chooses
+the nearer original endpoint by X (ties choose the first). That endpoint can lie
+outside the viewport. A selected offscreen endpoint still has a semantic value,
+but no marker is fabricated at the clip boundary. Keyboard navigation continues
+to use visible observation markers. Fill contours are grouped into bounded paths
+without changing their geometry or the shared renderer's path limits.
 
 ## Snapshot adapter and limits
 

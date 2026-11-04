@@ -6,6 +6,9 @@ use super::{
 use rust_desktop_ui_core::{Point, Rect};
 use rust_desktop_ui_data::{CellValue, DataTable, FieldType};
 use std::collections::HashSet;
+#[path = "chart_cartesian.rs"]
+mod cartesian;
+pub use cartesian::ChartArea;
 
 pub const MAX_CHART_SERIES: usize = 16;
 pub const MAX_CHART_POINTS: usize = 4096;
@@ -16,6 +19,10 @@ pub enum ChartView {
     Line,
     Scatter,
     Bar,
+    /// Positive and negative observations accumulate separately at each X.
+    StackedBar,
+    /// A line filled to zero; each series requires strictly increasing X.
+    Area,
     /// The same line geometry, without axes or a legend in the presenter.
     Sparkline,
     Pie,
@@ -117,6 +124,7 @@ pub enum ChartError {
     InvalidView,
     InvalidWeight,
     InvalidTopology,
+    DuplicateCategory,
 }
 impl std::fmt::Display for ChartError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -205,6 +213,7 @@ pub struct ChartModel {
     x_range: ChartRange,
     y_range: ChartRange,
     selected: Option<ChartPointKey>,
+    stacks: cartesian::Stacks,
 }
 fn automatic(values: impl Iterator<Item = f64>, zero: bool) -> Result<ChartRange, ChartError> {
     let mut minimum = f64::INFINITY;
@@ -236,7 +245,12 @@ impl ChartModel {
     pub fn new(series: Vec<ChartSeries>, settings: ChartSettings) -> Result<Self, ChartError> {
         if !matches!(
             settings.view,
-            ChartView::Line | ChartView::Scatter | ChartView::Bar | ChartView::Sparkline
+            ChartView::Line
+                | ChartView::Scatter
+                | ChartView::Bar
+                | ChartView::Sparkline
+                | ChartView::StackedBar
+                | ChartView::Area
         ) {
             return Err(ChartError::InvalidView);
         }
@@ -268,6 +282,7 @@ impl ChartModel {
                 }
             }
         }
+        let stacks = cartesian::validate(&series, settings.view)?;
         let mut x_range = match settings.x_range {
             Some(r) => r,
             None => automatic(
@@ -277,14 +292,24 @@ impl ChartModel {
         };
         let y_range = match settings.y_range {
             Some(r) => r,
+            None if settings.view == ChartView::StackedBar => automatic(
+                stacks
+                    .iter()
+                    .flatten()
+                    .flatten()
+                    .flat_map(|(a, b)| [*a, *b]),
+                true,
+            )?,
             None => automatic(
                 series
                     .iter()
                     .flat_map(|s| s.points.iter().filter_map(|p| p.y)),
-                settings.view == ChartView::Bar,
+                matches!(settings.view, ChartView::Bar | ChartView::Area),
             )?,
         };
-        if settings.view == ChartView::Bar && settings.x_range.is_none() {
+        if matches!(settings.view, ChartView::Bar | ChartView::StackedBar)
+            && settings.x_range.is_none()
+        {
             let mut xs: Vec<f64> = series
                 .iter()
                 .flat_map(|s| s.points.iter().map(|p| p.x))
@@ -309,6 +334,10 @@ impl ChartModel {
                 y_range.fraction(y)?;
             }
         }
+        for (base, end) in stacks.iter().flatten().flatten() {
+            y_range.fraction(*base)?;
+            y_range.fraction(*end)?;
+        }
         Ok(Self {
             series,
             family: None,
@@ -316,6 +345,7 @@ impl ChartModel {
             x_range,
             y_range,
             selected: None,
+            stacks,
         })
     }
     /// Construct typed non-Cartesian data. Explicit X/Y ranges and axis titles
@@ -342,6 +372,7 @@ impl ChartModel {
                 maximum: 1.0,
             },
             selected: None,
+            stacks: Vec::new(),
         })
     }
     pub fn family(&self) -> Option<&ChartFamily> {
@@ -371,12 +402,23 @@ impl ChartModel {
         }
         let series = self.series.iter().find(|s| s.id == key.series)?;
         let point = self.point(key)?;
-        Some(format!(
+        let mut description = format!(
             "{}: X {}, Y {}",
             series.label,
             Self::format_number(point.x),
             Self::format_number(point.y?)
-        ))
+        );
+        if self.settings.view == ChartView::StackedBar {
+            let row = self.series.iter().position(|s| s.id == key.series)?;
+            let column = series.points.iter().position(|p| p.id == key.point)?;
+            let (base, end) = self.stacks[row][column]?;
+            description.push_str(&format!(
+                "; интервал {} … {}",
+                Self::format_number(base),
+                Self::format_number(end)
+            ));
+        }
+        Some(description)
     }
     /// Legend labels in stable input order. Hierarchies use their root nodes;
     /// Heatmap uses its numeric scale and Sankey labels nodes on the plot.
@@ -479,6 +521,7 @@ impl ChartModel {
             points: Vec::new(),
             segments: Vec::new(),
             bars: Vec::new(),
+            areas: Vec::new(),
             regions: Vec::new(),
         };
         if let Some(family) = &self.family {
@@ -509,7 +552,12 @@ impl ChartModel {
             .filter(|v| *v > 0.0)
             .fold(0.75f64, f64::min)
             * 0.8;
-        let count = self.series.len().max(1) as f64;
+        let stacked = self.settings.view == ChartView::StackedBar;
+        let count = if stacked {
+            1.0
+        } else {
+            self.series.len().max(1) as f64
+        };
         let baseline = if self.y_range.minimum >= 0.0 {
             0.0
         } else if self.y_range.maximum <= 0.0 {
@@ -519,18 +567,23 @@ impl ChartModel {
         };
         for (series_index, series) in self.series.iter().enumerate() {
             let mut previous = None;
-            for point in &series.points {
+            for (point_index, point) in series.points.iter().enumerate() {
                 let Some(value) = point.y else {
                     previous = None;
                     continue;
                 };
                 let x = self.x_range.fraction(point.x)?;
-                let y = self.y_range.fraction(value)?;
+                let (base, end) = if stacked {
+                    self.stacks[series_index][point_index].unwrap()
+                } else {
+                    (0.0, value)
+                };
+                let y = self.y_range.fraction(end)?;
                 let key = ChartPointKey {
                     series: series.id,
                     point: point.id,
                 };
-                if self.settings.view != ChartView::Bar
+                if !matches!(self.settings.view, ChartView::Bar | ChartView::StackedBar)
                     && (0.0..=1.0).contains(&x)
                     && (0.0..=1.0).contains(&y)
                 {
@@ -540,8 +593,8 @@ impl ChartModel {
                     });
                 }
                 match self.settings.view {
-                    ChartView::Line | ChartView::Sparkline => {
-                        if let Some((px, py)) = previous
+                    ChartView::Line | ChartView::Sparkline | ChartView::Area => {
+                        if let Some((px, py, _)) = previous
                             && let Some((a, b)) = clip_segment((px, py), (x, y))
                         {
                             result.segments.push(ChartLine {
@@ -550,13 +603,31 @@ impl ChartModel {
                                 end: position(b.0, b.1),
                             });
                         }
-                        previous = Some((x, y));
+                        if self.settings.view == ChartView::Area
+                            && let Some((px, py, previous_key)) = previous
+                        {
+                            cartesian::area(
+                                &mut result.areas,
+                                plot,
+                                (px, py),
+                                (x, y),
+                                baseline,
+                                previous_key,
+                                key,
+                            );
+                        }
+                        previous = Some((x, y, key));
                     }
                     ChartView::Scatter => {}
-                    ChartView::Bar => {
-                        let left = (x - slot / 2.0 + slot * series_index as f64 / count).max(0.0);
-                        let right =
-                            (x - slot / 2.0 + slot * (series_index + 1) as f64 / count).min(1.0);
+                    ChartView::Bar | ChartView::StackedBar => {
+                        let index = if stacked { 0 } else { series_index };
+                        let baseline = if stacked {
+                            self.y_range.fraction(base)?
+                        } else {
+                            baseline
+                        };
+                        let left = (x - slot / 2.0 + slot * index as f64 / count).max(0.0);
+                        let right = (x - slot / 2.0 + slot * (index + 1) as f64 / count).min(1.0);
                         let top = y.max(baseline).min(1.0);
                         let bottom = y.min(baseline).max(0.0);
                         if right > left && top >= bottom && (top > bottom || y == baseline) {
@@ -631,6 +702,7 @@ pub struct ChartGeometry {
     pub points: Vec<ChartMark>,
     pub segments: Vec<ChartLine>,
     pub bars: Vec<ChartBar>,
+    pub areas: Vec<ChartArea>,
     pub regions: Vec<ChartRegion>,
 }
 impl ChartGeometry {
@@ -673,7 +745,12 @@ impl ChartGeometry {
                 nearest = Some(mark.key);
             }
         }
-        nearest
+        nearest.or_else(|| {
+            self.areas
+                .iter()
+                .rev()
+                .find_map(|area| area.hit_test(point, self.plot))
+        })
     }
 }
 #[cfg(test)]

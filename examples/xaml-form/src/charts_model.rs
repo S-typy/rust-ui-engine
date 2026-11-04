@@ -115,6 +115,8 @@ impl ChartsDemo {
             ("ChartTreemap", "Дерево площадей"),
             ("ChartSunburst", "Кольца дерева"),
             ("ChartSankey", "Потоки"),
+            ("ChartStackedBar", "Накопление"),
+            ("ChartArea", "Области"),
         ]
         .into_iter()
         .enumerate()
@@ -187,6 +189,8 @@ impl ChartsDemo {
                 9 => s.view = ChartView::Treemap,
                 10 => s.view = ChartView::Sunburst,
                 11 => s.view = ChartView::Sankey,
+                12 => s.view = ChartView::StackedBar,
+                13 => s.view = ChartView::Area,
                 _ => {}
             }
             if matches!(

@@ -46,7 +46,7 @@ pub use chart_family::{
 pub use chart_family_geometry::{ChartRegion, ChartRegionShape};
 mod gauge;
 pub use chart_model::{
-    ChartBar, ChartError, ChartGeometry, ChartLine, ChartMark, ChartModel, ChartPoint,
+    ChartArea, ChartBar, ChartError, ChartGeometry, ChartLine, ChartMark, ChartModel, ChartPoint,
     ChartPointKey, ChartRange, ChartSeries, ChartSettings, ChartView, MAX_CHART_POINTS,
     MAX_CHART_SERIES,
 };
