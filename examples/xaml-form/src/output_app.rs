@@ -980,6 +980,18 @@ fn append_format_examples(book: &mut Workbook) -> Result<(), String> {
             CellValue::Decimal("999.995".parse().map_err(err)?),
             "##0.00E+00",
         ),
+        ("Длительность · 36 часов", CellValue::Real(1.5), "[h]:mm:ss"),
+        ("Длительность · минуты", CellValue::Real(1.5), "[m]:ss"),
+        (
+            "Длительность · доли секунды",
+            CellValue::Decimal("0.0001".parse().map_err(err)?),
+            "[ss].000",
+        ),
+        (
+            "Отрицательная длительность",
+            CellValue::Real(-1.5),
+            "[h]:mm;[Red]([h]:mm)",
+        ),
     ]
     .into_iter()
     .enumerate()

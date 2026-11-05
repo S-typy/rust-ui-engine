@@ -112,6 +112,10 @@ are not a separate workbook value type.
 Month-only formats such as `mmmm` are recognized as dates, while standalone
 `AM/PM` and `A/P` formats are recognized as time-of-day values. Display uses the
 shared [cell formatter](spreadsheets.md), including supported locale overrides.
+Elapsed formats such as `[h]:mm:ss` preserve numeric day counts on import,
+including negative values and durations exceeding one day. They do not become
+time-of-day values or depend on the 1900/1904 date epoch. The original format
+code and formula expression remain available after a supported round-trip.
 
 Integers exceeding 15 decimal digits and exact decimal values cannot be exported
 as spreadsheet numbers without an explicit application conversion to number or

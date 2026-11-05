@@ -1,4 +1,5 @@
 //! Bounded cell presentation, independent of input/formula storage.
+mod elapsed;
 mod temporal;
 use super::*;
 use crate::UiCulture;
@@ -133,7 +134,7 @@ fn color(tokens: &mut Vec<Token>) -> Result<Option<u32>, &'static str> {
         "magenta" => 0xff00ff,
         "cyan" => 0x00ffff,
         _ => {
-            return Err("Unsupported color, condition or elapsed-time modifier");
+            return Err("Unsupported color or condition modifier");
         }
     };
     tokens.drain(..=end);
@@ -146,6 +147,9 @@ fn directives(
     let mut rgb = None;
     let mut localized = false;
     while tokens.first().and_then(code) == Some('[') {
+        if elapsed::total_marker(tokens).is_some() {
+            break;
+        }
         let end = tokens
             .iter()
             .position(|t| code(t) == Some(']'))
@@ -211,7 +215,14 @@ fn formatted(
     if matches!(value, CellValue::Date(_) | CellValue::Time(_)) {
         let mut part = parts.remove(0);
         let (rgb, culture) = directives(&mut part, culture)?;
-        return Ok((date_time(value, &part, culture)?, rgb));
+        return Ok((
+            if elapsed::requested(&part) {
+                elapsed::render(value, &part)?
+            } else {
+                date_time(value, &part, culture)?
+            },
+            rgb,
+        ));
     }
     let mut number = Number::new(&value.display())?;
     let negative = number.negative && number.digits != "0";
@@ -226,6 +237,13 @@ fn formatted(
     let (rgb, culture) = directives(&mut part, culture)?;
     if part.is_empty() {
         return Ok((String::new(), rgb));
+    }
+    if elapsed::requested(&part) {
+        let text = elapsed::render(value, &part)?;
+        return Ok((
+            format!("{}{}", if negative && index == 0 { "-" } else { "" }, text),
+            rgb,
+        ));
     }
     let Some(first) = part.iter().position(|t| matches!(code(t), Some('0' | '#'))) else {
         return Ok((literal(&part, None)?, rgb));

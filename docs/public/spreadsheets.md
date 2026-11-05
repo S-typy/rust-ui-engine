@@ -84,8 +84,19 @@ accepted. The directive may accompany one named color. It changes presentation
 only, with Gregorian dates and Latin numeric digits; currency-bearing directives,
 other locale IDs and alternative calendars are not supported.
 
-Conditional directives, fractions, elapsed-time formats and alignment
-directives are outside this
+Duration formats use one total field: `[h]`/`[hh]`, `[m]`/`[mm]` or `[s]`/`[ss]`.
+Numeric values count days: `1.5` with `[h]:mm:ss` displays `36:00:00`.
+Following `m`/`mm` and `s`/`ss` fields show remainders in decreasing unit order;
+seconds can have one to nine fractional digits, such as `[ss].000`. A doubled
+total field pads to at least two digits without limiting the total. Typed time
+values retain their clock duration; typed dates do not become durations.
+Sign/zero sections, quoted literals and supported color/locale directives apply.
+Omitted units and fractional precision truncate toward zero. Integer/Decimal
+conversion stays exact; magnitudes exceeding the `u128` nanosecond budget produce
+a diagnostic. The decimal separator for fractional seconds is the literal dot
+in the format, as for typed clocks.
+
+Conditional directives, fractions and alignment directives are outside this
 profile. Unsupported formats retain their metadata and display a raw value
 with a diagnostic, rather than a guessed result. Printing uses the same formatter
 and rejects unsupported formats explicitly. Formatting does not alter typed
@@ -95,7 +106,7 @@ The format picker shows the active cell's format, including an existing custom
 format that is not among its presets. Choosing a preset only stages the choice;
 «Применить» applies it to every selected anchor. A mixed-format selection shows
 the active cell's format until application. Presets include general, integer,
-two decimal places, percent, scientific/engineering notation, date/time and
+two decimal places, percent, scientific/engineering notation, date/time, durations and
 rubles. General restores default presentation. The picker uses the common
 ComboBox keyboard and accessibility contract.
 
@@ -121,8 +132,8 @@ preserves the live workbook, draft and history. An active IME composition blocks
 application. A changed draft and a format change are separate undo steps when
 both succeed. Undo/redo, cell navigation and sheet changes refresh the picker.
 Numeric values are not converted to typed dates or times by choosing a format.
-The example's «Форматы» worksheet shows date names, clocks, locale overrides
-and engineering rounding alongside their format strings.
+The example's «Форматы» worksheet shows date names, clocks, locale overrides,
+engineering rounding and durations alongside their format strings.
 
 The formula editor uses the shared accessible text control.
 `Spreadsheet::semantics` supplies bounded

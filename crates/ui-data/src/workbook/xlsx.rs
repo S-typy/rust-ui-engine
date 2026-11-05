@@ -1573,7 +1573,12 @@ fn read_color(
     Ok(None)
 }
 fn serial_value(n: f64, format: &str, date1904: bool) -> Result<Option<CellValue>, DataError> {
-    let lower = format_tokens(format)?;
+    let (lower, elapsed) = format_tokens(format)?;
+    // Elapsed formats display a numeric day count; they must not wrap into a
+    // time-of-day value or depend on the workbook date epoch.
+    if elapsed {
+        return Ok(None);
+    }
     let has_time = lower.contains('h')
         || lower.contains('s')
         || lower.contains("am/pm")
@@ -1652,8 +1657,9 @@ fn serial_value(n: f64, format: &str, date1904: bool) -> Result<Option<CellValue
     Ok(Some(CellValue::Date(date)))
 }
 
-fn format_tokens(format: &str) -> Result<String, DataError> {
+fn format_tokens(format: &str) -> Result<(String, bool), DataError> {
     let mut tokens = String::new();
+    let mut elapsed = false;
     let mut chars = format.chars();
     while let Some(c) = chars.next() {
         match c {
@@ -1691,16 +1697,14 @@ fn format_tokens(format: &str) -> Result<String, DataError> {
                     directive.to_ascii_lowercase().as_str(),
                     "h" | "hh" | "m" | "mm" | "s" | "ss"
                 ) {
-                    return Err(invalid(
-                        "elapsed duration format is outside time-of-day profile",
-                    ));
+                    elapsed = true;
                 }
             }
             ';' => break,
             _ => tokens.extend(c.to_lowercase()),
         }
     }
-    Ok(tokens)
+    Ok((tokens, elapsed))
 }
 
 #[cfg(test)]
@@ -1745,7 +1749,17 @@ mod serial_tests {
             serial_value(1.0, "[$-ru-RU]dd.mm.yyyy", false).unwrap(),
             Some(CellValue::Date(crate::DateValue::new(1900, 1, 1).unwrap()))
         );
-        assert!(serial_value(0.5, "[h]:mm", false).is_err());
+        for format in ["[h]:mm", "[HH]:mm:ss", "[Red][mm]:ss", "[$-409][ss].000"] {
+            for value in [-1.5, 0.5, 1.5, 1000000.0] {
+                for epoch in [false, true] {
+                    assert_eq!(serial_value(value, format, epoch).unwrap(), None);
+                }
+            }
+        }
+        assert_eq!(
+            serial_value(0.5, "\"[h]\"hh:mm", false).unwrap(),
+            Some(CellValue::Time(crate::TimeValue::new(12, 0, 0, 0).unwrap()))
+        );
     }
     #[test]
     fn numeric_time_preserves_subsecond_and_leap_bug_is_explicit() {
