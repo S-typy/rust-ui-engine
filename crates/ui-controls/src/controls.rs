@@ -50,7 +50,7 @@ pub use chart_model::{
     ChartPointKey, ChartRange, ChartSeries, ChartSettings, ChartView, MAX_CHART_POINTS,
     MAX_CHART_SERIES,
 };
-mod chart_paint;
+pub(crate) mod chart_paint;
 #[cfg(test)]
 mod chart_tests;
 pub use chart::{ChartDisplayStatus, ChartSelectionChange};

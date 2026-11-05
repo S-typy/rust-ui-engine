@@ -1,6 +1,6 @@
 use super::*;
 use rust_desktop_ui_core::StrokeSegment;
-pub(super) fn plot(model: &ChartModel, b: Rect) -> Option<Rect> {
+pub(crate) fn plot(model: &ChartModel, b: Rect) -> Option<Rect> {
     if model.settings().view == ChartView::Sparkline {
         return (b.width >= 32.0 && b.height >= 24.0)
             .then(|| Rect::new(b.x + 8.0, b.y + 8.0, b.width - 16.0, b.height - 16.0));
@@ -92,18 +92,63 @@ impl Controls {
         let Some(entry) = self.charts.get(&id) else {
             return Ok(false);
         };
-        let model = &entry.model;
+        ChartPainter {
+            scene: &mut self.scene,
+            engine: &mut self.engine,
+            theme: self.theme,
+        }
+        .paint(
+            &entry.model,
+            bounds,
+            clip,
+            &entry.summary,
+            self.runtime.focused() == Some(id),
+        )
+    }
+}
+
+pub(crate) fn paint_snapshot(
+    scene: &mut Scene,
+    engine: &mut TextEngine,
+    theme: Theme,
+    model: &ChartModel,
+    bounds: Rect,
+    summary: &str,
+) -> Result<(), ControlError> {
+    ChartPainter {
+        scene,
+        engine,
+        theme,
+    }
+    .paint(model, bounds, bounds, summary, false)?;
+    Ok(())
+}
+
+struct ChartPainter<'a> {
+    scene: &'a mut Scene,
+    engine: &'a mut TextEngine,
+    theme: Theme,
+}
+impl ChartPainter<'_> {
+    fn paint(
+        &mut self,
+        model: &ChartModel,
+        bounds: Rect,
+        clip: Rect,
+        summary: &str,
+        focused: bool,
+    ) -> Result<bool, ControlError> {
         let tokens = self.theme.tokens();
         self.scene.rounded_fill(bounds, clip, 6.0, tokens.surface);
-        if self.runtime.focused() == Some(id) {
+        if focused {
             self.scene
                 .rounded_stroke(bounds, clip, 6.0, 2.0, tokens.focus);
         }
         let Some(plot) = plot(model, bounds) else {
             text(
-                &mut self.scene,
-                &mut self.engine,
-                &format!("Компактная диаграмма. {}", entry.summary),
+                self.scene,
+                self.engine,
+                &format!("Компактная диаграмма. {summary}"),
                 Rect::new(
                     bounds.x + 8.0,
                     bounds.y + 4.0,
@@ -139,8 +184,8 @@ impl Controls {
                     tokens.border,
                 );
                 text(
-                    &mut self.scene,
-                    &mut self.engine,
+                    self.scene,
+                    self.engine,
                     &ChartModel::format_number(*value),
                     Rect::new(bounds.x + 2.0, y - 10.0, 72.0, 20.0),
                     clip,
@@ -163,8 +208,8 @@ impl Controls {
                     tokens.border,
                 );
                 text(
-                    &mut self.scene,
-                    &mut self.engine,
+                    self.scene,
+                    self.engine,
                     &ChartModel::format_number(*value),
                     Rect::new(
                         (x - 36.0).clamp(bounds.x + 4.0, bounds.x + bounds.width - 76.0),
@@ -179,8 +224,8 @@ impl Controls {
                 )?;
             }
             text(
-                &mut self.scene,
-                &mut self.engine,
+                self.scene,
+                self.engine,
                 &model.settings().y_title,
                 Rect::new(plot.x, bounds.y + 4.0, plot.width, 24.0),
                 clip,
@@ -189,8 +234,8 @@ impl Controls {
                 TextAlign::Start,
             )?;
             text(
-                &mut self.scene,
-                &mut self.engine,
+                self.scene,
+                self.engine,
                 &model.settings().x_title,
                 Rect::new(plot.x, plot.y + plot.height + 28.0, plot.width, 22.0),
                 clip,
@@ -210,8 +255,8 @@ impl Controls {
                         color(self.theme, i),
                     );
                     text(
-                        &mut self.scene,
-                        &mut self.engine,
+                        self.scene,
+                        self.engine,
                         label,
                         Rect::new(x + 18.0, y, width - 24.0, 26.0),
                         clip,
@@ -222,9 +267,9 @@ impl Controls {
                 }
             }
             text(
-                &mut self.scene,
-                &mut self.engine,
-                &entry.summary,
+                self.scene,
+                self.engine,
+                summary,
                 Rect::new(
                     bounds.x + 16.0,
                     bounds.y + bounds.height - 26.0,
@@ -238,14 +283,7 @@ impl Controls {
             )?;
         }
         if model.family().is_some() {
-            paint_regions(
-                &mut self.scene,
-                &mut self.engine,
-                model,
-                &geometry,
-                clip,
-                self.theme,
-            )?;
+            paint_regions(self.scene, self.engine, model, &geometry, clip, self.theme)?;
         }
         // Fill all series before drawing lines/markers, so selection anchors
         // remain visible even where independent areas overlap.

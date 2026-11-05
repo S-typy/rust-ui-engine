@@ -16,6 +16,11 @@ The [bounded number-format profile](spreadsheets.md) is shared with the viewport
 `from_workbook` uses Russian presentation; `from_workbook_with_culture` takes an
 explicit culture. Unsupported formats fail page construction with a diagnostic.
 
+`printing::from_chart` creates a single chart page using the control's common
+painter, current viewport and explicit theme. `ChartPrintOptions` controls page
+size, margins and optional selection decoration. The model is unchanged, and
+compact fallback sizes are rejected. See [chart output](charts.md#страницы-pdf-и-печать).
+
 `SheetPrintOptions` defaults to a 794×1123 logical-pixel page, 48-pixel margins,
 112-pixel columns and 28-pixel rows. These options scale the worksheet's actual
 sparse dimensions relative to those defaults, preserving custom sizes and
