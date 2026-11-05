@@ -27,6 +27,62 @@ fn fixture() -> (Controls, ImageEditorParts) {
     ui.update(Size::new(800.0, 500.0)).unwrap();
     (ui, p)
 }
+
+#[test]
+fn wheel_moves_the_viewport_and_ctrl_wheel_up_zooms_in_without_editing_pixels() {
+    let (mut ui, p) = fixture();
+    let original = ui.image_editor_value(p.container).unwrap().unwrap().clone();
+    ui.set_image_editor_viewport(
+        p.container,
+        ImageViewport {
+            fit: false,
+            zoom: 2.0,
+            pan: Point::ZERO,
+        },
+    )
+    .unwrap();
+    let b = ui.runtime.bounds(p.viewport).unwrap();
+    let position = Point::new(b.x + b.width / 2.0, b.y + b.height / 2.0);
+    for (delta, shift, expected) in [
+        (Point::new(12.0, 28.0), false, Point::new(-12.0, -28.0)),
+        (Point::new(0.0, 40.0), true, Point::new(-52.0, -28.0)),
+        (Point::new(-12.0, -28.0), false, Point::new(-40.0, 0.0)),
+    ] {
+        ui.dispatch(InputEvent::Wheel {
+            position,
+            delta,
+            modifiers: Modifiers {
+                shift,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        assert_eq!(ui.image_editor_viewport(p.container).unwrap().pan, expected);
+    }
+    let view = ui.image_editor_viewport(p.container).unwrap();
+    ui.dispatch(InputEvent::Wheel {
+        position,
+        delta: Point::ZERO,
+        modifiers: Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    assert_eq!(ui.image_editor_viewport(p.container), Some(view));
+    ui.dispatch(InputEvent::Wheel {
+        position,
+        delta: Point::new(0.0, -84.0),
+        modifiers: Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    })
+    .unwrap();
+    assert!(ui.image_editor_viewport(p.container).unwrap().zoom > view.zoom);
+    assert_eq!(ui.image_editor_value(p.container), Some(Some(&original)));
+    assert_eq!(ui.image_editor_draft(p.container), Some(Some(&original)));
+}
 #[test]
 fn editing_is_draft_until_explicit_apply_and_cancel_preserves_pixels() {
     let (mut ui, p) = fixture();

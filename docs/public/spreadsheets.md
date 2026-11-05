@@ -21,6 +21,9 @@ would replace the draft. Resize retains the editor and its draft.
 
 Arrow keys move the active cell, Shift extends the selection, PageUp/PageDown
 move through rows, and the wheel scrolls (Shift selects the horizontal axis).
+Wheel down advances to lower rows; Shift+wheel down advances to right columns.
+Horizontal wheel deltas also move columns. Each nonzero axis advances by three
+cells, and zero deltas leave both the viewport and pending formula draft alone.
 Click selects a cell; Shift-click extends the range. Drag selects a rectangle
 and autoscrolls at the viewport edges. Intersected merged ranges are included
 in full and editing targets their anchor. Escape, capture loss, disabling or

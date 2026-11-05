@@ -77,6 +77,15 @@ field/note editor. `begin_load`/`complete_load` discard outdated load tokens.
 Unapplied field drafts block replacement. Only the extracted-text preview is
 truncated above 1 MiB; the document and search stay intact.
 
+Wheel down scrolls the viewport down; Shift redirects vertical wheel movement
+to horizontal scrolling. Ctrl+wheel up zooms in. Both wheel and toolbar zoom
+start from the current fitted scale, with a 1–400% manual range. Zero deltas
+and horizontal-only Ctrl+wheel leave the viewport unchanged.
+Escape in the field/note editor calls `cancel_field_draft`, restoring its last
+applied text even after blur accepted a generic editor draft. An active IME
+composition must finish or be cancelled first. The accessible field name is
+updated on initial load, field navigation and document replacement.
+
 Run `cargo run --locked -p xaml-form -- --pdf`. Open/Save and explicit printer
 commands run in the host. The example never opens a file or submits a print
 job merely by starting. Windows DX12/Vulkan checks cover page keys, search,

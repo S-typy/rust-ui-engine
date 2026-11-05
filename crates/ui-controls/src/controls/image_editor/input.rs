@@ -162,13 +162,16 @@ impl Controls {
                 let Some(id) = self.image_editor_hit(*position) else {
                     return Ok(false);
                 };
-                if !delta.is_finite() {
+                if !delta.is_finite() || *delta == Point::ZERO {
                     return Ok(true);
                 }
                 if modifiers.control {
+                    if delta.y == 0.0 {
+                        return Ok(false);
+                    }
                     self.image_editor_action(
                         id,
-                        if delta.y >= 0.0 {
+                        if delta.y < 0.0 {
                             Action::ZoomIn
                         } else {
                             Action::ZoomOut
@@ -183,8 +186,14 @@ impl Controls {
                             .clamp(0.05, 32.0);
                     }
                     view.fit = false;
-                    view.pan.x = (view.pan.x + delta.x).clamp(-262144.0, 262144.0);
-                    view.pan.y = (view.pan.y + delta.y).clamp(-262144.0, 262144.0);
+                    // Pan translates the image; wheel deltas move the viewport.
+                    let (dx, dy) = if modifiers.shift {
+                        (f64::from(delta.x) + f64::from(delta.y), 0.0)
+                    } else {
+                        (f64::from(delta.x), f64::from(delta.y))
+                    };
+                    view.pan.x = (f64::from(view.pan.x) - dx).clamp(-262144.0, 262144.0) as f32;
+                    view.pan.y = (f64::from(view.pan.y) - dy).clamp(-262144.0, 262144.0) as f32;
                     self.set_image_editor_viewport(id, view)?;
                 }
                 Ok(true)

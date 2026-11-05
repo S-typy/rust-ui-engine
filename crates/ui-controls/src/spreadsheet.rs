@@ -628,16 +628,32 @@ impl Spreadsheet {
                 delta,
                 modifiers,
             } if bounds.contains(position.x, position.y) => {
-                self.commit(ui)?;
-                let step = if delta.y < 0.0 { 3 } else { -3 };
-                if modifiers.shift {
-                    self.first_column = self
-                        .first_column
-                        .saturating_add_signed(step)
-                        .min(MAX_COLUMNS - 1);
-                } else {
-                    self.first_row = self.first_row.saturating_add_signed(step).min(MAX_ROWS - 1);
+                if !delta.is_finite() {
+                    return Ok(false);
                 }
+                let steps = |value: f64| {
+                    if value > 0.0 {
+                        3
+                    } else if value < 0.0 {
+                        -3
+                    } else {
+                        0
+                    }
+                };
+                let (columns, rows) = if modifiers.shift {
+                    (steps(f64::from(delta.x) + f64::from(delta.y)), 0)
+                } else {
+                    (steps(f64::from(delta.x)), steps(f64::from(delta.y)))
+                };
+                if columns == 0 && rows == 0 {
+                    return Ok(false);
+                }
+                self.commit(ui)?;
+                self.first_column = self
+                    .first_column
+                    .saturating_add_signed(columns)
+                    .min(MAX_COLUMNS - 1);
+                self.first_row = self.first_row.saturating_add_signed(rows).min(MAX_ROWS - 1);
                 Ok(true)
             }
             InputEvent::KeyDown { key, modifiers, .. }

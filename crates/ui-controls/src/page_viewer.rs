@@ -7,6 +7,8 @@ use rust_desktop_ui_core::{
     pages::{PrintDocument, transform_page},
     *,
 };
+#[cfg(test)]
+mod tests;
 fn err(e: impl ToString) -> ControlError {
     ControlError::Invalid(e.to_string())
 }
@@ -378,13 +380,44 @@ impl PageViewer {
         Ok(())
     }
     fn load_field(&mut self, ui: &mut Controls) -> Result<(), ControlError> {
+        let field = self.pdf.as_ref().and_then(|p| p.fields().get(self.field));
+        let name = field.map_or_else(
+            || "Field value or annotation text".to_owned(),
+            |field| format!("PDF field {}", field.name),
+        );
         self.field_loaded = self
             .pdf
             .as_ref()
             .and_then(|p| p.fields().get(self.field))
             .map_or(String::new(), |f| f.value.clone());
         ui.set_editor_value(self.parts.field_value, &self.field_loaded)?;
+        ui.set_automation_name(self.parts.field_value, name)?;
         Ok(())
+    }
+    /// Restore the last accepted field/note text, including after editor blur.
+    /// An active composition must finish or be cancelled before this operation.
+    pub fn cancel_field_draft(&self, ui: &mut Controls) -> Result<(), ControlError> {
+        if ui
+            .document(self.parts.field_value)
+            .is_some_and(|d| d.composition().is_some())
+        {
+            return Err(err("Finish composition first"));
+        }
+        ui.set_editor_value(self.parts.field_value, &self.field_loaded)?;
+        Ok(())
+    }
+    fn effective_zoom(&self, bounds: Rect) -> f32 {
+        let page = &self.document.pages()[self.page];
+        self.zoom.unwrap_or_else(|| {
+            ((bounds.width - 16.0) / page.size.width)
+                .min((bounds.height - 16.0) / page.size.height)
+                .clamp(0.01, 4.0)
+        })
+    }
+    fn zoom_by(&mut self, ui: &Controls, factor: f32) {
+        if let Some(bounds) = ui.runtime.bounds(self.parts.canvas) {
+            self.zoom = Some((self.effective_zoom(bounds) * factor).clamp(0.01, 4.0));
+        }
     }
     pub fn set_page(&mut self, ui: &mut Controls, page: usize) -> Result<(), ControlError> {
         if page >= self.document.pages().len() {
@@ -467,8 +500,8 @@ impl PageViewer {
                     page.checked_sub(1).ok_or_else(|| err("Pages start at 1"))?,
                 )?;
             }
-            "zoom-in" => self.zoom = Some((self.zoom.unwrap_or(1.0) * 1.25).min(4.0)),
-            "zoom-out" => self.zoom = Some((self.zoom.unwrap_or(1.0) / 1.25).max(0.1)),
+            "zoom-in" => self.zoom_by(ui, 1.25),
+            "zoom-out" => self.zoom_by(ui, 1.0 / 1.25),
             "fit" => {
                 self.zoom = None;
                 self.offset = Point::ZERO;
@@ -509,12 +542,7 @@ impl PageViewer {
                     self.field = (self.field + 1) % pdf.fields().len();
                     let f = pdf.fields()[self.field].clone();
                     self.set_page(ui, f.page)?;
-                    ui.set_editor_value(self.parts.field_value, &f.value)?;
-                    self.field_loaded = f.value;
-                    ui.set_automation_name(
-                        self.parts.field_value,
-                        format!("PDF field {}", f.name),
-                    )?;
+                    self.load_field(ui)?;
                 }
             }
             "field-apply" | "note" => {
@@ -553,6 +581,25 @@ impl PageViewer {
         Ok(true)
     }
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if ui.runtime.focused() == Some(self.parts.field_value)
+            && ui.is_enabled(self.parts.field_value)
+            && matches!(
+                event,
+                InputEvent::KeyDown {
+                    key: Key::Escape,
+                    ..
+                }
+            )
+            && ui
+                .document(self.parts.field_value)
+                .is_none_or(|d| d.composition().is_none())
+        {
+            self.cancel_field_draft(ui)?;
+            return Ok(true);
+        }
+        if !ui.is_enabled(self.parts.canvas) {
+            return Ok(false);
+        }
         let Some(bounds) = ui.runtime.bounds(self.parts.canvas) else {
             return Ok(false);
         };
@@ -562,13 +609,24 @@ impl PageViewer {
                 delta,
                 modifiers,
             } if bounds.contains(position.x, position.y) => {
+                if !delta.is_finite() || *delta == Point::ZERO {
+                    return Ok(false);
+                }
                 if modifiers.control {
-                    let scale = if delta.y > 0.0 { 1.1 } else { 1.0 / 1.1 };
-                    self.zoom = Some((self.zoom.unwrap_or(1.0) * scale).clamp(0.1, 4.0));
+                    if delta.y == 0.0 {
+                        return Ok(false);
+                    }
+                    let scale = if delta.y < 0.0 { 1.1 } else { 1.0 / 1.1 };
+                    self.zoom_by(ui, scale);
                 } else if modifiers.shift {
-                    self.offset.x = (self.offset.x - delta.y).max(0.0);
+                    self.offset.x =
+                        (f64::from(self.offset.x) + f64::from(delta.x) + f64::from(delta.y))
+                            .clamp(0.0, f64::from(f32::MAX)) as f32;
                 } else {
-                    self.offset.y = (self.offset.y - delta.y).max(0.0);
+                    self.offset.x = (f64::from(self.offset.x) + f64::from(delta.x))
+                        .clamp(0.0, f64::from(f32::MAX)) as f32;
+                    self.offset.y = (f64::from(self.offset.y) + f64::from(delta.y))
+                        .clamp(0.0, f64::from(f32::MAX)) as f32;
                 }
                 Ok(true)
             }
@@ -596,10 +654,7 @@ impl PageViewer {
         let tokens = ui.theme().tokens();
         if let Some(bounds) = ui.runtime.bounds(self.parts.canvas) {
             let page = &self.document.pages()[self.page];
-            let fit = ((bounds.width - 16.0) / page.size.width)
-                .min((bounds.height - 16.0) / page.size.height)
-                .clamp(0.01, 4.0);
-            let scale = self.zoom.unwrap_or(fit);
+            let scale = self.effective_zoom(bounds);
             self.offset.x = self
                 .offset
                 .x

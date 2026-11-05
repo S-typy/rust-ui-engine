@@ -179,6 +179,39 @@ fn stale_lazy_locations_cannot_validate_deleted_keys_before_update() {
 fn frame(ui: &mut Controls) {
     ui.update(Size::new(640.0, 480.0)).unwrap();
 }
+
+#[test]
+fn wheel_offsets_follow_the_shared_viewport_direction_without_changing_selection() {
+    let (mut ui, id, source) = setup(true);
+    source
+        .borrow_mut()
+        .replace((1..=100).map(|key| node(key, None)).collect())
+        .unwrap();
+    ui.tree_resize_column(id, ColumnId(0), 800.0).unwrap();
+    ui.set_tree_selected_key(id, Some(RowKey(2))).unwrap();
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let position = Point::new(bounds.x + 150.0, bounds.y + 90.0);
+    for (delta, shift, expected) in [
+        (Point::new(0.0, 84.0), false, (0.0, 84.0)),
+        (Point::new(0.0, 84.0), true, (84.0, 84.0)),
+        (Point::new(-24.0, -28.0), false, (60.0, 56.0)),
+        (Point::ZERO, false, (60.0, 56.0)),
+    ] {
+        ui.dispatch(InputEvent::Wheel {
+            position,
+            delta,
+            modifiers: Modifiers {
+                shift,
+                ..Default::default()
+            },
+        })
+        .unwrap();
+        frame(&mut ui);
+        assert_eq!(ui.tree_model(id).unwrap().scroll_offset(), expected);
+        assert_eq!(ui.tree_selected_keys(id).unwrap(), [RowKey(2)]);
+    }
+}
 fn setup(header: bool) -> (Controls, WidgetId, Rc<RefCell<IndexedTreeSource>>) {
     let source = Rc::new(RefCell::new(
         IndexedTreeSource::new(vec![

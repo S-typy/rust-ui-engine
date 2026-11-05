@@ -258,11 +258,13 @@ impl Controls {
                         state.scroll.cancel();
                         state.model.cancel_pointer();
                         if modifiers.shift {
-                            state.model.scroll_by(-f64::from(delta.x + delta.y), 0.0)
+                            state
+                                .model
+                                .scroll_by(f64::from(delta.x) + f64::from(delta.y), 0.0)
                         } else {
                             state
                                 .model
-                                .scroll_by(-f64::from(delta.x), -f64::from(delta.y))
+                                .scroll_by(f64::from(delta.x), f64::from(delta.y))
                         }
                     }
                     InputEvent::KeyDown { key, modifiers, .. }

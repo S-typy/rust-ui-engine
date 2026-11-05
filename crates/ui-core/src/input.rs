@@ -62,6 +62,8 @@ pub enum InputEvent {
         modifiers: Modifiers,
     },
     PointerLeft,
+    /// Desired scroll offset in logical pixels: positive X/Y moves the viewport
+    /// right/down. A content translation uses the opposite sign.
     Wheel {
         position: Point,
         delta: Point,
