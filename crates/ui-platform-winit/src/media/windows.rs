@@ -42,11 +42,15 @@ impl Drop for Runtime {
         }
     }
 }
+struct CachedFrame {
+    requested: Duration,
+    frame: MediaFrame,
+}
 struct Video {
     reader: IMFSourceReader,
     _runtime: Runtime,
     info: MediaInfo,
-    last: Option<Duration>,
+    last: Option<CachedFrame>,
 }
 pub(super) fn open(
     path: &Path,
@@ -151,11 +155,24 @@ impl MediaProvider for Video {
         position: Duration,
         cancelled: &AtomicBool,
     ) -> Result<Option<MediaFrame>, MediaError> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(error("Cancelled"));
+        }
         if self.info.duration.is_some_and(|d| position >= d) {
             return Ok(None);
         }
+        if let Some(cached) = &self.last
+            && position >= cached.requested
+            && position <= cached.frame.position
+        {
+            // A sample at/after the request remains valid for every intervening
+            // clock tick. Repeated paused requests must not advance ReadSample.
+            // Bitmap clones share immutable pixels; this cache owns one frame.
+            return Ok(Some(cached.frame.clone()));
+        }
         // Seek only discontinuities. Sequential playback preserves decoder state.
-        if self.last.map_or(!position.is_zero(), |p| {
+        if self.last.as_ref().map_or(!position.is_zero(), |cached| {
+            let p = cached.frame.position;
             position < p || position.saturating_sub(p) > Duration::from_millis(500)
         }) {
             let ticks = i64::try_from(position.as_nanos() / 100).map_err(error)?;
@@ -210,11 +227,15 @@ impl MediaProvider for Video {
             }
             let buffer = unsafe { sample.ConvertToContiguousBuffer() }.map_err(error)?;
             let bitmap = read_bitmap(&buffer, &media, width, height)?;
-            self.last = Some(time);
-            return Ok(Some(MediaFrame {
+            let frame = MediaFrame {
                 position: time,
                 bitmap,
-            }));
+            };
+            self.last = Some(CachedFrame {
+                requested: position,
+                frame: frame.clone(),
+            });
+            return Ok(Some(frame));
         }
         Err(error("Video sample search budget exceeded"))
     }

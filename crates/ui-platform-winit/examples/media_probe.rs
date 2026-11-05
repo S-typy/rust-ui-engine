@@ -9,12 +9,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut provider = rust_desktop_ui_platform_winit::media::open_video_file(&path, &cancel)?;
     println!("provider: {:?}", provider.info());
     let duration = provider.info().duration.ok_or("No duration")?;
-    let positions = [Duration::ZERO, duration / 2, Duration::ZERO, duration / 3];
+    let positions = [
+        Duration::ZERO,
+        duration / 2,
+        Duration::ZERO,
+        duration / 3 + Duration::from_nanos(1),
+    ];
     for (index, position) in positions.into_iter().enumerate() {
         let frame = provider
             .frame_at(position, &cancel)?
             .ok_or("Unexpected end of stream")?;
         assert!(frame.position >= position);
+        // Verify repeated and intermediate clock requests against the original
+        // sample's timestamp AND pixels, independently of decoder internals.
+        for repeated in [
+            position,
+            position,
+            position + (frame.position - position) / 2,
+            frame.position,
+        ] {
+            let same = provider
+                .frame_at(repeated, &cancel)?
+                .ok_or("Repeated frame disappeared")?;
+            assert_eq!(
+                same.position, frame.position,
+                "Repeated request advanced decoder"
+            );
+            assert_eq!(
+                same.bitmap.pixels(),
+                frame.bitmap.pixels(),
+                "Repeated request changed pixels"
+            );
+        }
         println!(
             "frame {index}: requested={position:?} actual={:?} {}x{} bytes={}",
             frame.position,
@@ -38,12 +64,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
     cancel.store(true, std::sync::atomic::Ordering::Release);
+    assert!(provider.frame_at(positions[3], &cancel).is_err());
     assert!(provider.frame_at(Duration::ZERO, &cancel).is_err());
     drop(provider);
     // Reopen verifies independent decoder state and balanced runtime lifetime.
     cancel.store(false, std::sync::atomic::Ordering::Release);
     let mut second = rust_desktop_ui_platform_winit::media::open_video_file(&path, &cancel)?;
     assert!(MediaProvider::frame_at(&mut *second, Duration::ZERO, &cancel)?.is_some());
-    println!("seek/cancel/reopen: PASS; audio/camera/window actions: none");
+    println!("seek/repeat/intermediate/cancel/reopen: PASS; audio/camera/window actions: none");
     Ok(())
 }
