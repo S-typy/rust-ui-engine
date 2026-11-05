@@ -826,3 +826,73 @@ fn report_canvas_and_dashboard_retain_editors_across_resize_and_filter() {
     assert_eq!(dashboard.widget("chart"), Some(chart));
     assert_eq!(dashboard.session().results()["chart"].rows, vec![2]);
 }
+
+#[test]
+fn dashboard_tile_headings_do_not_overlap_content_after_theme_and_size_changes() {
+    let mut session = dashboard();
+    let mut definition = session.definition().clone();
+    for (column, (id, widget)) in [
+        ("metric", DashboardWidget::Metric { aggregate: 0 }),
+        (
+            "missing",
+            DashboardWidget::Missing {
+                name: "Plugin".into(),
+                payload: serde_json::json!({"retained": true}),
+            },
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut item = definition.items[0].clone();
+        item.id = id.into();
+        item.title = id.into();
+        item.widget = widget;
+        item.placement.row = 1;
+        item.placement.column = column;
+        definition.items.push(item);
+    }
+    session.replace(session.revision(), definition).unwrap();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let mut dashboard = Dashboard::mount(
+        &mut ui,
+        root,
+        session,
+        LayoutStyle {
+            width: Length::Percent(1.0),
+            height: Length::Percent(1.0),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        for size in [Size::new(1280.0, 900.0), Size::new(850.0, 700.0)] {
+            ui.update(size).unwrap();
+            dashboard.refresh(&mut ui).unwrap();
+            ui.update(size).unwrap();
+            for id in ["grid", "chart", "metric", "missing"] {
+                let content = dashboard.widget(id).unwrap();
+                let tile = ui.runtime.tree().parent(content).unwrap();
+                let heading = ui.runtime.tree().children(tile).unwrap()[0];
+                let header = ui.runtime.bounds(heading).unwrap();
+                let body = ui.runtime.bounds(content).unwrap();
+                let bounds = ui.runtime.bounds(tile).unwrap();
+                assert!(header.height >= 36.0);
+                assert!(
+                    header.y + header.height <= body.y,
+                    "{id}: heading {header:?} overlaps content {body:?}"
+                );
+                assert!(body.y + body.height <= bounds.y + bounds.height - 5.0 + 0.01);
+                let edge = Point::new(
+                    header.x + header.width * 0.5,
+                    header.y + header.height - 0.5,
+                );
+                if ui.runtime.clip(heading).unwrap().contains(edge.x, edge.y) {
+                    assert_eq!(ui.runtime.hit_test(edge), Some(heading));
+                }
+            }
+        }
+    }
+}

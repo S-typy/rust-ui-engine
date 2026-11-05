@@ -409,7 +409,7 @@ fn build(
                 LayoutStyle {
                     kind: LayoutKind::Grid,
                     grid_columns: vec![GridTrack::Fr(1.0)],
-                    grid_rows: vec![GridTrack::Px(34.0), GridTrack::Fr(1.0)],
+                    grid_rows: vec![GridTrack::Auto, GridTrack::Fr(1.0)],
                     padding: Edges::all(5.0),
                     grid_row: GridPlacement {
                         start: Some((p.row + 1) as u16),
