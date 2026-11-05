@@ -1,5 +1,7 @@
 use crate::form::Form;
-use rust_desktop_ui_controls::{ChartModel, ChartRange, ChartSeries, ChartSettings, ChartView};
+use rust_desktop_ui_controls::{
+    ChartModel, ChartRange, ChartScale, ChartSeries, ChartSettings, ChartView,
+};
 use rust_desktop_ui_core::{LayoutStyle, Length, Size, WidgetId};
 use rust_desktop_ui_platform_winit::{DesktopApp, EventResponse, PlatformEvent, accesskit};
 use rust_desktop_ui_xaml::WindowDefinition;
@@ -45,6 +47,19 @@ fn sample(generation: u32) -> Vec<ChartSeries> {
             .unwrap()
         })
         .collect()
+}
+fn log_sample(generation: u32) -> Vec<ChartSeries> {
+    let mut data = sample(generation);
+    for series in &mut data {
+        for point in &mut series.points {
+            point.x = 10.0f64.powf(point.id as f64 / 2.0);
+            point.y = point.y.map(|_| {
+                10.0f64.powf((point.id as f64 + generation as f64 * 0.1) / 2.0)
+                    * if series.id == 1 { 1.0 } else { 0.5 }
+            });
+        }
+    }
+    data
 }
 fn settings(view: ChartView) -> ChartSettings {
     ChartSettings {
@@ -118,6 +133,7 @@ impl ChartsDemo {
             ("ChartStackedBar", "Накопление"),
             ("ChartArea", "Области"),
             ("ChartStackedArea", "Слои областей"),
+            ("ChartLog", "Логарифм"),
         ]
         .into_iter()
         .enumerate()
@@ -172,12 +188,28 @@ impl ChartsDemo {
                         s.y_range = None
                     } else {
                         s.x_range = Some(ChartRange {
-                            minimum: 0.5,
-                            maximum: 5.5,
+                            minimum: if s.x_scale == ChartScale::Log10 {
+                                10.0
+                            } else {
+                                0.5
+                            },
+                            maximum: if s.x_scale == ChartScale::Log10 {
+                                1000.0
+                            } else {
+                                5.5
+                            },
                         });
                         s.y_range = Some(ChartRange {
-                            minimum: -2.0,
-                            maximum: 12.0,
+                            minimum: if s.y_scale == ChartScale::Log10 {
+                                1.0
+                            } else {
+                                -2.0
+                            },
+                            maximum: if s.y_scale == ChartScale::Log10 {
+                                1000.0
+                            } else {
+                                12.0
+                            },
                         });
                     }
                 }
@@ -193,6 +225,11 @@ impl ChartsDemo {
                 12 => s.view = ChartView::StackedBar,
                 13 => s.view = ChartView::Area,
                 14 => s.view = ChartView::StackedArea,
+                15 => {
+                    s = settings(ChartView::Line);
+                    s.x_scale = ChartScale::Log10;
+                    s.y_scale = ChartScale::Log10;
+                }
                 _ => {}
             }
             if matches!(
@@ -213,10 +250,23 @@ impl ChartsDemo {
                 )
                 .map_err(error)?;
             } else {
-                if m.family().is_some() {
+                if (m.family().is_some() && action != 15)
+                    || matches!(
+                        s.view,
+                        ChartView::Bar
+                            | ChartView::Area
+                            | ChartView::StackedBar
+                            | ChartView::StackedArea
+                    ) && (s.x_scale != ChartScale::Linear || s.y_scale != ChartScale::Linear)
+                {
                     s = settings(s.view);
                 }
-                m.replace(sample(self.generation), s).map_err(error)?;
+                let data = if s.x_scale == ChartScale::Log10 || s.y_scale == ChartScale::Log10 {
+                    log_sample(self.generation)
+                } else {
+                    sample(self.generation)
+                };
+                m.replace(data, s).map_err(error)?;
             }
             let cartesian = m.family().is_none();
             self.form.ui.set_chart_model(self.chart, m).map_err(error)?;
@@ -354,6 +404,7 @@ mod tests {
                 "ChartTreemap",
                 "ChartSunburst",
                 "ChartSankey",
+                "ChartLog",
             ] {
                 let b = app
                     .form
@@ -390,6 +441,7 @@ mod tests {
                     "Дерево площадей",
                     "Кольца дерева",
                     "Потоки",
+                    "Логарифм",
                 ] {
                     assert!(
                         app.form

@@ -37,7 +37,7 @@ impl Controls {
         self.scene_dirty = true;
         Ok(())
     }
-    /// Zoom Cartesian axes around a normalized lower-left data-space anchor.
+    /// Zoom Cartesian axes around a normalized lower-left axis-space anchor.
     /// A successful change cancels a captured gesture and keeps point selection.
     pub fn zoom_chart(
         &mut self,

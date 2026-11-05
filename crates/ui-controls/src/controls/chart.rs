@@ -54,12 +54,10 @@ impl Controls {
     ) -> Result<String, ControlError> {
         let summary = Self::chart_summary(model);
         self.preflight_new_editor_text(&format!("Компактная диаграмма. {summary}"), style, false)?;
+        let titles = model.axis_titles();
         for value in std::iter::once(summary.as_str())
             .chain(model.series().iter().map(|s| s.label.as_str()))
-            .chain([
-                model.settings().x_title.as_str(),
-                model.settings().y_title.as_str(),
-            ])
+            .chain([titles[0].as_str(), titles[1].as_str()])
         {
             if value.contains(['\u{2028}', '\u{2029}']) {
                 return Err(error("Chart labels must be single-line"));
@@ -82,11 +80,10 @@ impl Controls {
             }
         }
         for value in model
-            .x_range()
-            .ticks()
+            .x_ticks()
             .map_err(error)?
             .into_iter()
-            .chain(model.y_range().ticks().map_err(error)?)
+            .chain(model.y_ticks().map_err(error)?)
         {
             self.preflight_new_editor_text(&ChartModel::format_number(value), style, false)?;
         }
@@ -141,17 +138,35 @@ impl Controls {
             (None, b) => b,
         }
     }
-    /// Readable manual viewport bounds, separate from the selected observation.
-    /// Automatic ranges and non-Cartesian families have no view override.
+    /// Readable manual viewport bounds and logarithmic axis context, separate
+    /// from the selected raw observation.
     pub fn chart_view_description(&self, id: WidgetId) -> Option<String> {
         let model = self.chart_model(id)?;
-        if model.settings().x_range.is_none() && model.settings().y_range.is_none() {
-            return None;
+        let settings = model.settings();
+        let scales = [("X", settings.x_scale), ("Y", settings.y_scale)]
+            .into_iter()
+            .filter_map(|(name, scale)| (scale == ChartScale::Log10).then_some(name))
+            .collect::<Vec<_>>();
+        let context = if scales.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "Логарифмическая шкала (основание 10): {}",
+                scales.join(", ")
+            )
+        };
+        if settings.x_range.is_none() && settings.y_range.is_none() {
+            return (!context.is_empty()).then_some(context);
         }
+        let suffix = if context.is_empty() {
+            context
+        } else {
+            format!(". {context}")
+        };
         let x = model.x_range();
         let y = model.y_range();
         Some(format!(
-            "Видимый диапазон: X {} … {}; Y {} … {}",
+            "Видимый диапазон: X {} … {}; Y {} … {}{suffix}",
             ChartModel::format_number(x.minimum),
             ChartModel::format_number(x.maximum),
             ChartModel::format_number(y.minimum),

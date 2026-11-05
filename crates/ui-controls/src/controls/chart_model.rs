@@ -11,6 +11,9 @@ mod cartesian;
 pub use cartesian::ChartArea;
 #[path = "chart_navigation.rs"]
 mod navigation;
+#[path = "chart_scale.rs"]
+mod scale;
+pub use scale::ChartScale;
 #[path = "chart_stacked_area.rs"]
 mod stacked_area;
 
@@ -80,6 +83,8 @@ impl ChartRange {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ChartSettings {
     pub view: ChartView,
+    pub x_scale: ChartScale,
+    pub y_scale: ChartScale,
     pub x_range: Option<ChartRange>,
     pub y_range: Option<ChartRange>,
     pub legend: bool,
@@ -90,6 +95,8 @@ impl Default for ChartSettings {
     fn default() -> Self {
         Self {
             view: ChartView::Line,
+            x_scale: ChartScale::Linear,
+            y_scale: ChartScale::Linear,
             x_range: None,
             y_range: None,
             legend: true,
@@ -262,6 +269,14 @@ impl ChartModel {
         ) {
             return Err(ChartError::InvalidView);
         }
+        if (settings.x_scale != ChartScale::Linear || settings.y_scale != ChartScale::Linear)
+            && !matches!(
+                settings.view,
+                ChartView::Line | ChartView::Scatter | ChartView::Sparkline
+            )
+        {
+            return Err(ChartError::InvalidView);
+        }
         if series.len() > MAX_CHART_SERIES {
             return Err(ChartError::Capacity);
         }
@@ -293,7 +308,7 @@ impl ChartModel {
         let stacks = cartesian::validate(&series, settings.view)?;
         let mut x_range = match settings.x_range {
             Some(r) => r,
-            None => automatic(
+            None => settings.x_scale.automatic(
                 series.iter().flat_map(|s| s.points.iter().map(|p| p.x)),
                 false,
             )?,
@@ -314,7 +329,7 @@ impl ChartModel {
                     true,
                 )?
             }
-            None => automatic(
+            None => settings.y_scale.automatic(
                 series
                     .iter()
                     .flat_map(|s| s.points.iter().filter_map(|p| p.y)),
@@ -338,14 +353,14 @@ impl ChartModel {
                 x_range.maximum = (x_range.maximum + pad).next_up();
             }
         }
-        x_range.validate()?;
-        y_range.validate()?;
+        settings.x_scale.domain(x_range)?;
+        settings.y_scale.domain(y_range)?;
         // The complete normalized candidate is checked before publication, including
         // points outside explicit ranges. Extremely ill-conditioned scales refuse.
         for p in series.iter().flat_map(|s| &s.points) {
-            x_range.fraction(p.x)?;
+            settings.x_scale.fraction(x_range, p.x)?;
             if let Some(y) = p.y {
-                y_range.fraction(y)?;
+                settings.y_scale.fraction(y_range, y)?;
             }
         }
         for (base, end) in stacks.iter().flatten().flatten() {
@@ -370,6 +385,8 @@ impl ChartModel {
             || settings.y_range.is_some()
             || !settings.x_title.is_empty()
             || !settings.y_title.is_empty()
+            || settings.x_scale != ChartScale::Linear
+            || settings.y_scale != ChartScale::Linear
         {
             return Err(ChartError::InvalidRange);
         }
@@ -478,6 +495,25 @@ impl ChartModel {
     pub fn series(&self) -> &[ChartSeries] {
         &self.series
     }
+    /// Tick values are raw observations, spaced in the selected axis domain.
+    pub fn x_ticks(&self) -> Result<Vec<f64>, ChartError> {
+        self.settings.x_scale.ticks(self.x_range)
+    }
+    pub fn y_ticks(&self) -> Result<Vec<f64>, ChartError> {
+        self.settings.y_scale.ticks(self.y_range)
+    }
+    pub(super) fn x_fraction(&self, value: f64) -> Result<f64, ChartError> {
+        self.settings.x_scale.fraction(self.x_range, value)
+    }
+    pub(super) fn y_fraction(&self, value: f64) -> Result<f64, ChartError> {
+        self.settings.y_scale.fraction(self.y_range, value)
+    }
+    pub(super) fn axis_titles(&self) -> [String; 2] {
+        [
+            self.settings.x_scale.caption(&self.settings.x_title),
+            self.settings.y_scale.caption(&self.settings.y_title),
+        ]
+    }
     pub fn settings(&self) -> &ChartSettings {
         &self.settings
     }
@@ -536,8 +572,8 @@ impl ChartModel {
         };
         let mut result = ChartGeometry {
             plot,
-            x_ticks: self.x_range.ticks()?,
-            y_ticks: self.y_range.ticks()?,
+            x_ticks: self.x_ticks()?,
+            y_ticks: self.y_ticks()?,
             points: Vec::new(),
             segments: Vec::new(),
             bars: Vec::new(),
@@ -562,7 +598,7 @@ impl ChartModel {
             .series
             .iter()
             .flat_map(|s| &s.points)
-            .map(|p| self.x_range.fraction(p.x))
+            .map(|p| self.x_fraction(p.x))
             .collect::<Result<_, _>>()?;
         xs.sort_by(f64::total_cmp);
         xs.dedup();
@@ -595,7 +631,7 @@ impl ChartModel {
                     previous = None;
                     continue;
                 };
-                let x = self.x_range.fraction(point.x)?;
+                let x = self.x_fraction(point.x)?;
                 let (base, end) = if stacked {
                     let Some(span) = self.stacks[series_index][point_index] else {
                         continue;
@@ -604,7 +640,7 @@ impl ChartModel {
                 } else {
                     (0.0, value)
                 };
-                let y = self.y_range.fraction(end)?;
+                let y = self.y_fraction(end)?;
                 let key = ChartPointKey {
                     series: series.id,
                     point: point.id,

@@ -171,8 +171,9 @@ impl ChartPainter<'_> {
         let spark = model.settings().view == ChartView::Sparkline;
         if !spark {
             for value in &geometry.y_ticks {
-                let fraction = (*value - model.y_range().minimum)
-                    / (model.y_range().maximum - model.y_range().minimum);
+                let fraction = model
+                    .y_fraction(*value)
+                    .map_err(|e| ControlError::Invalid(e.to_string()))?;
                 let y = plot.y + (1.0 - fraction) as f32 * plot.height;
                 self.scene.stroke_path(
                     &[StrokeSegment {
@@ -195,8 +196,9 @@ impl ChartPainter<'_> {
                 )?;
             }
             for value in &geometry.x_ticks {
-                let fraction = (*value - model.x_range().minimum)
-                    / (model.x_range().maximum - model.x_range().minimum);
+                let fraction = model
+                    .x_fraction(*value)
+                    .map_err(|e| ControlError::Invalid(e.to_string()))?;
                 let x = plot.x + fraction as f32 * plot.width;
                 self.scene.stroke_path(
                     &[StrokeSegment {
@@ -226,7 +228,7 @@ impl ChartPainter<'_> {
             text(
                 self.scene,
                 self.engine,
-                &model.settings().y_title,
+                &model.axis_titles()[1],
                 Rect::new(plot.x, bounds.y + 4.0, plot.width, 24.0),
                 clip,
                 tokens.text,
@@ -236,7 +238,7 @@ impl ChartPainter<'_> {
             text(
                 self.scene,
                 self.engine,
-                &model.settings().x_title,
+                &model.axis_titles()[0],
                 Rect::new(plot.x, plot.y + plot.height + 28.0, plot.width, 22.0),
                 clip,
                 tokens.text,

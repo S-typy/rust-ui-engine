@@ -4,7 +4,8 @@
 an optional selected item. Cartesian views are `Line`, `Scatter`, `Bar`, and
 `Sparkline`, `StackedBar`, `Area` and `StackedArea`. Typed `ChartFamily` observations add `Pie`, `Heatmap`, `Treemap`,
 `Sunburst` and `Sankey`. Sparkline uses the same line geometry with a compact
-presentation. Logarithmic and time axes remain outside this profile.
+presentation. Line, Scatter and Sparkline support independent linear or base-ten
+logarithmic axes. Time axes remain outside this profile.
 
 `ChartSeries` has a stable `u64` ID, label and points. Each point has a full signed
 `i64` ID unique within its series, a finite `x` and optional finite `y`. Point order
@@ -21,7 +22,7 @@ provider I/O or edit any source row.
 
 ## Ranges and geometry
 
-Both axes use finite linear ranges with positive finite spans. Automatic empty
+By default both axes use finite linear ranges with positive finite spans. Automatic empty
 ranges are 0..1. Constant ranges expand symmetrically by 5% of the larger of 1 and
 the absolute value. Automatic bar y includes zero; automatic bar x pads by half
 the minimum distinct x interval, rounded outward, so endpoint bars fit fully.
@@ -38,14 +39,37 @@ width/height in 1..1e6 logical units. Tight layout is a presenter concern; inval
 geometry is never published as a successful model operation.
 
 `geometry(plot)` produces `ChartMark`, `ChartLine` and `ChartBar` arrays plus
-evenly spaced axis ticks. NULL discontinuities are preserved when clipping.
+axis ticks spaced in the selected coordinate domain. NULL discontinuities are preserved when clipping.
 Grouped bars have distinct positions by series order; their point markers use
 the actual bar center. The same returned geometry drives drawing and hit tests.
 `hit_test` first chooses the last drawn containing bar, then the nearest marker
 within a finite nonnegative radius. Equal marker distances use series/input
 order. Plot endpoints are inclusive for hit testing. Out-of-plot input returns
 no point. Stored observations are never interpolated, decimated or aggregated;
-line and area geometry connects adjacent values with linear segments.
+line and area geometry connects adjacent transformed coordinates with straight segments.
+
+### Logarithmic axes
+
+Set `ChartSettings.x_scale` and/or `y_scale` to `ChartScale::Log10` for Line,
+Scatter or Sparkline. Both default to `Linear`. Bar, StackedBar, Area,
+StackedArea and non-Cartesian families reject logarithmic settings: their zero
+baselines or categorical regions do not define a positive logarithmic domain.
+
+Every X and non-NULL Y on a logarithmic axis must be finite and strictly positive,
+including observations outside an explicit viewport. NULL still breaks a line.
+Public ranges, values and selected keys remain raw; only geometry uses log10.
+Empty automatic log ranges are 1..10. A singleton gets half a decade of padding
+on each side, bounded by the smallest positive f64 and f64::MAX. Multiple
+observations retain exact raw extrema. Ranges with indistinguishable transformed
+bounds or overflowing inverse transforms are rejected atomically.
+
+`x_ticks()` and `y_ticks()` return raw values: up to five major powers of ten
+where possible, otherwise up to five values spaced in logarithmic coordinates.
+For six to nine consecutive decades, intermediate powers are thinned while
+retaining endpoint decades to keep labels apart at the minimum full chart size.
+Duplicate rounded ticks are removed. `ChartRange::ticks()` remains a linear
+range utility. Drawing, hit testing, grid lines and exported pages share the
+same coordinate transform. Axis captions append `log10`; source titles are unchanged.
 
 ### Accumulation and filled areas
 
@@ -96,8 +120,10 @@ without changing their geometry or the shared renderer's path limits.
 `set_view_ranges(x, y)` sets each explicit range or uses `None` to restore the
 range derived from the observations. `zoom_at(factor, anchor)` scales both spans:
 values above one zoom in, and the normalized anchor `(0, 0)` is the lower-left,
-`(1, 1)` the upper-right data-space corner. `pan(x, y)` shifts each range by that
-fraction of its current span; positive offsets move toward larger coordinates.
+`(1, 1)` the upper-right axis-space corner. `pan(x, y)` shifts each range by that
+fraction of its current domain span; positive offsets move toward larger coordinates.
+On logarithmic axes these operations work in log10 space before converting the
+result back to raw bounds. A zero offset leaves that axis's raw bounds exact.
 
 Transforms validate a complete candidate before publication. Factors must be
 finite and positive, anchors finite and within `[0, 1]`, and offsets finite.
@@ -118,7 +144,7 @@ explicit conversion. The helper does not parse display text or issue a query.
 - At most 16 series and 4096 points in total.
 - Unique series IDs and point IDs within each series.
 - Series labels and axis titles at most 256 UTF-8 bytes, without control characters.
-- At most five distinct ticks per axis; duplicate floating-point ticks are removed.
+- At most five ticks per axis; duplicate floating-point ticks are removed.
 - Invalid input produces a small typed `ChartError` without copying large payloads.
 
 The drawing presenter must preflight final composed labels through the text
@@ -129,7 +155,7 @@ retained input checks and native visual acceptance are separate evidence.
 ## Partitions, cells, hierarchies and flows
 
 Use `ChartModel::from_family(data, settings)` and `replace_family` for these
-views. X/Y titles and explicit Cartesian ranges are rejected. `series()` is
+views. X/Y titles, logarithmic settings and explicit Cartesian ranges are rejected. `series()` is
 empty and `point()` returns `None`; observations remain available through
 `family()`. The legacy `x_range()` and `y_range()` unit intervals describe no
 data axis for these views. Their geometry contains no numeric axis ticks.

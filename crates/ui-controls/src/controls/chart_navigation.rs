@@ -23,7 +23,7 @@ impl ChartModel {
         Ok(true)
     }
 
-    /// Zoom both axes by a positive factor around a normalized data-space anchor.
+    /// Zoom both axes by a positive factor around a normalized axis-space anchor.
     /// A factor above one zooms in. (0,0) is the lower-left plot corner; (1,1)
     /// is the upper-right. Invalid or ill-conditioned candidates are atomic.
     pub fn zoom_at(&mut self, factor: f64, anchor: (f64, f64)) -> Result<bool, ChartError> {
@@ -50,12 +50,20 @@ impl ChartModel {
             }
         };
         self.set_view_ranges(
-            Some(zoom(self.x_range, anchor.0)),
-            Some(zoom(self.y_range, anchor.1)),
+            Some(
+                self.settings
+                    .x_scale
+                    .raw(zoom(self.settings.x_scale.domain(self.x_range)?, anchor.0))?,
+            ),
+            Some(
+                self.settings
+                    .y_scale
+                    .raw(zoom(self.settings.y_scale.domain(self.y_range)?, anchor.1))?,
+            ),
         )
     }
 
-    /// Translate the viewport by fractions of its current spans. Positive
+    /// Translate the viewport by fractions of its current axis-domain spans. Positive
     /// offsets move the view toward larger data coordinates, without editing data.
     pub fn pan(&mut self, x: f64, y: f64) -> Result<bool, ChartError> {
         if self.family.is_some() {
@@ -74,6 +82,21 @@ impl ChartModel {
                 maximum: range.maximum + delta,
             }
         };
-        self.set_view_ranges(Some(shift(self.x_range, x)), Some(shift(self.y_range, y)))
+        self.set_view_ranges(
+            Some(if x == 0.0 {
+                self.x_range
+            } else {
+                self.settings
+                    .x_scale
+                    .raw(shift(self.settings.x_scale.domain(self.x_range)?, x))?
+            }),
+            Some(if y == 0.0 {
+                self.y_range
+            } else {
+                self.settings
+                    .y_scale
+                    .raw(shift(self.settings.y_scale.domain(self.y_range)?, y))?
+            }),
+        )
     }
 }

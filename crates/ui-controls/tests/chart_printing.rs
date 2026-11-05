@@ -1,6 +1,6 @@
 use rust_desktop_ui_controls::{
-    ChartFamily, ChartModel, ChartPoint, ChartPointKey, ChartRange, ChartSeries, ChartSettings,
-    ChartSlice, ChartView, Controls, Theme,
+    ChartFamily, ChartModel, ChartPoint, ChartPointKey, ChartRange, ChartScale, ChartSeries,
+    ChartSettings, ChartSlice, ChartView, Controls, Theme,
     pdf::PdfError,
     printing::{ChartPrintOptions, export_pdf, from_chart},
 };
@@ -123,6 +123,85 @@ fn snapshot_keeps_viewport_selection_and_has_the_same_ink_as_the_control() {
                 }
             }
         }
+    }
+}
+
+#[test]
+fn logarithmic_grid_and_point_positions_match_mounted_and_printed_scenes() {
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        let model = ChartModel::new(
+            vec![ChartSeries {
+                id: 1,
+                label: "Powers".into(),
+                points: [1.0, 10.0, 100.0, 1000.0]
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, v)| ChartPoint {
+                        id: i as i64,
+                        x: v,
+                        y: Some(v),
+                    })
+                    .collect(),
+            }],
+            ChartSettings {
+                x_scale: ChartScale::Log10,
+                y_scale: ChartScale::Log10,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let size = Size::new(800.0, 500.0);
+        let doc = from_chart(
+            &model,
+            &mut TextEngine::new(),
+            "Log10",
+            ChartPrintOptions {
+                page_size: size,
+                margin: 8.0,
+                theme,
+                include_selection: false,
+            },
+            || false,
+        )
+        .unwrap();
+        let mut ui = Controls::new(theme).unwrap();
+        let id = ui
+            .chart(
+                ui.root(),
+                model,
+                LayoutStyle {
+                    width: Length::Percent(1.0),
+                    height: Length::Percent(1.0),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        ui.update(size).unwrap();
+        let plot = ui.chart_geometry(id).unwrap().unwrap().plot;
+        let page = &doc.pages()[0].scene;
+        let mut mounted = ui.scene().clone();
+        let body = Rect::new(8.0, 8.0, 784.0, 484.0);
+        for path in &mut mounted.stroke_paths {
+            path.clip = path.clip.intersection(body).unwrap();
+        }
+        assert_eq!(page.stroke_paths, mounted.stroke_paths);
+        // Independent expected grid positions, not merely equality of two users
+        // of the same painter: raw 10 and100 must lie at one and two thirds.
+        for i in 0..=3 {
+            let y = plot.y + plot.height * (1.0 - i as f32 / 3.0);
+            assert!(page.stroke_paths.iter().flat_map(|p| &p.segments).any(
+                |s| (s.start.y - y).abs() < 0.001
+                    && (s.end.y - y).abs() < 0.001
+                    && (s.start.x - plot.x).abs() < 0.001
+                    && (s.end.x - plot.x - plot.width).abs() < 0.001
+            ));
+        }
+        assert_eq!(page.texts.iter().filter(|t| t.text == "log10").count(), 2);
+        assert!(
+            export_pdf(&doc, &mut TextEngine::new(), || false)
+                .unwrap()
+                .starts_with(b"%PDF-")
+        );
     }
 }
 
