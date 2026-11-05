@@ -176,6 +176,11 @@ with a diagnostic, rather than a guessed result. Printing uses the same formatte
 and rejects unsupported formats explicitly. Formatting does not alter typed
 clipboard values or formulas.
 
+Short rows reduce vertical text padding before clipping glyphs. Their stored
+height, selection and editor geometry stay unchanged, and the same rule applies
+to printed pages. Explicitly very short rows or wrapped content may still clip;
+use row auto-fit when the height should follow the displayed content.
+
 The format picker shows the active cell's format, including an existing custom
 format that is not among its presets. Choosing a preset only stages the choice;
 «Применить» applies it to every selected anchor. A mixed-format selection shows

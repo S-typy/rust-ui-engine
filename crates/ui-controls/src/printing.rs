@@ -67,22 +67,44 @@ pub fn prepare_for_printer(
                         .prepare_styled(run, page.scene.text_spans(i), scale)
                         .map_err(invalid)?;
                     for g in &prepared.glyphs {
-                        let mut pixels = g.bitmap.rgba.clone();
-                        for p in pixels.chunks_exact_mut(4) {
-                            p[0] = (f32::from(p[0]) * g.tint.r).round() as u8;
-                            p[1] = (f32::from(p[1]) * g.tint.g).round() as u8;
-                            p[2] = (f32::from(p[2]) * g.tint.b).round() as u8;
-                            p[3] = (f32::from(p[3]) * g.tint.a).round() as u8;
+                        // A tight image clip can discard an edge sample when a
+                        // PDF viewer downsamples at a fractional pixel position.
+                        // Keep a transparent texel around the ink, with edge RGB
+                        // extended for straight-alpha image interpolation. The
+                        // original text/ancestor clip still limits visible ink.
+                        let width = g.bitmap.width as usize;
+                        let height = g.bitmap.height as usize;
+                        let mut pixels = vec![0; (width + 2) * (height + 2) * 4];
+                        for y in 0..height + 2 {
+                            for x in 0..width + 2 {
+                                let source = (y.saturating_sub(1).min(height - 1) * width
+                                    + x.saturating_sub(1).min(width - 1))
+                                    * 4;
+                                let target = (y * (width + 2) + x) * 4;
+                                for (channel, tint) in
+                                    [g.tint.r, g.tint.g, g.tint.b].into_iter().enumerate()
+                                {
+                                    pixels[target + channel] =
+                                        (f32::from(g.bitmap.rgba[source + channel]) * tint).round()
+                                            as u8;
+                                }
+                                if x > 0 && x <= width && y > 0 && y <= height {
+                                    pixels[target + 3] =
+                                        (f32::from(g.bitmap.rgba[source + 3]) * g.tint.a).round()
+                                            as u8;
+                                }
+                            }
                         }
-                        let bitmap = Bitmap::new_rgba8(g.bitmap.width, g.bitmap.height, pixels)
-                            .map_err(invalid)?;
+                        let bitmap =
+                            Bitmap::new_rgba8(g.bitmap.width + 2, g.bitmap.height + 2, pixels)
+                                .map_err(invalid)?;
                         let mut image = ImagePrimitive::new(
                             bitmap,
                             Rect::new(
-                                g.position.x / scale,
-                                g.position.y / scale,
-                                g.bitmap.width as f32 / scale,
-                                g.bitmap.height as f32 / scale,
+                                (g.position.x - 1.0) / scale,
+                                (g.position.y - 1.0) / scale,
+                                (g.bitmap.width + 2) as f32 / scale,
+                                (g.bitmap.height + 2) as f32 / scale,
                             ),
                         );
                         image.clip = Rect::new(

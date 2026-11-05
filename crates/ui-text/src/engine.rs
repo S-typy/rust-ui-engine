@@ -856,7 +856,9 @@ impl TextEngine {
             .format(Format::Alpha)
             .offset(Vector::new(
                 f32::from(key.x_fraction) / 4.0,
-                f32::from(key.y_fraction) / 4.0,
+                // Swash outlines use a bottom-left origin; layout and bitmap
+                // placement use screen coordinates with positive Y downward.
+                -f32::from(key.y_fraction) / 4.0,
             ))
             .default_color([255, 255, 255, 255]);
         if key.skew != 0 {
@@ -970,6 +972,58 @@ fn scaled_rect(rect: Rect, scale: f32) -> Option<Rect> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fractional_raster_translation_follows_screen_coordinates() {
+        fn center(text: &PreparedText) -> (f64, f64) {
+            let (mut x, mut y, mut mass) = (0.0, 0.0, 0.0);
+            for glyph in &text.glyphs {
+                for (pixel, rgba) in glyph.bitmap.rgba.chunks_exact(4).enumerate() {
+                    let alpha = f64::from(rgba[3]);
+                    x += alpha
+                        * (f64::from(glyph.position.x)
+                            + (pixel % glyph.bitmap.width as usize) as f64
+                            + 0.5);
+                    y += alpha
+                        * (f64::from(glyph.position.y)
+                            + (pixel / glyph.bitmap.width as usize) as f64
+                            + 0.5);
+                    mass += alpha;
+                }
+            }
+            assert!(mass > 0.0);
+            (x / mass, y / mass)
+        }
+        let mut engine = TextEngine::new();
+        for scale in [1.0, 1.25, 1.5, 2.0] {
+            for weight in [400, 700] {
+                let mut run = TextRun::new(
+                    "Hgyp Ÿ e\u{301}",
+                    Rect::new(40.0, 40.0, 300.0, 80.0),
+                    Color::rgb(0, 0, 0),
+                    14.0,
+                );
+                run.weight = weight;
+                let original = run.bounds;
+                let base = center(&engine.prepare(&run, scale).unwrap());
+                // Cross integer boundaries too: a reversed fractional offset
+                // otherwise jumps forward only when the integer origin changes.
+                for step in 1..=8 {
+                    let delta = step as f32 * 0.25;
+                    run.bounds.x = original.x + delta / scale;
+                    run.bounds.y = original.y + delta / scale;
+                    run.clip = run.bounds;
+                    let shifted = center(&engine.prepare(&run, scale).unwrap());
+                    for (axis, actual) in [("x", shifted.0 - base.0), ("y", shifted.1 - base.1)] {
+                        assert!(
+                            (actual - f64::from(delta)).abs() < 0.12,
+                            "scale={scale} weight={weight} step={step} axis={axis} shift={actual}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn appending_multiline_text_preserves_existing_fallback_glyph_positions() {

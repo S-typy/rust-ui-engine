@@ -24,6 +24,85 @@ fn page() -> PrintDocument {
     .unwrap()
 }
 #[test]
+fn printer_glyphs_preserve_ink_and_ancestor_clip_with_transparent_sampling_edges() {
+    let mut engine = TextEngine::new();
+    // Use colored translucent text and a fractional origin. Preserve the actual
+    // raster coverage in global coordinates, including clipped overhangs.
+    let mut run = TextRun::new(
+        "Café gyp Ÿ",
+        Rect::new(24.25, 24.75, 200.0, 40.0),
+        Color {
+            r: 0.2,
+            g: 0.6,
+            b: 0.9,
+            a: 0.5,
+        },
+        18.0,
+    );
+    run.clip = Rect::new(30.0, 25.0, 150.0, 28.0);
+    let mut scene = Scene::default();
+    scene.text(run.clone());
+    let source = PrintDocument::new(
+        "Glyph transport",
+        vec![PrintPage {
+            size: Size::new(400.0, 500.0),
+            scene,
+        }],
+    )
+    .unwrap();
+    for scale in [1.0, 1.25, 2.0, 4.0] {
+        let glyphs = engine.prepare(&run, scale).unwrap().glyphs;
+        let printed = prepare_for_printer(&source, &mut engine, scale, || false).unwrap();
+        let images = &printed.pages()[0].scene.images;
+        assert_eq!(images.len(), glyphs.len());
+        for (image, glyph) in images.iter().zip(glyphs) {
+            let width = image.bitmap.width() as usize;
+            let height = image.bitmap.height() as usize;
+            // A full transparent perimeter keeps a consumer's image clipping
+            // away from the real coverage without loosening the ancestor clip.
+            for y in 0..height {
+                for x in 0..width {
+                    if x == 0 || y == 0 || x + 1 == width || y + 1 == height {
+                        assert_eq!(image.bitmap.pixels()[(y * width + x) * 4 + 3], 0);
+                    }
+                }
+            }
+            assert_eq!(
+                image.clip,
+                Rect::new(
+                    glyph.clip.x / scale,
+                    glyph.clip.y / scale,
+                    glyph.clip.width / scale,
+                    glyph.clip.height / scale
+                )
+            );
+            for (pixel, original) in glyph.bitmap.rgba.chunks_exact(4).enumerate() {
+                let x = pixel % glyph.bitmap.width as usize;
+                let y = pixel / glyph.bitmap.width as usize;
+                let target = ((y + 1) * width + x + 1) * 4;
+                for (channel, tint) in [glyph.tint.r, glyph.tint.g, glyph.tint.b, glyph.tint.a]
+                    .into_iter()
+                    .enumerate()
+                {
+                    assert_eq!(
+                        image.bitmap.pixels()[target + channel],
+                        (f32::from(original[channel]) * tint).round() as u8
+                    );
+                }
+                assert!(
+                    (image.bounds.x * scale + x as f32 + 1.0 - glyph.position.x - x as f32).abs()
+                        < 0.001
+                );
+                assert!(
+                    (image.bounds.y * scale + y as f32 + 1.0 - glyph.position.y - y as f32).abs()
+                        < 0.001
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn pdf_export_reopens_with_unicode_search_and_visible_images() {
     let pdf = export_pdf(&page(), &mut TextEngine::new(), || false).unwrap();
     let opened = PdfDocument::open(&pdf).unwrap();

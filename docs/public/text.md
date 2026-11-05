@@ -31,6 +31,10 @@ raster bearings. Effective clipping is the intersection of the run bounds and
 explicit clip. Selection and caret geometry remain unclipped, so the host can
 scroll them into view.
 
+Fractional outline raster offsets follow the same screen coordinates as layout:
+positive Y moves ink downward. Quarter-pixel glyph caching preserves that direction across
+integer pixel boundaries and display scales.
+
 Each `RasterGlyph` carries an opaque `GlyphKey`, an `Arc<GlyphBitmap>`, and a tint.
 Bitmaps use straight RGBA: outline masks contain white RGB and coverage alpha;
 color glyphs retain their colors. Mask tint is the text color. Color-glyph tint

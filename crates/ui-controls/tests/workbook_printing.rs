@@ -24,6 +24,76 @@ fn options() -> SheetPrintOptions {
 }
 
 #[test]
+fn short_rows_keep_decimal_commas_and_descenders_inside_the_glyph_clip() {
+    use rust_desktop_ui_text::TextEngine;
+    let mut engine = TextEngine::new();
+    for height in [20.0, 21.0, 28.0] {
+        let mut book = Workbook::new("Short rows").unwrap();
+        book.apply(&[WorkbookEdit::ColumnWidth {
+            sheet: 0,
+            column: 0,
+            width: Some(400.0),
+        }])
+        .unwrap();
+        for style in 0..4 {
+            let mut cell = WorkbookCell::value(CellValue::Text("120,50 gypqj Ÿ e\u{301}".into()));
+            cell.style.bold = style & 1 != 0;
+            cell.style.italic = style & 2 != 0;
+            book.apply(&[
+                WorkbookEdit::Set {
+                    sheet: 0,
+                    address: address(style, 0),
+                    cell,
+                },
+                WorkbookEdit::RowHeight {
+                    sheet: 0,
+                    row: style,
+                    height: Some(height),
+                },
+            ])
+            .unwrap();
+        }
+        let before = book.clone();
+        let pages = from_workbook(&book, 0, Default::default(), || false).unwrap();
+        assert_eq!(book, before);
+        let scene = &pages.pages()[0].scene;
+        assert_eq!(scene.texts.len(), 4);
+        for (style, run) in scene.texts.iter().enumerate() {
+            assert_eq!(run.clip.height, height as f32);
+            if height == 28.0 {
+                assert_eq!(run.bounds.y - run.clip.y, 5.0);
+                assert_eq!(run.bounds.height, 21.0);
+            }
+            for scale in [1.0, 1.25, 1.5, 2.0, 4.0] {
+                let prepared = engine
+                    .prepare_styled(run, scene.text_spans(style), scale)
+                    .unwrap();
+                assert!(!prepared.glyphs.is_empty());
+                for glyph in &prepared.glyphs {
+                    for (pixel, rgba) in glyph.bitmap.rgba.chunks_exact(4).enumerate() {
+                        if rgba[3] == 0 {
+                            continue;
+                        }
+                        let x =
+                            glyph.position.x + (pixel % glyph.bitmap.width as usize) as f32 + 0.5;
+                        let y =
+                            glyph.position.y + (pixel / glyph.bitmap.width as usize) as f32 + 0.5;
+                        assert!(
+                            x >= glyph.clip.x
+                                && x <= glyph.clip.x + glyph.clip.width
+                                && y >= glyph.clip.y
+                                && y <= glyph.clip.y + glyph.clip.height,
+                            "height={height} style={style} scale={scale} ink=({x},{y}) clip={:?}",
+                            glyph.clip
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn fit_width_scales_typography_and_rejects_silent_overflow() {
     let mut book = Workbook::new("Wide").unwrap();
     book.apply(&[WorkbookEdit::Set {

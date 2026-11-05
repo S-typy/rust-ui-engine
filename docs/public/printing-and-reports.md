@@ -35,8 +35,10 @@ return an error without changing the workbook or returning partial pages.
 ## Export and Windows printing
 
 `printing::export_pdf` writes page vectors and raster images. Text is shaped
-with the normal text engine and exported as glyph images at 192 DPI. Each
-shaped line also has invisible text with Unicode `ActualText`; the visible
+with the normal text engine and exported as glyph images at 192 DPI. Each glyph
+image has a transparent sampling border; its ink position and the text's ancestor
+clip stay unchanged when a reader scales the page. Each shaped line also has
+invisible text with Unicode `ActualText`; the visible
 glyph images are marked as artifacts. Font binaries are not embedded. This preserves
 visual glyphs but does not promise outline-text quality at arbitrary zoom or
 text extraction in every external reader. Rounded rectangles and ellipses use

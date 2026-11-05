@@ -33,13 +33,17 @@ pub(crate) fn cell_text_run(
     color: Color,
     scale: f32,
 ) -> TextRun {
+    // Keep ordinary rows' 5/2 padding, but yield that space to the glyph line
+    // in short imported rows. Fixed padding left only 13px for a 14px font
+    // in a 20px row, cutting comma tails and other descenders in UI and print.
+    let vertical_padding = (rect.height - 21.0 * scale).clamp(0.0, 7.0 * scale);
     let mut run = TextRun::new(
         value,
         Rect::new(
             rect.x + 6.0 * scale,
-            rect.y + 5.0 * scale,
+            rect.y + vertical_padding * (5.0 / 7.0),
             (rect.width - 12.0 * scale).max(1.0),
-            (rect.height - 7.0 * scale).max(1.0),
+            (rect.height - vertical_padding).max(1.0),
         ),
         color,
         14.0 * scale,
