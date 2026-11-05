@@ -79,13 +79,19 @@ impl Controls {
                 self.preflight_new_editor_text(label, style, false)?;
             }
         }
-        for value in model
-            .x_ticks()
-            .map_err(error)?
-            .into_iter()
-            .chain(model.y_ticks().map_err(error)?)
-        {
-            self.preflight_new_editor_text(&ChartModel::format_number(value), style, false)?;
+        for value in model.x_ticks().map_err(error)? {
+            self.preflight_new_editor_text(
+                &model.x_tick_label(value).map_err(error)?,
+                style,
+                false,
+            )?;
+        }
+        for value in model.y_ticks().map_err(error)? {
+            self.preflight_new_editor_text(
+                &model.y_tick_label(value).map_err(error)?,
+                style,
+                false,
+            )?;
         }
         if let Some(plot) = chart_paint::plot(model, bounds) {
             model.geometry(plot).map_err(error)?;
@@ -138,7 +144,7 @@ impl Controls {
             (None, b) => b,
         }
     }
-    /// Readable manual viewport bounds and logarithmic axis context, separate
+    /// Readable manual viewport bounds and axis scale context, separate
     /// from the selected raw observation.
     pub fn chart_view_description(&self, id: WidgetId) -> Option<String> {
         let model = self.chart_model(id)?;
@@ -147,7 +153,7 @@ impl Controls {
             .into_iter()
             .filter_map(|(name, scale)| (scale == ChartScale::Log10).then_some(name))
             .collect::<Vec<_>>();
-        let context = if scales.is_empty() {
+        let mut context = if scales.is_empty() {
             String::new()
         } else {
             format!(
@@ -155,6 +161,19 @@ impl Controls {
                 scales.join(", ")
             )
         };
+        let times = [("X", settings.x_scale), ("Y", settings.y_scale)]
+            .into_iter()
+            .filter_map(|(name, scale)| (scale == ChartScale::UtcMilliseconds).then_some(name))
+            .collect::<Vec<_>>();
+        if !times.is_empty() {
+            if !context.is_empty() {
+                context.push_str(". ");
+            }
+            context.push_str(&format!(
+                "Временная шкала UTC, миллисекунды: {}",
+                times.join(", ")
+            ));
+        }
         if settings.x_range.is_none() && settings.y_range.is_none() {
             return (!context.is_empty()).then_some(context);
         }
@@ -167,10 +186,10 @@ impl Controls {
         let y = model.y_range();
         Some(format!(
             "Видимый диапазон: X {} … {}; Y {} … {}{suffix}",
-            ChartModel::format_number(x.minimum),
-            ChartModel::format_number(x.maximum),
-            ChartModel::format_number(y.minimum),
-            ChartModel::format_number(y.maximum),
+            settings.x_scale.format_value(x.minimum).ok()?,
+            settings.x_scale.format_value(x.maximum).ok()?,
+            settings.y_scale.format_value(y.minimum).ok()?,
+            settings.y_scale.format_value(y.maximum).ok()?,
         ))
     }
     pub fn chart_model(&self, id: WidgetId) -> Option<&ChartModel> {

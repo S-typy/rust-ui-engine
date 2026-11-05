@@ -61,6 +61,27 @@ fn log_sample(generation: u32) -> Vec<ChartSeries> {
     }
     data
 }
+fn time_sample(generation: u32, calendar: bool) -> Vec<ChartSeries> {
+    use rust_desktop_ui_data::{DateValue, ScheduleInstant, TimeValue};
+    let noon = TimeValue::new(12, 0, 0, 0).unwrap();
+    let start = ScheduleInstant::from_utc(DateValue::new(2024, 2, 28).unwrap(), noon)
+        .unwrap()
+        .0;
+    let mut data = sample(generation);
+    for series in &mut data {
+        for p in &mut series.points {
+            let seconds = if calendar {
+                ScheduleInstant::from_utc(DateValue::new(2024, 1 + p.id as u8, 1).unwrap(), noon)
+                    .unwrap()
+                    .0
+            } else {
+                start + p.id * 43200
+            };
+            p.x = (seconds * 1000) as f64;
+        }
+    }
+    data
+}
 fn settings(view: ChartView) -> ChartSettings {
     ChartSettings {
         view,
@@ -78,6 +99,7 @@ pub struct ChartsDemo {
     spark: WidgetId,
     actions: Rc<RefCell<VecDeque<u8>>>,
     generation: u32,
+    time_calendar: bool,
     diagnostics: bool,
     last: String,
 }
@@ -134,6 +156,8 @@ impl ChartsDemo {
             ("ChartArea", "Области"),
             ("ChartStackedArea", "Слои областей"),
             ("ChartLog", "Логарифм"),
+            ("ChartTime", "Время UTC"),
+            ("ChartCalendar", "Календарь UTC"),
         ]
         .into_iter()
         .enumerate()
@@ -167,6 +191,7 @@ impl ChartsDemo {
             spark,
             actions,
             generation: 0,
+            time_calendar: false,
             diagnostics,
             last: String::new(),
         })
@@ -188,12 +213,16 @@ impl ChartsDemo {
                         s.y_range = None
                     } else {
                         s.x_range = Some(ChartRange {
-                            minimum: if s.x_scale == ChartScale::Log10 {
+                            minimum: if s.x_scale == ChartScale::UtcMilliseconds {
+                                m.series()[0].points[1].x
+                            } else if s.x_scale == ChartScale::Log10 {
                                 10.0
                             } else {
                                 0.5
                             },
-                            maximum: if s.x_scale == ChartScale::Log10 {
+                            maximum: if s.x_scale == ChartScale::UtcMilliseconds {
+                                m.series()[0].points[5].x
+                            } else if s.x_scale == ChartScale::Log10 {
                                 1000.0
                             } else {
                                 5.5
@@ -230,6 +259,11 @@ impl ChartsDemo {
                     s.x_scale = ChartScale::Log10;
                     s.y_scale = ChartScale::Log10;
                 }
+                16 | 17 => {
+                    self.time_calendar = action == 17;
+                    s = settings(ChartView::Line);
+                    s.x_scale = ChartScale::UtcMilliseconds;
+                }
                 _ => {}
             }
             if matches!(
@@ -250,7 +284,7 @@ impl ChartsDemo {
                 )
                 .map_err(error)?;
             } else {
-                if (m.family().is_some() && action != 15)
+                if (m.family().is_some() && !matches!(action, 15..=17))
                     || matches!(
                         s.view,
                         ChartView::Bar
@@ -261,7 +295,9 @@ impl ChartsDemo {
                 {
                     s = settings(s.view);
                 }
-                let data = if s.x_scale == ChartScale::Log10 || s.y_scale == ChartScale::Log10 {
+                let data = if s.x_scale == ChartScale::UtcMilliseconds {
+                    time_sample(self.generation, self.time_calendar)
+                } else if s.x_scale == ChartScale::Log10 || s.y_scale == ChartScale::Log10 {
                     log_sample(self.generation)
                 } else {
                     sample(self.generation)

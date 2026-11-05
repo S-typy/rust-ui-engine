@@ -155,7 +155,7 @@ retained input checks and native visual acceptance are separate evidence.
 ## Partitions, cells, hierarchies and flows
 
 Use `ChartModel::from_family(data, settings)` and `replace_family` for these
-views. X/Y titles, logarithmic settings and explicit Cartesian ranges are rejected. `series()` is
+views. X/Y titles, non-default axis scale settings and explicit Cartesian ranges are rejected. `series()` is
 empty and `point()` returns `None`; observations remain available through
 `family()`. The legacy `x_range()` and `y_range()` unit intervals describe no
 data axis for these views. Their geometry contains no numeric axis ticks.
@@ -191,3 +191,35 @@ not select empty space. `points` contains keyboard anchors, not fabricated X/Y
 observations. Subpixel regions may collapse at the final f32 conversion; zero and
 missing partitions are omitted. The shared renderer's per-frame path budget also
 applies when composing multiple diagrams.
+
+## UTC calendar axes
+
+`ChartScale::UtcMilliseconds` maps Unix milliseconds linearly on either axis of
+Line, Scatter or Sparkline. Observations are whole milliseconds in Gregorian
+years 0001 through 9999; their `f64` integers are exact in this range. NULL Y
+continues to break a line. Bar, Area, stacked and non-Cartesian views reject
+this scale. It can be combined with Linear or Log10 on the other axis.
+
+Viewport bounds may be fractional milliseconds, but the span must be at least
+one millisecond and remain inside the supported calendar. Invalid zoom/pan or
+live data replacement leaves the old model and selection intact. One value gets
+an automatic range of up to one second on either side, clipped at the calendar
+bounds. An empty axis uses the first UTC day of 1970.
+
+At most five visible ticks are aligned to fixed millisecond/second/minute/hour/
+day intervals, then Gregorian month or year intervals for wider ranges. Calendar
+intervals use real month lengths and leap years. Very narrow ranges can contain
+only one tick. `x_ticks`/`y_ticks` retain numeric coordinates;
+`x_tick_label`/`y_tick_label` provide compact date or clock labels. Precision follows the actual tick interval
+so half-second and half-day ticks remain distinct. Axis titles
+supply UTC and the visible dates. `ChartScale::format_value`, selected-point
+summaries and accessible range descriptions use a full UTC timestamp through
+milliseconds. Fractional viewport boundaries are displayed at their containing
+millisecond; the numeric range itself is unchanged.
+
+The timezone is explicit UTC. Local-zone conversion, daylight-saving rules,
+non-Gregorian calendars, leap seconds and sub-millisecond observations are not
+part of this scale. Applications convert date/time fields explicitly before
+creating observations; the numeric table adapter does not infer a timezone.
+`ScheduleInstant::from_utc` and `utc` provide bounded whole-second conversion
+with the existing `DateValue` and `TimeValue` types.

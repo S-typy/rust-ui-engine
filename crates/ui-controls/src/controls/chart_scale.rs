@@ -9,6 +9,9 @@ pub enum ChartScale {
     Linear,
     /// Base-ten logarithm; all values on this axis must be strictly positive.
     Log10,
+    /// Unix milliseconds in UTC, years 0001..9999, without leap seconds.
+    /// Observations use whole milliseconds; viewport bounds may be fractional.
+    UtcMilliseconds,
 }
 
 impl ChartScale {
@@ -17,6 +20,8 @@ impl ChartScale {
             Self::Linear => title.to_owned(),
             Self::Log10 if title.is_empty() => "log10".into(),
             Self::Log10 => format!("{title} · log10"),
+            Self::UtcMilliseconds if title.is_empty() => "UTC".into(),
+            Self::UtcMilliseconds => format!("{title} · UTC"),
         }
     }
     pub(super) fn project(self, value: f64) -> Result<f64, ChartError> {
@@ -27,6 +32,7 @@ impl ChartScale {
             Self::Linear => Ok(value),
             Self::Log10 if value > 0.0 => Ok(value.log10()),
             Self::Log10 => Err(ChartError::InvalidRange),
+            Self::UtcMilliseconds => time::validate(value).map(|()| value),
         }
     }
     fn unproject(self, value: f64) -> Result<f64, ChartError> {
@@ -35,7 +41,7 @@ impl ChartScale {
         }
         let smallest = f64::from_bits(1);
         let result = match self {
-            Self::Linear => value,
+            Self::Linear | Self::UtcMilliseconds => value,
             Self::Log10 if value == smallest.log10() => smallest,
             Self::Log10 if value == f64::MAX.log10() => f64::MAX,
             Self::Log10 => 10.0f64.powf(value),
@@ -52,6 +58,9 @@ impl ChartScale {
             maximum: self.project(range.maximum)?,
         };
         result.validate()?;
+        if self == Self::UtcMilliseconds && result.maximum - result.minimum < 1.0 {
+            return Err(ChartError::InvalidRange);
+        }
         Ok(result)
     }
     pub(super) fn raw(self, range: ChartRange) -> Result<ChartRange, ChartError> {
@@ -75,6 +84,13 @@ impl ChartScale {
     ) -> Result<ChartRange, ChartError> {
         if self == Self::Linear {
             return automatic(values, zero);
+        }
+        if self == Self::UtcMilliseconds {
+            return if zero {
+                Err(ChartError::InvalidView)
+            } else {
+                time::automatic(values)
+            };
         }
         if zero {
             return Err(ChartError::InvalidView);
@@ -107,6 +123,10 @@ impl ChartScale {
     pub(super) fn ticks(self, range: ChartRange) -> Result<Vec<f64>, ChartError> {
         if self == Self::Linear {
             return range.ticks();
+        }
+        if self == Self::UtcMilliseconds {
+            self.domain(range)?;
+            return time::ticks(range);
         }
         let domain = self.domain(range)?;
         let first = domain.minimum.ceil() as i32;
@@ -153,5 +173,23 @@ impl ChartScale {
             }
         }
         Ok(values)
+    }
+
+    /// Full value for selection, accessible descriptions and manual ranges.
+    /// Time coordinates are shown as Gregorian UTC through milliseconds.
+    pub fn format_value(self, value: f64) -> Result<String, ChartError> {
+        self.project(value)?;
+        if self == Self::UtcMilliseconds {
+            time::format(value)
+        } else {
+            Ok(ChartModel::format_number(value))
+        }
+    }
+    pub(super) fn tick_label(self, range: ChartRange, value: f64) -> Result<String, ChartError> {
+        if self == Self::UtcMilliseconds {
+            time::tick_label(range, value)
+        } else {
+            self.format_value(value)
+        }
     }
 }

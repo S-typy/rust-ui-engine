@@ -15,10 +15,15 @@ pub(crate) fn plot(model: &ChartModel, b: Rect) -> Option<Rect> {
         if model.family().is_some() && model.settings().view != ChartView::Heatmap {
             return Rect::new(b.x + 20.0, b.y + top, b.width - 40.0, b.height - top - 38.0);
         }
+        let left = if model.settings().y_scale == ChartScale::UtcMilliseconds {
+            112.0
+        } else {
+            82.0
+        };
         Rect::new(
-            b.x + 82.0,
+            b.x + left,
             b.y + top,
-            b.width - 106.0,
+            b.width - left - 24.0,
             b.height - top - 76.0,
         )
     })
@@ -187,8 +192,10 @@ impl ChartPainter<'_> {
                 text(
                     self.scene,
                     self.engine,
-                    &ChartModel::format_number(*value),
-                    Rect::new(bounds.x + 2.0, y - 10.0, 72.0, 20.0),
+                    &model
+                        .y_tick_label(*value)
+                        .map_err(|e| ControlError::Invalid(e.to_string()))?,
+                    Rect::new(bounds.x + 2.0, y - 10.0, plot.x - bounds.x - 10.0, 20.0),
                     clip,
                     tokens.muted,
                     12.0,
@@ -196,6 +203,11 @@ impl ChartPainter<'_> {
                 )?;
             }
             for value in &geometry.x_ticks {
+                let width = if model.settings().x_scale == ChartScale::UtcMilliseconds {
+                    100.0
+                } else {
+                    72.0
+                };
                 let fraction = model
                     .x_fraction(*value)
                     .map_err(|e| ControlError::Invalid(e.to_string()))?;
@@ -212,11 +224,14 @@ impl ChartPainter<'_> {
                 text(
                     self.scene,
                     self.engine,
-                    &ChartModel::format_number(*value),
+                    &model
+                        .x_tick_label(*value)
+                        .map_err(|e| ControlError::Invalid(e.to_string()))?,
                     Rect::new(
-                        (x - 36.0).clamp(bounds.x + 4.0, bounds.x + bounds.width - 76.0),
+                        (x - width / 2.0)
+                            .clamp(bounds.x + 4.0, bounds.x + bounds.width - width - 4.0),
                         plot.y + plot.height + 6.0,
-                        72.0,
+                        width,
                         20.0,
                     ),
                     clip,

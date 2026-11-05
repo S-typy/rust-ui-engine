@@ -235,6 +235,9 @@ impl RichDocumentDemo {
                         .map_err(err)?;
                 } else {
                     self.editor.activate(&mut self.form.ui, id).map_err(err)?;
+                    if id == self.editor.parts.apply {
+                        self.result("Изменения документа применены")?;
+                    }
                 }
                 Ok(())
             })();

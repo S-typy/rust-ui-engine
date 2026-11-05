@@ -16,6 +16,8 @@ mod scale;
 pub use scale::ChartScale;
 #[path = "chart_stacked_area.rs"]
 mod stacked_area;
+#[path = "chart_time.rs"]
+mod time;
 
 pub const MAX_CHART_SERIES: usize = 16;
 pub const MAX_CHART_POINTS: usize = 4096;
@@ -303,6 +305,13 @@ impl ChartModel {
                 if !p.x.is_finite() || p.y.is_some_and(|v| !v.is_finite()) {
                     return Err(ChartError::NonFinite);
                 }
+                for (scale, value) in [(settings.x_scale, Some(p.x)), (settings.y_scale, p.y)] {
+                    if scale == ChartScale::UtcMilliseconds
+                        && value.is_some_and(|v| v.fract() != 0.0)
+                    {
+                        return Err(ChartError::InvalidRange);
+                    }
+                }
             }
         }
         let stacks = cartesian::validate(&series, settings.view)?;
@@ -436,8 +445,8 @@ impl ChartModel {
         let mut description = format!(
             "{}: X {}, Y {}",
             series.label,
-            Self::format_number(point.x),
-            Self::format_number(point.y?)
+            self.settings.x_scale.format_value(point.x).ok()?,
+            self.settings.y_scale.format_value(point.y?).ok()?
         );
         if matches!(
             self.settings.view,
@@ -495,12 +504,19 @@ impl ChartModel {
     pub fn series(&self) -> &[ChartSeries] {
         &self.series
     }
-    /// Tick values are raw observations, spaced in the selected axis domain.
+    /// Tick coordinates in original units, aligned for the selected axis scale.
     pub fn x_ticks(&self) -> Result<Vec<f64>, ChartError> {
         self.settings.x_scale.ticks(self.x_range)
     }
     pub fn y_ticks(&self) -> Result<Vec<f64>, ChartError> {
         self.settings.y_scale.ticks(self.y_range)
+    }
+    /// Compact axis label; UTC context and dates are also present in the title.
+    pub fn x_tick_label(&self, value: f64) -> Result<String, ChartError> {
+        self.settings.x_scale.tick_label(self.x_range, value)
+    }
+    pub fn y_tick_label(&self, value: f64) -> Result<String, ChartError> {
+        self.settings.y_scale.tick_label(self.y_range, value)
     }
     pub(super) fn x_fraction(&self, value: f64) -> Result<f64, ChartError> {
         self.settings.x_scale.fraction(self.x_range, value)
@@ -510,9 +526,23 @@ impl ChartModel {
     }
     pub(super) fn axis_titles(&self) -> [String; 2] {
         [
-            self.settings.x_scale.caption(&self.settings.x_title),
-            self.settings.y_scale.caption(&self.settings.y_title),
+            (self.settings.x_scale, &self.settings.x_title, self.x_range),
+            (self.settings.y_scale, &self.settings.y_title, self.y_range),
         ]
+        .map(|(scale, title, range)| {
+            let caption = scale.caption(title);
+            if scale == ChartScale::UtcMilliseconds {
+                let a = scale.format_value(range.minimum).unwrap();
+                let b = scale.format_value(range.maximum).unwrap();
+                if a[..10] == b[..10] {
+                    format!("{caption} · {}", &a[..10])
+                } else {
+                    format!("{caption} · {} — {}", &a[..10], &b[..10])
+                }
+            } else {
+                caption
+            }
+        })
     }
     pub fn settings(&self) -> &ChartSettings {
         &self.settings

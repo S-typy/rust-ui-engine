@@ -939,3 +939,30 @@ fn scheduling_query_civil_boundary_and_future_duration_are_checked_in_order() {
         Err(ScheduleError::Invalid(_))
     ));
 }
+#[test]
+fn scheduling_utc_calendar_conversion_is_explicit_and_bounded() {
+    for (seconds, text) in [
+        (0, "1970-01-01T00:00:00"),
+        (-1, "1969-12-31T23:59:59"),
+        (951782400, "2000-02-29T00:00:00"),
+        (-62135596800, "0001-01-01T00:00:00"),
+        (253402300799, "9999-12-31T23:59:59"),
+    ] {
+        let instant = ScheduleInstant(seconds);
+        let utc = instant.utc().unwrap();
+        assert_eq!(utc.to_string(), text);
+        assert_eq!(
+            ScheduleInstant::from_utc(utc.date(), utc.time()).unwrap(),
+            instant
+        );
+    }
+    assert!(ScheduleInstant(-62135596801).utc().is_err());
+    assert!(ScheduleInstant(253402300800).utc().is_err());
+    assert!(
+        ScheduleInstant::from_utc(
+            DateValue::new(2024, 1, 1).unwrap(),
+            TimeValue::new(0, 0, 0, 1).unwrap()
+        )
+        .is_err()
+    );
+}

@@ -50,6 +50,15 @@ pub(super) fn date_from_day(day: i64) -> Result<DateValue, ScheduleError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ScheduleInstant(pub i64);
 impl ScheduleInstant {
+    /// Interpret a whole-second Gregorian date and clock as UTC, without a
+    /// timezone lookup or leap-second conversion.
+    pub fn from_utc(date: DateValue, time: TimeValue) -> Result<Self, ScheduleError> {
+        ScheduleLocal::new(date, time).map(|local| Self(local.seconds()))
+    }
+    /// Gregorian UTC date and clock, restricted to years 0001 through 9999.
+    pub fn utc(self) -> Result<ScheduleLocal, ScheduleError> {
+        ScheduleLocal::from_seconds(self.0)
+    }
     pub fn checked_add(self, seconds: i64) -> Result<Self, ScheduleError> {
         self.0
             .checked_add(seconds)
