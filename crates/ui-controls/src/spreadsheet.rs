@@ -7,6 +7,8 @@ use rust_desktop_ui_data::{
 };
 use std::collections::BTreeSet;
 
+mod auto_size;
+pub use auto_size::{AutoFitAxis, auto_fit_edits};
 mod editing;
 mod formatting;
 mod presentation;
@@ -88,6 +90,8 @@ pub struct SpreadsheetParts {
     pub format_apply: WidgetId,
     pub format_code: WidgetId,
     pub format_code_apply: WidgetId,
+    pub auto_columns: WidgetId,
+    pub auto_rows: WidgetId,
 }
 pub struct Spreadsheet {
     pub parts: SpreadsheetParts,
@@ -121,7 +125,7 @@ impl Spreadsheet {
                 kind: LayoutKind::Grid,
                 grid_columns: vec![GridTrack::Fr(1.0)],
                 grid_rows: vec![
-                    GridTrack::Px(36.0),
+                    GridTrack::Auto,
                     GridTrack::Px(36.0),
                     GridTrack::Px(78.0),
                     GridTrack::Fr(1.0),
@@ -143,7 +147,8 @@ impl Spreadsheet {
                 root,
                 LayoutStyle {
                     kind: LayoutKind::Grid,
-                    grid_columns: vec![GridTrack::Fr(1.0); 10],
+                    grid_columns: vec![GridTrack::Fr(1.0); 6],
+                    grid_rows: vec![GridTrack::Auto; 2],
                     gap: 3.0,
                     ..row(1)
                 },
@@ -160,6 +165,8 @@ impl Spreadsheet {
                 ("Paste", "paste"),
                 ("Sheet −", "previous"),
                 ("Sheet +", "next"),
+                ("Автоширина", "auto-columns"),
+                ("Автовысота", "auto-rows"),
             ]
             .into_iter()
             .enumerate()
@@ -170,13 +177,23 @@ impl Spreadsheet {
                     None,
                     LayoutStyle {
                         grid_column: GridPlacement {
-                            start: Some(n as u16 + 1),
+                            start: Some(n as u16 % 6 + 1),
+                            span: 1,
+                        },
+                        grid_row: GridPlacement {
+                            start: Some(n as u16 / 6 + 1),
                             span: 1,
                         },
                         height: Length::Px(32.0),
                         ..Default::default()
                     },
                 )?;
+                if action == "auto-columns" {
+                    ui.set_automation_name(id, "Автоподбор ширины столбцов")?;
+                }
+                if action == "auto-rows" {
+                    ui.set_automation_name(id, "Автоподбор высоты строк")?;
+                }
                 actions.push((id, action));
             }
             let entry = ui.transparent_panel(
@@ -331,6 +348,16 @@ impl Spreadsheet {
                     format_apply,
                     format_code,
                     format_code_apply,
+                    auto_columns: actions
+                        .iter()
+                        .find(|(_, action)| *action == "auto-columns")
+                        .unwrap()
+                        .0,
+                    auto_rows: actions
+                        .iter()
+                        .find(|(_, action)| *action == "auto-rows")
+                        .unwrap()
+                        .0,
                 },
                 anchor: session.active(),
                 session,
@@ -535,6 +562,22 @@ impl Spreadsheet {
                 .cloned()
                 .ok_or_else(|| err("Выберите формат ячеек"))?;
             return self.set_number_format(ui, &format);
+        }
+        if action == "auto-columns" {
+            let range = self.session.selection();
+            return self.auto_fit(
+                ui,
+                AutoFitAxis::Columns,
+                range.start().column()..=range.end().column(),
+            );
+        }
+        if action == "auto-rows" {
+            let range = self.session.selection();
+            return self.auto_fit(
+                ui,
+                AutoFitAxis::Rows,
+                range.start().row()..=range.end().row(),
+            );
         }
         if action == "formula" {
             return self.edit_formula(ui);

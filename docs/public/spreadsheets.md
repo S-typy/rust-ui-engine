@@ -39,6 +39,31 @@ not change workbook cells; release publishes one undoable edit.
 All workbook changes publish atomically and participate in undo/redo, bounded
 to 64 snapshots and an estimated 64 MiB.
 
+`Spreadsheet::auto_fit` sizes a selected inclusive range of columns or rows.
+The toolbar's «Автоширина» and «Автовысота» apply it to the current selection.
+Columns measure unwrapped formatted text, including trailing spaces; rows measure
+line breaks and wrapping at the current combined column width. Measurement uses
+the same text shaping, 14-DIP typography, bold/italic and number formatter as the
+worksheet. Merged anchors contribute their whole text; any additional space is
+distributed among selected axes only. Unselected dimensions remain unchanged.
+The «Размеры» example sheet contains long, wrapped, multiline and merged cells.
+
+The standalone `auto_fit_edits` planner takes a reusable `TextEngine` and returns
+an atomic `WorkbookEdit` batch without modifying the workbook. It scans sparse
+stored cells, including offscreen values. Empty axes use the sheet default as
+their minimum; nonempty axes can shrink to their content, with minimum widths
+of 32 and heights of 28 logical pixels. At most 16384 axes can be requested;
+required sizes above 4096 pixels and unsupported formats return an error.
+The workbook's dimension metadata limit still applies to the resulting batch.
+
+A changed formula draft and the size batch are prepared together before live
+publication, then recorded as separate undo steps. Repeating an unchanged fit
+adds no history. Errors preserve the workbook, draft and history; compositions
+in either formula or format-code editor block the operation. The format-code
+draft remains staged, and both retained editors keep their identities. Sizing is
+explicit; editing a value does not automatically resize its row or column.
+Double-click header sizing and hidden rows/columns are not provided.
+
 Ctrl+C/V requests host-owned text clipboard I/O. Ctrl+Shift+V uses the session's
 typed copy, including formulas, styles and merges. A delayed clipboard response
 is rejected after the selection or document generation changes, or a newer

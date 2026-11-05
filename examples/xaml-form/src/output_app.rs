@@ -203,6 +203,12 @@ impl OutputDemo {
                 form.view.names.insert("CellFormat".into(), s.parts.format);
                 form.view
                     .names
+                    .insert("SheetAutoColumns".into(), s.parts.auto_columns);
+                form.view
+                    .names
+                    .insert("SheetAutoRows".into(), s.parts.auto_rows);
+                form.view
+                    .names
                     .insert("CellFormatCode".into(), s.parts.format_code);
                 form.view
                     .names
@@ -804,7 +810,48 @@ fn sample_workbook() -> Result<Workbook, String> {
     });
     book.apply(&edits).map_err(err)?;
     append_format_examples(&mut book)?;
+    append_size_examples(&mut book)?;
     Ok(book)
+}
+
+fn append_size_examples(book: &mut Workbook) -> Result<(), String> {
+    let sheet = book.sheets().len();
+    let mut edits = vec![WorkbookEdit::AddSheet {
+        name: "Размеры".into(),
+    }];
+    for (row, column, text, wrap) in [
+        (0, 0, "Ширина по содержимому: длинная подпись", false),
+        (
+            1,
+            0,
+            "Текст с переносом по ширине столбца. Высота строки подбирается по всем строкам текста.",
+            true,
+        ),
+        (2, 0, "Первая строка\nВторая строка\nТретья строка", false),
+        (
+            4,
+            1,
+            "Объединённая ячейка: ширина распределяется между выбранными столбцами",
+            false,
+        ),
+    ] {
+        let mut cell = WorkbookCell::value(CellValue::Text(text.into()));
+        cell.style.wrap = wrap;
+        edits.push(WorkbookEdit::Set {
+            sheet,
+            address: CellAddress::new(row, column).map_err(err)?,
+            cell,
+        });
+    }
+    edits.push(WorkbookEdit::Merge {
+        sheet,
+        range: CellRange::new(
+            CellAddress::new(4, 1).map_err(err)?,
+            CellAddress::new(4, 3).map_err(err)?,
+        )
+        .map_err(err)?,
+    });
+    book.apply(&edits).map_err(err)
 }
 pub(crate) fn sample_report() -> Result<ReportResult, String> {
     let schema = TableSchema::new(vec![
