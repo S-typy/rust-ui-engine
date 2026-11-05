@@ -75,7 +75,14 @@ fn typed_dates_times_and_format_failures_are_explicit() {
         "16:05:08.123"
     );
     assert_eq!(display(CellValue::Time(time), "hh:mm"), "16:05");
-    for format in ["[>=1]0", "0 ?/?", "_(*0)", "0.00.0", "0.0#0", "\"unclosed"] {
+    for format in [
+        "[>=1]0",
+        "0 ????/????",
+        "_(*0)",
+        "0.00.0",
+        "0.0#0",
+        "\"unclosed",
+    ] {
         let result = format_value(
             &WorkbookValue::Scalar(CellValue::Integer(25)),
             format,

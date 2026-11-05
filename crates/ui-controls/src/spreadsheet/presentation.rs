@@ -1,5 +1,6 @@
 //! Bounded cell presentation, independent of input/formula storage.
 mod elapsed;
+mod fraction;
 mod temporal;
 use super::*;
 use crate::UiCulture;
@@ -240,6 +241,13 @@ fn formatted(
     }
     if elapsed::requested(&part) {
         let text = elapsed::render(value, &part)?;
+        return Ok((
+            format!("{}{}", if negative && index == 0 { "-" } else { "" }, text),
+            rgb,
+        ));
+    }
+    if fraction::requested(&part) {
+        let text = fraction::render(&number, &part)?;
         return Ok((
             format!("{}{}", if negative && index == 0 { "-" } else { "" }, text),
             rgb,

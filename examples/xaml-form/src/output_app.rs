@@ -1039,6 +1039,14 @@ fn append_format_examples(book: &mut Workbook) -> Result<(), String> {
             CellValue::Real(-1.5),
             "[h]:mm;[Red]([h]:mm)",
         ),
+        ("Смешанная дробь", CellValue::Real(5.25), "# ?/?"),
+        ("Неправильная дробь", CellValue::Real(5.25), "??/??"),
+        ("Фиксированный знаменатель", CellValue::Real(1.875), "# ?/8"),
+        (
+            "Приближение дробью",
+            CellValue::Real(std::f64::consts::PI),
+            "# ???/???",
+        ),
     ]
     .into_iter()
     .enumerate()

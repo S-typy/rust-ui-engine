@@ -121,7 +121,28 @@ conversion stays exact; magnitudes exceeding the `u128` nanosecond budget produc
 a diagnostic. The decimal separator for fractional seconds is the literal dot
 in the format, as for typed clocks.
 
-Conditional directives, fractions and alignment directives are outside this
+Numeric fractions support mixed forms (`# ?/?`, `# ??/??`) and improper forms
+(`??/??`). A denominator with one to three placeholder digits chooses the nearest
+fraction with denominator at most 9, 99 or 999. Equal errors prefer a smaller
+denominator, then the larger value. A literal denominator from 1 to 999999 keeps
+that denominator without reducing it: `1.875` with `# ?/8` displays `1 7/8`.
+Fixed-denominator ties round away from zero. A rounded whole fraction carries
+into the integer part of a mixed format.
+
+`0` requires a digit, `#` suppresses insignificant zeroes, and `?` reserves
+ordinary spaces. Leading `#` may precede a run of `0` or `?`; mixing required
+zeroes with question marks within one field is unsupported. The numerator mask
+is limited to six placeholders; extra significant digits remain visible.
+A zero fractional part disappears unless its numerator requires zeroes; question
+marks preserve spaces in its place. A mixed format also retains its literal
+space separator. Sign, color, locale and quoted-literal sections still apply.
+Integer/Decimal values retain exact whole parts and decimal precision; Real
+uses its shortest decimal representation. This is display formatting: input,
+formulas, clipboard and XLSX storage remain numeric. Fraction masks with percent,
+comma scaling/grouping or decimal points are outside this profile. Question-mark
+spacing does not guarantee alignment in a proportional font.
+
+Conditional directives and alignment directives are outside this
 profile. Unsupported formats retain their metadata and display a raw value
 with a diagnostic, rather than a guessed result. Printing uses the same formatter
 and rejects unsupported formats explicitly. Formatting does not alter typed
@@ -132,7 +153,7 @@ format that is not among its presets. Choosing a preset only stages the choice;
 «Применить» applies it to every selected anchor. A mixed-format selection shows
 the active cell's format until application. Presets include general, integer,
 two decimal places, percent, scientific/engineering notation, date/time, durations and
-rubles. General restores default presentation. The picker uses the common
+rubles and fractions. General restores default presentation. The picker uses the common
 ComboBox keyboard and accessibility contract.
 
 The separate format-code editor accepts custom strings. Typing and leaving it do
@@ -158,7 +179,7 @@ application. A changed draft and a format change are separate undo steps when
 both succeed. Undo/redo, cell navigation and sheet changes refresh the picker.
 Numeric values are not converted to typed dates or times by choosing a format.
 The example's «Форматы» worksheet shows date names, clocks, locale overrides,
-engineering rounding and durations alongside their format strings.
+engineering rounding, durations and fractions alongside their format strings.
 
 The formula editor uses the shared accessible text control.
 `Spreadsheet::semantics` supplies bounded
