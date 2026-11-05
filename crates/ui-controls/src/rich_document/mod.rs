@@ -1,8 +1,10 @@
 //! Bounded rich documents, atomic operations, fragments and paginated layout.
 //! The model has no window, filesystem or GPU dependency.
 
+mod clipboard;
 mod docx;
 mod layout;
+pub use clipboard::RichClipboardFragment;
 pub use docx::*;
 pub use layout::*;
 

@@ -1,7 +1,7 @@
 # Third-party notices
 
-Snapshot: 2026-11-04. The project code is licensed under Apache-2.0. Dependencies
-retain the licenses declared below. The table covers all 421 registry packages in
+Snapshot: 2026-11-05. The project code is licensed under Apache-2.0. Dependencies
+retain the licenses declared below. The table covers all 430 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
 
@@ -185,6 +185,7 @@ not constitute a complete binary redistribution review.
 | hashbrown | 0.17.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/hashbrown/0.17.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/hashbrown/0.17.1/source/LICENSE-MIT) |
 | hermit-abi | 0.5.3 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/hermit-abi/0.5.3/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/hermit-abi/0.5.3/source/LICENSE-MIT) |
 | hex | 0.4.3 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/hex/0.4.3/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/hex/0.4.3/source/LICENSE-MIT) |
+| html5ever | 0.40.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/html5ever/0.40.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/html5ever/0.40.1/source/LICENSE-MIT) |
 | hybrid-array | 0.4.15 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/hybrid-array/0.4.15/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/hybrid-array/0.4.15/source/LICENSE-MIT) |
 | icu_collections | 2.3.0 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/icu_collections/2.3.0/source/LICENSE) |
 | icu_locale_core | 2.3.0 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/icu_locale_core/2.3.0/source/LICENSE) |
@@ -223,6 +224,7 @@ not constitute a complete binary redistribution review.
 | lock_api | 0.4.14 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/lock_api/0.4.14/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/lock_api/0.4.14/source/LICENSE-MIT) |
 | log | 0.4.34 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/log/0.4.34/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/log/0.4.34/source/LICENSE-MIT) |
 | lopdf | 0.45.0 | MIT | [LICENSE](https://docs.rs/crate/lopdf/0.45.0/source/LICENSE) |
+| markup5ever | 0.40.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/markup5ever/0.40.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/markup5ever/0.40.0/source/LICENSE-MIT) |
 | md-5 | 0.11.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/md-5/0.11.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/md-5/0.11.0/source/LICENSE-MIT) |
 | memchr | 2.8.3 | Unlicense OR MIT | [COPYING](https://docs.rs/crate/memchr/2.8.3/source/COPYING), [LICENSE-MIT](https://docs.rs/crate/memchr/2.8.3/source/LICENSE-MIT) |
 | memmap2 | 0.9.11 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/memmap2/0.9.11/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/memmap2/0.9.11/source/LICENSE-MIT) |
@@ -236,6 +238,7 @@ not constitute a complete binary redistribution review.
 | ndk | 0.9.0 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT) |
 | ndk-context | 0.1.1 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/rust-windowing/android-ndk-rs/10f2ba388fca20f7349996ebae26ccda7a6fda5c/LICENSE-MIT) |
 | ndk-sys | 0.6.0+11769913 | MIT OR Apache-2.0 | [LICENSE-APACHE (upstream)](https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-APACHE), [LICENSE-MIT (upstream)](https://raw.githubusercontent.com/rust-mobile/ndk/49bbbba16c58ff63cb8a0ad0eca5a9fb7ecaec25/LICENSE-MIT) |
+| new_debug_unreachable | 1.0.6 | MIT | [LICENSE-MIT](https://docs.rs/crate/new_debug_unreachable/1.0.6/source/LICENSE-MIT) |
 | nom | 8.0.0 | MIT | [LICENSE](https://docs.rs/crate/nom/8.0.0/source/LICENSE) |
 | num-traits | 0.2.19 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/num-traits/0.2.19/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/num-traits/0.2.19/source/LICENSE-MIT) |
 | num_enum | 0.7.6 | BSD-3-Clause OR MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/num_enum/0.7.6/source/LICENSE-APACHE), [LICENSE-BSD](https://docs.rs/crate/num_enum/0.7.6/source/LICENSE-BSD), [LICENSE-MIT](https://docs.rs/crate/num_enum/0.7.6/source/LICENSE-MIT) |
@@ -280,6 +283,7 @@ not constitute a complete binary redistribution review.
 | percent-encoding | 2.3.2 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/percent-encoding/2.3.2/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/percent-encoding/2.3.2/source/LICENSE-MIT) |
 | petgraph | 0.8.3 | MIT OR Apache-2.0 | [assets/images/LICENSE.md](https://docs.rs/crate/petgraph/0.8.3/source/assets/images/LICENSE.md), [LICENSE-APACHE](https://docs.rs/crate/petgraph/0.8.3/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/petgraph/0.8.3/source/LICENSE-MIT) |
 | phf | 0.14.0 | MIT | [LICENSE](https://docs.rs/crate/phf/0.14.0/source/LICENSE) |
+| phf_codegen | 0.14.0 | MIT | [LICENSE](https://docs.rs/crate/phf_codegen/0.14.0/source/LICENSE) |
 | phf_generator | 0.14.0 | MIT | [LICENSE](https://docs.rs/crate/phf_generator/0.14.0/source/LICENSE) |
 | phf_macros | 0.14.0 | MIT | [LICENSE](https://docs.rs/crate/phf_macros/0.14.0/source/LICENSE) |
 | phf_shared | 0.14.0 | MIT | [LICENSE](https://docs.rs/crate/phf_shared/0.14.0/source/LICENSE) |
@@ -297,6 +301,7 @@ not constitute a complete binary redistribution review.
 | portable-atomic | 1.15.0 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/portable-atomic/1.15.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/portable-atomic/1.15.0/source/LICENSE-MIT) |
 | portable-atomic-util | 0.2.8 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/portable-atomic-util/0.2.8/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/portable-atomic-util/0.2.8/source/LICENSE-MIT) |
 | potential_utf | 0.1.6 | Unicode-3.0 | [LICENSE](https://docs.rs/crate/potential_utf/0.1.6/source/LICENSE) |
+| precomputed-hash | 0.1.1 | MIT | [LICENSE](https://docs.rs/crate/precomputed-hash/0.1.1/source/LICENSE) |
 | presser | 0.3.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/presser/0.3.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/presser/0.3.1/source/LICENSE-MIT) |
 | proc-macro-crate | 3.5.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/proc-macro-crate/3.5.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/proc-macro-crate/3.5.0/source/LICENSE-MIT) |
 | proc-macro2 | 1.0.107 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/proc-macro2/1.0.107/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/proc-macro2/1.0.107/source/LICENSE-MIT) |
@@ -353,6 +358,8 @@ not constitute a complete binary redistribution review.
 | stable_deref_trait | 1.2.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/stable_deref_trait/1.2.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/stable_deref_trait/1.2.1/source/LICENSE-MIT) |
 | static_assertions | 1.1.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/static_assertions/1.1.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/static_assertions/1.1.0/source/LICENSE-MIT) |
 | strict-num | 0.1.1 | MIT | [LICENSE](https://docs.rs/crate/strict-num/0.1.1/source/LICENSE) |
+| string_cache | 0.11.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/string_cache/0.11.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/string_cache/0.11.0/source/LICENSE-MIT) |
+| string_cache_codegen | 0.11.2 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/string_cache_codegen/0.11.2/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/string_cache_codegen/0.11.2/source/LICENSE-MIT) |
 | stringprep | 0.1.5 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/stringprep/0.1.5/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/stringprep/0.1.5/source/LICENSE-MIT) |
 | svgtypes | 0.16.1 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/svgtypes/0.16.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/svgtypes/0.16.1/source/LICENSE-MIT) |
 | swash | 0.2.10 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/swash/0.2.10/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/swash/0.2.10/source/LICENSE-MIT) |
@@ -361,6 +368,7 @@ not constitute a complete binary redistribution review.
 | synstructure | 0.14.0 | MIT | [LICENSE](https://docs.rs/crate/synstructure/0.14.0/source/LICENSE) |
 | taffy | 0.14.0 | MIT | [LICENSE (upstream)](https://raw.githubusercontent.com/DioxusLabs/taffy/77f385683c1d698c91a23a259f87fdddf26925fb/LICENSE) |
 | tempfile | 3.27.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/tempfile/3.27.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/tempfile/3.27.0/source/LICENSE-MIT) |
+| tendril | 0.5.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/tendril/0.5.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/tendril/0.5.1/source/LICENSE-MIT) |
 | thiserror | 1.0.69 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/thiserror/1.0.69/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/thiserror/1.0.69/source/LICENSE-MIT) |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/thiserror/2.0.21/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/thiserror/2.0.21/source/LICENSE-MIT) |
 | thiserror-impl | 1.0.69 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/thiserror-impl/1.0.69/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/thiserror-impl/1.0.69/source/LICENSE-MIT) |
@@ -409,6 +417,7 @@ not constitute a complete binary redistribution review.
 | wayland-sys | 0.31.11 | MIT | [LICENSE.txt](https://docs.rs/crate/wayland-sys/0.31.11/source/LICENSE.txt) |
 | web-sys | 0.3.106 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/web-sys/0.3.106/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/web-sys/0.3.106/source/LICENSE-MIT) |
 | web-time | 1.1.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/web-time/1.1.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/web-time/1.1.0/source/LICENSE-MIT) |
+| web_atoms | 0.3.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/web_atoms/0.3.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/web_atoms/0.3.0/source/LICENSE-MIT) |
 | weezl | 0.2.1 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/weezl/0.2.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/weezl/0.2.1/source/LICENSE-MIT) |
 | wgpu | 30.0.1 | MIT OR Apache-2.0 | [LICENSE.APACHE](https://docs.rs/crate/wgpu/30.0.1/source/LICENSE.APACHE), [LICENSE.MIT](https://docs.rs/crate/wgpu/30.0.1/source/LICENSE.MIT) |
 | wgpu-core | 30.0.1 | MIT OR Apache-2.0 | [LICENSE.APACHE](https://docs.rs/crate/wgpu-core/30.0.1/source/LICENSE.APACHE), [LICENSE.MIT](https://docs.rs/crate/wgpu-core/30.0.1/source/LICENSE.MIT) |

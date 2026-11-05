@@ -62,10 +62,9 @@ Undo/redo stores document content, formatting and selection together, with a
 64-entry/64-MiB history budget.
 
 The text surface uses the existing TextBox for grapheme and bidi navigation,
-selection, scrolling, clipboard and composition. Formatting, document replacement
+selection, scrolling and composition. Formatting, document replacement
 and view changes reject active preedit; transient composition never changes the
-document. Clipboard uses the host's plain-text route. Rich fragments are a model
-API, not an operating-system rich clipboard format.
+document. Code view retains the host's plain-text clipboard route.
 
 Code view edits JSON. Apply validates parsing, references and complete pagination
 before replacing the document as one undoable operation. A failed Apply leaves
@@ -82,6 +81,52 @@ layout or resize. Shared event queues are never drained by the component. DOCX
 file dialogs, file access and save policy belong to the application.
 
 The editing surface exposes ordinary text semantics and the preview has a
-descriptive name. Document-level screen-reader navigation, rich clipboard,
+descriptive name. Document-level screen-reader navigation,
 native CJK composition and multi-page inline caret navigation require separate
 integration and validation; model tests do not establish those behaviors.
+
+## Formatted clipboard
+
+`RichClipboardFragment` owns validated inline runs from one paragraph or table
+cell. `replace_in` preserves surrounding runs and paragraph metadata, validates
+grapheme boundaries and limits, and only then publishes the candidate.
+`to_html` emits explicit inline font, size, weight, italic, underline and RGB
+color with preserved whitespace. Unicode text is available independently through
+`plain_text`.
+
+`from_html` uses an HTML tokenizer and a strict bounded profile: balanced
+`span`, `b`/`strong`, `i`/`em`, `u`, `p`, `div`, `pre`, and void `br` elements;
+character references and comments; the `style` attribute only. Nonempty blocks
+are separated by line breaks; block spacing, empty block layout and paragraph
+metadata are outside this inline representation. Normal HTML whitespace
+collapses; `pre`, `white-space:pre` and `pre-wrap` preserve it. CSS supports one
+font family (quoted strings include escapes), `px`/`pt` sizes, normal/400 or
+bold/700 weight, normal/italic style, none/underline decoration, `#rgb`,
+`#rrggbb` and the sixteen basic named colors. Local inline declarations inherit
+and override the supported attributes. External styles, classes, font fallback
+lists, CSS functions, comments, `!important`, URLs, embedded objects, links,
+scripts and unsupported declarations return an error. No resources are fetched
+and no HTML is executed.
+
+Limits are 4 MiB input HTML, 1 MiB decoded text, 256 runs, 64 element levels,
+16,384 tokens and 4096 bytes per style attribute. Malformed or unsupported input
+does not replace the selection. This API does not implement browser layout or
+arbitrary HTML document fidelity.
+
+`RichEditor::clipboard_target` captures a single-use destination. `copy_fragment`
+reads its selected runs; `paste_html`, `paste_text` and `complete_cut` reject a
+changed document version, selection, paragraph, view or active composition.
+Paste and cut are one document undo operation, including formatting and
+selection. Host validation, limits and read-only state remain effective. Empty
+paste is a no-op. Plain text normalizes CRLF and CR to LF.
+
+In `xaml-form --rich-editor`, Ctrl+C/Ctrl+X writes Unicode and HTML together
+through the Windows platform service. Cut removes the selection only after a
+successful write. Ctrl+V requests HTML first and falls back to Unicode only if
+the HTML format is absent. Invalid or unsupported HTML leaves the document
+unchanged and offers explicit Ctrl+Shift+V plain-text paste. Ctrl+Insert,
+Shift+Insert and Shift+Delete provide alternate copy/paste/cut shortcuts. New
+input, focus loss and owner closure discard pending destinations. Applications
+integrating the component must provide this platform ownership/cancellation
+policy; `RichEditor` has no OS clipboard dependency. Embedded block images and
+multi-paragraph structure require document APIs rather than this inline format.

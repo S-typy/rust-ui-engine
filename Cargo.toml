@@ -44,6 +44,7 @@ resvg = { version = "=0.48.1", default-features = false }
 roxmltree = "=0.21.1"
 zip = { version = "=8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 lopdf = { version = "=0.45.0", default-features = false }
+html5ever = "=0.40.1"
 
 [profile.release]
 lto = "thin"

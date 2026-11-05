@@ -25,6 +25,7 @@
 | image | `=0.25.10`, `png/jpeg/bmp/ico` | Декодирование статических raster assets | MIT OR Apache-2.0 |
 | resvg | `=0.48.1`, без default features | Подготовка статического SVG в bitmap | Apache-2.0 OR MIT |
 | roxmltree | `=0.21.1` | XML-разбор и предварительная проверка XAML/SVG/DOCX/XLSX | MIT OR Apache-2.0 |
+| html5ever | `=0.40.1` | Токенизация ограниченного HTML clipboard; без браузерного layout и выполнения содержимого | MIT OR Apache-2.0 |
 | zip | `=8.6.0`, без default features, `deflate-flate2-zlib-rs` | Ограниченные ZIP-пакеты документов и книг | MIT |
 | lopdf | `=0.45.0`, без default features | PDF objects, streams, encoding и запись; не UI renderer | MIT |
 
@@ -46,7 +47,8 @@
 [rusqlite](https://docs.rs/crate/rusqlite/0.40.2/source/Cargo.toml),
 [image](https://docs.rs/crate/image/0.25.10/source/LICENSE-MIT),
 [resvg](https://docs.rs/crate/resvg/0.48.1/source/LICENSE-MIT),
-[roxmltree](https://docs.rs/crate/roxmltree/0.21.1/source/LICENSE-MIT).
+[roxmltree](https://docs.rs/crate/roxmltree/0.21.1/source/LICENSE-MIT),
+[html5ever](https://docs.rs/crate/html5ever/0.40.1/source/LICENSE-MIT).
 `pollster` использует старую запись `Apache-2.0/MIT`, эквивалентную выбору одной
 из двух лицензий. Это преобразование отмечено отдельно в inventory.
 

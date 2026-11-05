@@ -63,6 +63,154 @@ fn mount() -> (Controls, RichEditor) {
     (ui, editor)
 }
 #[test]
+fn formatted_clipboard_paste_cut_undo_preserve_runs_and_selection() {
+    let (mut ui, mut editor) = mount();
+    let id = editor.parts.editor;
+    ui.set_editor_selection(id, 0, 5).unwrap();
+    let target = editor.clipboard_target(&mut ui).unwrap();
+    assert!(
+        editor
+            .paste_html(&mut ui, target, "<b>Привет</b><i> 👩‍💻</i>")
+            .unwrap()
+    );
+    let after = editor.document().clone();
+    assert_eq!(
+        paragraph_at(&after, 0).unwrap().plain_text(),
+        "Привет 👩‍💻 beta"
+    );
+    assert!(paragraph_at(&after, 0).unwrap().runs[0].style.bold);
+    assert!(editor.undo(&mut ui).unwrap());
+    assert_eq!(
+        ui.document(id).unwrap().selection(),
+        Selection {
+            anchor: 0,
+            focus: 5
+        }
+    );
+    assert!(editor.redo(&mut ui).unwrap());
+    assert_eq!(editor.document(), &after);
+    ui.set_editor_selection(id, 0, "Привет".len()).unwrap();
+    let cut = editor.clipboard_target(&mut ui).unwrap();
+    assert_eq!(
+        editor.copy_fragment(&ui, &cut).unwrap().plain_text(),
+        "Привет"
+    );
+    assert_eq!(editor.document(), &after); // request alone never cuts
+    editor.complete_cut(&mut ui, cut).unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), " 👩‍💻 beta");
+    assert!(editor.undo(&mut ui).unwrap());
+    assert_eq!(editor.document(), &after);
+}
+#[test]
+fn rejected_clipboard_preserves_model_host_history_and_revision() {
+    let (mut ui, mut editor) = mount();
+    let id = editor.parts.editor;
+    ui.set_editor_selection(id, 0, 5).unwrap();
+    let before = editor.document().clone();
+    for html in ["<img src='x'>", "<b>bad", "<i>\u{301}</i>"] {
+        // Third candidate joins a combining mark to the preceding character.
+        if html.contains('\u{301}') {
+            ui.set_editor_selection(id, 1, 1).unwrap();
+        }
+        let selection = ui.document(id).unwrap().selection();
+        let version = ui.document(id).unwrap().version();
+        let target = editor.clipboard_target(&mut ui).unwrap();
+        assert!(editor.paste_html(&mut ui, target, html).is_err());
+        assert_eq!(editor.document(), &before);
+        assert_eq!(ui.document(id).unwrap().version(), version);
+        assert_eq!(ui.document(id).unwrap().selection(), selection);
+        assert!(!editor.can_undo());
+        assert_eq!(editor.revision(), 0);
+    }
+    ui.set_editor_settings(
+        id,
+        crate::EditorSettings {
+            max_length: Some(10),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let target = editor.clipboard_target(&mut ui).unwrap();
+    assert!(editor.paste_text(&mut ui, target, "too much text").is_err());
+    assert_eq!(editor.document(), &before);
+    assert!(!editor.can_undo());
+}
+#[test]
+fn asynchronous_clipboard_rejects_stale_text_selection_view_and_composition() {
+    for case in 0..5 {
+        let (mut ui, mut editor) = mount();
+        let id = editor.parts.editor;
+        ui.runtime.apply(Mutation::Focus(Some(id))).unwrap();
+        let target = editor.clipboard_target(&mut ui).unwrap();
+        match case {
+            0 => {
+                ui.set_editor_value(id, "new text").unwrap();
+            }
+            1 => ui.set_editor_selection(id, 0, 1).unwrap(),
+            2 => editor.set_view(&mut ui, RichEditorView::Code).unwrap(),
+            3 => ui.ime_preedit("候補", Some((0, 6))).unwrap(),
+            _ => editor.select_paragraph(&mut ui, 1).unwrap(),
+        }
+        let before = editor.document().clone();
+        let host = ui.document(id).unwrap().text().to_owned();
+        assert!(editor.paste_html(&mut ui, target, "<b>stale</b>").is_err());
+        assert_eq!(editor.document(), &before);
+        assert_eq!(ui.document(id).unwrap().text(), host);
+    }
+}
+#[test]
+fn plain_clipboard_normalizes_lines_and_read_only_still_copies() {
+    let (mut ui, mut editor) = mount();
+    let id = editor.parts.editor;
+    ui.set_editor_selection(id, 0, 5).unwrap();
+    let target = editor.clipboard_target(&mut ui).unwrap();
+    editor.paste_text(&mut ui, target, "a\r\nb\rc").unwrap();
+    assert_eq!(ui.document(id).unwrap().text(), "a\nb\nc beta");
+    ui.set_editor_settings(
+        id,
+        crate::EditorSettings {
+            is_read_only: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ui.set_editor_selection(id, 0, 1).unwrap();
+    let target = editor.clipboard_target(&mut ui).unwrap();
+    assert_eq!(
+        editor.copy_fragment(&ui, &target).unwrap().plain_text(),
+        "a"
+    );
+    assert!(editor.complete_cut(&mut ui, target).is_err());
+    assert_eq!(ui.document(id).unwrap().text(), "a\nb\nc beta");
+}
+#[test]
+fn cut_business_rejection_and_empty_paste_preserve_the_accepted_document() {
+    let (mut ui, mut editor) = mount();
+    let id = editor.parts.editor;
+    ui.set_editor_selection(id, 0, 10).unwrap();
+    ui.set_editor_validation(
+        id,
+        crate::EditorValidation {
+            is_required: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let before = editor.document().clone();
+    let version = ui.document(id).unwrap().version();
+    let selection = ui.document(id).unwrap().selection();
+    let cut = editor.clipboard_target(&mut ui).unwrap();
+    assert!(editor.complete_cut(&mut ui, cut).is_err());
+    let paste = editor.clipboard_target(&mut ui).unwrap();
+    assert!(!editor.paste_html(&mut ui, paste, "<div></div>").unwrap());
+    assert_eq!(editor.document(), &before);
+    assert_eq!(ui.document(id).unwrap().version(), version);
+    assert_eq!(ui.document(id).unwrap().selection(), selection);
+    assert!(!editor.can_undo());
+    assert_eq!(editor.revision(), 0);
+}
+
+#[test]
 fn formatted_selection_and_unicode_undo_restore_together() {
     let (mut ui, mut editor) = mount();
     let id = editor.parts.editor;

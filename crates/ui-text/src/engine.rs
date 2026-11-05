@@ -132,7 +132,7 @@ pub struct PreparedText {
     /// Intrinsic layout dimensions in physical pixels.
     pub width: f32,
     pub height: f32,
-    /// Actual shaped .notdef glyphs; nonzero means system-font coverage is incomplete.
+    /// Printable shaped .notdef glyphs; nonzero means system-font coverage is incomplete.
     pub missing_glyphs: usize,
     /// Includes spaces, nonpainting glyphs and glyphs outside the clip.
     pub shaped_glyphs: usize,
@@ -528,11 +528,33 @@ impl TextEngine {
         let mut rasterized_glyphs = 0;
         let mut color_glyphs = 0;
         for line in layout.lines() {
+            let mut control_run = None;
+            let mut control_glyphs = Vec::new();
+            let mut control_index = 0;
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
                 };
                 let font_run = glyph_run.run();
+                // Tabs and hard breaks are layout characters. Some fonts map
+                // their clusters to .notdef; retain the shaped advance/caret
+                // geometry without painting a replacement box or reporting a
+                // missing printable glyph. Style segments share one font run.
+                let text_range = font_run.text_range();
+                if control_run.as_ref() != Some(&text_range) {
+                    control_glyphs.clear();
+                    control_index = 0;
+                    if run.text[text_range.clone()].contains(['\t', '\r', '\n']) {
+                        for cluster in font_run.visual_clusters() {
+                            let text = &run.text[cluster.text_range()];
+                            let hidden = !text.is_empty()
+                                && text.chars().all(|c| matches!(c, '\t' | '\r' | '\n'));
+                            control_glyphs
+                                .extend(std::iter::repeat_n(hidden, cluster.glyphs().count()));
+                        }
+                    }
+                    control_run = Some(text_range);
+                }
                 let color = glyph_run
                     .style()
                     .brush
@@ -546,6 +568,11 @@ impl TextEngine {
                     shaped_glyphs += 1;
                     if shaped_glyphs > MAX_PREPARED_GLYPHS {
                         return Err(TextError::RasterLimit);
+                    }
+                    let hidden = control_glyphs.get(control_index).copied().unwrap_or(false);
+                    control_index += 1;
+                    if hidden {
+                        continue;
                     }
                     if glyph.id == 0 {
                         missing_glyphs += 1;
@@ -1058,6 +1085,50 @@ mod tests {
             Color::rgb(10, 20, 30),
             20.0,
         )
+    }
+
+    #[test]
+    fn tab_clusters_keep_caret_advance_without_replacement_ink() {
+        let mut engine = TextEngine::new();
+        for text in ["A\tB", "A\t\tB", "אב\tגד", "A\tB\nC\tD"] {
+            for scale in [1.0, 1.25, 1.5, 2.0] {
+                let value = run(text);
+                // Color changes create separate positioned glyph segments
+                // inside the same font run, including the segment after a tab.
+                let spans = text
+                    .char_indices()
+                    .map(|(start, c)| TextSpan {
+                        range: start..start + c.len_utf8(),
+                        font: None,
+                        font_size: None,
+                        weight: None,
+                        color: Some(if start % 2 == 0 {
+                            Color::rgb(200, 0, 0)
+                        } else {
+                            Color::rgb(0, 0, 200)
+                        }),
+                    })
+                    .collect::<Vec<_>>();
+                let prepared = engine.prepare_styled(&value, &spans, scale).unwrap();
+                assert_eq!(prepared.missing_glyphs, 0, "{text:?} at {scale}");
+                assert_eq!(
+                    prepared.glyphs.len(),
+                    text.chars().filter(|c| !c.is_whitespace()).count()
+                );
+                for (i, c) in text.char_indices().filter(|(_, c)| *c == '\t') {
+                    let a = prepared.caret_rect(i);
+                    let b = prepared.caret_rect(i + c.len_utf8());
+                    assert!((a.x - b.x).abs() > 0.1);
+                    assert_eq!(a.y, b.y);
+                    assert!(!prepared.selection_rects(i..i + 1).is_empty());
+                }
+            }
+        }
+        let missing = engine.prepare(&run("\u{10ffff}"), 1.0).unwrap();
+        assert!(
+            missing.missing_glyphs > 0,
+            "unknown printable glyphs must remain diagnostic"
+        );
     }
 
     #[test]

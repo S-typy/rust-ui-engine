@@ -188,6 +188,10 @@ scripts your application uses. `PreparedText::missing_glyphs` counts shaped
 guarantee that every font color format can be rasterized. Swash's outline,
 COLR outline and bitmap paths are used; unsupported font/color formats can still
 produce no bitmap. Spaces and other nonpainting glyphs also produce no bitmap.
+Tab and hard-break clusters retain their shaped advance, source byte positions
+and caret/selection geometry without painting `.notdef` boxes. They do not count
+as missing printable glyphs. Tab spacing currently follows the shaping backend's
+advance; configurable tab stops are not exposed.
 
 Runs are limited to 1 MiB of UTF-8, 65,536 prepared glyphs and a physical font size
 of 1,024 pixels. Each extended grapheme is limited to 32 Unicode scalars and

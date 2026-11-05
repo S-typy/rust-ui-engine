@@ -1,8 +1,11 @@
 //! Retained rich-document editor with a paragraph editing surface and a
 //! paginated formatted preview. The code view edits the validated JSON model.
-//! Native text input, clipboard and IME are delegated to the existing TextBox.
+//! Native text input and IME use the existing TextBox; formatted clipboard
+//! operations use validated fragments and versioned asynchronous destinations.
+mod clipboard;
 use crate::rich_document::*;
 use crate::{ControlError, Controls};
+pub use clipboard::RichClipboardTarget;
 use rust_desktop_ui_core::{
     Axis, DrawCommand, GridPlacement, GridTrack, InputEvent, Key, LayoutKind, LayoutStyle, Length,
     Point, Rect, Scene, WidgetId,

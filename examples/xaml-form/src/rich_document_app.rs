@@ -1,4 +1,5 @@
 //! Explicit DOCX I/O around the retained rich-document editor.
+mod clipboard;
 use crate::form::Form;
 use rust_desktop_ui_controls::rich_document::{
     DocumentMedia, DocxImport, Paragraph, RichBlock, RichDocument, RichImage, RichTable,
@@ -49,6 +50,7 @@ pub(crate) struct RichDocumentDemo {
     waker: Option<platform::AppWaker>,
     diagnostics: bool,
     last: String,
+    clipboard: clipboard::ClipboardState,
 }
 fn err(e: impl ToString) -> String {
     e.to_string()
@@ -134,6 +136,7 @@ impl RichDocumentDemo {
             waker: None,
             diagnostics,
             last: String::new(),
+            clipboard: Default::default(),
         })
     }
     fn result(&mut self, message: &str) -> Result<(), String> {
@@ -354,13 +357,12 @@ impl DesktopApp for RichDocumentDemo {
                 self.editor.view(),
                 self.busy
             );
-            if signature != self.last {
+            let batch = crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view);
+            let complete = format!("{signature}\n{batch}");
+            if complete != self.last {
                 println!("rich-document-state {signature}");
-                println!(
-                    "batch-state {}",
-                    crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view)
-                );
-                self.last = signature;
+                println!("batch-state {batch}");
+                self.last = complete;
             }
         }
         Ok(())
@@ -375,25 +377,34 @@ impl DesktopApp for RichDocumentDemo {
         let action = (|| -> Result<(), String> {
             match event {
                 PlatformEvent::Input(input) => {
-                    if !self
-                        .editor
-                        .handle_event(&mut self.form.ui, &input)
-                        .map_err(err)?
+                    if !self.clipboard_input(&input)?
+                        && !self
+                            .editor
+                            .handle_event(&mut self.form.ui, &input)
+                            .map_err(err)?
                     {
                         self.form.ui.dispatch(input).map_err(err)?;
                     }
                 }
-                PlatformEvent::Text(text) => self.form.ui.text_input(&text).map_err(err)?,
+                PlatformEvent::Text(text) => {
+                    self.clipboard.cancel();
+                    self.form.ui.text_input(&text).map_err(err)?;
+                }
                 PlatformEvent::Paste(text) => self.form.ui.paste_input(&text).map_err(err)?,
                 PlatformEvent::ImePreedit(text, cursor) => {
+                    self.clipboard.cancel();
                     self.form.ui.ime_preedit(&text, cursor).map_err(err)?
                 }
-                PlatformEvent::ImeCommit(text) => self.form.ui.ime_commit(&text).map_err(err)?,
+                PlatformEvent::ImeCommit(text) => {
+                    self.clipboard.cancel();
+                    self.form.ui.ime_commit(&text).map_err(err)?;
+                }
                 PlatformEvent::ImeCancel => self.form.ui.cancel_preedit(),
                 PlatformEvent::Tick => {
                     self.form.ui.tick(Instant::now()).map_err(err)?;
                 }
                 PlatformEvent::Accessibility(request) => {
+                    self.clipboard.cancel();
                     self.form.accessible.action(&mut self.form.ui, request)?
                 }
             }
@@ -425,6 +436,20 @@ impl DesktopApp for RichDocumentDemo {
     }
     fn take_dialog_request(&mut self) -> Option<DialogRequest> {
         self.request.take()
+    }
+    fn platform_services_changed(&mut self, handle: Option<platform::PlatformServiceHandle>) {
+        self.clipboard.cancel();
+        self.clipboard.handle = handle;
+    }
+    fn platform_service_completed(
+        &mut self,
+        completion: platform::PlatformServiceCompletion,
+    ) -> Result<EventResponse, String> {
+        if let Err(error) = self.clipboard_completed(completion) {
+            self.result(&error)?;
+        }
+        self.refresh()?;
+        Ok(EventResponse::redraw())
     }
     fn dialog_completed(&mut self, completion: DialogCompletion) -> Result<EventResponse, String> {
         if self
