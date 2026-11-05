@@ -148,7 +148,7 @@ fn invalid_and_unrepresentable_plans_leave_workbook_untouched() {
         assert_eq!(book, before);
     }
     let mut cell = WorkbookCell::value(CellValue::Integer(12));
-    cell.style.number_format = "[>0]0".into();
+    cell.style.number_format = "[>]0".into();
     book.apply(&[set(0, 0, cell)]).unwrap();
     assert!(
         auto_fit_edits(

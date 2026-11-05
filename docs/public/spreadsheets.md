@@ -142,8 +142,36 @@ formulas, clipboard and XLSX storage remain numeric. Fraction masks with percent
 comma scaling/grouping or decimal points are outside this profile. Question-mark
 spacing does not guarantee alignment in a proportional font.
 
-Conditional directives and alignment directives are outside this
-profile. Unsupported formats retain their metadata and display a raw value
+Numeric conditions support `<`, `<=`, `=`, `<>`, `>=` and `>` with a signed
+decimal or scientific threshold, such as `[>100][Green]0.0;[<-100][Red](0.0);0.0`.
+One condition may precede each of the first two sections, alongside color and
+locale modifiers in any order. Conditions in the third or text section, duplicate
+conditions and malformed thresholds produce a diagnostic. Exponents are bounded
+to -1024..1024; thresholds use a dot independent of the display culture.
+
+Conditions compare the original signed value before rounding, percent or comma
+scaling. Integer and Decimal comparisons are exact; Real uses its shortest decimal
+representation. Typed dates and clocks do not implicitly become numeric serials
+for condition evaluation. The fourth section still formats text independently.
+
+The first matching condition wins. In a three-section numeric format, an
+unconditional first section matches nonnegative values and an unconditional
+second section matches negative values; the third section handles the remainder.
+With two sections, an unconditional second section handles every value rejected
+by the first. A lone unmatched condition falls back to General. Two unmatched
+conditions without a third section produce a raw-value diagnostic. An explicit
+General section uses the selected culture and color.
+
+A condition that accepts only strictly negative values consumes the implicit
+minus; write a literal minus or parentheses when needed. The same rule applies
+to a two-section unconditional fallback whose complement is strictly negative.
+Other matching conditions and the third fallback preserve the sign. Selection
+and sign are not reconsidered after rounding: `-0.001` with `[<=0]0.00;0` retains
+the minus in its rounded zero. Fractions and durations use this same selection.
+These directives choose a number-format section; they do not implement workbook
+conditional-formatting rules such as color scales or formula-driven styles.
+
+Alignment directives remain outside this profile. Unsupported formats retain their metadata and display a raw value
 with a diagnostic, rather than a guessed result. Printing uses the same formatter
 and rejects unsupported formats explicitly. Formatting does not alter typed
 clipboard values or formulas.
@@ -179,7 +207,7 @@ application. A changed draft and a format change are separate undo steps when
 both succeed. Undo/redo, cell navigation and sheet changes refresh the picker.
 Numeric values are not converted to typed dates or times by choosing a format.
 The example's «Форматы» worksheet shows date names, clocks, locale overrides,
-engineering rounding, durations and fractions alongside their format strings.
+engineering rounding, durations, fractions and numeric conditions alongside their format strings.
 
 The formula editor uses the shared accessible text control.
 `Spreadsheet::semantics` supplies bounded

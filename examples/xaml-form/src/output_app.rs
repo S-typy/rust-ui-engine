@@ -1047,6 +1047,21 @@ fn append_format_examples(book: &mut Workbook) -> Result<(), String> {
             CellValue::Real(std::f64::consts::PI),
             "# ???/???",
         ),
+        (
+            "Условие · верхний диапазон",
+            CellValue::Real(120.5),
+            "[>100][Green]0.0;[<-100][Red](0.0);0.0",
+        ),
+        (
+            "Условие · нижний диапазон",
+            CellValue::Real(-120.5),
+            "[>100][Green]0.0;[<-100][Red](0.0);0.0",
+        ),
+        (
+            "Условие · точная граница",
+            CellValue::Integer(9_007_199_254_740_993),
+            "[>9007199254740992]\"Выше границы\";0",
+        ),
     ]
     .into_iter()
     .enumerate()

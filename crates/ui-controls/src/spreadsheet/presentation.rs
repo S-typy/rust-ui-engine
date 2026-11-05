@@ -1,4 +1,5 @@
 //! Bounded cell presentation, independent of input/formula storage.
+mod condition;
 mod elapsed;
 mod fraction;
 mod temporal;
@@ -199,6 +200,7 @@ fn formatted(
     culture: UiCulture,
 ) -> Result<(String, Option<u32>), &'static str> {
     let mut parts = sections(format)?;
+    let conditions = condition::extract(&mut parts)?;
     let WorkbookValue::Scalar(value) = value else {
         return Ok((value.display(), None));
     };
@@ -214,6 +216,9 @@ fn formatted(
         return Ok((literal(&part, Some(text))?, rgb));
     }
     if matches!(value, CellValue::Date(_) | CellValue::Time(_)) {
+        if conditions.iter().any(Option::is_some) {
+            return Err("Conditional formats require numeric values");
+        }
         let mut part = parts.remove(0);
         let (rgb, culture) = directives(&mut part, culture)?;
         return Ok((
@@ -226,30 +231,42 @@ fn formatted(
         ));
     }
     let mut number = Number::new(&value.display())?;
-    let negative = number.negative && number.digits != "0";
-    let index = if number.digits == "0" && parts.len() >= 3 {
-        2
-    } else if negative && parts.len() >= 2 {
-        1
-    } else {
-        0
+    let (index, automatic_sign) = match condition::select(&conditions, &number)? {
+        condition::Selection::Section(index, sign) => (index, sign),
+        condition::Selection::General => {
+            let display = format_value(&WorkbookValue::Scalar(value.clone()), "General", culture);
+            return Ok((display.text, None));
+        }
     };
     let mut part = parts[index].clone();
     let (rgb, culture) = directives(&mut part, culture)?;
+    if part
+        .iter()
+        .filter_map(code)
+        .collect::<String>()
+        .eq_ignore_ascii_case("General")
+        && part.iter().all(|token| code(token).is_some())
+    {
+        let mut display = format_value(&WorkbookValue::Scalar(value.clone()), "General", culture);
+        if number.negative && !automatic_sign && display.text.starts_with('-') {
+            display.text.remove(0);
+        }
+        return Ok((display.text, rgb));
+    }
     if part.is_empty() {
         return Ok((String::new(), rgb));
     }
     if elapsed::requested(&part) {
         let text = elapsed::render(value, &part)?;
         return Ok((
-            format!("{}{}", if negative && index == 0 { "-" } else { "" }, text),
+            format!("{}{}", if automatic_sign { "-" } else { "" }, text),
             rgb,
         ));
     }
     if fraction::requested(&part) {
         let text = fraction::render(&number, &part)?;
         return Ok((
-            format!("{}{}", if negative && index == 0 { "-" } else { "" }, text),
+            format!("{}{}", if automatic_sign { "-" } else { "" }, text),
             rgb,
         ));
     }
@@ -280,7 +297,7 @@ fn formatted(
     Ok((
         format!(
             "{}{}{}{}",
-            if negative && index == 0 { "-" } else { "" },
+            if automatic_sign { "-" } else { "" },
             prefix,
             rendered,
             suffix
