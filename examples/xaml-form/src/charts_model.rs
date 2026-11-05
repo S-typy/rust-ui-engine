@@ -117,6 +117,7 @@ impl ChartsDemo {
             ("ChartSankey", "Потоки"),
             ("ChartStackedBar", "Накопление"),
             ("ChartArea", "Области"),
+            ("ChartStackedArea", "Слои областей"),
         ]
         .into_iter()
         .enumerate()
@@ -191,6 +192,7 @@ impl ChartsDemo {
                 11 => s.view = ChartView::Sankey,
                 12 => s.view = ChartView::StackedBar,
                 13 => s.view = ChartView::Area,
+                14 => s.view = ChartView::StackedArea,
                 _ => {}
             }
             if matches!(

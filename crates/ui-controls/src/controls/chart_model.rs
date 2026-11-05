@@ -11,6 +11,8 @@ mod cartesian;
 pub use cartesian::ChartArea;
 #[path = "chart_navigation.rs"]
 mod navigation;
+#[path = "chart_stacked_area.rs"]
+mod stacked_area;
 
 pub const MAX_CHART_SERIES: usize = 16;
 pub const MAX_CHART_POINTS: usize = 4096;
@@ -25,6 +27,9 @@ pub enum ChartView {
     StackedBar,
     /// A line filled to zero; each series requires strictly increasing X.
     Area,
+    /// Signed cumulative bands on identical, strictly increasing X coordinates.
+    /// A missing observation breaks that band and the bands stacked above it.
+    StackedArea,
     /// The same line geometry, without axes or a legend in the presenter.
     Sparkline,
     Pie,
@@ -253,6 +258,7 @@ impl ChartModel {
                 | ChartView::Sparkline
                 | ChartView::StackedBar
                 | ChartView::Area
+                | ChartView::StackedArea
         ) {
             return Err(ChartError::InvalidView);
         }
@@ -294,14 +300,20 @@ impl ChartModel {
         };
         let y_range = match settings.y_range {
             Some(r) => r,
-            None if settings.view == ChartView::StackedBar => automatic(
-                stacks
-                    .iter()
-                    .flatten()
-                    .flatten()
-                    .flat_map(|(a, b)| [*a, *b]),
-                true,
-            )?,
+            None if matches!(
+                settings.view,
+                ChartView::StackedBar | ChartView::StackedArea
+            ) =>
+            {
+                automatic(
+                    stacks
+                        .iter()
+                        .flatten()
+                        .flatten()
+                        .flat_map(|(a, b)| [*a, *b]),
+                    true,
+                )?
+            }
             None => automatic(
                 series
                     .iter()
@@ -410,15 +422,21 @@ impl ChartModel {
             Self::format_number(point.x),
             Self::format_number(point.y?)
         );
-        if self.settings.view == ChartView::StackedBar {
+        if matches!(
+            self.settings.view,
+            ChartView::StackedBar | ChartView::StackedArea
+        ) {
             let row = self.series.iter().position(|s| s.id == key.series)?;
             let column = series.points.iter().position(|p| p.id == key.point)?;
-            let (base, end) = self.stacks[row][column]?;
-            description.push_str(&format!(
-                "; интервал {} … {}",
-                Self::format_number(base),
-                Self::format_number(end)
-            ));
+            if let Some((base, end)) = self.stacks[row][column] {
+                description.push_str(&format!(
+                    "; интервал {} … {}",
+                    Self::format_number(base),
+                    Self::format_number(end)
+                ));
+            } else {
+                description.push_str("; накопление недоступно");
+            }
         }
         Some(description)
     }
@@ -554,7 +572,10 @@ impl ChartModel {
             .filter(|v| *v > 0.0)
             .fold(0.75f64, f64::min)
             * 0.8;
-        let stacked = self.settings.view == ChartView::StackedBar;
+        let stacked = matches!(
+            self.settings.view,
+            ChartView::StackedBar | ChartView::StackedArea
+        );
         let count = if stacked {
             1.0
         } else {
@@ -576,7 +597,10 @@ impl ChartModel {
                 };
                 let x = self.x_range.fraction(point.x)?;
                 let (base, end) = if stacked {
-                    self.stacks[series_index][point_index].unwrap()
+                    let Some(span) = self.stacks[series_index][point_index] else {
+                        continue;
+                    };
+                    span
                 } else {
                     (0.0, value)
                 };
@@ -620,7 +644,7 @@ impl ChartModel {
                         }
                         previous = Some((x, y, key));
                     }
-                    ChartView::Scatter => {}
+                    ChartView::Scatter | ChartView::StackedArea => {}
                     ChartView::Bar | ChartView::StackedBar => {
                         let index = if stacked { 0 } else { series_index };
                         let baseline = if stacked {
@@ -648,6 +672,9 @@ impl ChartModel {
                     _ => unreachable!("family geometry is handled above"),
                 }
             }
+        }
+        if self.settings.view == ChartView::StackedArea {
+            stacked_area::geometry(self, &mut result)?;
         }
         Ok(result)
     }

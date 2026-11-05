@@ -92,6 +92,10 @@ job merely by starting. Windows DX12/Vulkan checks cover page keys, search,
 bookmarks, flat text fields, notes and explicit file dialogs. Saved Unicode
 field values and notes were reopened by an independent PDF parser. Windows
 Narrator reading was verified for the separate extracted-text and field editors.
+Moving the window between 120/144 DPI monitors preserves the current page,
+field draft, Unicode selection and editor identity on DX12/Vulkan. Physical
+UIA text rectangles remain within the field; Escape, Apply and field navigation
+were checked after the move. Native CJK composition remains unverified.
 Canvas text hit-selection, link actions, additional form types, a rich PDF
 document text provider and other OS reader checks remain outstanding. The
 viewer is a Rust-mounted control, not a compiled `<PdfViewer>` element.

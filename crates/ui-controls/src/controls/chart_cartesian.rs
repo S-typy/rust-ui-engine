@@ -6,20 +6,24 @@ use std::collections::HashMap;
 pub(super) type Stacks = Vec<Vec<Option<(f64, f64)>>>;
 
 pub(super) fn validate(series: &[ChartSeries], view: ChartView) -> Result<Stacks, ChartError> {
-    if view == ChartView::Area {
+    if matches!(view, ChartView::Area | ChartView::StackedArea) {
         if series
             .iter()
             .any(|s| s.points.windows(2).any(|p| p[0].x >= p[1].x))
         {
             return Err(ChartError::InvalidTopology);
         }
-        return Ok(vec![]);
+        if view == ChartView::Area {
+            return Ok(vec![]);
+        }
+        stacked_area::validate(series)?;
     }
-    if view != ChartView::StackedBar {
+    if !matches!(view, ChartView::StackedBar | ChartView::StackedArea) {
         return Ok(vec![]);
     }
     let mut totals: HashMap<u64, (f64, f64)> = HashMap::new();
     let mut result = Vec::with_capacity(series.len());
+    let mut unknown = HashSet::new();
     for s in series {
         let mut categories = HashSet::new();
         let mut row = Vec::with_capacity(s.points.len());
@@ -28,7 +32,11 @@ pub(super) fn validate(series: &[ChartSeries], view: ChartView) -> Result<Stacks
             if !categories.insert(x) {
                 return Err(ChartError::DuplicateCategory);
             }
-            let span = if let Some(y) = p.y {
+            let span = if view == ChartView::StackedArea && (p.y.is_none() || unknown.contains(&x))
+            {
+                unknown.insert(x);
+                None
+            } else if let Some(y) = p.y {
                 let totals = totals.entry(x).or_default();
                 let accumulated = if y >= 0.0 {
                     &mut totals.0
@@ -137,35 +145,50 @@ pub(super) fn area(
         vec![(a, b)]
     };
     for (left, right) in intervals {
-        let polygon = clip(vec![(left.0, baseline), left, right, (right.0, baseline)]);
-        let mut contour: Vec<_> = polygon
-            .into_iter()
-            .map(|p| {
-                Point::new(
-                    (f64::from(plot.x) + p.0.clamp(0.0, 1.0) * f64::from(plot.width)) as f32,
-                    (f64::from(plot.y) + (1.0 - p.1.clamp(0.0, 1.0)) * f64::from(plot.height))
-                        as f32,
-                )
-            })
-            .collect();
-        contour.dedup();
-        if contour.first() == contour.last() {
-            contour.pop();
-        }
-        let path = FillPath {
-            contours: vec![contour.clone()],
-            clip: plot,
-            rule: FillRule::NonZero,
-            color: Color::rgb(0, 0, 0),
-        };
-        if !path.is_valid() {
-            continue;
-        }
-        output.push(ChartArea {
-            start,
-            end,
-            contour,
-            split_x: f64::from(plot.x) + (a.0 + b.0) * 0.5 * f64::from(plot.width),
-        });
+        band(
+            output,
+            plot,
+            [(left.0, baseline), left, right, (right.0, baseline)],
+            (start, end),
+            (a.0 + b.0) * 0.5,
+        );
     }
+}
+
+pub(super) fn band(
+    output: &mut Vec<ChartArea>,
+    plot: Rect,
+    corners: [XY; 4],
+    keys: (ChartPointKey, ChartPointKey),
+    split_x: f64,
+) {
+    let polygon = clip(corners.to_vec());
+    let mut contour: Vec<_> = polygon
+        .into_iter()
+        .map(|p| {
+            Point::new(
+                (f64::from(plot.x) + p.0.clamp(0.0, 1.0) * f64::from(plot.width)) as f32,
+                (f64::from(plot.y) + (1.0 - p.1.clamp(0.0, 1.0)) * f64::from(plot.height)) as f32,
+            )
+        })
+        .collect();
+    contour.dedup();
+    if contour.first() == contour.last() {
+        contour.pop();
+    }
+    let path = FillPath {
+        contours: vec![contour.clone()],
+        clip: plot,
+        rule: FillRule::NonZero,
+        color: Color::rgb(0, 0, 0),
+    };
+    if !path.is_valid() {
+        return;
+    }
+    output.push(ChartArea {
+        start: keys.0,
+        end: keys.1,
+        contour,
+        split_x: f64::from(plot.x) + split_x * f64::from(plot.width),
+    });
 }

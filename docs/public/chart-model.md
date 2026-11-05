@@ -2,9 +2,9 @@
 
 `ChartModel` contains a bounded accepted snapshot of numeric series, settings and
 an optional selected item. Cartesian views are `Line`, `Scatter`, `Bar`, and
-`Sparkline`, `StackedBar` and `Area`. Typed `ChartFamily` observations add `Pie`, `Heatmap`, `Treemap`,
+`Sparkline`, `StackedBar`, `Area` and `StackedArea`. Typed `ChartFamily` observations add `Pie`, `Heatmap`, `Treemap`,
 `Sunburst` and `Sankey`. Sparkline uses the same line geometry with a compact
-presentation. Stacked areas, logarithmic and time axes remain outside this profile.
+presentation. Logarithmic and time axes remain outside this profile.
 
 `ChartSeries` has a stable `u64` ID, label and points. Each point has a full signed
 `i64` ID unique within its series, a finite `x` and optional finite `y`. Point order
@@ -44,7 +44,8 @@ the actual bar center. The same returned geometry drives drawing and hit tests.
 `hit_test` first chooses the last drawn containing bar, then the nearest marker
 within a finite nonnegative radius. Equal marker distances use series/input
 order. Plot endpoints are inclusive for hit testing. Out-of-plot input returns
-no point. There is no interpolation, decimation or hidden data aggregation.
+no point. Stored observations are never interpolated, decimated or aggregated;
+line and area geometry connects adjacent values with linear segments.
 
 ### Accumulation and filled areas
 
@@ -63,6 +64,24 @@ Zero crossings split the fill into two simple polygons. Explicit ranges clip the
 polygons before conversion to f32; visible fill can remain when both observations
 are offscreen. Independent series overlap in series order. Fills are painted
 first, then lines and markers. NULL breaks both the line and the area.
+
+`StackedArea` uses identical, strictly increasing X coordinates in every series,
+including NULL positions. Positive and negative values accumulate separately in
+series order. Its automatic Y range includes known cumulative endpoints. Missing
+values break their band and every band above it; lower bands remain available.
+An upper observation whose baseline is unknown keeps its raw value and key,
+but has no cumulative marker or interval. Its description explicitly reports
+that accumulation is unavailable. Unknown baselines are never replaced by zero.
+
+Between observations, signed sums follow the interpolated source values.
+Every zero crossing in a lower series splits the upper geometry, so a changing
+baseline has the correct bend. A band changing sign switches between the
+negative and positive envelopes without connecting the empty space between them.
+Subdivision vertices create no new point identities. The same contour hit test,
+original-endpoint selection, keyboard navigation and view transforms apply.
+There is a budget of 8192 strips before viewport clipping, in addition to the
+series/point limits. Exceeding it returns `Capacity` before model replacement;
+it does not increase the renderer's per-frame path limit.
 
 `ChartGeometry.areas` exposes the same clipped contours used for painting and
 hit testing. Marker proximity takes precedence; a click inside a fill chooses
