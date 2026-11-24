@@ -10,7 +10,7 @@ pub(super) fn new_kind(name: &str) -> Option<ElementKind> {
         "NotificationCenter" => ElementKind::NotificationCenter(Default::default()),
         "LoadingOverlay" => ElementKind::LoadingOverlay(Box::default()),
         "Grid" => ElementKind::Grid(GridDefinition::default()),
-        "GridControl" => ElementKind::GridControl(GridControlDefinition::default()),
+        "GridControl" => ElementKind::GridControl(Box::default()),
         "TreeView" => ElementKind::TreeView(TreeDefinition::default()),
         "TreeGrid" => ElementKind::TreeGrid(TreeDefinition::default()),
         "CircularGauge" | "LinearGauge" | "DigitalGauge" | "StateIndicator" => {
@@ -527,6 +527,39 @@ pub(super) fn property(
                 "FilterText" => grid.filter_text = attr.value().into(),
                 "SelectedValue" => grid.selected_value = Some(attr.value().into()),
                 "View" => grid.view = grid_extensions::view(document, attr)?,
+                "GroupMode" => {
+                    grid.hierarchical_groups = match attr.value() {
+                        "Composite" => false,
+                        "Hierarchy" => true,
+                        _ => {
+                            return Err(at_attribute(
+                                document,
+                                attr,
+                                "GroupMode must be Composite or Hierarchy",
+                            ));
+                        }
+                    }
+                }
+                "GroupSortSummary" => {
+                    grid.group_sort_summary = Some(attr.value().parse().map_err(|_| {
+                        at_attribute(document, attr, "Expected zero-based summary index")
+                    })?)
+                }
+                "GroupDescending" => grid.group_descending = boolean(document, attr)?,
+                "RightPinnedFields" => {
+                    grid.right_pinned_fields = grid_extensions::fields(document, attr, 64)?
+                }
+                "StackedFields" => {
+                    for pair in attr.value().split(',') {
+                        let (field, root) = pair.split_once('=').ok_or_else(|| {
+                            at_attribute(document, attr, "Expected field=track pairs")
+                        })?;
+                        grid.stacked_fields
+                            .push((field.trim().into(), root.trim().into()));
+                    }
+                }
+                "ShowGroupPanel" => grid.show_group_panel = boolean(document, attr)?,
+                "GroupFooter" => grid.group_footer = boolean(document, attr)?,
                 "GroupFields" => grid.group_fields = grid_extensions::fields(document, attr, 8)?,
                 _ => return Ok(false),
             }

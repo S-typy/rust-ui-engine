@@ -7,6 +7,8 @@ const MAX_PROJECTED_ROWS: usize = 1_000_000;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) enum SyntheticIdentity {
     Group(Vec<String>),
+    Branch(Vec<String>, Vec<String>),
+    Footer(Vec<String>, Vec<String>),
     DetailHeader(i64),
     Detail(i64, i64),
 }
@@ -70,10 +72,13 @@ impl Projection {
                 next.synthetic.insert(key, SyntheticRow { identity, label });
                 Ok(key)
             };
-        if options.group_fields.is_empty() && options.summaries.is_empty() {
+        if options.group_fields.is_empty()
+            && options.summaries.is_empty()
+            && options.custom_summaries.is_empty()
+        {
             next.roots = source.keys.iter().copied().map(row_key).collect();
         } else {
-            let visible = DataTable::with_limits(
+            let mut visible = DataTable::with_limits(
                 source.table.schema().clone(),
                 source
                     .keys
@@ -83,22 +88,97 @@ impl Projection {
                 source.table.limits(),
             )
             .map_err(error)?;
-            let result = QueryEngine::execute(&visible, &options.query(&source.data_query))
-                .map_err(error)?;
-            next.totals = result.aggregates;
-            if options.group_fields.is_empty() {
-                next.roots = result.row_keys.into_iter().map(row_key).collect();
+            let mut query = options.query(&source.data_query);
+            let mut group_fields = std::mem::take(&mut query.group_by);
+            for (field, rule) in &options.group_expressions {
+                let parsed = if rule == "@display" {
+                    let Some(index) = options.group_fields.iter().position(|f| f == field) else {
+                        continue;
+                    };
+                    let mut alias = format!("_grid_display_{index}");
+                    while visible.schema().field(&alias).is_some() {
+                        alias.push('_');
+                    }
+                    let mut fields = visible.schema().fields().to_vec();
+                    let mut schema = rust_desktop_ui_data::FieldSchema::new(
+                        &alias,
+                        rust_desktop_ui_data::FieldType::Text,
+                    );
+                    schema.nullable = true;
+                    fields.push(schema);
+                    let mut rows = visible.rows().to_vec();
+                    for row in &mut rows {
+                        let value = visible.value(row.key, field).expect("known group field");
+                        row.values.push(if *value == CellValue::Null {
+                            CellValue::Null
+                        } else {
+                            CellValue::Text(source.cell_label(field, value))
+                        });
+                    }
+                    visible = DataTable::with_limits(
+                        rust_desktop_ui_data::TableSchema::new(fields).map_err(error)?,
+                        rows,
+                        visible.limits(),
+                    )
+                    .map_err(error)?;
+                    rust_desktop_ui_data::QueryExpression::field(alias)
+                } else {
+                    rust_desktop_ui_data::parse_expression_text(source.table.schema(), rule)
+                        .map_err(error)?
+                };
+                if let Some(index) = options.group_fields.iter().position(|f| f == field) {
+                    group_fields[index] = parsed;
+                }
+            }
+            let levels = group_fields.len();
+            let first = if options.hierarchical_groups {
+                levels.min(1)
             } else {
+                levels
+            };
+            let mut parents = HashMap::new();
+            let mut footers = Vec::new();
+            for depth in first..=levels {
+                query.group_by = group_fields[..depth].to_vec();
+                let mut result = QueryEngine::execute(&visible, &query).map_err(error)?;
+                for summary in &options.custom_summaries {
+                    result
+                        .aggregates
+                        .push(summary.evaluate(&visible, &result.row_keys)?);
+                    for group in &mut result.groups {
+                        group
+                            .aggregates
+                            .push(summary.evaluate(&visible, &group.row_keys)?);
+                    }
+                }
+                if let Some(index) = options.group_sort_summary {
+                    result
+                        .sort_groups_by_summary(index, options.group_descending)
+                        .map_err(error)?;
+                } else if options.group_descending {
+                    result.groups.reverse();
+                }
+                if depth == first {
+                    next.totals = result.aggregates;
+                }
+                if depth == 0 {
+                    next.roots = result.row_keys.into_iter().map(row_key).collect();
+                    break;
+                }
+                let mut current = HashMap::new();
                 for group in result.groups {
                     if next.groups.len() >= 4096 {
                         return Err(error("Grid presentation supports at most 4096 groups"));
                     }
-                    let identity =
-                        SyntheticIdentity::Group(group.key.iter().map(value_identity).collect());
-                    let mut label = options
-                        .group_fields
+                    let path: Vec<_> = group.key.iter().map(value_identity).collect();
+                    let label_start = if options.hierarchical_groups {
+                        depth - 1
+                    } else {
+                        0
+                    };
+                    let mut label = options.group_fields[label_start..depth]
                         .iter()
-                        .zip(&group.key)
+                        .zip(&group.key[label_start..])
                         .map(|(name, value)| {
                             format!(
                                 "{}: {}",
@@ -106,25 +186,74 @@ impl Projection {
                                     .table
                                     .schema()
                                     .field(name)
-                                    .map_or(name.as_str(), |field| field.title.as_str()),
-                                value.display()
+                                    .map_or(name.as_str(), |f| f.title.as_str()),
+                                if *value == CellValue::Null {
+                                    "(NULL)".to_owned()
+                                } else if options.group_expressions.iter().any(|(f, _)| f == name) {
+                                    value.display()
+                                } else {
+                                    source.group_key_label(name, value)
+                                }
                             )
                         })
                         .collect::<Vec<_>>()
                         .join(" · ");
                     label.push_str(&format!(" ({})", group.row_keys.len()));
-                    for (summary, value) in options.summaries.iter().zip(&group.aggregates) {
-                        label.push_str(&format!(" · {}: {}", summary.title, value.display()));
+                    let summary_text = options
+                        .summary_titles()
+                        .zip(&group.aggregates)
+                        .map(|(title, v)| format!("{title}: {}", v.display()))
+                        .collect::<Vec<_>>()
+                        .join(" · ");
+                    if !options.group_footer && !summary_text.is_empty() {
+                        label.push_str(" · ");
+                        label.push_str(&summary_text);
+                    }
+                    if summary_text.len() > 16_384 {
+                        return Err(error("Group footer exceeds 16 KiB"));
                     }
                     if label.len() > 16_384 {
                         return Err(error("Group caption exceeds 16 KiB"));
                     }
+                    let identity = if options.hierarchical_groups {
+                        SyntheticIdentity::Branch(
+                            options.group_fields[..depth].to_vec(),
+                            path.clone(),
+                        )
+                    } else {
+                        SyntheticIdentity::Group(path.clone())
+                    };
                     let key = allocate(identity, label)?;
-                    next.roots.push(key);
+                    if options.group_footer && !summary_text.is_empty() {
+                        let footer = allocate(
+                            SyntheticIdentity::Footer(
+                                options.group_fields[..depth].to_vec(),
+                                path.clone(),
+                            ),
+                            summary_text,
+                        )?;
+                        footers.push((key, footer));
+                    }
+                    if depth == first {
+                        next.roots.push(key);
+                    } else {
+                        let parent = parents
+                            .get(&path[..depth - 1])
+                            .ok_or_else(|| error("Missing parent group"))?;
+                        next.children.entry(*parent).or_default().push(key);
+                    }
                     next.groups.push(key);
-                    next.children
-                        .insert(key, group.row_keys.into_iter().map(row_key).collect());
+                    if depth == levels {
+                        next.children
+                            .insert(key, group.row_keys.into_iter().map(row_key).collect());
+                    } else {
+                        current.insert(path, key);
+                    }
                 }
+                parents = current;
+            }
+            for (key, footer) in footers {
+                next.children.entry(key).or_default().push(footer);
             }
         }
         if let Some(detail) = &source.detail {
@@ -214,7 +343,7 @@ impl Projection {
 }
 
 /// Typed equality identity; query normalization makes equivalent decimals equal.
-fn value_identity(value: &CellValue) -> String {
+pub(super) fn value_identity(value: &CellValue) -> String {
     match value {
         CellValue::Real(v) if *v == 0.0 => "Real(0)".into(),
         CellValue::Decimal(v) => format!("Decimal({v})"),
@@ -227,6 +356,13 @@ impl SnapshotSource {
         // Evaluate the candidate legacy query and presentation without touching
         // the shared source. Aggregate/type failures therefore cannot publish a
         // half-applied query to sibling views.
+        if !self.formulas.is_empty() || !self.unbound.is_empty() {
+            let mut next = self.clone();
+            next.data_query = query;
+            next.reload()?;
+            *self = next;
+            return Ok(());
+        }
         let data = self
             .handle
             .try_borrow()
@@ -264,7 +400,10 @@ impl SnapshotSource {
     pub(super) fn row_kind(&self, row: RowKey) -> Option<GridRowKind> {
         if let Some(value) = self.projection.synthetic.get(&row) {
             return Some(match &value.identity {
-                SyntheticIdentity::Group(key) => GridRowKind::Group { key: key.clone() },
+                SyntheticIdentity::Group(key) | SyntheticIdentity::Branch(_, key) => {
+                    GridRowKind::Group { key: key.clone() }
+                }
+                SyntheticIdentity::Footer(_, key) => GridRowKind::GroupFooter { key: key.clone() },
                 SyntheticIdentity::DetailHeader(master) => {
                     GridRowKind::DetailHeader { master: *master }
                 }
@@ -293,7 +432,9 @@ impl SnapshotSource {
     pub(super) fn projected_cell(&self, row: RowKey, column: ColumnId) -> Option<String> {
         let synthetic = self.projection.synthetic.get(&row)?;
         Some(match &synthetic.identity {
-            SyntheticIdentity::Group(_) => {
+            SyntheticIdentity::Group(_)
+            | SyntheticIdentity::Branch(_, _)
+            | SyntheticIdentity::Footer(_, _) => {
                 if column == ColumnId(0) {
                     synthetic.label.clone()
                 } else {

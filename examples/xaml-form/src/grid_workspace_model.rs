@@ -59,7 +59,7 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
             vec![
                 CellValue::Integer(key),
                 CellValue::Text(format!("DOC-{index:05}")),
-                CellValue::Text(["Разработка", "Поставка", "Поддержка"][index as usize % 3].into()),
+                CellValue::Text(["DEV", "SUP", "SVC"][index as usize % 3].into()),
                 CellValue::Text(format!("Рабочая запись {index:05}")),
                 CellValue::Integer(if index == 0 {
                     9_007_199_254_740_993
@@ -112,6 +112,34 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
         .map_err(err)?,
         details,
     )?;
+    let categories = source(
+        TableSchema::new(vec![
+            FieldSchema::new("Code", FieldType::Text),
+            FieldSchema::new("Name", FieldType::Text),
+            FieldSchema::new("Area", FieldType::Text),
+        ])
+        .map_err(err)?,
+        [
+            ("DEV", "Разработка", "Проекты"),
+            ("SUP", "Поставка", "Логистика"),
+            ("SVC", "Поддержка", "Сервис"),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (key, name, area))| {
+            DataRow::new(
+                i as i64,
+                vec![
+                    CellValue::Text(key.into()),
+                    CellValue::Text(name.into()),
+                    CellValue::Text(area.into()),
+                ],
+            )
+        })
+        .collect(),
+    )?;
+    ui.register_data_source("WorkspaceCategories", categories)
+        .map_err(err)?;
     ui.register_data_source("WorkspaceRecords", master.clone())
         .map_err(err)?;
     ui.register_data_source("WorkspaceDetails", detail.clone())
@@ -120,7 +148,11 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
         ("Table", "Таблица"),
         ("Cards", "Карточки"),
         ("Group", "Группировка"),
+        ("SortGroups", "Порядок групп"),
+        ("Footer", "Итоги под группой"),
         ("Details", "Подробности"),
+        ("Formula", "Применить формулу"),
+        ("Chooser", "Выбрать колонки"),
         ("Reorder", "Переставить колонки"),
         ("Pin", "Закрепить категорию"),
         ("Date", "Показать дату"),
@@ -139,6 +171,7 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
 }
 pub(crate) struct State {
     grid: WidgetId,
+    formula: WidgetId,
     summary: WidgetId,
     stored: WidgetId,
     status: WidgetId,
@@ -160,6 +193,7 @@ impl State {
         };
         let state = Self {
             grid,
+            formula: required("WorkspaceFormula")?,
             summary: required("WorkspaceSummary")?,
             stored: required("WorkspaceStored")?,
             status: required("WorkspaceStatus")?,
@@ -194,7 +228,7 @@ impl State {
                     "Cards" => settings.view = GridViewMode::Cards,
                     _ => {
                         if settings.group_fields.is_empty() {
-                            settings.group_fields.push("Category".into())
+                            settings.group_fields = vec!["Category".into(), "Active".into()]
                         } else {
                             settings.group_fields.clear()
                         }
@@ -202,6 +236,54 @@ impl State {
                 }
                 ui.set_grid_presentation(self.grid, settings).map_err(err)?;
                 Ok("Представление изменено; ключ выбранной записи сохранён.".into())
+            }
+            "SortGroups" | "Footer" => {
+                let mut settings = ui
+                    .grid_presentation(self.grid)
+                    .ok_or("Grid removed")?
+                    .clone();
+                let label = if command == "Footer" {
+                    settings.group_footer = !settings.group_footer;
+                    if settings.group_footer {
+                        "Итоги показаны под группой"
+                    } else {
+                        "Итоги показаны в заголовке группы"
+                    }
+                } else {
+                    match (settings.group_sort_summary, settings.group_descending) {
+                        (None, false) => {
+                            settings.group_sort_summary = Some(1);
+                            settings.group_descending = true;
+                            "Группы по сумме, по убыванию"
+                        }
+                        (Some(_), true) => {
+                            settings.group_descending = false;
+                            "Группы по сумме, по возрастанию"
+                        }
+                        _ => {
+                            settings.group_sort_summary = None;
+                            settings.group_descending = false;
+                            "Группы по ключу"
+                        }
+                    }
+                };
+                ui.set_grid_presentation(self.grid, settings).map_err(err)?;
+                Ok(label.into())
+            }
+            "Formula" => {
+                let formula = ui
+                    .document(self.formula)
+                    .ok_or("Поле формулы недоступно")?
+                    .text()
+                    .to_owned();
+                ui.set_grid_calculated_expression(self.grid, "LineTotal", &formula)
+                    .map_err(err)?;
+                Ok("Сумма строки и итоги пересчитаны.".into())
+            }
+            "Chooser" => {
+                ui.set_grid_column_chooser_open(self.grid, true)
+                    .map_err(err)?;
+                Ok("Выбор колонок и полос".into())
             }
             "Details" => {
                 let key = ui.grid_selected_key(self.grid).ok_or("Выберите запись")?;

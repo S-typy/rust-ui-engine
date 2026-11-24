@@ -8,13 +8,20 @@ use rust_desktop_ui_treegrid::{
     SortDirection, SortOrder, TreeDataSource, TreeGrid,
 };
 use std::{cell::RefCell, rc::Rc};
+mod bands;
+mod chooser;
+pub use bands::{GridBandAddress, GridBandChange, GridBandItem};
 mod editors;
+mod grouping;
+mod unbound;
+pub use unbound::GridUnboundColumn;
 mod pivot;
 mod presentation;
 #[cfg(test)]
 mod presentation_tests;
 mod projection;
 mod views;
+pub use editors::{GridCellEditor, GridChoiceEditor, GridLookupRequest, GridTextCellEditor};
 pub use presentation::*;
 use projection::Projection;
 pub use views::GridCellTemplate;
@@ -34,6 +41,9 @@ struct DataWakeSubscription {
 #[derive(Clone, Debug, PartialEq)]
 pub struct GridControlColumn {
     pub field: String,
+    /// Canonical typed expression for a read-only local column.
+    pub expression: Option<String>,
+    pub unbound: Option<GridUnboundColumn>,
     pub title: String,
     pub width: f32,
     pub min_width: f32,
@@ -46,6 +56,8 @@ impl GridControlColumn {
     pub fn new(field: impl Into<String>, title: impl Into<String>, width: f32) -> Self {
         Self {
             field: field.into(),
+            expression: None,
+            unbound: None,
             title: title.into(),
             width,
             min_width: 32.0,
@@ -66,6 +78,10 @@ pub struct GridControlSettings {
 #[derive(Clone)]
 struct SnapshotSource {
     handle: DataSourceHandle,
+    formulas: Vec<(String, String)>,
+    unbound: Vec<(String, GridUnboundColumn)>,
+    value_revisions: Vec<u64>,
+    choice_labels: HashMap<String, editors::ChoiceLabels>,
     table: DataTable,
     keys: Vec<i64>,
     positions: HashMap<i64, usize>,
@@ -78,13 +94,31 @@ struct SnapshotSource {
 }
 
 impl SnapshotSource {
-    fn new(handle: DataSourceHandle, fields: Vec<String>) -> Result<Self, ControlError> {
+    fn new(handle: DataSourceHandle, columns: &[GridControlColumn]) -> Result<Self, ControlError> {
         let data = handle
             .try_borrow()
             .map_err(|_| error("Grid source is already borrowed"))?;
-        let keys: Vec<_> = (0..data.len()).filter_map(|i| data.row_key(i)).collect();
+        let fields = columns.iter().map(|c| c.field.clone()).collect();
+        let formulas: Vec<_> = columns
+            .iter()
+            .filter_map(|c| Some((c.field.clone(), c.expression.clone()?)))
+            .collect();
+        let unbound: Vec<_> = columns
+            .iter()
+            .filter_map(|c| Some((c.field.clone(), c.unbound.clone()?)))
+            .collect();
+        if unbound.iter().any(|(_, u)| Rc::ptr_eq(&handle, &u.source)) {
+            return Err(error("Unbound value source must be separate from master"));
+        }
+        let value_revisions = unbound::revisions(&unbound)?;
+        let table = unbound::table(data.table(), &unbound, &formulas, None)?;
+        let keys = data.query().row_keys(&table).map_err(error)?;
         let result = Self {
-            table: data.table().clone(),
+            table,
+            formulas,
+            unbound,
+            value_revisions,
+            choice_labels: HashMap::new(),
             positions: keys.iter().enumerate().map(|(i, k)| (*k, i)).collect(),
             keys,
             fields,
@@ -101,9 +135,22 @@ impl SnapshotSource {
         Ok(result)
     }
     fn reload(&mut self) -> Result<(), ControlError> {
-        let mut next = Self::new(Rc::clone(&self.handle), self.fields.clone())?;
-        next.presentation = self.presentation.clone();
-        next.detail = self.detail.clone();
+        let mut next = self.clone();
+        {
+            let data = self
+                .handle
+                .try_borrow()
+                .map_err(|_| error("Grid source is already borrowed"))?;
+            next.table = unbound::table(data.table(), &self.unbound, &self.formulas, None)?;
+            next.value_revisions = unbound::revisions(&self.unbound)?;
+            if self.formulas.is_empty() && self.unbound.is_empty() {
+                next.data_query = data.query().clone();
+            }
+            next.keys = next.data_query.row_keys(&next.table).map_err(error)?;
+            next.positions = next.keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
+            next.revision = data.revision();
+        }
+        next.reload_choices()?;
         next.projection = Projection::build(&next, &self.projection)?;
         *self = next;
         Ok(())
@@ -159,10 +206,12 @@ impl TreeDataSource for SnapshotSource {
         if let Some(value) = self.projected_cell(row, column) {
             return value;
         }
-        self.fields
-            .get(column.0 as usize)
-            .and_then(|field| self.table.value(data_key(row), field))
-            .map(CellValue::display)
+        let Some(field) = self.fields.get(column.0 as usize) else {
+            return String::new();
+        };
+        self.table
+            .value(data_key(row), field)
+            .map(|v| self.cell_label(field, v))
             .unwrap_or_default()
     }
     fn editable(&self, row: RowKey, column: ColumnId) -> bool {
@@ -219,6 +268,10 @@ pub(super) struct GridState {
     source_error: Option<String>,
     scroll_bars: Vec<GridScrollBar>,
     scroll_drag: Option<GridScrollDrag>,
+    band_drag: Option<bands::BandDrag>,
+    band_policy: Option<bands::BandPolicy>,
+    group_drag: Option<(ColumnId, bool)>,
+    chooser: Option<chooser::Chooser>,
     selection_validator: Option<SelectionValidator>,
     filter_validator: Option<EditorValidator>,
     reveal_selected: bool,
@@ -228,7 +281,8 @@ pub(super) struct GridState {
     cell_templates: HashMap<ColumnId, GridCellTemplate>,
     legacy_editor: WidgetId,
     typed_editor: Option<editors::TypedEditor>,
-    editor_recipes: HashMap<ColumnId, DataFormEditorFactory>,
+    editor_recipes: HashMap<ColumnId, editors::GridRecipe>,
+    conditional_editors: HashMap<ColumnId, editors::ConditionalEditor>,
     editor_height: f32,
 }
 
@@ -250,7 +304,9 @@ impl GridState {
     /// Preserve the first visible surviving row rather than a numeric index
     /// when collection inserts, removals, moves or field changes reorder rows.
     fn refresh_source(&mut self) -> Result<(), ControlError> {
-        if self.source.presentation != GridPresentationSettings::default()
+        if !self.source.formulas.is_empty()
+            || !self.source.unbound.is_empty()
+            || self.source.presentation != GridPresentationSettings::default()
             || self.source.detail.is_some()
         {
             let mut next = self.source.clone();
@@ -402,9 +458,14 @@ impl GridState {
         Ok(())
     }
     fn pointer_captured(&self) -> bool {
-        self.model.pointer_captured() || self.scroll_drag.is_some()
+        self.model.pointer_captured()
+            || self.scroll_drag.is_some()
+            || self.group_drag.is_some()
+            || self.band_drag.is_some()
     }
     fn cancel_pointer(&mut self) {
+        self.group_drag = None;
+        self.band_drag = None;
         self.model.cancel_pointer();
         self.scroll_drag = None;
     }
@@ -412,19 +473,8 @@ impl GridState {
         let thickness = 12.0_f32.min(bounds.width).min(bounds.height);
         let total_height =
             self.model.row_count() as f64 * f64::from(self.model.config().row_height);
-        let mut total_width: f64 = self
-            .model
-            .columns()
-            .iter()
-            .map(|c| f64::from(c.width))
-            .sum();
-        let mut pinned: f64 = self
-            .model
-            .columns()
-            .iter()
-            .filter(|c| c.pinned)
-            .map(|c| f64::from(c.width))
-            .sum();
+        let (regular, mut pinned) = self.model.column_extents();
+        let mut total_width = regular + pinned;
         if self.source.presentation.view == GridViewMode::Cards {
             total_width = f64::from((bounds.width - thickness).max(0.0));
             pinned = 0.0;
@@ -639,6 +689,16 @@ impl Controls {
             .chain(
                 self.grids
                     .values()
+                    .flat_map(|g| g.source.choice_labels.values().map(|c| &c.editor.source)),
+            )
+            .chain(
+                self.grids
+                    .values()
+                    .flat_map(|g| g.source.unbound.iter().map(|(_, u)| &u.source)),
+            )
+            .chain(
+                self.grids
+                    .values()
                     .filter_map(|grid| grid.source.detail.as_ref().map(|detail| &detail.source)),
             )
         {
@@ -725,7 +785,9 @@ impl Controls {
             let mut seen = HashSet::new();
             for column in &settings.columns {
                 if !seen.insert(&column.field)
-                    || data.table().schema().field(&column.field).is_none()
+                    || (column.expression.is_none()
+                        && column.unbound.is_none()
+                        && data.table().schema().field(&column.field).is_none())
                 {
                     return Err(error("Grid columns require unique, known data fields"));
                 }
@@ -740,6 +802,11 @@ impl Controls {
                         "Invalid GridControl column identifier, caption or width limits",
                     ));
                 }
+            }
+        }
+        for column in &mut settings.columns {
+            if column.expression.is_some() {
+                column.read_only = true;
             }
         }
         let columns = settings
@@ -758,10 +825,7 @@ impl Controls {
             .collect();
         let mut model = TreeGrid::new(columns).map_err(error)?;
         model.flat_presentation = true;
-        let mut snapshot = SnapshotSource::new(
-            source,
-            settings.columns.iter().map(|c| c.field.clone()).collect(),
-        )?;
+        let mut snapshot = SnapshotSource::new(source, &settings.columns)?;
         model.refresh(&mut snapshot).map_err(error)?;
         // Synchronize accepted query indicators without calling the adapter.
         let query = snapshot.query();
@@ -810,6 +874,10 @@ impl Controls {
                 source_error: None,
                 scroll_bars: Vec::new(),
                 scroll_drag: None,
+                group_drag: None,
+                band_drag: None,
+                band_policy: None,
+                chooser: None,
                 selection_validator: None,
                 filter_validator: None,
                 reveal_selected: false,
@@ -820,6 +888,7 @@ impl Controls {
                 legacy_editor: editor,
                 typed_editor: None,
                 editor_recipes: HashMap::new(),
+                conditional_editors: HashMap::new(),
                 editor_height: 0.0,
             },
         );
@@ -831,6 +900,13 @@ impl Controls {
     }
     pub fn grid_source(&self, id: WidgetId) -> Option<DataSourceHandle> {
         self.grids.get(&id).map(|g| Rc::clone(&g.source.handle))
+    }
+    pub fn grid_field_schema(
+        &self,
+        id: WidgetId,
+        field: &str,
+    ) -> Option<&rust_desktop_ui_data::FieldSchema> {
+        self.grids.get(&id)?.source.table.schema().field(field)
     }
     pub fn grid_settings(&self, id: WidgetId) -> Option<&GridControlSettings> {
         self.grids.get(&id).map(|g| &g.settings)
@@ -850,15 +926,7 @@ impl Controls {
     /// Visible columns in logical accessibility order, including offscreen ones.
     pub fn grid_accessible_columns(&self, id: WidgetId) -> Option<Vec<ColumnId>> {
         let grid = self.grids.get(&id)?;
-        Some(
-            grid.model
-                .columns()
-                .iter()
-                .filter(|c| c.pinned)
-                .chain(grid.model.columns().iter().filter(|c| !c.pinned))
-                .map(|c| c.id)
-                .collect(),
-        )
+        Some(grid.model.display_column_order())
     }
     /// Materialize a logical cell without focusing/selecting or accepting an
     /// editor. An active edit prevents viewport relocation and remains intact.
@@ -884,23 +952,20 @@ impl Controls {
         // A data notification can still be queued behind the AT request.
         // Never interpret old coordinates against a newly published source.
         if grid.source.handle.try_borrow().ok().is_none_or(|source| {
-            source.revision() != grid.source.revision || source.query() != &grid.source.data_query
+            source.revision() != grid.source.revision
+                || (grid.source.formulas.is_empty()
+                    && grid.source.unbound.is_empty()
+                    && source.query() != &grid.source.data_query)
         }) {
             return Ok(false);
         }
-        let Some(target) = grid.model.columns().iter().find(|c| c.id == column) else {
+        if grid.source.choices_changed()?
+            || unbound::revisions(&grid.source.unbound)? != grid.source.value_revisions
+        {
             return Ok(false);
-        };
-        let x = if target.pinned {
-            grid.model.scroll_offset().0
-        } else {
-            grid.model
-                .columns()
-                .iter()
-                .filter(|c| !c.pinned)
-                .take_while(|c| c.id != column)
-                .map(|c| f64::from(c.width))
-                .sum()
+        }
+        let Some(x) = grid.model.column_scroll_start(column) else {
+            return Ok(false);
         };
         grid.model
             .scroll_to(x, row as f64 * f64::from(grid.model.config().row_height))
@@ -1015,6 +1080,34 @@ impl Controls {
             validator.check(filter).map_err(error)?;
         }
         query.filter = filter.to_owned();
+        self.apply_grid_query(id, query)
+    }
+    /// Sort projected fields with the same typed ordering used by header gestures.
+    pub fn set_grid_sort(
+        &mut self,
+        id: WidgetId,
+        sort: Vec<SortDescriptor>,
+    ) -> Result<(), ControlError> {
+        if self.grid_editor(id).is_some() {
+            return Err(error("Finish the active cell edit before sorting"));
+        }
+        self.sync_grids()?;
+        let grid = self
+            .grids
+            .get(&id)
+            .ok_or_else(|| error("Unknown GridControl"))?;
+        if sort.iter().any(|s| !grid.source.fields.contains(&s.field)) {
+            return Err(error("Unknown grid sort column"));
+        }
+        let mut query = grid.source.data_query.clone();
+        query.sort = sort;
+        self.apply_grid_query(id, query)
+    }
+    fn apply_grid_query(&mut self, id: WidgetId, query: DataQuery) -> Result<(), ControlError> {
+        let grid = self
+            .grids
+            .get_mut(&id)
+            .ok_or_else(|| error("Unknown GridControl"))?;
         let result = grid.source.apply_data_query(query);
         grid.error = result.as_ref().err().map(ToString::to_string);
         if result.is_ok() {
@@ -1303,16 +1396,8 @@ impl Controls {
                 return Ok(outcome);
             }
         }
-        let result = self.grids[&id]
-            .source
-            .handle
-            .try_borrow_mut()
-            .map_err(|_| "Grid source is already borrowed".to_owned())
-            .and_then(|mut source| {
-                source
-                    .set_cell_expected(row, &field, &expected, value.clone())
-                    .map_err(|e| e.to_string())
-            });
+        let snapshot = &self.grids[&id].source;
+        let result = snapshot.write_cell(row, &field, &expected, value.clone());
         match result {
             Ok(changed) => {
                 let control = self.controls.get_mut(&editor).unwrap();
@@ -1329,7 +1414,7 @@ impl Controls {
                 if self.document(editor).is_some() {
                     self.rich_value_committed(editor)?;
                 }
-                self.finish_grid_edit(id)?;
+                self.finish_grid_edit(id, Some(&value))?;
                 Ok(if changed {
                     CommitOutcome::Committed
                 } else {
@@ -1347,13 +1432,33 @@ impl Controls {
         if self.document(editor).is_some() {
             self.cancel_edit(editor)?;
         }
-        self.finish_grid_edit(id)
+        self.finish_grid_edit(id, None)
     }
-    fn finish_grid_edit(&mut self, id: WidgetId) -> Result<(), ControlError> {
+    fn finish_grid_edit(
+        &mut self,
+        id: WidgetId,
+        committed: Option<&CellValue>,
+    ) -> Result<(), ControlError> {
+        if let Some(popup)=&self.rich.popup
+            && self.grids.get(&id).and_then(|g|g.typed_editor.as_ref()).is_some_and(|h|
+                h.owner==popup.owner && matches!(&h.recipe,editors::GridRecipe::Custom(c) if c.choice().is_some())) {
+            self.close_rich_popup(true)?;
+        }
         let grid = self
             .grids
             .get_mut(&id)
             .ok_or_else(|| error("Unknown GridControl"))?;
+        if let (Some(session), Some(host)) = (&grid.session, &grid.typed_editor)
+            && host.editor == grid.editor
+            && let editors::GridRecipe::Custom(custom) = &host.recipe
+        {
+            custom.closed(
+                session.row,
+                &host.schema,
+                committed.unwrap_or(&session.expected),
+                committed.is_some(),
+            );
+        }
         grid.session = None;
         grid.model.cancel_edit();
         grid.error = None;
@@ -1408,6 +1513,8 @@ impl Controls {
             let grid_source = &self.grids[&id].source;
             let sources = std::iter::once(&grid_source.handle)
                 .chain(grid_source.detail.iter().map(|d| &d.source))
+                .chain(grid_source.unbound.iter().map(|(_, u)| &u.source))
+                .chain(grid_source.choice_labels.values().map(|c| &c.editor.source))
                 .cloned()
                 .collect::<Vec<_>>();
             for source in sources {
@@ -1441,7 +1548,9 @@ impl Controls {
                         .try_borrow()
                         .map_err(|_| error("Grid source is already borrowed"))?
                         .revision()
-                    || grid.source.detail_changed()?)
+                    || grid.source.detail_changed()?
+                    || grid.source.choices_changed()?
+                    || unbound::revisions(&grid.source.unbound)? != grid.source.value_revisions)
             {
                 grid.refresh_source()?;
             }
@@ -1505,6 +1614,7 @@ impl Controls {
                 scene.fill(bar.track, chrome.card_surface);
                 scene.fill(bar.thumb, theme.muted);
             }
+            grid.paint_chooser(bounds, &mut scene);
             grid.source_error = grid
                 .source
                 .handle
@@ -1576,6 +1686,9 @@ impl Controls {
         }
         if matches!(event, InputEvent::WindowFocused(false)) {
             self.cancel_grid_pointers();
+            for grid in self.grids.values_mut() {
+                grid.chooser = None;
+            }
             return Ok(false);
         }
         if let Some(owner) = self
@@ -1592,7 +1705,7 @@ impl Controls {
             && !modifiers.super_key
         {
             match key {
-                Key::Enter => {
+                Key::Enter if !modifiers.shift => {
                     self.commit_grid_edit(owner)?;
                     return Ok(true);
                 }
@@ -1649,6 +1762,12 @@ impl Controls {
             if self.grids[&id].session.is_some() {
                 return Ok(false);
             }
+        }
+        if self.grid_chooser_input(id, event)? {
+            return Ok(true);
+        }
+        if self.grid_band_input(id, event)? || self.grid_group_panel_input(id, event)? {
+            return Ok(true);
         }
         let matches_grid_event = matches!(
             event,

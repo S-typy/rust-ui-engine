@@ -9,6 +9,7 @@ mod index;
 mod model;
 mod source;
 mod structure;
+mod tracks;
 mod view;
 
 pub use data::*;

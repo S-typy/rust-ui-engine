@@ -169,6 +169,14 @@ impl<'a> Parser<'a> {
                 };
                 QueryExpression::Literal(v)
             }
+            "to_decimal" | "year" | "month_start" => {
+                let op = match name.as_str() {
+                    "year" => ScalarTransform::Year,
+                    "month_start" => ScalarTransform::MonthStart,
+                    _ => ScalarTransform::ToDecimal,
+                };
+                QueryExpression::Transform(op, Box::new(self.expression(depth + 1)?))
+            }
             "lower" | "length" => {
                 let v = Box::new(self.expression(depth + 1)?);
                 if name == "lower" {

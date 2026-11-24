@@ -76,10 +76,7 @@ impl Controls {
             .collect();
         let mut model = TreeGrid::new(columns).map_err(error)?;
         model.flat_presentation = true;
-        let mut source = SnapshotSource::new(
-            handle,
-            settings.columns.iter().map(|c| c.field.clone()).collect(),
-        )?;
+        let mut source = SnapshotSource::new(handle, &settings.columns)?;
         model.refresh(&mut source).map_err(error)?;
         model
             .set_viewport(Size::new(bounds.width, bounds.height))

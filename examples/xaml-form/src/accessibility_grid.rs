@@ -310,14 +310,13 @@ impl GridAccessibility {
         }
         if let Some(host) = ui.runtime.bounds(widget) {
             for (index, (summary, value)) in presentation
-                .summaries
-                .iter()
+                .summary_titles()
                 .zip(ui.grid_summaries(widget).unwrap_or(&[]))
                 .enumerate()
             {
                 let id = self.id(widget, Part::Summary(index), next);
                 let mut summary_node = Node::new(Role::Label);
-                summary_node.set_label(format!("{}: {}", summary.title, value.display()));
+                summary_node.set_label(format!("{}: {}", summary, value.display()));
                 summary_node.set_bounds(bounds(
                     rust_desktop_ui_core::Rect::new(
                         host.x,
@@ -331,7 +330,12 @@ impl GridAccessibility {
                 children.push(id);
             }
             if !cards {
-                for (index, band) in presentation.bands.iter().enumerate() {
+                for (index, band) in presentation
+                    .bands
+                    .iter()
+                    .chain(presentation.band_rows.iter().flatten())
+                    .enumerate()
+                {
                     let id = self.id(widget, Part::Band(index), next);
                     let mut band_node = Node::new(Role::ColumnHeader);
                     band_node.set_label(band.title.clone());

@@ -22,6 +22,19 @@ impl CompiledExpression {
                 CellValue::Null => right.evaluate(row, limits)?,
                 value => value,
             },
+            ExpressionNode::Transform(op, arg) => match (op, arg.evaluate(row, limits)?) {
+                (_, CellValue::Null) => CellValue::Null,
+                (ScalarTransform::ToDecimal, CellValue::Integer(v)) => {
+                    CellValue::Decimal(DecimalValue::new(i128::from(v), 0)?)
+                }
+                (ScalarTransform::Year, CellValue::Date(v)) => {
+                    CellValue::Integer(i64::from(v.year()))
+                }
+                (ScalarTransform::MonthStart, CellValue::Date(v)) => {
+                    CellValue::Date(crate::DateValue::new(v.year(), v.month(), 1)?)
+                }
+                _ => unreachable!("compiled scalar transform"),
+            },
             ExpressionNode::Lowercase(value) => match value.evaluate(row, limits)? {
                 CellValue::Text(text) => CellValue::Text(lowercase(&text, limits)?),
                 CellValue::Null => CellValue::Null,

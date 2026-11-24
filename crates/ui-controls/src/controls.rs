@@ -269,8 +269,10 @@ pub use bars::{
 pub use choices::{CheckPresentation, CheckState, RadioChoiceGroup};
 pub use flyout::{Flyout, FlyoutPlacement};
 pub use grid::{
-    DataSourceHandle, GridBand, GridCellTemplate, GridColumnArrangement, GridControlColumn,
-    GridControlSettings, GridDetailSettings, GridPresentationSettings, GridRowKind, GridSummary,
+    DataSourceHandle, GridBand, GridBandAddress, GridBandChange, GridBandItem, GridCellEditor,
+    GridCellTemplate, GridChoiceEditor, GridColumnArrangement, GridControlColumn,
+    GridControlSettings, GridCustomSummary, GridDetailSettings, GridLookupRequest,
+    GridPresentationSettings, GridRowKind, GridSummary, GridTextCellEditor, GridUnboundColumn,
     GridViewMode,
 };
 pub use images::{ImageSettings, ImageStretch};

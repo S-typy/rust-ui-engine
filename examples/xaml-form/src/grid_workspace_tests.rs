@@ -23,6 +23,47 @@ fn grid_workspace_demo_modes_recipes_conflict_and_binding_preserve_logical_key()
     ui.update(Size::new(1320.0, 820.0)).unwrap();
     assert_eq!(ui.grid_selected_key(grid), Some(i64::MIN));
     assert!(ui.grid_frame(grid).unwrap().semantics.rows.len() < 40);
+    let size = Size::new(1320., 820.);
+    let before = ui.grid_summaries(grid).unwrap().to_vec();
+    ui.begin_grid_edit(grid, i64::MIN, "Category").unwrap();
+    assert_eq!(
+        ui.document(ui.grid_editor(grid).unwrap()).unwrap().text(),
+        "Разработка"
+    );
+    ui.set_grid_edit_value(grid, CellValue::Text("SUP".into()))
+        .unwrap();
+    assert!(ui.commit_grid_edit(grid).unwrap());
+    assert_eq!(
+        sources.master.borrow().value(i64::MIN, "Category"),
+        Some(&CellValue::Text("SUP".into()))
+    );
+    ui.update(size).unwrap();
+    assert_eq!(ui.grid_summaries(grid).unwrap(), before);
+    let formula = view.find_name("WorkspaceFormula").unwrap();
+    let original = ui.document(formula).unwrap().text().to_owned();
+    ui.set_text(formula, r#"integer("1")"#).unwrap();
+    state.command(&mut ui, "GridWorkspaceFormula").unwrap();
+    ui.update(size).unwrap();
+    assert_eq!(
+        ui.grid_summaries(grid).unwrap()[1],
+        CellValue::Integer(10000)
+    );
+    ui.set_text(formula, r#"field("LineTotal")"#).unwrap();
+    state.command(&mut ui, "GridWorkspaceFormula").unwrap();
+    ui.update(size).unwrap();
+    assert_eq!(
+        ui.grid_summaries(grid).unwrap()[1],
+        CellValue::Integer(10000)
+    );
+    assert!(
+        ui.label_text(view.find_name("WorkspaceStatus").unwrap())
+            .unwrap()
+            .contains("отклонена")
+    );
+    ui.set_text(formula, &original).unwrap();
+    state.command(&mut ui, "GridWorkspaceFormula").unwrap();
+    ui.update(size).unwrap();
+    assert_eq!(ui.grid_summaries(grid).unwrap(), before);
     for command in [
         "Cards", "Table", "Reorder", "Pin", "Date", "Date", "Details", "Quantity",
     ] {

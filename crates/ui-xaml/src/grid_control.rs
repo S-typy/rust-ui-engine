@@ -24,9 +24,20 @@ pub struct GridControlDefinition {
     /// A signed 64-bit row key represented as a decimal string, preserving all bits.
     pub selected_value: Option<String>,
     pub view: crate::GridViewDefinition,
+    pub hierarchical_groups: bool,
+    /// Optional zero-based group summary to sort by, otherwise order by grouping key.
+    pub group_sort_summary: Option<usize>,
+    pub group_descending: bool,
+    pub group_footer: bool,
+    pub show_group_panel: bool,
+    /// (field, track root) for multi-row cells within a band.
+    pub stacked_fields: Vec<(String, String)>,
+    pub right_pinned_fields: Vec<String>,
     pub group_fields: Vec<String>,
     pub summaries: Vec<crate::GridSummaryDefinition>,
     pub bands: Vec<crate::GridBandDefinition>,
+    /// Additional nested header tiers, in top-to-bottom order.
+    pub band_rows: Vec<Vec<crate::GridBandDefinition>>,
     pub detail: Option<crate::GridDetailDefinition>,
     pub cell_templates: Vec<crate::GridCellTemplateDefinition>,
     pub editors: Vec<crate::GridEditorDefinition>,
@@ -38,6 +49,10 @@ pub struct GridColumnDefinition {
     /// Exact schema field name, not a property path or reflection expression.
     pub field: String,
     pub header: String,
+    pub expression: Option<String>,
+    pub group_expression: Option<String>,
+    pub value_source: Option<String>,
+    pub value_member: Option<String>,
     pub width: f32,
     pub min_width: f32,
     pub max_width: f32,
@@ -50,6 +65,10 @@ impl Default for GridColumnDefinition {
         Self {
             field: String::new(),
             header: String::new(),
+            expression: None,
+            group_expression: None,
+            value_source: None,
+            value_member: None,
             width: 140.0,
             min_width: 32.0,
             max_width: 4096.0,
@@ -112,6 +131,33 @@ pub(super) fn validate_columns(columns: &[GridColumnDefinition]) -> Result<(), S
         {
             return Err(
                 "GridColumn FieldName must be a unique nonempty schema name of at most 256 UTF-8 bytes without NUL".into(),
+            );
+        }
+        if column
+            .expression
+            .as_ref()
+            .is_some_and(|e| e.is_empty() || e.len() > rust_desktop_ui_data::MAX_QUERY_TEXT_BYTES)
+        {
+            return Err("Invalid calculated column expression length".into());
+        }
+        if column.group_expression.as_ref().is_some_and(|s| {
+            s.trim().is_empty() || s.len() > rust_desktop_ui_data::MAX_QUERY_TEXT_BYTES
+        }) {
+            return Err("Invalid group expression length".into());
+        }
+        if column.value_source.is_some() != column.value_member.is_some()
+            || column
+                .value_source
+                .as_deref()
+                .is_some_and(|s| !valid_name(s))
+            || column
+                .value_member
+                .as_deref()
+                .is_some_and(|s| s.is_empty() || s.len() > 256 || s.contains('\0'))
+            || column.value_source.is_some() && column.expression.is_some()
+        {
+            return Err(
+                "Unbound column requires ValueSource and ValueMember without Expression".into(),
             );
         }
         if !valid_text(&column.header) {
@@ -260,6 +306,10 @@ pub(super) fn parse_column(node: Node<'_, '_>) -> Result<GridColumnDefinition, D
         reject_extension(node.document(), attr)?;
         match attr.name() {
             "FieldName" => column.field = attr.value().into(),
+            "ValueSource" => column.value_source = Some(attr.value().into()),
+            "ValueMember" => column.value_member = Some(attr.value().into()),
+            "GroupExpression" => column.group_expression = Some(attr.value().into()),
+            "Expression" => column.expression = Some(attr.value().into()),
             "Header" => column.header = attr.value().into(),
             "Width" => column.width = editor_metric(node.document(), attr, 4096.0, false)?,
             "MinWidth" => column.min_width = editor_metric(node.document(), attr, 4096.0, false)?,

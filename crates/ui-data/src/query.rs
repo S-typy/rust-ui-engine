@@ -9,7 +9,7 @@ use compile::{CompiledCriteria, CompiledExpression};
 
 /// Version of null, type, ordering, expression and aggregate semantics.
 /// Providers must match this version before accepting a pushed request.
-pub const QUERY_SEMANTICS_VERSION: u32 = 1;
+pub const QUERY_SEMANTICS_VERSION: u32 = 2;
 pub const MAX_QUERY_NODES: usize = 512;
 pub const MAX_QUERY_DEPTH: usize = 32;
 pub const MAX_QUERY_TERMS: usize = 128;
@@ -25,12 +25,29 @@ pub enum QueryExpression {
         operator: ArithmeticOperator,
         right: Box<Self>,
     },
+    Transform(ScalarTransform, Box<Self>),
     Lowercase(Box<Self>),
     /// Number of Unicode scalar values, not bytes or grapheme clusters.
     TextLength(Box<Self>),
     Coalesce(Box<Self>, Box<Self>),
 }
 
+/// Explicit exact conversions used by local queries and grid formulas.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScalarTransform {
+    ToDecimal,
+    Year,
+    MonthStart,
+}
+impl ScalarTransform {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::ToDecimal => "to_decimal",
+            Self::Year => "year",
+            Self::MonthStart => "month_start",
+        }
+    }
+}
 impl QueryExpression {
     pub fn field(name: impl Into<String>) -> Self {
         Self::Field(name.into())
@@ -162,6 +179,50 @@ pub struct QueryResult {
     pub groups: Vec<QueryGroup>,
 }
 
+impl QueryResult {
+    /// Order peers by a selected aggregate. Equal totals retain typed group-key order.
+    pub fn sort_groups_by_summary(
+        &mut self,
+        index: usize,
+        descending: bool,
+    ) -> Result<(), DataError> {
+        let total = self
+            .aggregates
+            .get(index)
+            .ok_or_else(|| invalid("unknown summary index"))?;
+        for group in &self.groups {
+            let v = group
+                .aggregates
+                .get(index)
+                .ok_or_else(|| invalid("missing group summary"))?;
+            if (v != &CellValue::Null
+                && total != &CellValue::Null
+                && std::mem::discriminant(v) != std::mem::discriminant(total))
+                || matches!(v,CellValue::Real(r) if !r.is_finite())
+            {
+                return Err(invalid("inconsistent summary type"));
+            }
+        }
+        let first = self
+            .groups
+            .iter()
+            .map(|g| &g.aggregates[index])
+            .find(|v| **v != CellValue::Null);
+        if first.is_some_and(|v| {
+            self.groups.iter().map(|g| &g.aggregates[index]).any(|w| {
+                *w != CellValue::Null && std::mem::discriminant(v) != std::mem::discriminant(w)
+            })
+        }) {
+            return Err(invalid("inconsistent summary type"));
+        }
+        self.groups.sort_by(|a, b| {
+            let cmp = compare_values(&a.aggregates[index], &b.aggregates[index]);
+            if descending { cmp.reverse() } else { cmp }
+        });
+        Ok(())
+    }
+}
+
 /// A capability is a promise to preserve *all* operators and types in its
 /// category, including errors and deterministic key ordering. A per-request
 /// capability applies to that complete request only. Unsupported expressions
@@ -279,6 +340,59 @@ impl QueryEngine {
     pub fn execute(table: &DataTable, request: &QueryRequest) -> Result<QueryResult, DataError> {
         Self::compile(table.schema(), request)?.execute(table)
     }
+    /// Append read-only, typed columns. Formulas may reference later declarations.
+    /// The caller's accepted snapshot is unchanged on any error.
+    pub fn calculated_table(
+        table: &DataTable,
+        columns: &[(String, String)],
+    ) -> Result<DataTable, DataError> {
+        if table.schema().fields().len() + columns.len() > table.limits().max_fields {
+            return Err(DataError::Capacity(
+                "calculated fields exceed table limits".into(),
+            ));
+        }
+        let mut pending: Vec<_> = columns.iter().collect();
+        let mut result = table.clone();
+        while !pending.is_empty() {
+            let mut diagnostic = String::new();
+            let next = pending.iter().enumerate().find_map(|(i, (name, text))| {
+                match crate::parse_expression_text(result.schema(), text) {
+                    Ok(expr) => Some((i, expr)),
+                    Err(e) => {
+                        diagnostic = format!("formula {name}: {e}");
+                        None
+                    }
+                }
+            });
+            let (index, expr) = next.ok_or_else(|| {
+                DataError::Validation(format!(
+                    "Unresolved or cyclic calculated column: {diagnostic}"
+                ))
+            })?;
+            let (name, _) = pending.remove(index);
+            let compiled = compile::compile_expression(result.schema(), &expr)?;
+            let ty = compiled.kind.kind.ok_or_else(|| {
+                DataError::Validation("calculated column needs a typed result".into())
+            })?;
+            let mut field = crate::FieldSchema::new(name, ty);
+            field.nullable = compiled.kind.nullable;
+            field.read_only = true;
+            let mut fields = result.schema().fields().to_vec();
+            fields.push(field);
+            let schema = TableSchema::new(fields)?;
+            let limits = result.limits();
+            let mut rows = Vec::with_capacity(result.rows().len());
+            for row in result.rows() {
+                let value = compiled.evaluate(row, limits)?;
+                let mut row = row.clone();
+                row.values.push(value);
+                rows.push(row);
+            }
+            result = DataTable::with_limits(schema, rows, limits)?;
+        }
+        Ok(result)
+    }
+
     pub fn expression_type(
         schema: &TableSchema,
         expression: &QueryExpression,

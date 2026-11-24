@@ -7,8 +7,72 @@ use rust_desktop_ui_controls::{
 use rust_desktop_ui_data::{Aggregate, AggregateFunction, QueryExpression};
 use rust_desktop_ui_xaml::GridControlDefinition;
 use rust_desktop_ui_xaml::{GridColumnDefinition, GridSummaryFunction, GridViewDefinition};
-use std::{cell::RefCell, rc::Rc};
+use std::rc::Rc;
 
+fn choice_editor(
+    ui: &Controls,
+    def: &rust_desktop_ui_xaml::GridEditorDefinition,
+) -> Result<Option<rust_desktop_ui_controls::GridChoiceEditor>, String> {
+    def.choice
+        .as_ref()
+        .map(|(source, key, fields)| {
+            Ok(rust_desktop_ui_controls::GridChoiceEditor {
+                source: ui
+                    .data_source(source)
+                    .ok_or_else(|| format!("Unknown choice source '{source}'"))?,
+                value_field: key.clone(),
+                display_fields: fields.clone(),
+                searchable: def.factory == "Lookup",
+            })
+        })
+        .transpose()
+}
+
+fn custom_editor(
+    ui: &Controls,
+    def: &rust_desktop_ui_xaml::GridEditorDefinition,
+    field: &rust_desktop_ui_data::FieldSchema,
+) -> Result<Option<Rc<dyn rust_desktop_ui_controls::GridCellEditor>>, String> {
+    use rust_desktop_ui_controls::{
+        EditorButton, EditorButtonAction, GridTextCellEditor, MaskSettings,
+    };
+    if let Some(choice) = choice_editor(ui, def)? {
+        choice.validate(field).map_err(err)?;
+        return Ok(Some(Rc::new(choice)));
+    }
+    if !matches!(def.factory.as_str(), "Memo" | "Masked" | "Button") {
+        return Ok(None);
+    }
+    if field.kind != rust_desktop_ui_data::FieldType::Text {
+        return Err("Text editor requires a text field".into());
+    }
+    let recipe = match def.factory.as_str() {
+        "Masked" => GridTextCellEditor::Masked(
+            MaskSettings::new(def.mask.as_deref().ok_or("Mask required")?).map_err(err)?,
+        ),
+        "Memo" => GridTextCellEditor::Multiline,
+        _ => {
+            let (label, action) = if let Some(name) = &def.command {
+                let cmd = rust_desktop_ui_controls::CommandId::from(name.as_str());
+                (
+                    ui.commands()
+                        .label(&cmd)
+                        .ok_or("Unknown GridEditor command")?
+                        .to_owned(),
+                    EditorButtonAction::Command(cmd),
+                )
+            } else {
+                ("Очистить".into(), EditorButtonAction::Clear)
+            };
+            GridTextCellEditor::Buttons(vec![EditorButton {
+                label,
+                icon: None,
+                action,
+            }])
+        }
+    };
+    Ok(Some(Rc::new(recipe)))
+}
 pub(super) fn validate_source(
     ui: &Controls,
     definition: &GridControlDefinition,
@@ -24,68 +88,45 @@ pub(super) fn validate_source(
     {
         return Err("Automatic GridControl columns exceed the 64-column limit".into());
     }
-    for column in &definition.columns {
-        if source.table().schema().field(&column.field).is_none() {
-            return Err(format!(
-                "Unknown grid field '{}' in source '{}'",
-                column.field, definition.data_source
-            ));
-        }
-    }
+    let mut query = source.query().clone();
+    drop(source);
+    let columns = columns(ui, &definition.columns, &source_handle)?;
+    let detail = detail(ui, definition)?;
+    let filter = (!definition.filter_text.is_empty()).then_some(definition.filter_text.as_str());
+    let table = presentation(definition)
+        .preview(&source_handle, &columns, detail.as_ref(), filter)
+        .map_err(err)?;
     if let Some(key) = &definition.selected_value {
         let key = key.parse::<i64>().map_err(err)?;
-        let visible = if definition.filter_text.is_empty() {
-            // Existing shared queries may hide a selected row; identity still
-            // belongs to the accepted source snapshot.
-            source.row(key).is_some()
-        } else {
-            // Preview a local query without modifying the registered source
-            // or issuing I/O through its adapter.
-            let mut preview = rust_desktop_ui_data::DataSource::new(
-                rust_desktop_ui_data::CollectionAdapter::new(source.table().clone()),
-            )
-            .map_err(err)?;
-            let mut query = source.query().clone();
-            query.filter.clone_from(&definition.filter_text);
-            preview.set_query(query).map_err(err)?;
-            preview.position(key).is_some()
-        };
-        if !visible {
+        if let Some(filter) = filter {
+            query.filter = filter.into();
+        }
+        if table.row(key).is_none()
+            || filter.is_some() && !query.row_keys(&table).map_err(err)?.contains(&key)
+        {
             return Err(format!(
                 "Selected grid row '{key}' is absent from the initial query"
             ));
         }
     }
-    let columns = columns(&definition.columns, &source_handle)?;
-    let presentation = presentation(definition);
-    let detail = detail(ui, definition)?;
-    if detail
-        .as_ref()
-        .is_some_and(|d| Rc::ptr_eq(&d.source, &source_handle))
-    {
-        return Err("Grid detail source must be distinct from its master source".into());
-    }
-    let mut preview = rust_desktop_ui_data::DataSource::new(
-        rust_desktop_ui_data::CollectionAdapter::new(source.table().clone()),
-    )
-    .map_err(err)?;
-    let mut query = source.query().clone();
-    if !definition.filter_text.is_empty() {
-        query.filter.clone_from(&definition.filter_text);
-    }
-    preview.set_query(query).map_err(err)?;
-    drop(source);
-    presentation
-        .validate_source(&Rc::new(RefCell::new(preview)), &columns, detail.as_ref())
-        .map_err(err)?;
     for editor in &definition.editors {
-        Controls::validate_grid_editor_factory(
-            &source_handle,
-            &editor.field,
-            &editor.factory,
-            &DataFormFactories::default(),
-        )
-        .map_err(err)?;
+        let field = table
+            .schema()
+            .field(&editor.field)
+            .ok_or_else(|| format!("Unknown editor field '{}'", editor.field))?;
+        if let Some((name, value)) = &editor.when {
+            table
+                .schema()
+                .field(name)
+                .ok_or("Unknown editor condition field")?
+                .parse(value)
+                .map_err(err)?;
+        }
+        if custom_editor(ui, editor, field)?.is_none() {
+            DataFormFactories::default()
+                .resolve(&editor.factory, field)
+                .map_err(err)?;
+        }
     }
     let known: std::collections::HashSet<_> = columns.iter().map(|c| c.field.as_str()).collect();
     if definition
@@ -105,6 +146,8 @@ pub(super) fn validate_source(
 fn column(column: &GridColumnDefinition) -> GridControlColumn {
     GridControlColumn {
         field: column.field.clone(),
+        expression: column.expression.clone(),
+        unbound: None,
         title: column.header.clone(),
         width: column.width,
         min_width: column.min_width,
@@ -114,11 +157,27 @@ fn column(column: &GridColumnDefinition) -> GridControlColumn {
     }
 }
 fn columns(
+    ui: &Controls,
     definitions: &[GridColumnDefinition],
     source: &DataSourceHandle,
 ) -> Result<Vec<GridControlColumn>, String> {
     if !definitions.is_empty() {
-        return Ok(definitions.iter().map(column).collect());
+        return definitions
+            .iter()
+            .map(|c| {
+                let mut out = column(c);
+                if let Some((source, member)) = c.value_source.as_ref().zip(c.value_member.as_ref())
+                {
+                    out.unbound = Some(rust_desktop_ui_controls::GridUnboundColumn {
+                        source: ui
+                            .data_source(source)
+                            .ok_or_else(|| format!("Unknown unbound source '{source}'"))?,
+                        member: member.clone(),
+                    });
+                }
+                Ok(out)
+            })
+            .collect();
     }
     let source = source.try_borrow().map_err(err)?;
     Ok(source
@@ -132,20 +191,43 @@ fn columns(
         })
         .collect())
 }
+fn band(b: &rust_desktop_ui_xaml::GridBandDefinition) -> GridBand {
+    GridBand {
+        title: b.title.clone(),
+        fields: b.fields.clone(),
+    }
+}
 fn presentation(definition: &GridControlDefinition) -> GridPresentationSettings {
     GridPresentationSettings {
         view: match definition.view {
             GridViewDefinition::Table => GridViewMode::Table,
             GridViewDefinition::Cards => GridViewMode::Cards,
         },
+        hierarchical_groups: definition.hierarchical_groups,
+        group_sort_summary: definition.group_sort_summary,
+        group_descending: definition.group_descending,
+        group_footer: definition.group_footer,
+        show_group_panel: definition.show_group_panel,
+        stacked_fields: definition.stacked_fields.clone(),
+        right_pinned_fields: definition.right_pinned_fields.clone(),
         group_fields: definition.group_fields.clone(),
-        bands: definition
-            .bands
+        group_expressions: definition
+            .columns
             .iter()
-            .map(|b| GridBand {
-                title: b.title.clone(),
-                fields: b.fields.clone(),
-            })
+            .filter_map(|c| Some((c.field.clone(), c.group_expression.clone()?)))
+            .collect(),
+        bands: definition.bands.iter().map(band).collect(),
+        band_rows: definition
+            .band_rows
+            .iter()
+            .map(|row| row.iter().map(band).collect())
+            .collect(),
+        custom_summaries: vec![],
+        summary_columns: definition
+            .summaries
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| Some((i, s.display_column.clone()?)))
             .collect(),
         summaries: definition
             .summaries
@@ -200,7 +282,7 @@ impl MountedView {
             .data_source(&definition.data_source)
             .ok_or_else(|| format!("Unknown data source '{}'", definition.data_source))?;
         let settings = GridControlSettings {
-            columns: columns(&definition.columns, &source)?,
+            columns: columns(ui, &definition.columns, &source)?,
             is_read_only: definition.is_read_only,
         };
         if style.height == Length::Auto
@@ -240,6 +322,25 @@ impl MountedView {
             .map_err(err)?;
         }
         for editor in &definition.editors {
+            let schema = ui
+                .grid_field_schema(id, &editor.field)
+                .ok_or("Missing editor field")?
+                .clone();
+            if let Some(recipe) = custom_editor(ui, editor, &schema)? {
+                if let Some((name, value)) = &editor.when {
+                    let typed = ui
+                        .grid_field_schema(id, name)
+                        .ok_or("Unknown editor condition field")?
+                        .parse(value)
+                        .map_err(err)?;
+                    ui.set_grid_conditional_cell_editor(id, &editor.field, name, typed, recipe)
+                        .map_err(err)?;
+                } else {
+                    ui.set_grid_cell_editor(id, &editor.field, recipe)
+                        .map_err(err)?;
+                }
+                continue;
+            }
             ui.set_grid_editor_factory(
                 id,
                 &editor.field,

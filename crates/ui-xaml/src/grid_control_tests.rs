@@ -90,6 +90,10 @@ fn grid_extended_metadata_manual_validation_and_limits_match_xml() {
     assert!(validate_grid_control(&g).is_err());
     g.cell_templates.clear();
     g.editors.push(GridEditorDefinition {
+        choice: None,
+        mask: None,
+        command: None,
+        when: None,
         field: "Id".into(),
         factory: "Bad.Name".into(),
     });
@@ -109,7 +113,7 @@ fn grid(content: &str) -> GridControlDefinition {
     let ElementKind::GridControl(grid) = parsed.content.kind else {
         panic!("expected GridControl");
     };
-    grid
+    *grid
 }
 
 #[test]
@@ -122,10 +126,10 @@ fn grid_control_named_source_and_auto_columns_have_explicit_defaults() {
     assert!(parsed.content.children().is_empty());
     assert_eq!(
         parsed.content.kind,
-        ElementKind::GridControl(GridControlDefinition {
+        ElementKind::GridControl(Box::new(GridControlDefinition {
             data_source: "Orders".into(),
             ..Default::default()
-        })
+        }))
     );
     assert!(
         grid("<GridControl DataSource='Orders'><GridControl.Columns/></GridControl>")
@@ -162,6 +166,10 @@ fn grid_column_direct_and_property_syntax_preserve_presentation_and_codegen() {
             max_width: 900.0,
             is_pinned: true,
             is_read_only: true,
+            expression: None,
+            group_expression: None,
+            value_source: None,
+            value_member: None,
         }
     );
     assert_eq!(
@@ -518,4 +526,53 @@ fn grid_metadata_is_not_named_content_and_validation_reaches_inactive_pages_and_
     grid.data_source = "invalid.path".into();
     assert!(validate_window_docking(&definition).is_err());
     assert!(parse(&window("<StackPanel><GridControl DataSource='Orders' x:Name='Same'/><TextBlock x:Name='Same'/></StackPanel>")).is_err());
+}
+
+#[test]
+fn nested_grid_bands_group_settings_choice_and_formulas_compile() {
+    let markup = r#"<GridControl DataSource="Orders" GroupFields="Region,City" GroupMode="Hierarchy" ShowGroupPanel="True">
+    <GridColumn FieldName="Amount" Expression='mul(to_decimal(field("Quantity")),field("Price"))'/>
+    <GridControl.Bands><GridBand Header="Sales"><GridBand Header="2026" Fields="Amount"/></GridBand></GridControl.Bands>
+    <GridControl.Editors><GridEditor FieldName="Buyer" Factory="Lookup" ItemsSource="Clients" ValueField="Id" DisplayFields="Name,City"/></GridControl.Editors></GridControl>"#;
+    let g = grid(markup);
+    assert!(g.hierarchical_groups && g.show_group_panel);
+    assert_eq!(g.band_rows[0][0].title, "2026");
+    assert_eq!(g.bands[0].fields, ["Amount"]);
+    assert!(g.columns[0].expression.is_some());
+    assert!(compile(&window(markup)).unwrap().contains("Clients"));
+    assert!(parse(&window(&markup.replace("Hierarchy", "Other"))).is_err());
+    assert!(
+        parse(&window(&markup.replace(
+            "Header=\"Sales\"",
+            "Header=\"Sales\" Fields=\"Extra\""
+        )))
+        .is_err()
+    );
+}
+
+#[test]
+fn choice_masks_external_values_and_group_formulas_roundtrip_in_xaml_metadata() {
+    let markup = r#"<GridControl DataSource="Orders" GroupFields="Day" GroupMode="Hierarchy" GroupFooter="True" GroupSortSummary="0" GroupDescending="True">
+    <GridColumn FieldName="Day" GroupExpression='month_start(field("Day"))'/>
+    <GridColumn FieldName="Note" ValueSource="Extras" ValueMember="Text"/>
+    <GridControl.Summaries><GridSummary Function="CountRows" DisplayColumn="Day"/></GridControl.Summaries>
+    <GridControl.Editors><GridEditor FieldName="Note" Factory="Masked" Mask="LL" WhenField="Flag" WhenValue="True"/>
+    <GridEditor FieldName="Note" Factory="Button" Command="ChooseNote"/></GridControl.Editors></GridControl>"#;
+    let spec = grid(markup);
+    assert!(spec.group_footer && spec.group_descending);
+    assert_eq!(spec.columns[1].value_source.as_deref(), Some("Extras"));
+    assert_eq!(spec.editors.len(), 2);
+    assert_eq!(
+        spec.columns[0].group_expression.as_deref(),
+        Some(r#"month_start(field("Day"))"#)
+    );
+    let code = compile(&window(markup)).unwrap();
+    assert!(code.contains("ChooseNote") && code.contains("Extras"));
+    assert!(parse(&window(&markup.replace("ValueMember=\"Text\"", ""))).is_err());
+    assert!(
+        parse(&window(
+            &markup.replace(" WhenField=\"Flag\" WhenValue=\"True\"", "")
+        ))
+        .is_err()
+    );
 }

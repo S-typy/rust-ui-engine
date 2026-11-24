@@ -380,7 +380,8 @@ impl DataTable {
         let index = self.schema.field_index(field)?;
         self.row(key)?.values.get(index)
     }
-    pub(crate) fn edited(
+    /// Validate an optimistic cell edit and produce a candidate without touching storage.
+    pub fn edited(
         &self,
         key: i64,
         field: &str,

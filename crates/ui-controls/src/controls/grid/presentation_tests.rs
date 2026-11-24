@@ -915,3 +915,6 @@ fn partially_scrolled_cards_keep_full_geometry_and_text_translates_without_compr
     assert_eq!(scrolled.height, card.height);
     assert!((card.y - scrolled.y - 17.0).abs() < 0.01);
 }
+
+#[path = "advanced_tests.rs"]
+mod advanced_tests;

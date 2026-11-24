@@ -160,6 +160,7 @@ pub struct TreeGrid {
     pub(crate) pinned: Vec<usize>,
     pub(crate) column_ends: Vec<f64>,
     pub(crate) pinned_width: f64,
+    pub(crate) tracks: Option<crate::tracks::ColumnTracks>,
     pub(crate) scroll_x: f64,
     pub(crate) scroll_y: f64,
     pub(crate) viewport: Size,
@@ -259,6 +260,7 @@ impl TreeGrid {
             pinned: Vec::new(),
             column_ends: Vec::new(),
             pinned_width: 0.0,
+            tracks: None,
             scroll_x: 0.0,
             scroll_y: 0.0,
             viewport: Size::ZERO,
@@ -770,12 +772,7 @@ impl TreeGrid {
         source: &impl TreeDataSource,
         forward: bool,
     ) -> Result<(), GridError> {
-        let order: Vec<_> = self
-            .pinned
-            .iter()
-            .chain(&self.regular)
-            .map(|&i| self.columns[i].id)
-            .collect();
+        let order = self.display_column_order();
         let current = self
             .focused_column
             .and_then(|column| order.iter().position(|&id| id == column))
@@ -1034,6 +1031,21 @@ impl TreeGrid {
     }
 
     fn ensure_column_visible(&mut self, column: ColumnId) {
+        if let Some(tracks) = &self.tracks {
+            if let Some(slot) = tracks.slots.get(&column)
+                && slot.zone == 1
+            {
+                let available =
+                    (f64::from(self.viewport.width) - tracks.widths[0] - tracks.widths[2]).max(0.0);
+                if slot.start < self.scroll_x || slot.width > available {
+                    self.scroll_x = slot.start;
+                } else if slot.start + slot.width > self.scroll_x + available {
+                    self.scroll_x = slot.start + slot.width - available;
+                }
+            }
+            self.clamp_scroll();
+            return;
+        }
         let Some(position) = self
             .regular
             .iter()
@@ -1409,6 +1421,9 @@ impl TreeGrid {
     }
 
     fn index_columns(&mut self) {
+        if let Some(tracks) = &mut self.tracks {
+            tracks.rebuild(&self.columns);
+        }
         self.regular.clear();
         self.pinned.clear();
         self.column_ends.clear();
@@ -1426,15 +1441,14 @@ impl TreeGrid {
         }
     }
 
-    fn clamp_scroll(&mut self) {
+    pub(crate) fn clamp_scroll(&mut self) {
         let height = f64::from((self.viewport.height - self.config.header_height).max(0.0));
-        let width = (f64::from(self.viewport.width) - self.pinned_width).max(0.0);
+        let (regular, fixed) = self.column_extents();
+        let width = (f64::from(self.viewport.width) - fixed).max(0.0);
         self.scroll_y = self
             .scroll_y
             .min((self.row_count() as f64 * f64::from(self.config.row_height) - height).max(0.0));
-        self.scroll_x = self
-            .scroll_x
-            .min((self.column_ends.last().copied().unwrap_or(0.0) - width).max(0.0));
+        self.scroll_x = self.scroll_x.min((regular - width).max(0.0));
     }
 
     fn ensure_visible(&mut self, index: usize) {

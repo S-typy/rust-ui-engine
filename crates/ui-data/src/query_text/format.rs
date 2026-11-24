@@ -120,6 +120,10 @@ impl Writer {
                 self.push(",")?;
                 self.expression(right, depth + 1)?;
             }
+            QueryExpression::Transform(op, arg) => {
+                self.start(op.name(), depth)?;
+                self.expression(arg, depth + 1)?;
+            }
             QueryExpression::Lowercase(v) | QueryExpression::TextLength(v) => {
                 self.start(
                     if matches!(value, QueryExpression::Lowercase(_)) {

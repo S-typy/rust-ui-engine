@@ -22,6 +22,7 @@ pub enum GridSummaryFunction {
 pub struct GridSummaryDefinition {
     pub title: String,
     pub function: GridSummaryFunction,
+    pub display_column: Option<String>,
     pub field: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -48,6 +49,10 @@ pub struct GridCellTemplateDefinition {
 pub struct GridEditorDefinition {
     pub field: String,
     pub factory: String,
+    pub choice: Option<(String, String, Vec<String>)>,
+    pub mask: Option<String>,
+    pub command: Option<String>,
+    pub when: Option<(String, String)>,
 }
 
 fn field(value: &str) -> bool {
@@ -67,8 +72,15 @@ pub(super) fn validate(grid: &GridControlDefinition) -> Result<(), String> {
     if !unique_fields(&grid.group_fields, 8) || grid.summaries.len() > 16 || grid.bands.len() > 16 {
         return Err("GridControl supports 8 unique group fields, 16 summaries and 16 bands".into());
     }
+    if grid
+        .group_sort_summary
+        .is_some_and(|i| i >= grid.summaries.len())
+    {
+        return Err("Unknown GroupSortSummary".into());
+    }
     for summary in &grid.summaries {
-        if !caption(&summary.title)
+        if summary.display_column.as_ref().is_some_and(|f| !field(f))
+            || !caption(&summary.title)
             || match summary.function {
                 GridSummaryFunction::CountRows => summary.field.is_some(),
                 _ => summary.field.as_deref().is_none_or(|value| !field(value)),
@@ -77,16 +89,36 @@ pub(super) fn validate(grid: &GridControlDefinition) -> Result<(), String> {
             return Err("GridSummary requires a bounded title; CountRows has no field and other functions require FieldName".into());
         }
     }
-    let mut band_fields = HashSet::new();
-    for band in &grid.bands {
-        if band.title.is_empty()
-            || !caption(&band.title)
-            || band.fields.is_empty()
-            || !unique_fields(&band.fields, MAX_GRID_COLUMNS)
-            || band.fields.iter().any(|field| !band_fields.insert(field))
-        {
-            return Err("GridBand requires Header and bounded, unique, disjoint Fields".into());
+    let mut parent: Option<&[GridBandDefinition]> = None;
+    if grid.band_rows.len() >= 8
+        || grid.bands.len() + grid.band_rows.iter().map(Vec::len).sum::<usize>() > 64
+    {
+        return Err("Invalid nested grid band layout".into());
+    }
+    for row in std::iter::once(&grid.bands).chain(&grid.band_rows) {
+        if parent.is_some() && row.is_empty() {
+            return Err("Invalid nested grid band layout".into());
         }
+        let mut band_fields = HashSet::new();
+        for band in row {
+            if let Some(parents) = parent
+                && !parents
+                    .iter()
+                    .any(|p| band.fields.iter().all(|f| p.fields.contains(f)))
+            {
+                return Err("Invalid nested grid band layout".into());
+            }
+
+            if band.title.is_empty()
+                || !caption(&band.title)
+                || band.fields.is_empty()
+                || !unique_fields(&band.fields, MAX_GRID_COLUMNS)
+                || band.fields.iter().any(|field| !band_fields.insert(field))
+            {
+                return Err("GridBand requires Header and bounded, unique, disjoint Fields".into());
+            }
+        }
+        parent = Some(row);
     }
     if let Some(detail) = &grid.detail {
         if !valid_name(&detail.data_source)
@@ -97,6 +129,13 @@ pub(super) fn validate(grid: &GridControlDefinition) -> Result<(), String> {
             return Err("GridDetail requires a registered DataSource, MasterField, ForeignField and explicit columns".into());
         }
         validate_columns(&detail.columns)?;
+        if detail
+            .columns
+            .iter()
+            .any(|c| c.expression.is_some() || c.value_source.is_some())
+        {
+            return Err("Calculated fields require a master GridColumn".into());
+        }
         if !grid.columns.is_empty() && detail.columns.len() > grid.columns.len() {
             return Err("GridDetail cannot have more columns than its master grid".into());
         }
@@ -118,12 +157,38 @@ pub(super) fn validate(grid: &GridControlDefinition) -> Result<(), String> {
     }
     let mut fields = HashSet::new();
     if grid.editors.len() > MAX_GRID_COLUMNS
-        || grid
-            .editors
-            .iter()
-            .any(|e| !field(&e.field) || !fields.insert(&e.field) || !valid_name(&e.factory))
+        || grid.editors.iter().any(|e| {
+            !field(&e.field)
+                || !fields.insert((&e.field, e.when.is_some()))
+                || !valid_name(&e.factory)
+                || e.mask
+                    .as_ref()
+                    .is_some_and(|s| s.is_empty() || s.len() > 4096)
+                || (e.factory == "Masked") != e.mask.is_some()
+                || e.command
+                    .as_ref()
+                    .is_some_and(|s| !valid_name(s) || e.factory != "Button")
+                || e.when.as_ref().is_some_and(|(f, v)| {
+                    !field(f)
+                        || v.len() > 4096
+                        || !matches!(
+                            e.factory.as_str(),
+                            "ComboBox" | "Lookup" | "Masked" | "Memo" | "Button"
+                        )
+                })
+                || match &e.choice {
+                    Some((source, key, fields)) => {
+                        !matches!(e.factory.as_str(), "ComboBox" | "Lookup")
+                            || !valid_name(source)
+                            || !field(key)
+                            || fields.is_empty()
+                            || !unique_fields(fields, 32)
+                    }
+                    None => matches!(e.factory.as_str(), "ComboBox" | "Lookup"),
+                }
+        })
     {
-        return Err("GridEditor requires unique fields and registered factory identifiers".into());
+        return Err("GridEditor requires at most one base and one conditional recipe per field and registered factory identifiers".into());
     }
     Ok(())
 }
@@ -242,7 +307,7 @@ pub(super) fn parse_property(
         }
         match expected {
             "GridSummary" => {
-                attributes(item, &["Title", "Function", "FieldName"])?;
+                attributes(item, &["Title", "Function", "FieldName", "DisplayColumn"])?;
                 empty(item)?;
                 let function = function(item)?;
                 grid.summaries.push(GridSummaryDefinition {
@@ -251,20 +316,12 @@ pub(super) fn parse_property(
                         .map(str::to_owned)
                         .unwrap_or_else(|| format!("{function:?}")),
                     function,
+                    display_column: item.attribute("DisplayColumn").map(str::to_owned),
                     field: item.attribute("FieldName").map(str::to_owned),
                 });
             }
             "GridBand" => {
-                attributes(item, &["Header", "Fields"])?;
-                empty(item)?;
-                grid.bands.push(GridBandDefinition {
-                    title: value(item, "Header"),
-                    fields: item
-                        .attribute_node("Fields")
-                        .map(|attr| fields(item.document(), attr, 64))
-                        .transpose()?
-                        .unwrap_or_default(),
-                });
+                parse_band(item, depth + 1, count, 0, grid)?;
             }
             "GridCellTemplate" => {
                 attributes(item, &["FieldName", "Prefix", "Suffix", "Icon", "Emphasis"])?;
@@ -285,10 +342,50 @@ pub(super) fn parse_property(
                 });
             }
             "GridEditor" => {
-                attributes(item, &["FieldName", "Factory"])?;
+                attributes(
+                    item,
+                    &[
+                        "FieldName",
+                        "Factory",
+                        "ItemsSource",
+                        "ValueField",
+                        "DisplayFields",
+                        "Mask",
+                        "Command",
+                        "WhenField",
+                        "WhenValue",
+                    ],
+                )?;
                 empty(item)?;
+                if item.attribute("WhenField").is_some() != item.attribute("WhenValue").is_some() {
+                    return Err(at_node(
+                        item,
+                        "Conditional editor requires WhenField and WhenValue",
+                    ));
+                }
                 grid.editors.push(GridEditorDefinition {
+                    mask: item.attribute("Mask").map(str::to_owned),
+                    command: item.attribute("Command").map(str::to_owned),
+                    when: item
+                        .attribute("WhenField")
+                        .zip(item.attribute("WhenValue"))
+                        .map(|(f, v)| (f.into(), v.into())),
                     field: value(item, "FieldName"),
+                    choice: if item.attribute("ItemsSource").is_some()
+                        || item.attribute("ValueField").is_some()
+                        || item.attribute("DisplayFields").is_some()
+                    {
+                        Some((
+                            value(item, "ItemsSource"),
+                            value(item, "ValueField"),
+                            item.attribute_node("DisplayFields")
+                                .map(|a| fields(item.document(), a, 32))
+                                .transpose()?
+                                .unwrap_or_default(),
+                        ))
+                    } else {
+                        None
+                    },
                     factory: item.attribute("Factory").unwrap_or("Auto").into(),
                 });
             }
@@ -325,6 +422,57 @@ pub(super) fn parse_property(
     Ok(())
 }
 
+fn parse_band(
+    node: Node<'_, '_>,
+    depth: usize,
+    count: &mut usize,
+    level: usize,
+    grid: &mut GridControlDefinition,
+) -> Result<Vec<String>, Diagnostic> {
+    if level >= 8 {
+        return Err(at_node(node, "At most eight band tiers are supported"));
+    }
+    attributes(node, &["Header", "Fields"])?;
+    let declared = node.attribute_node("Fields");
+    let mut members = declared
+        .map(|a| fields(node.document(), a, MAX_GRID_COLUMNS))
+        .transpose()?
+        .unwrap_or_default();
+    for child in node.children() {
+        if !child.is_element() {
+            require_empty_content(child)?;
+            continue;
+        }
+        if declared.is_some()
+            || child.tag_name().namespace() != Some(UI_NAMESPACE)
+            || child.tag_name().name() != "GridBand"
+        {
+            return Err(at_node(
+                child,
+                "A band contains either Fields or child GridBand elements",
+            ));
+        }
+        count_metadata(child, depth + 1, count)?;
+        members.extend(parse_band(child, depth + 1, count, level + 1, grid)?);
+        if members.len() > MAX_GRID_COLUMNS {
+            return Err(at_node(node, "Too many fields in band"));
+        }
+    }
+    let band = GridBandDefinition {
+        title: value(node, "Header"),
+        fields: members.clone(),
+    };
+    if level == 0 {
+        grid.bands.push(band);
+    } else {
+        if grid.band_rows.len() < level {
+            grid.band_rows.resize_with(level, Vec::new);
+        }
+        grid.band_rows[level - 1].push(band);
+    }
+    Ok(members)
+}
+
 fn strings(values: &[String]) -> String {
     format!(
         "vec![{}]",
@@ -342,33 +490,52 @@ fn optional(value: &Option<String>) -> String {
         .unwrap_or_else(|| "None".into())
 }
 fn columns(values: &[GridColumnDefinition]) -> String {
-    format!("vec![{}]", values.iter().map(|c|format!("rust_desktop_ui_xaml::GridColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?}, min_width: {:?}, max_width: {:?}, is_pinned: {}, is_read_only: {} }}",c.field,c.header,c.width,c.min_width,c.max_width,c.is_pinned,c.is_read_only)).collect::<Vec<_>>().join(","))
+    format!("vec![{}]", values.iter().map(|c|format!("rust_desktop_ui_xaml::GridColumnDefinition {{ field: {:?}.into(), header: {:?}.into(), width: {:?}, min_width: {:?}, max_width: {:?}, is_pinned: {}, is_read_only: {}, expression: {},group_expression:{},value_source:{},value_member:{} }}",c.field,c.header,c.width,c.min_width,c.max_width,c.is_pinned,c.is_read_only,optional(&c.expression),optional(&c.group_expression),optional(&c.value_source),optional(&c.value_member))).collect::<Vec<_>>().join(","))
 }
 pub(super) fn code(grid: &GridControlDefinition) -> String {
-    let summaries = grid.summaries.iter().map(|s|format!("rust_desktop_ui_xaml::GridSummaryDefinition {{ title:{:?}.into(), function:rust_desktop_ui_xaml::GridSummaryFunction::{:?}, field:{} }}",s.title,s.function,optional(&s.field))).collect::<Vec<_>>().join(",");
-    let bands = grid
-        .bands
+    let summaries = grid.summaries.iter().map(|s|format!("rust_desktop_ui_xaml::GridSummaryDefinition {{ title:{:?}.into(), function:rust_desktop_ui_xaml::GridSummaryFunction::{:?}, field:{},display_column:{} }}",s.title,s.function,optional(&s.field),optional(&s.display_column))).collect::<Vec<_>>().join(",");
+    let stacks = grid
+        .stacked_fields
         .iter()
-        .map(|b| {
-            format!(
-                "rust_desktop_ui_xaml::GridBandDefinition {{ title:{:?}.into(),fields:{} }}",
-                b.title,
-                strings(&b.fields)
-            )
-        })
+        .map(|(f, r)| format!("({f:?}.into(),{r:?}.into())"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let right = strings(&grid.right_pinned_fields);
+    let band_code = |row: &[GridBandDefinition]| {
+        row.iter()
+            .map(|b| {
+                format!(
+                    "rust_desktop_ui_xaml::GridBandDefinition {{ title:{:?}.into(),fields:{} }}",
+                    b.title,
+                    strings(&b.fields)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    let bands = band_code(&grid.bands);
+    let band_rows = grid
+        .band_rows
+        .iter()
+        .map(|r| format!("vec![{}]", band_code(r)))
         .collect::<Vec<_>>()
         .join(",");
     let detail = grid.detail.as_ref().map(|d|format!("Some(rust_desktop_ui_xaml::GridDetailDefinition {{ data_source:{:?}.into(),master_field:{:?}.into(),foreign_field:{:?}.into(),columns:{} }})",d.data_source,d.master_field,d.foreign_field,columns(&d.columns))).unwrap_or_else(||"None".into());
     let templates = grid.cell_templates.iter().map(|t|format!("rust_desktop_ui_xaml::GridCellTemplateDefinition {{ field:{:?}.into(),prefix:{:?}.into(),suffix:{:?}.into(),icon:{},emphasis:{} }}",t.field,t.prefix,t.suffix,t.icon.map(|icon|format!("Some(rust_desktop_ui_xaml::IconSymbol::{icon:?})")).unwrap_or_else(||"None".into()),t.emphasis)).collect::<Vec<_>>().join(",");
-    let editors = grid.editors.iter().map(|e|format!("rust_desktop_ui_xaml::GridEditorDefinition {{ field:{:?}.into(),factory:{:?}.into() }}",e.field,e.factory)).collect::<Vec<_>>().join(",");
+    let editors = grid.editors.iter().map(|e|format!("rust_desktop_ui_xaml::GridEditorDefinition {{ field:{:?}.into(),factory:{:?}.into(),mask:{},command:{},when:{},choice:{} }}",e.field,e.factory,optional(&e.mask),optional(&e.command),e.when.as_ref().map(|(f,v)|format!("Some(({f:?}.into(),{v:?}.into()))")).unwrap_or_else(||"None".into()),e.choice.as_ref().map(|(s,k,d)|format!("Some(({s:?}.into(),{k:?}.into(),{}))",strings(d))).unwrap_or_else(||"None".into()))).collect::<Vec<_>>().join(",");
     format!(
-        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],detail:{detail},cell_templates:vec![{templates}],editors:vec![{editors}] }}",
+        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},hierarchical_groups:{},group_sort_summary:{:?},group_descending:{},group_footer:{},show_group_panel:{},stacked_fields:vec![{stacks}],right_pinned_fields:{right},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],band_rows:vec![{band_rows}],detail:{detail},cell_templates:vec![{templates}],editors:vec![{editors}] }}",
         grid.data_source,
         columns(&grid.columns),
         grid.is_read_only,
         grid.filter_text,
         optional(&grid.selected_value),
         grid.view,
+        grid.hierarchical_groups,
+        grid.group_sort_summary,
+        grid.group_descending,
+        grid.group_footer,
+        grid.show_group_panel,
         strings(&grid.group_fields)
     )
 }

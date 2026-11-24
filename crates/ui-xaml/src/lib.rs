@@ -632,7 +632,7 @@ pub enum ElementKind {
     StackPanel(StackPanelDefinition),
     WrapPanel(StackPanelDefinition),
     Grid(GridDefinition),
-    GridControl(GridControlDefinition),
+    GridControl(Box<GridControlDefinition>),
     DataForm(DataFormDefinition),
     PropertyGrid(PropertyGridDefinition),
     Wizard(Box<WizardDefinition>),

@@ -150,7 +150,7 @@ impl Controls {
             .settings
             .retain(|id, _| self.rich.composites.contains_key(id));
     }
-    fn lookup_query(&self, owner: WidgetId) -> String {
+    pub(super) fn lookup_query(&self, owner: WidgetId) -> String {
         let Some(editor) = self.composite_editor(owner) else {
             return String::new();
         };

@@ -13,6 +13,7 @@ pub(super) enum ExpressionNode {
         ArithmeticOperator,
         Box<CompiledExpression>,
     ),
+    Transform(ScalarTransform, Box<CompiledExpression>),
     Lowercase(Box<CompiledExpression>),
     TextLength(Box<CompiledExpression>),
     Coalesce(Box<CompiledExpression>, Box<CompiledExpression>),
@@ -139,6 +140,25 @@ impl<'a> Compiler<'a> {
                 (
                     kind,
                     ExpressionNode::Arithmetic(Box::new(left), *operator, Box::new(right)),
+                )
+            }
+            QueryExpression::Transform(op, arg) => {
+                self.expressions = true;
+                let arg = self.expression(arg, depth + 1)?;
+                let (input, output) = match op {
+                    ScalarTransform::ToDecimal => (FieldType::Integer, FieldType::Decimal),
+                    ScalarTransform::Year => (FieldType::Date, FieldType::Integer),
+                    ScalarTransform::MonthStart => (FieldType::Date, FieldType::Date),
+                };
+                if arg.kind.kind.is_some_and(|kind| kind != input) {
+                    return Err(invalid("Invalid scalar transform input type"));
+                }
+                (
+                    ExpressionType {
+                        kind: Some(output),
+                        nullable: arg.kind.nullable,
+                    },
+                    ExpressionNode::Transform(*op, Box::new(arg)),
                 )
             }
             QueryExpression::Lowercase(value) | QueryExpression::TextLength(value) => {

@@ -38,6 +38,46 @@ impl GridState {
                 }
             })
             .collect();
+        let options = &source.presentation;
+        let column_id = |name: &str| {
+            self.settings
+                .columns
+                .iter()
+                .position(|c| c.field == name)
+                .map(|i| ColumnId(i as u64))
+        };
+        let stacks: HashMap<_, _> = options
+            .stacked_fields
+            .iter()
+            .map(|(f, r)| {
+                (
+                    column_id(f).expect("validated field"),
+                    column_id(r).expect("validated root"),
+                )
+            })
+            .collect();
+        let right: HashSet<_> = options
+            .right_pinned_fields
+            .iter()
+            .filter_map(|f| column_id(f))
+            .collect();
+        let mut track_sizes = HashMap::new();
+        for col in &columns {
+            let track = stacks.get(&col.id).copied().unwrap_or(col.id);
+            *track_sizes
+                .entry((
+                    if right.contains(&col.id) {
+                        2
+                    } else if col.pinned {
+                        0
+                    } else {
+                        1
+                    },
+                    track,
+                ))
+                .or_insert(0usize) += 1;
+        }
+        let lines = track_sizes.values().max().copied().unwrap_or(1) as f32;
         let config = if source.presentation.view == GridViewMode::Cards {
             GridConfig {
                 header_height: 0.0,
@@ -46,11 +86,15 @@ impl GridState {
             }
         } else {
             GridConfig {
-                row_height: 28.0_f32.max(self.editor_height),
+                header_height: GridConfig::default().header_height * lines,
+                row_height: 28.0_f32.max(self.editor_height) * lines,
                 ..Default::default()
             }
         };
         let mut model = TreeGrid::with_config(columns, config).map_err(error)?;
+        if options.view == GridViewMode::Table {
+            model.set_column_tracks(stacks, right).map_err(error)?;
+        }
         model.flat_presentation =
             source.presentation.group_fields.is_empty() && source.detail.is_none();
         model.refresh(source).map_err(error)?;
@@ -61,13 +105,14 @@ impl GridState {
             .copied()
             .filter(|key| {
                 if let Some(row) = source.projection.synthetic.get(key) {
-                    self.source
-                        .projection
-                        .identities
-                        .get(&row.identity)
-                        .map_or(source.projection.groups.contains(key), |old| {
-                            self.model.is_expanded(*old)
-                        })
+                    self.source.projection.identities.get(&row.identity).map_or(
+                        matches!(
+                            row.identity,
+                            projection::SyntheticIdentity::Group(_)
+                                | projection::SyntheticIdentity::Branch(_, _)
+                        ),
+                        |old| self.model.is_expanded(*old),
+                    )
                 } else {
                     self.model.is_expanded(*key)
                 }
@@ -131,7 +176,7 @@ impl GridState {
             })
             .collect()
     }
-    fn validate_arrangement(
+    pub(super) fn validate_arrangement(
         &self,
         arrangement: &[GridColumnArrangement],
     ) -> Result<(), ControlError> {
@@ -161,23 +206,25 @@ impl GridState {
         Ok(())
     }
     pub(super) fn presentation_bounds(&self, bounds: Rect) -> Rect {
+        let panel = self.source.presentation.panel_height(bounds);
         let band = if self.source.presentation.bands.is_empty()
             || self.source.presentation.view == GridViewMode::Cards
         {
             0.0
         } else {
-            24.0_f32.min(bounds.height)
+            (24.0 * (1 + self.source.presentation.band_rows.len()) as f32).min(bounds.height)
         };
-        let footer = if self.source.presentation.summaries.is_empty() {
+        let footer = if self.source.presentation.summary_titles().next().is_none() {
             0.0
         } else {
-            28.0_f32.min((bounds.height - band).max(0.0))
+            (28.0 * self.source.presentation.footer_lines() as f32)
+                .min((bounds.height - panel - band).max(0.0))
         };
         Rect::new(
             bounds.x,
-            bounds.y + band,
+            bounds.y + panel + band,
             bounds.width,
-            (bounds.height - band - footer).max(0.0),
+            (bounds.height - panel - band - footer).max(0.0),
         )
     }
     pub(super) fn decorate_frame(&self, bounds: Rect, frame: &mut GridFrame) {
@@ -371,7 +418,41 @@ impl PresentationPainter<'_> {
         }
         for row in &mut frame.semantics.rows {
             if let Some(synthetic) = self.source.projection.synthetic.get(&row.key)
-                && matches!(synthetic.identity, projection::SyntheticIdentity::Group(_))
+                && matches!(
+                    synthetic.identity,
+                    projection::SyntheticIdentity::Footer(..)
+                )
+            {
+                let Some(rect) = row.bounds.intersection(bounds) else {
+                    continue;
+                };
+                frame.scene.fill(rect, palette.header);
+                let area = Rect::new(rect.x + 6., rect.y, (rect.width - 12.).max(0.), rect.height);
+                draw_text(
+                    &mut frame.scene,
+                    area,
+                    rect,
+                    synthetic.label.clone(),
+                    palette.text,
+                    600,
+                    13.,
+                );
+                for (i, cell) in row.cells.iter_mut().enumerate() {
+                    cell.label = if i == 0 {
+                        synthetic.label.clone()
+                    } else {
+                        String::new()
+                    };
+                    cell.editable = false;
+                }
+                continue;
+            }
+            if let Some(synthetic) = self.source.projection.synthetic.get(&row.key)
+                && matches!(
+                    synthetic.identity,
+                    projection::SyntheticIdentity::Group(_)
+                        | projection::SyntheticIdentity::Branch(_, _)
+                )
             {
                 let rect = row
                     .bounds
@@ -383,7 +464,13 @@ impl PresentationPainter<'_> {
                 frame
                     .hits
                     .retain(|h| !matches!(h.kind, GridHitKind::Expander(key) if key == row.key));
-                let disclosure = Rect::new(rect.x, rect.y, 26.0_f32.min(rect.width), rect.height);
+                let indent = (row.depth as f32 * 16.0).min(rect.width);
+                let disclosure = Rect::new(
+                    rect.x + indent,
+                    rect.y,
+                    26.0_f32.min(rect.width - indent),
+                    rect.height,
+                );
                 frame.hits.push(GridHit {
                     bounds: disclosure,
                     kind: GridHitKind::Expander(row.key),
@@ -393,7 +480,7 @@ impl PresentationPainter<'_> {
                     + (row.index as f64 * f64::from(self.model.config().row_height)
                         - self.model.scroll_offset().1) as f32;
                 let icon = Rect::new(
-                    rect.x + 5.0,
+                    rect.x + indent + 5.0,
                     row_y + (self.model.config().row_height - 16.0) * 0.5,
                     16.0,
                     16.0,
@@ -412,9 +499,9 @@ impl PresentationPainter<'_> {
                 draw_text(
                     &mut frame.scene,
                     Rect::new(
-                        rect.x + 26.0,
+                        rect.x + indent + 26.0,
                         row_y,
-                        (rect.width - 32.0).max(0.0),
+                        (rect.width - indent - 32.0).max(0.0),
                         self.model.config().row_height,
                     ),
                     rect,
@@ -436,8 +523,48 @@ impl PresentationPainter<'_> {
     }
     fn decorate_outer(&self, bounds: Rect, frame: &GridFrame, scene: &mut Scene) {
         let palette = self.model.palette;
+        let panel = self.source.presentation.panel_height(bounds);
+        if panel > 0.0 {
+            let area = Rect::new(bounds.x, bounds.y, bounds.width, panel);
+            scene.fill(area, palette.header);
+            let fields = &self.source.presentation.group_fields;
+            if fields.is_empty() {
+                draw_text(
+                    scene,
+                    area,
+                    area,
+                    "Перетащите заголовок для группировки".into(),
+                    palette.text,
+                    400,
+                    13.0,
+                );
+            }
+            for (index, field) in fields.iter().enumerate() {
+                let chip = self.source.presentation.group_slot(bounds, index);
+                let label = self
+                    .settings
+                    .columns
+                    .iter()
+                    .find(|c| &c.field == field)
+                    .map_or(field.as_str(), |c| c.title.as_str());
+                draw_text(
+                    scene,
+                    chip,
+                    chip,
+                    format!("  {}  ›", label),
+                    palette.text,
+                    600,
+                    13.0,
+                );
+            }
+        }
         if self.source.presentation.view == GridViewMode::Table {
-            for band in &self.source.presentation.bands {
+            let options = &self.source.presentation;
+            for (level, band) in std::iter::once(&options.bands)
+                .chain(&options.band_rows)
+                .enumerate()
+                .flat_map(|(level, row)| row.iter().map(move |b| (level, b)))
+            {
                 // Use clipped visible column geometry, merging only adjacent
                 // fragments in the same pinned/scrolling coordinate region.
                 let mut columns: Vec<_> = frame
@@ -449,7 +576,7 @@ impl PresentationPainter<'_> {
                     })
                     .collect();
                 columns.sort_by(|a, b| a.clip.x.total_cmp(&b.clip.x));
-                let mut fragments: Vec<(Rect, bool)> = Vec::new();
+                let mut fragments: Vec<(Rect, (bool, bool))> = Vec::new();
                 for column in columns {
                     let Some(visible) = column.bounds.intersection(column.clip) else {
                         continue;
@@ -459,17 +586,23 @@ impl PresentationPainter<'_> {
                     }
                     let rect = Rect::new(
                         visible.x,
-                        bounds.y,
+                        bounds.y + panel + level as f32 * 24.0,
                         visible.width,
-                        24.0_f32.min(bounds.height),
+                        (bounds.height - panel - level as f32 * 24.0).clamp(0.0, 24.0),
+                    );
+                    let zone = (
+                        column.pinned,
+                        options
+                            .right_pinned_fields
+                            .contains(&self.source.fields[column.id.0 as usize]),
                     );
                     if let Some((last, pinned)) = fragments.last_mut()
-                        && *pinned == column.pinned
-                        && (last.x + last.width - rect.x).abs() < 0.5
+                        && *pinned == zone
+                        && rect.x <= last.x + last.width + 0.5
                     {
-                        last.width = rect.x + rect.width - last.x;
+                        last.width = last.width.max(rect.x + rect.width - last.x);
                     } else {
-                        fragments.push((rect, column.pinned));
+                        fragments.push((rect, zone));
                     }
                 }
                 for (rect, _) in fragments {
@@ -492,8 +625,10 @@ impl PresentationPainter<'_> {
                 }
             }
         }
-        if !self.source.presentation.summaries.is_empty() {
-            let height = 28.0_f32.min(bounds.height);
+        if self.source.presentation.summary_titles().next().is_some() {
+            let options = &self.source.presentation;
+            let lines = options.footer_lines();
+            let height = (28.0 * lines as f32).min(bounds.height);
             let rect = Rect::new(
                 bounds.x,
                 bounds.y + bounds.height - height,
@@ -501,20 +636,51 @@ impl PresentationPainter<'_> {
                 height,
             );
             scene.fill(rect, palette.header);
-            let text = self
-                .source
-                .presentation
-                .summaries
-                .iter()
+            let line = height / lines as f32;
+            let mut cells: Vec<(Rect, Vec<String>)> = Vec::new();
+            for (i, (title, value)) in options
+                .summary_titles()
                 .zip(&self.source.projection.totals)
-                .map(|(s, v)| format!("{}: {}", s.title, v.display()))
-                .collect::<Vec<_>>()
-                .join("  ·  ");
-            draw_text(scene, rect, rect, text, palette.text, 600, 13.0);
+                .enumerate()
+            {
+                let area = if let Some((_, field)) = options
+                    .summary_columns
+                    .iter()
+                    .find(|(index, _)| *index == i)
+                {
+                    let Some(column) = frame
+                        .columns
+                        .iter()
+                        .find(|c| &self.settings.columns[c.id.0 as usize].field == field)
+                    else {
+                        continue;
+                    };
+                    Rect::new(column.clip.x, rect.y, column.clip.width, line)
+                } else {
+                    Rect::new(rect.x, rect.y + height - line, rect.width, line)
+                };
+                let text = format!("{title}: {}", value.display());
+                if let Some((_, parts)) = cells.iter_mut().find(|(bounds, _)| *bounds == area) {
+                    parts.push(text);
+                } else {
+                    cells.push((area, vec![text]));
+                }
+            }
+            for (area, parts) in cells {
+                draw_text(
+                    scene,
+                    area,
+                    area,
+                    parts.join("  ·  "),
+                    palette.text,
+                    600,
+                    13.0,
+                );
+            }
         }
     }
 }
-fn draw_text(
+pub(super) fn draw_text(
     scene: &mut Scene,
     bounds: Rect,
     clip: Rect,
@@ -573,7 +739,10 @@ impl Controls {
             .handle
             .try_borrow()
             .map_err(|_| error("Grid source is already borrowed"))?;
-        Ok(source.revision() == grid.source.revision && !grid.source.detail_changed()?)
+        Ok(source.revision() == grid.source.revision
+            && !grid.source.detail_changed()?
+            && !grid.source.choices_changed()?
+            && unbound::revisions(&grid.source.unbound)? == grid.source.value_revisions)
     }
     pub fn grid_summaries(&self, id: WidgetId) -> Option<&[CellValue]> {
         self.grids
@@ -597,6 +766,38 @@ impl Controls {
         let mut source = grid.source.clone();
         source.presentation = settings;
         self.install_grid_presentation(id, source, self.grid_arrangement(id).unwrap())
+    }
+    /// Replace a formula after type checking the entire candidate presentation.
+    pub fn set_grid_calculated_expression(
+        &mut self,
+        id: WidgetId,
+        field: &str,
+        text: &str,
+    ) -> Result<(), ControlError> {
+        let grid = self
+            .grids
+            .get(&id)
+            .ok_or_else(|| error("Unknown GridControl"))?;
+        let mut next = grid.source.clone();
+        let index = grid
+            .settings
+            .columns
+            .iter()
+            .position(|c| c.field == field && c.expression.is_some())
+            .ok_or_else(|| error("Unknown calculated column"))?;
+        let formula = next
+            .formulas
+            .iter_mut()
+            .find(|(f, _)| f == field)
+            .expect("declared formula");
+        formula.1 = text.into();
+        self.install_grid_presentation(
+            id,
+            next,
+            self.grid_arrangement(id).expect("registered grid"),
+        )?;
+        self.grids.get_mut(&id).unwrap().settings.columns[index].expression = Some(text.into());
+        Ok(())
     }
     pub fn set_grid_detail(
         &mut self,
@@ -657,11 +858,16 @@ impl Controls {
         // Validate the final decorated runs and use their real shaped line
         // height, including emphasized labels, before publishing the model.
         center_scene_text(&mut scene, &mut self.engine)?;
-        for band in &source.presentation.bands {
+        for band in source
+            .presentation
+            .bands
+            .iter()
+            .chain(source.presentation.band_rows.iter().flatten())
+        {
             self.measure_text(&band.title, 4096.0, false)?;
         }
-        for summary in &source.presentation.summaries {
-            self.measure_text(&summary.title, 4096.0, false)?;
+        for title in source.presentation.summary_titles() {
+            self.measure_text(title, 4096.0, false)?;
         }
         let grid = self.grids.get_mut(&id).unwrap();
         grid.source = source;

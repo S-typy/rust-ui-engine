@@ -137,7 +137,9 @@ pub(super) fn visual_supported(v: &QueryBuilderValue) -> bool {
             QueryExpression::Field(_) | QueryExpression::Literal(_) => true,
             QueryExpression::Arithmetic { left, right, .. }
             | QueryExpression::Coalesce(left, right) => simple(left) && simple(right),
-            QueryExpression::Lowercase(v) | QueryExpression::TextLength(v) => simple(v),
+            QueryExpression::Transform(_, v)
+            | QueryExpression::Lowercase(v)
+            | QueryExpression::TextLength(v) => simple(v),
         },
     }
 }

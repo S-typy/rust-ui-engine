@@ -44,7 +44,7 @@ impl DataFormFactories {
         self.entries.insert(name.into(), factory);
         Ok(())
     }
-    pub(super) fn resolve(
+    pub fn resolve(
         &self,
         name: &str,
         field: &FieldSchema,

@@ -224,7 +224,7 @@ fn form_kind(kind: &ElementKind) -> String {
         ElementKind::ExpressionBuilder(v)=>("ExpressionBuilder",crate::query_builder::code(v)),
         ElementKind::NotificationCenter(_) => ("NotificationCenter",crate::notifications::code(kind)),
         ElementKind::LoadingOverlay(_) => ("LoadingOverlay",crate::notifications::code(kind)),
-        ElementKind::GridControl(grid) => ("GridControl", crate::grid_extensions::code(grid)),
+        ElementKind::GridControl(grid) => ("GridControl", format!("Box::new({})",crate::grid_extensions::code(grid))),
         ElementKind::PropertyGrid(value) => ("PropertyGrid", crate::property_grid::code(value)),
         ElementKind::DataForm(form) => ("DataForm",format!("rust_desktop_ui_xaml::DataFormDefinition {{ data_source:{:?}.into(),row_key:{},label_width:{:?},row_gap:{:?},is_read_only:{},fields:vec![{}] }}",form.data_source,form.row_key,form.label_width,form.row_gap,form.is_read_only,form.fields.iter().map(|f|format!("rust_desktop_ui_xaml::DataFormFieldDefinition {{ field:{:?}.into(),label:{},visible:{},is_read_only:{},editor:{:?}.into() }}",f.field,optional_string(&f.label),f.visible,f.is_read_only,f.editor)).collect::<Vec<_>>().join(","))),
         ElementKind::Gauge(value) => ("Gauge",crate::gauge::code(value)),

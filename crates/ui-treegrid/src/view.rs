@@ -187,7 +187,13 @@ impl TreeGridView {
         frame.scene.fill(header, grid.palette.header);
         for visible in &frame.columns {
             let column = &grid.columns[visible.index];
-            let cell = Rect::new(visible.bounds.x, bounds.y, column.width, header_height);
+            let cell = grid.track_cell(
+                column.id,
+                visible.bounds.x,
+                bounds.y,
+                visible.bounds.width,
+                header_height,
+            );
             let Some(clip) = cell
                 .intersection(visible.clip)
                 .and_then(|rect| rect.intersection(header))
@@ -250,6 +256,9 @@ impl TreeGridView {
 }
 
 fn visible_columns(grid: &TreeGrid, bounds: Rect) -> Vec<VisibleColumn> {
+    if let Some(tracks) = &grid.tracks {
+        return tracks.visible(grid, bounds);
+    }
     let mut columns = Vec::new();
     let pinned_width = (grid.pinned_width as f32).min(bounds.width);
     let regular_clip = Rect::new(
@@ -372,7 +381,13 @@ fn paint_row(
     };
     for visible in &frame.columns {
         let column = &grid.columns[visible.index];
-        let cell = Rect::new(visible.bounds.x, bounds.y, column.width, bounds.height);
+        let cell = grid.track_cell(
+            column.id,
+            visible.bounds.x,
+            bounds.y,
+            visible.bounds.width,
+            bounds.height,
+        );
         let Some(clip) = cell
             .intersection(visible.clip)
             .and_then(|rect| rect.intersection(body))

@@ -580,6 +580,14 @@ fn accepted_changes(
     changes
 }
 
+impl DataQuery {
+    /// Stable keys in display order over the supplied local snapshot.
+    pub fn row_keys(&self, table: &DataTable) -> Result<Vec<i64>, DataError> {
+        let (visible, _) = query_index(table, self)?;
+        Ok(visible.into_iter().map(|i| table.rows()[i].key).collect())
+    }
+}
+
 pub(crate) type QueryIndex = (Vec<usize>, HashMap<i64, usize>);
 
 pub(crate) fn query_index(table: &DataTable, query: &DataQuery) -> Result<QueryIndex, DataError> {
