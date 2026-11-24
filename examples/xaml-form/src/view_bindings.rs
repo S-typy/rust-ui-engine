@@ -35,6 +35,8 @@ fn property(name: &str) -> Result<BindingProperty, String> {
         "IsIndeterminate" => BindingProperty::IsIndeterminate,
         "SelectedKey" => BindingProperty::SelectedKey,
         "SelectedValue" => BindingProperty::SelectedValue,
+        "IsCriteriaEnabled" => BindingProperty::IsCriteriaEnabled,
+        "Criteria" => BindingProperty::Criteria,
         "FilterText" => BindingProperty::FilterText,
         "SelectedValues" | "SelectedKeys" => BindingProperty::SelectedValues,
         "ItemsSource" => BindingProperty::ItemsSource,

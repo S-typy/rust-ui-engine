@@ -584,6 +584,11 @@ impl WindowState {
             }
             let clipboard = clipboard.as_mut().expect("clipboard initialized");
             match request {
+                ClipboardRequest::CopyTable { text, html } => {
+                    if let Err(err) = clipboard.set_html(html, Some(text)) {
+                        eprintln!("Clipboard table copy failed: {err}");
+                    }
+                }
                 ClipboardRequest::Copy(text) => {
                     if let Err(error) = clipboard.set_text(text) {
                         eprintln!("Clipboard copy failed: {error}");

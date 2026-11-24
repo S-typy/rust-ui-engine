@@ -77,6 +77,7 @@ impl SnapshotSource {
         field: &str,
         expected: &CellValue,
         value: CellValue,
+        validator: Option<&records::Validator>,
     ) -> Result<bool, String> {
         let auxiliary = self
             .unbound
@@ -85,7 +86,12 @@ impl SnapshotSource {
             .map(|(_, u)| u);
         let (target, member) =
             auxiliary.map_or((&self.handle, field), |u| (&u.source, u.member.as_str()));
-        if !self.formulas.is_empty()
+        let mut row_check = None;
+        if self.parent_field.is_some()
+            || self.relation.is_some()
+            || !self.filters.is_empty()
+            || validator.is_some()
+            || !self.formulas.is_empty()
             || !self.unbound.is_empty()
             || !self.presentation.summaries.is_empty()
             || !self.presentation.custom_summaries.is_empty()
@@ -96,6 +102,16 @@ impl SnapshotSource {
                 .table()
                 .edited(row, member, expected, &value)
                 .map_err(|e| e.to_string())?;
+            if auxiliary.is_none()
+                && let Some(check) = validator
+            {
+                let record = edited
+                    .row(row)
+                    .ok_or_else(|| "Missing edited record".to_owned())?;
+                check(edited.schema(), record)
+                    .map_err(|issue| format!("{}: {}", issue.field, issue.message))?;
+                row_check = source.table().row(row).cloned();
+            }
             drop(source);
             let mut candidate = self.clone();
             let base = self
@@ -114,10 +130,7 @@ impl SnapshotSource {
                 Some((target, &edited)),
             )
             .map_err(|e| e.to_string())?;
-            candidate.keys = candidate
-                .data_query
-                .row_keys(&candidate.table)
-                .map_err(|e| e.to_string())?;
+            candidate.keys = candidate.filtered_keys(None).map_err(|e| e.to_string())?;
             candidate.positions = candidate
                 .keys
                 .iter()
@@ -126,6 +139,22 @@ impl SnapshotSource {
                 .collect();
             candidate.reload_choices().map_err(|e| e.to_string())?;
             Projection::build(&candidate, &self.projection).map_err(|e| e.to_string())?;
+        }
+        if let Some(old) = row_check {
+            use rust_desktop_ui_data::DataWrite;
+            return target
+                .try_borrow_mut()
+                .map_err(|_| "Grid source is busy")?
+                .write_batch(&[
+                    DataWrite::CheckRow(old),
+                    DataWrite::Update {
+                        key: row,
+                        field: member.into(),
+                        expected: expected.clone(),
+                        value,
+                    },
+                ])
+                .map_err(|e| e.to_string());
         }
         target
             .try_borrow_mut()

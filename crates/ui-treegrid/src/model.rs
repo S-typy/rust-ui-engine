@@ -139,6 +139,7 @@ enum ColumnDrag {
     },
     Header {
         id: ColumnId,
+        extend: bool,
         start: Point,
         moved: bool,
     },
@@ -154,6 +155,7 @@ pub struct TreeGrid {
     pub palette: GridPalette,
     /// Flat tables omit the hierarchy gutter; hierarchical geometry is the default.
     pub flat_presentation: bool,
+    pub(crate) lanes: usize,
     pub(crate) columns: Vec<GridColumn>,
     pub(crate) config: GridConfig,
     pub(crate) regular: Vec<usize>,
@@ -254,6 +256,7 @@ impl TreeGrid {
         let mut grid = Self {
             palette: GridPalette::default(),
             flat_presentation: false,
+            lanes: 1,
             columns,
             config,
             regular: Vec::new(),
@@ -320,6 +323,11 @@ impl TreeGrid {
     }
     pub fn focused_column(&self) -> Option<ColumnId> {
         self.focused_column
+    }
+    /// Restore logical multi-selection after rebuilding a projection. The caller
+    /// supplies surviving record keys, including records temporarily filtered out.
+    pub fn retain_selected_records(&mut self, keys: impl IntoIterator<Item = RowKey>) {
+        self.selected.extend(keys);
     }
     pub fn selected(&self) -> &HashSet<RowKey> {
         &self.selected
@@ -403,6 +411,20 @@ impl TreeGrid {
         Ok(())
     }
 
+    /// Number of records sharing one horizontal strip in a wrapping view.
+    pub fn set_record_lanes(&mut self, lanes: usize) {
+        self.lanes = lanes.clamp(1, 64);
+        self.clamp_scroll();
+    }
+    pub fn record_lanes(&self) -> usize {
+        self.lanes
+    }
+    pub fn content_height(&self) -> f64 {
+        self.row_count().div_ceil(self.lanes) as f64 * f64::from(self.config.row_height)
+    }
+    pub fn record_top(&self, index: usize) -> f64 {
+        (index / self.lanes) as f64 * f64::from(self.config.row_height)
+    }
     pub fn set_viewport(&mut self, viewport: Size) -> Result<(), GridError> {
         if !viewport.is_valid() {
             return Err(GridError::InvalidGeometry(
@@ -445,7 +467,7 @@ impl TreeGrid {
         self.set_viewport(Size::new(bounds.width, bounds.height))?;
         let frame = TreeGridView::paint(self, source, bounds)?;
         let height = f64::from(self.config.row_height);
-        let index = (self.scroll_y / height).floor() as usize;
+        let index = (self.scroll_y / height).floor() as usize * self.lanes;
         self.viewport_anchor = Some(crate::TreeScrollAnchor {
             key: frame
                 .rows
@@ -486,6 +508,7 @@ impl TreeGrid {
                 self.drag = Some(ColumnDrag::Header {
                     id,
                     start: point,
+                    extend: modifiers.shift,
                     moved: false,
                 })
             }
@@ -526,7 +549,10 @@ impl TreeGrid {
         let Some(drag) = self.drag.take() else {
             return Ok(false);
         };
-        if let ColumnDrag::Header { id, moved, .. } = drag {
+        if let ColumnDrag::Header {
+            id, moved, extend, ..
+        } = drag
+        {
             if moved {
                 let before = match frame.hit_test(point) {
                     Some(GridHitKind::Header(column) | GridHitKind::ResizeColumn(column)) => {
@@ -536,7 +562,7 @@ impl TreeGrid {
                 };
                 self.reorder_column(id, before)?;
             } else {
-                self.toggle_sort(source, id)?;
+                self.toggle_header_sort(source, id, extend)?;
             }
         }
         Ok(true)
@@ -1196,17 +1222,33 @@ impl TreeGrid {
         source: &mut impl TreeDataSource,
         column: ColumnId,
     ) -> Result<(), GridError> {
+        self.toggle_header_sort(source, column, false)
+    }
+
+    fn toggle_header_sort(
+        &mut self,
+        source: &mut impl TreeDataSource,
+        column: ColumnId,
+        extend: bool,
+    ) -> Result<(), GridError> {
         self.require_column(column)?;
-        let direction =
-            if self.query.sort.first().is_some_and(|sort| {
-                sort.column == column && sort.direction == SortDirection::Ascending
-            }) {
-                SortDirection::Descending
-            } else {
-                SortDirection::Ascending
-            };
         let mut query = self.query.clone();
-        query.sort = vec![SortOrder { column, direction }];
+        let previous = query.sort.iter().position(|sort| sort.column == column);
+        let direction = if previous.is_some_and(|i| {
+            (extend || i == 0) && query.sort[i].direction == SortDirection::Ascending
+        }) {
+            SortDirection::Descending
+        } else {
+            SortDirection::Ascending
+        };
+        let order = SortOrder { column, direction };
+        if !extend {
+            query.sort = vec![order];
+        } else if let Some(index) = previous {
+            query.sort[index] = order;
+        } else {
+            query.sort.push(order);
+        }
         self.apply_query(source, query)
     }
 
@@ -1445,14 +1487,12 @@ impl TreeGrid {
         let height = f64::from((self.viewport.height - self.config.header_height).max(0.0));
         let (regular, fixed) = self.column_extents();
         let width = (f64::from(self.viewport.width) - fixed).max(0.0);
-        self.scroll_y = self
-            .scroll_y
-            .min((self.row_count() as f64 * f64::from(self.config.row_height) - height).max(0.0));
+        self.scroll_y = self.scroll_y.min((self.content_height() - height).max(0.0));
         self.scroll_x = self.scroll_x.min((regular - width).max(0.0));
     }
 
     fn ensure_visible(&mut self, index: usize) {
-        let top = index as f64 * f64::from(self.config.row_height);
+        let top = self.record_top(index);
         let bottom = top + f64::from(self.config.row_height);
         let height = f64::from((self.viewport.height - self.config.header_height).max(0.0));
         if top < self.scroll_y {

@@ -606,6 +606,9 @@ impl DesktopApp for CompositionDemo {
                     rust_desktop_ui_controls::ClipboardRequest::Copy(s) => {
                         ClipboardRequest::Copy(s)
                     }
+                    rust_desktop_ui_controls::ClipboardRequest::CopyTable { text, html } => {
+                        ClipboardRequest::CopyTable { text, html }
+                    }
                     rust_desktop_ui_controls::ClipboardRequest::Paste => ClipboardRequest::Paste,
                 })
                 .collect(),

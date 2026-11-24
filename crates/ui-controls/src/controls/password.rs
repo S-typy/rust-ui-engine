@@ -327,6 +327,9 @@ impl Controls {
     }
     /// Clipboard insertion has a distinct policy from typed text.
     pub fn paste_input(&mut self, text: &str) -> Result<(), ControlError> {
+        if self.grid_workflow_paste(text)? {
+            return Ok(());
+        }
         if let Some(id) = self
             .runtime
             .focused()

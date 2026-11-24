@@ -435,3 +435,40 @@ fn grid_alignment_preserves_intrinsic_height_while_stretch_and_height_binding_fi
         }
     }
 }
+
+#[test]
+fn one_mounted_auto_grid_switches_between_collection_and_sqlite_and_writes_one_batch() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let (_, sources) = data_model::model().unwrap();
+    let grid = ui
+        .grid_control(
+            ui.root(),
+            sources[0].1.clone(),
+            Default::default(),
+            Default::default(),
+        )
+        .unwrap();
+    let key = data_model::FIRST_KEY;
+    ui.set_grid_selected_key(grid, Some(key)).unwrap();
+    ui.replace_grid_source(grid, sources[1].1.clone()).unwrap();
+    assert_eq!(ui.grid_selected_key(grid), Some(key));
+    let old = sources[1].1.borrow().revision();
+    ui.begin_grid_row_edit(grid, key).unwrap();
+    ui.set_grid_draft_cell(grid, "Quantity", CellValue::Integer(27))
+        .unwrap();
+    ui.set_grid_draft_cell(grid, "Product", CellValue::Text("Проверка записи".into()))
+        .unwrap();
+    ui.commit_grid_record(grid).unwrap();
+    assert_eq!(sources[1].1.borrow().revision(), old + 1);
+    sources[1].1.borrow_mut().refresh().unwrap();
+    assert_eq!(
+        sources[1].1.borrow().table().value(key, "Quantity"),
+        Some(&CellValue::Integer(27))
+    );
+    ui.replace_grid_source(grid, sources[0].1.clone()).unwrap();
+    assert_eq!(ui.grid_selected_key(grid), Some(key));
+    assert_ne!(
+        sources[0].1.borrow().table().value(key, "Quantity"),
+        Some(&CellValue::Integer(27))
+    );
+}

@@ -270,10 +270,10 @@ pub use choices::{CheckPresentation, CheckState, RadioChoiceGroup};
 pub use flyout::{Flyout, FlyoutPlacement};
 pub use grid::{
     DataSourceHandle, GridBand, GridBandAddress, GridBandChange, GridBandItem, GridCellEditor,
-    GridCellTemplate, GridChoiceEditor, GridColumnArrangement, GridControlColumn,
+    GridCellRange, GridCellTemplate, GridChoiceEditor, GridColumnArrangement, GridControlColumn,
     GridControlSettings, GridCustomSummary, GridDetailSettings, GridLookupRequest,
-    GridPresentationSettings, GridRowKind, GridSummary, GridTextCellEditor, GridUnboundColumn,
-    GridViewMode,
+    GridPresentationSettings, GridRecordEvent, GridRelation, GridRowDraft, GridRowIssue,
+    GridRowKind, GridSummary, GridTextCellEditor, GridTransfer, GridUnboundColumn, GridViewMode,
 };
 pub use images::{ImageSettings, ImageStretch};
 pub use memo::{MemoEdit, MemoEditSettings};
@@ -511,6 +511,7 @@ pub struct ScrollViewer {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClipboardRequest {
     Copy(String),
+    CopyTable { text: String, html: String },
     Paste,
 }
 
@@ -3115,6 +3116,9 @@ impl Controls {
     }
     /// Insert user text or paste. Over-limit input is rejected as a whole.
     pub fn text_input(&mut self, text: &str) -> Result<(), ControlError> {
+        if self.grid_workflow_text(text)? {
+            return Ok(());
+        }
         if self.runtime.drag_session().is_some() {
             self.suppressed_key_text = None;
             return Ok(());

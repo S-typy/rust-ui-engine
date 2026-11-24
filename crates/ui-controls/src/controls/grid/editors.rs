@@ -765,7 +765,7 @@ impl Controls {
         grid.model
             .begin_edit(&grid.source, row_key(key), ColumnId(index as u64))
             .map_err(error)?;
-        grid.selected_key = Some(key);
+        grid.set_current(Some(key));
         grid.editor = editor;
         grid.error = None;
         grid.typed_editor = Some(TypedEditor {
@@ -777,6 +777,7 @@ impl Controls {
             recipe,
             schema,
         });
+        grid.records.emit(GridRecordEvent::Begin(key));
         grid.session = Some(CellSession {
             row: key,
             field,

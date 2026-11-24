@@ -120,11 +120,25 @@ pub(super) fn validate(grid: &GridControlDefinition) -> Result<(), String> {
         }
         parent = Some(row);
     }
-    if let Some(detail) = &grid.detail {
+    let mut names = std::collections::HashSet::new();
+    if grid.relations.len() > 32
+        || grid
+            .relations
+            .iter()
+            .any(|(n, _)| !valid_name(n) || !names.insert(n))
+    {
+        return Err("Relations require unique names and at most 32 entries".into());
+    }
+    for (detail, inline) in grid
+        .detail
+        .iter()
+        .map(|d| (d, true))
+        .chain(grid.relations.iter().map(|(_, d)| (d, false)))
+    {
         if !valid_name(&detail.data_source)
             || !field(&detail.master_field)
             || !field(&detail.foreign_field)
-            || detail.columns.is_empty()
+            || (inline && detail.columns.is_empty())
         {
             return Err("GridDetail requires a registered DataSource, MasterField, ForeignField and explicit columns".into());
         }
@@ -136,7 +150,7 @@ pub(super) fn validate(grid: &GridControlDefinition) -> Result<(), String> {
         {
             return Err("Calculated fields require a master GridColumn".into());
         }
-        if !grid.columns.is_empty() && detail.columns.len() > grid.columns.len() {
+        if inline && !grid.columns.is_empty() && detail.columns.len() > grid.columns.len() {
             return Err("GridDetail cannot have more columns than its master grid".into());
         }
     }
@@ -231,6 +245,7 @@ pub(super) fn is_property(name: &str) -> bool {
         name,
         "GridControl.Summaries"
             | "GridControl.Bands"
+            | "GridControl.Relations"
             | "GridControl.Detail"
             | "GridControl.CellTemplates"
             | "GridControl.Editors"
@@ -284,6 +299,7 @@ pub(super) fn parse_property(
         "GridControl.Summaries" => ("GridSummary", 16),
         "GridControl.Bands" => ("GridBand", 16),
         "GridControl.Detail" => ("GridDetail", 1),
+        "GridControl.Relations" => ("GridRelation", 32),
         "GridControl.CellTemplates" => ("GridCellTemplate", 64),
         "GridControl.Editors" => ("GridEditor", 64),
         _ => unreachable!(),
@@ -389,8 +405,12 @@ pub(super) fn parse_property(
                     factory: item.attribute("Factory").unwrap_or("Auto").into(),
                 });
             }
-            "GridDetail" => {
-                attributes(item, &["DataSource", "MasterField", "ForeignField"])?;
+            "GridDetail" | "GridRelation" => {
+                if expected == "GridRelation" {
+                    attributes(item, &["Name", "DataSource", "MasterField", "ForeignField"])?;
+                } else {
+                    attributes(item, &["DataSource", "MasterField", "ForeignField"])?;
+                }
                 let mut detail = GridDetailDefinition {
                     data_source: value(item, "DataSource"),
                     master_field: value(item, "MasterField"),
@@ -408,7 +428,11 @@ pub(super) fn parse_property(
                     count_metadata(column, depth + 2, count)?;
                     detail.columns.push(parse_column(column)?);
                 }
-                grid.detail = Some(detail);
+                if expected == "GridRelation" {
+                    grid.relations.push((value(item, "Name"), detail));
+                } else {
+                    grid.detail = Some(detail);
+                }
             }
             _ => unreachable!(),
         }
@@ -520,15 +544,40 @@ pub(super) fn code(grid: &GridControlDefinition) -> String {
         .map(|r| format!("vec![{}]", band_code(r)))
         .collect::<Vec<_>>()
         .join(",");
-    let detail = grid.detail.as_ref().map(|d|format!("Some(rust_desktop_ui_xaml::GridDetailDefinition {{ data_source:{:?}.into(),master_field:{:?}.into(),foreign_field:{:?}.into(),columns:{} }})",d.data_source,d.master_field,d.foreign_field,columns(&d.columns))).unwrap_or_else(||"None".into());
+    let emit_detail = |d: &GridDetailDefinition| {
+        format!(
+            "rust_desktop_ui_xaml::GridDetailDefinition {{ data_source:{:?}.into(),master_field:{:?}.into(),foreign_field:{:?}.into(),columns:{} }}",
+            d.data_source,
+            d.master_field,
+            d.foreign_field,
+            columns(&d.columns)
+        )
+    };
+    let detail = grid
+        .detail
+        .as_ref()
+        .map_or_else(|| "None".into(), |d| format!("Some({})", emit_detail(d)));
+    let relations = grid
+        .relations
+        .iter()
+        .map(|(n, d)| format!("({n:?}.into(),{})", emit_detail(d)))
+        .collect::<Vec<_>>()
+        .join(",");
     let templates = grid.cell_templates.iter().map(|t|format!("rust_desktop_ui_xaml::GridCellTemplateDefinition {{ field:{:?}.into(),prefix:{:?}.into(),suffix:{:?}.into(),icon:{},emphasis:{} }}",t.field,t.prefix,t.suffix,t.icon.map(|icon|format!("Some(rust_desktop_ui_xaml::IconSymbol::{icon:?})")).unwrap_or_else(||"None".into()),t.emphasis)).collect::<Vec<_>>().join(",");
     let editors = grid.editors.iter().map(|e|format!("rust_desktop_ui_xaml::GridEditorDefinition {{ field:{:?}.into(),factory:{:?}.into(),mask:{},command:{},when:{},choice:{} }}",e.field,e.factory,optional(&e.mask),optional(&e.command),e.when.as_ref().map(|(f,v)|format!("Some(({f:?}.into(),{v:?}.into()))")).unwrap_or_else(||"None".into()),e.choice.as_ref().map(|(s,k,d)|format!("Some(({s:?}.into(),{k:?}.into(),{}))",strings(d))).unwrap_or_else(||"None".into()))).collect::<Vec<_>>().join(",");
     format!(
-        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},hierarchical_groups:{},group_sort_summary:{:?},group_descending:{},group_footer:{},show_group_panel:{},stacked_fields:vec![{stacks}],right_pinned_fields:{right},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],band_rows:vec![{band_rows}],detail:{detail},cell_templates:vec![{templates}],editors:vec![{editors}] }}",
+        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), criteria:{:?}.into(),criteria_disabled:{}, show_auto_filter_row:{},show_row_selector:{},parent_field:{}, selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},hierarchical_groups:{},group_sort_summary:{:?},group_descending:{},group_footer:{},show_group_panel:{},stacked_fields:vec![{stacks}],right_pinned_fields:{right},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],band_rows:vec![{band_rows}],detail:{detail},relations:vec![{relations}],cell_templates:vec![{templates}],editors:vec![{editors}] }}",
         grid.data_source,
         columns(&grid.columns),
         grid.is_read_only,
         grid.filter_text,
+        grid.criteria,
+        grid.criteria_disabled,
+        grid.show_auto_filter_row,
+        grid.show_row_selector,
+        grid.parent_field
+            .as_ref()
+            .map_or_else(|| "None".to_string(), |f| format!("Some({f:?}.into())")),
         optional(&grid.selected_value),
         grid.view,
         grid.hierarchical_groups,

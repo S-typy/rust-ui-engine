@@ -11,6 +11,7 @@ pub(crate) fn key(key: &NativeKey) -> Key {
             NamedKey::Alt => Key::Alt,
             NamedKey::F10 => Key::F10,
             NamedKey::F2 => Key::F2,
+            NamedKey::F3 => Key::F3,
             NamedKey::PageUp => Key::PageUp,
             NamedKey::PageDown => Key::PageDown,
             NamedKey::Insert => Key::Insert,

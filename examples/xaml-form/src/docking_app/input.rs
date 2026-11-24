@@ -65,6 +65,9 @@ impl DockWindow {
                     rust_desktop_ui_controls::ClipboardRequest::Copy(text) => {
                         platform::ClipboardRequest::Copy(text)
                     }
+                    rust_desktop_ui_controls::ClipboardRequest::CopyTable { text, html } => {
+                        platform::ClipboardRequest::CopyTable { text, html }
+                    }
                     rust_desktop_ui_controls::ClipboardRequest::Paste => {
                         platform::ClipboardRequest::Paste
                     }

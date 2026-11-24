@@ -2728,6 +2728,7 @@ dependencies = [
  "rust-desktop-ui-core",
  "rust-desktop-ui-render-wgpu",
  "windows",
+ "windows-core",
  "windows-sys 0.61.2",
  "winit",
 ]

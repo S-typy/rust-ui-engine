@@ -20,6 +20,8 @@ pub enum BindingProperty {
     Query,
     Route,
     FilterText,
+    Criteria,
+    IsCriteriaEnabled,
     Header,
     IsExpanded,
     SelectedIndex,
@@ -1394,6 +1396,12 @@ impl ControlBindings {
                 }),
             )
             .map_err(control_error)?;
+        } else if binding.target.property == BindingProperty::Criteria {
+            ui.chain_grid_criteria_validator(
+                binding.target.widget,
+                EditorValidator::new(move |text| validate(DataValue::String(text.to_owned()))),
+            )
+            .map_err(control_error)?;
         } else if binding.target.property == BindingProperty::FilterText {
             ui.chain_grid_filter_validator(
                 binding.target.widget,
@@ -1720,6 +1728,14 @@ fn read_property(
             .search_query(id)
             .map(|query| DataValue::String(query.into()))
             .ok_or_else(|| invalid("Query requires SearchBox")),
+        BindingProperty::IsCriteriaEnabled => ui
+            .grid_criteria_enabled(id)
+            .map(DataValue::Bool)
+            .ok_or_else(|| invalid("IsCriteriaEnabled requires GridControl")),
+        BindingProperty::Criteria => ui
+            .grid_criteria(id)
+            .map(DataValue::String)
+            .ok_or_else(|| invalid("Criteria requires GridControl")),
         BindingProperty::FilterText => ui
             .grid_filter(id)
             .map(DataValue::from)
@@ -2075,6 +2091,12 @@ fn write_property(
             .map_err(control_error),
         BindingProperty::Query => ui
             .set_search_query(id, string(value)?)
+            .map_err(control_error),
+        BindingProperty::IsCriteriaEnabled => ui
+            .set_grid_criteria_enabled(id, boolean(value)?)
+            .map_err(control_error),
+        BindingProperty::Criteria => ui
+            .set_grid_criteria(id, string(value)?)
             .map_err(control_error),
         BindingProperty::FilterText => ui
             .set_grid_filter(id, string(value)?)

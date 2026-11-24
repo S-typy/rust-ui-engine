@@ -50,7 +50,9 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
     let proxy = event_loop.create_proxy();
     let smoke_deadline = options.smoke_test.then(|| Instant::now() + SMOKE_TIMEOUT);
     let mut host = Host {
-        app,
+        app: std::rc::Rc::new(std::cell::RefCell::new(app)),
+        #[cfg(windows)]
+        drop_target: None,
         options,
         proxy,
         window: None,
@@ -83,7 +85,9 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
 }
 
 struct Host<A> {
-    app: A,
+    app: std::rc::Rc<std::cell::RefCell<A>>,
+    #[cfg(windows)]
+    drop_target: Option<crate::ole_drag::Registration>,
     options: RunOptions,
     proxy: EventLoopProxy<HostEvent>,
     app_waker: Option<AppWaker>,
@@ -124,6 +128,10 @@ impl<A> Drop for Host<A> {
 }
 
 impl<A: DesktopApp> Host<A> {
+    // Drop the application borrow before delivering any resulting native effects.
+    fn with_app<R>(&self, f: impl FnOnce(&mut A) -> R) -> R {
+        f(&mut self.app.borrow_mut())
+    }
     fn fail(&mut self, event_loop: &ActiveEventLoop, error: impl ToString) {
         self.failure = Some(error.to_string());
         event_loop.exit();
@@ -145,7 +153,7 @@ impl<A: DesktopApp> Host<A> {
 
     fn geometry_changed(&mut self) {
         let Some(window) = &self.window else { return };
-        desktop::notify_geometry(window, &mut self.app);
+        desktop::notify_geometry(window, &mut *self.app.borrow_mut());
     }
 
     fn drain_capture_loss(&mut self, event_loop: &ActiveEventLoop) {
@@ -154,7 +162,7 @@ impl<A: DesktopApp> Host<A> {
             .as_ref()
             .is_some_and(|capture| capture.take_lost())
         {
-            match self.app.pointer_capture_lost() {
+            match self.with_app(|app| app.pointer_capture_lost()) {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => self.fail(event_loop, error),
             }
@@ -163,21 +171,33 @@ impl<A: DesktopApp> Host<A> {
     }
 
     fn dispatch(&mut self, event_loop: &ActiveEventLoop, event: PlatformEvent) {
-        let protected_before = self.app.ime_is_password();
-        match self.app.event(event) {
+        let protected_before = self.app.borrow().ime_is_password();
+        match self.with_app(|app| app.event(event)) {
             Ok(response) => self.effects(event_loop, response),
             Err(error) => self.fail(event_loop, error),
         }
         self.sync_ime(event_loop);
         // Publish protected focus before the next queued key, not at the next
         // GPU frame. Screen-reader keyboard echo must see the password role.
-        if protected_before != self.app.ime_is_password()
+        #[cfg(windows)]
+        {
+            let request = self.app.borrow_mut().take_native_text_drag();
+            if let Some(request) = request {
+                let moved = crate::ole_drag::start(&request).unwrap_or_else(|e| {
+                    eprintln!("Text drag failed: {e}");
+                    false
+                });
+                self.app.borrow_mut().native_text_drag_finished(moved);
+                self.redraw();
+            }
+        }
+        if protected_before != self.app.borrow().ime_is_password()
             && let Some(window) = &self.window
             && let Err(error) = self.publish_accessibility(window.scale_factor() as f32)
         {
             self.fail(event_loop, error);
         }
-        if let Some(direction) = self.app.take_resize_request()
+        if let Some(direction) = self.app.borrow_mut().take_resize_request()
             && let Some(window) = &self.window
             && let Err(error) = crate::begin_resize(window, direction)
         {
@@ -187,19 +207,23 @@ impl<A: DesktopApp> Host<A> {
 
     fn sync_ime(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(window) = &self.window {
-            window.set_ime_purpose(if self.app.ime_is_password() {
+            window.set_ime_purpose(if self.app.borrow().ime_is_password() {
                 winit::window::ImePurpose::Password
             } else {
                 winit::window::ImePurpose::Normal
             });
         }
         let allowed = self.focused
-            && crate::ime::composition_allowed(self.app.ime_is_password())
-            && crate::ime::valid_cursor(self.app.ime_target(), self.app.ime_cursor()).is_some();
-        let changed = self.ime.set_target(self.app.ime_target(), allowed);
+            && crate::ime::composition_allowed(self.app.borrow().ime_is_password())
+            && crate::ime::valid_cursor(
+                self.app.borrow().ime_target(),
+                self.app.borrow().ime_cursor(),
+            )
+            .is_some();
+        let changed = self.ime.set_target(self.app.borrow().ime_target(), allowed);
         let cancelled = self
             .ime
-            .cancelled_by_editor(self.app.ime_composition_active());
+            .cancelled_by_editor(self.app.borrow().ime_composition_active());
         if changed || cancelled {
             if let Some(window) = &self.window {
                 window.set_ime_allowed(false);
@@ -207,7 +231,7 @@ impl<A: DesktopApp> Host<A> {
                     window.set_ime_allowed(true);
                 }
             }
-            match self.app.event(PlatformEvent::ImeCancel) {
+            match self.with_app(|app| app.event(PlatformEvent::ImeCancel)) {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => self.fail(event_loop, error),
             }
@@ -215,7 +239,7 @@ impl<A: DesktopApp> Host<A> {
         // Popup and layout changes must reach native hit testing before the next
         // queued mouse message, not only when a later redraw happens to arrive.
         if let Some(chrome) = &self.chrome {
-            chrome.update(self.app.title_bar());
+            chrome.update(self.app.borrow().title_bar());
         }
     }
 
@@ -240,13 +264,18 @@ impl<A: DesktopApp> Host<A> {
             }
             let clipboard = self.clipboard.as_mut().expect("clipboard initialized");
             match request {
+                ClipboardRequest::CopyTable { text, html } => {
+                    if let Err(err) = clipboard.set_html(html, Some(text)) {
+                        eprintln!("Clipboard table copy failed: {err}");
+                    }
+                }
                 ClipboardRequest::Copy(text) => {
                     if let Err(error) = clipboard.set_text(text) {
                         eprintln!("Clipboard copy failed: {error}");
                     }
                 }
                 ClipboardRequest::Paste => match clipboard.get_text() {
-                    Ok(text) => match self.app.event(PlatformEvent::Paste(text)) {
+                    Ok(text) => match self.with_app(|app| app.event(PlatformEvent::Paste(text))) {
                         Ok(response) => {
                             if response.redraw {
                                 self.redraw();
@@ -307,11 +336,12 @@ impl<A: DesktopApp> Host<A> {
             },
             |chrome| chrome.state(&window, self.focused),
         );
-        self.app.window_chrome_changed(chrome);
-        if let Err(error) = self
+        self.app.borrow_mut().window_chrome_changed(chrome);
+        let update = self
             .app
-            .update(Size::new(logical.width, logical.height), scale as f32)
-        {
+            .borrow_mut()
+            .update(Size::new(logical.width, logical.height), scale as f32);
+        if let Err(error) = update {
             self.fail(event_loop, error);
             return;
         }
@@ -320,7 +350,10 @@ impl<A: DesktopApp> Host<A> {
             return;
         }
         self.sync_ime(event_loop);
-        let caret = crate::ime::valid_cursor(self.app.ime_target(), self.app.ime_cursor());
+        let caret = crate::ime::valid_cursor(
+            self.app.borrow().ime_target(),
+            self.app.borrow().ime_cursor(),
+        );
         if let Some(caret) = caret {
             window.set_ime_cursor_area(
                 LogicalPosition::new(f64::from(caret.x), f64::from(caret.y)),
@@ -333,29 +366,35 @@ impl<A: DesktopApp> Host<A> {
         // Opaque GPU swapchains cover DWM's caption glyph pixels. Paint our own
         // vectors at the native button bounds while Windows retains hit testing,
         // accessibility and all system actions. Ordinary windows avoid the copy.
-        let decorated_scene = self.chrome.as_ref().map(|chrome| {
-            let mut scene = self.app.scene().clone();
-            chrome.paint(&mut scene, self.focused);
-            scene
-        });
-        let scene = decorated_scene.as_ref().unwrap_or_else(|| self.app.scene());
-        match renderer.render(scene, scale as f32) {
+        let outcome = {
+            let app = self.app.borrow();
+            let decorated_scene = self.chrome.as_ref().map(|chrome| {
+                let mut scene = app.scene().clone();
+                chrome.paint(&mut scene, self.focused);
+                scene
+            });
+            renderer.render(
+                decorated_scene.as_ref().unwrap_or_else(|| app.scene()),
+                scale as f32,
+            )
+        };
+        match outcome {
             Ok(RenderOutcome::Presented { .. }) => {
                 self.frames += 1;
                 self.recoveries = 0;
                 self.retry_at = None;
                 let stats = renderer.stats();
-                self.app.frame_presented(stats);
+                self.app.borrow_mut().frame_presented(stats);
                 let title = if self.options.show_render_stats {
                     format!(
                         "{} | frames={} glyphs={} missing={}",
-                        self.app.title(),
+                        self.app.borrow().title(),
                         self.frames,
                         stats.glyphs,
                         stats.missing_glyphs
                     )
                 } else {
-                    self.app.title()
+                    self.app.borrow().title()
                 };
                 window.set_title(&title);
                 if self.options.smoke_test {
@@ -450,6 +489,7 @@ impl<A: DesktopApp> Host<A> {
         }
         self.wake_at = self
             .app
+            .borrow()
             .wake_after()
             .map(|delay| Instant::now() + delay.max(Duration::from_millis(1)));
     }
@@ -458,7 +498,7 @@ impl<A: DesktopApp> Host<A> {
         let Some(adapter) = &mut self.adapter else {
             return Ok(());
         };
-        let app = &mut self.app;
+        let mut app = self.app.borrow_mut();
         let previous = &mut self.accessible_nodes;
         let mut error = None;
         adapter.update_if_active(|| match previous.update(app.accessibility(scale)) {
@@ -472,18 +512,23 @@ impl<A: DesktopApp> Host<A> {
     }
 }
 
-impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
+impl<A: DesktopApp + 'static> ApplicationHandler<HostEvent> for Host<A> {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
         }
         let mut attributes = Window::default_attributes()
             .with_active(self.options.activate)
-            .with_title(self.app.title())
+            .with_title(self.app.borrow().title())
             .with_inner_size(LogicalSize::new(self.options.width, self.options.height))
             .with_visible(false);
         if let Some(size) = self.options.min_size {
             attributes = attributes.with_min_inner_size(LogicalSize::new(size.width, size.height));
+        }
+        #[cfg(windows)]
+        if self.app.borrow().accepts_native_text_drops() {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attributes = attributes.with_drag_and_drop(false);
         }
         let window = match event_loop.create_window(attributes) {
             Ok(window) => Arc::new(window),
@@ -492,7 +537,7 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
                 return;
             }
         };
-        if let Some(bar) = self.app.title_bar() {
+        if let Some(bar) = self.app.borrow().title_bar() {
             match NativeChrome::attach(window.clone(), bar, self.options.min_size) {
                 Ok(chrome) => self.chrome = chrome,
                 Err(error) => eprintln!("Using native title bar: {error}"),
@@ -514,16 +559,42 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
             &waker,
         ));
         self.accessible_nodes.clear();
-        self.app.set_waker(Some(waker.clone()));
+        self.app.borrow_mut().set_waker(Some(waker.clone()));
         let services = crate::services::NativeServices::new(window.clone(), waker.clone());
-        self.app.platform_services_changed(Some(services.handle()));
+        self.app
+            .borrow_mut()
+            .platform_services_changed(Some(services.handle()));
         self.services = Some(services);
         self.app_waker = Some(waker);
+        #[cfg(windows)]
+        if self.app.borrow().accepts_native_text_drops() {
+            let app = std::rc::Rc::downgrade(&self.app);
+            let redraw = window.clone();
+            match crate::ole_drag::Registration::attach(window.clone(), move |point, text| {
+                let Some(app) = app.upgrade() else {
+                    return false;
+                };
+                let Ok(mut app) = app.try_borrow_mut() else {
+                    return false;
+                };
+                let accepted = app.native_text_drop(point, text);
+                if accepted && text.is_some() {
+                    redraw.request_redraw();
+                }
+                accepted
+            }) {
+                Ok(target) => self.drop_target = Some(target),
+                Err(e) => {
+                    self.fail(event_loop, e);
+                    return;
+                }
+            }
+        }
         window.set_visible(true);
         self.focused = window.has_focus();
         self.window = Some(window);
         dispatch_focus_transition(self.focused, |event| self.dispatch(event_loop, event));
-        self.app.window_placement_applied(0);
+        self.app.borrow_mut().window_placement_applied(0);
         self.geometry_changed();
         self.initialize_renderer(event_loop);
     }
@@ -535,8 +606,8 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
         if let Some(mut services) = self.services.take() {
             services.close();
         }
-        self.app.platform_services_changed(None);
-        self.app.set_waker(None);
+        self.app.borrow_mut().platform_services_changed(None);
+        self.app.borrow_mut().set_waker(None);
         self.focused = false;
         self.modifiers = Modifiers::default();
         self.occluded = false;
@@ -548,6 +619,10 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
         self.renderer = None;
         self.chrome = None;
         self.capture = None;
+        #[cfg(windows)]
+        {
+            self.drop_target = None;
+        }
         self.window = None;
     }
 
@@ -617,8 +692,8 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
         if let Some(mut services) = self.services.take() {
             services.close();
         }
-        self.app.platform_services_changed(None);
-        self.app.set_waker(None);
+        self.app.borrow_mut().platform_services_changed(None);
+        self.app.borrow_mut().set_waker(None);
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
@@ -646,7 +721,7 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
                 std::iter::once((crate::WindowKey::MAIN, window.as_ref())),
             )
         }) {
-            self.app.desktop_pointer_changed(context);
+            self.app.borrow_mut().desktop_pointer_changed(context);
         }
         if let Some(position) = pointer_position {
             self.cursor = position;
@@ -805,7 +880,7 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
             let Some(completion) = self.services.as_mut().and_then(|v| v.next()) else {
                 break;
             };
-            match self.app.platform_service_completed(completion) {
+            match self.with_app(|app| app.platform_service_completed(completion)) {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => {
                     self.fail(event_loop, error);
@@ -817,7 +892,7 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
             let Some(event) = self.services.as_mut().and_then(|v| v.event()) else {
                 break;
             };
-            match self.app.platform_service_event(event) {
+            match self.with_app(|app| app.platform_service_event(event)) {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => {
                     self.fail(event_loop, error);
@@ -830,7 +905,7 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
             return;
         }
         if let Some(window) = self.window.clone()
-            && let Some(request) = self.app.take_dialog_request()
+            && let Some(request) = self.with_app(|app| app.take_dialog_request())
         {
             // A malformed request must not accept an editor draft through blur.
             let request = crate::dialogs::validate_request(request);
@@ -856,7 +931,7 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
                     crate::dialogs::show(&window, request)
                 }
             };
-            match self.app.dialog_completed(completion) {
+            match self.with_app(|app| app.dialog_completed(completion)) {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => {
                     self.fail(event_loop, error);
@@ -887,6 +962,7 @@ impl<A: DesktopApp> ApplicationHandler<HostEvent> for Host<A> {
             self.dispatch(event_loop, PlatformEvent::Tick);
             self.wake_at = self
                 .app
+                .borrow()
                 .wake_after()
                 .map(|delay| now + delay.max(Duration::from_millis(1)));
         }

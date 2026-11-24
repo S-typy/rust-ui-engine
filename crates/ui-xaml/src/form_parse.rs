@@ -123,7 +123,10 @@ pub(super) fn is_binding_property(kind: &ElementKind, name: &str) -> bool {
         }
         ElementKind::RangeSlider(_) => matches!(name, "LowerValue" | "UpperValue"),
         ElementKind::GridControl(_) => {
-            matches!(name, "FilterText" | "SelectedValue" | "IsReadOnly")
+            matches!(
+                name,
+                "IsCriteriaEnabled" | "Criteria" | "FilterText" | "SelectedValue" | "IsReadOnly"
+            )
         }
         ElementKind::ProgressBar(_) | ElementKind::BusyIndicator(_) => {
             matches!(name, "Value" | "IsIndeterminate")
@@ -524,6 +527,11 @@ pub(super) fn property(
             match attr.name() {
                 "DataSource" => grid.data_source = attr.value().into(),
                 "IsReadOnly" => grid.is_read_only = boolean(document, attr)?,
+                "IsCriteriaEnabled" => grid.criteria_disabled = !boolean(document, attr)?,
+                "Criteria" => grid.criteria = attr.value().into(),
+                "ShowAutoFilterRow" => grid.show_auto_filter_row = boolean(document, attr)?,
+                "ShowRowSelector" => grid.show_row_selector = boolean(document, attr)?,
+                "ParentField" => grid.parent_field = Some(attr.value().into()),
                 "FilterText" => grid.filter_text = attr.value().into(),
                 "SelectedValue" => grid.selected_value = Some(attr.value().into()),
                 "View" => grid.view = grid_extensions::view(document, attr)?,

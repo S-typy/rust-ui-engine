@@ -18,6 +18,7 @@ pub enum Key {
     Alt,
     F10,
     F2,
+    F3,
     PageUp,
     PageDown,
     Insert,

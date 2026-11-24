@@ -1298,6 +1298,8 @@ fn parse_element_properties(
                     | "IsExpanded"
                     | "SelectedIndex"
                     | "FilterText"
+                    | "Criteria"
+                    | "IsCriteriaEnabled"
                     | "Query"
                     | "Route"
             ) && !matches!(
@@ -1320,6 +1322,8 @@ fn parse_element_properties(
                     | "IsExpanded"
                     | "SelectedIndex"
                     | "FilterText"
+                    | "Criteria"
+                    | "IsCriteriaEnabled"
                     | "Query"
                     | "Route"
             ) || matches!(

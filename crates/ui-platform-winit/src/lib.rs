@@ -47,6 +47,7 @@ pub enum PlatformEvent {
 #[derive(Debug, Clone)]
 pub enum ClipboardRequest {
     Copy(String),
+    CopyTable { text: String, html: String },
     Paste,
 }
 
@@ -67,7 +68,32 @@ impl EventResponse {
 
 /// Implement this trait to run a retained scene in a native GPU window.
 /// `accessibility` supplies a complete connected tree; the host sends only changed nodes.
+/// A text transfer requested by a drag gesture. Set allow_move only when the
+/// source can check the original records again after a confirmed move.
+pub struct NativeTextDrag {
+    pub text: String,
+    pub allow_move: bool,
+}
+#[cfg(windows)]
+mod ole_drag;
+
 pub trait DesktopApp {
+    /// Opt in to Unicode text drops on a single-window Windows host.
+    fn accepts_native_text_drops(&self) -> bool {
+        false
+    }
+    /// During hover text is None. On drop return true only after incorporation.
+    fn native_text_drop(
+        &mut self,
+        _point: rust_desktop_ui_core::Point,
+        _text: Option<&str>,
+    ) -> bool {
+        false
+    }
+    fn take_native_text_drag(&mut self) -> Option<NativeTextDrag> {
+        None
+    }
+    fn native_text_drag_finished(&mut self, _moved: bool) {}
     /// A bounded owner-scoped service/dispatcher handle. None revokes the old
     /// owner before suspension/destruction. Native errors arrive as completions.
     fn platform_services_changed(&mut self, services: Option<PlatformServiceHandle>) {

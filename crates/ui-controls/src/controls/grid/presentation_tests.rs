@@ -918,3 +918,6 @@ fn partially_scrolled_cards_keep_full_geometry_and_text_translates_without_compr
 
 #[path = "advanced_tests.rs"]
 mod advanced_tests;
+
+#[path = "workflow_tests.rs"]
+mod workflow_tests;

@@ -21,6 +21,8 @@ pub(crate) fn model() -> Result<Rc<RefCell<BindingContext>>, String> {
         BindingContext::new(DataValue::object([
             ("SelectedKey", i64::MIN.to_string().into()),
             ("Filter", "".into()),
+            ("Criteria", "true()".into()),
+            ("RuleEnabled", true.into()),
             ("ReadOnly", false.into()),
         ]))
         .map_err(err)?,
@@ -48,6 +50,8 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
     .collect();
     let mut records = Vec::new();
     let mut details = Vec::new();
+    let mut payments = Vec::new();
+    let mut notes = Vec::new();
     for index in 0..10_000_i64 {
         let key = match index {
             0 => i64::MIN,
@@ -78,7 +82,22 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
             ],
         ));
         if index < 20 {
+            payments.push(DataRow::new(
+                index,
+                vec![
+                    CellValue::Integer(key),
+                    CellValue::Text(format!("Платёж №{}", index + 1)),
+                ],
+            ));
             for item in 0..3 {
+                let line = index * 10 + item;
+                notes.push(DataRow::new(
+                    line,
+                    vec![
+                        CellValue::Integer(line),
+                        CellValue::Text(format!("Примечание к позиции {}", item + 1)),
+                    ],
+                ));
                 details.push(DataRow::new(
                     index * 10 + item,
                     vec![
@@ -88,6 +107,8 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
                         CellValue::Decimal(
                             DecimalValue::new(i128::from((item + 1) * 25075), 2).map_err(err)?,
                         ),
+                        CellValue::Integer(item * 1024),
+                        CellValue::Integer(line),
                     ],
                 ));
             }
@@ -108,6 +129,11 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
             FieldSchema::new("Caption", FieldType::Text),
             FieldSchema::new("Quantity", FieldType::Integer),
             FieldSchema::new("Price", FieldType::Decimal),
+            FieldSchema::new("Position", FieldType::Integer),
+            FieldSchema {
+                read_only: true,
+                ..FieldSchema::new("LineId", FieldType::Integer)
+            },
         ])
         .map_err(err)?,
         details,
@@ -138,13 +164,51 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
         })
         .collect(),
     )?;
+    let topics = source(
+        TableSchema::new(vec![
+            FieldSchema::new("Title", FieldType::Text),
+            FieldSchema {
+                nullable: true,
+                ..FieldSchema::new("ParentId", FieldType::Integer)
+            },
+        ])
+        .map_err(err)?,
+        vec![
+            DataRow::new(1, vec![CellValue::Text("Заказы".into()), CellValue::Null]),
+            DataRow::new(2, vec![CellValue::Text("Склад".into()), CellValue::Null]),
+        ],
+    )?;
+    ui.register_data_source("WorkspaceTopics", topics)
+        .map_err(err)?;
     ui.register_data_source("WorkspaceCategories", categories)
         .map_err(err)?;
     ui.register_data_source("WorkspaceRecords", master.clone())
         .map_err(err)?;
+    for (name, foreign, rows) in [
+        ("WorkspacePayments", "OwnerId", payments),
+        ("WorkspaceNotes", "LineId", notes),
+    ] {
+        let child = source(
+            TableSchema::new(vec![
+                FieldSchema::new(foreign, FieldType::Integer),
+                FieldSchema::new("Caption", FieldType::Text),
+            ])
+            .map_err(err)?,
+            rows,
+        )?;
+        ui.register_data_source(name, child).map_err(err)?;
+    }
     ui.register_data_source("WorkspaceDetails", detail.clone())
         .map_err(err)?;
     for (id, label) in [
+        ("NewRow", "Добавить"),
+        ("EditRow", "Изменить"),
+        ("DeleteRow", "Удалить"),
+        ("SaveRow", "Записать"),
+        ("CancelRow", "Отменить"),
+        ("OpenItems", "Открыть позиции"),
+        ("Payments", "Платежи"),
+        ("Notes", "Примечания к позиции"),
         ("Table", "Таблица"),
         ("Cards", "Карточки"),
         ("Group", "Группировка"),
@@ -172,6 +236,11 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
 pub(crate) struct State {
     grid: WidgetId,
     formula: WidgetId,
+    row_title: WidgetId,
+    row_quantity: WidgetId,
+    items_host: WidgetId,
+    notes_host: WidgetId,
+    active_items: Option<WidgetId>,
     summary: WidgetId,
     stored: WidgetId,
     status: WidgetId,
@@ -193,6 +262,11 @@ impl State {
         };
         let state = Self {
             grid,
+            row_title: required("WorkspaceRowTitle")?,
+            row_quantity: required("WorkspaceRowQuantity")?,
+            items_host: required("WorkspaceItemsHost")?,
+            notes_host: required("WorkspaceNotesHost")?,
+            active_items: None,
             formula: required("WorkspaceFormula")?,
             summary: required("WorkspaceSummary")?,
             stored: required("WorkspaceStored")?,
@@ -200,6 +274,31 @@ impl State {
             sources,
             external: 0,
         };
+        ui.set_grid_row_validator(grid,|schema,row|{
+            if row.values[schema.field_index("Title").unwrap()].display().trim().is_empty() || matches!(row.values[schema.field_index("Quantity").unwrap()],CellValue::Integer(v) if v<1){
+                let field=if row.values[schema.field_index("Title").unwrap()].display().trim().is_empty(){"Title"}else{"Quantity"};
+                return Err(rust_desktop_ui_controls::GridRowIssue{field:field.into(),message:"Введите наименование и положительное количество".into()});
+            }Ok(())
+        }).map_err(err)?;
+        let topics = required("WorkspaceTopicsGrid")?;
+        ui.set_grid_child_loader(topics, |parent| {
+            let labels: &[&str] = match parent {
+                1 => &["В обработке", "Выполненные"],
+                2 => &["Резерв", "Отгрузка"],
+                _ => &[],
+            };
+            Ok(labels
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    DataRow::new(
+                        parent * 10 + i as i64,
+                        vec![CellValue::Text((*t).into()), CellValue::Integer(parent)],
+                    )
+                })
+                .collect())
+        })
+        .map_err(err)?;
         state.refresh(ui)?;
         Ok(Some(state))
     }
@@ -218,6 +317,126 @@ impl State {
     }
     fn run(&mut self, ui: &mut Controls, command: &str) -> Result<String, String> {
         match command {
+            "NewRow" | "EditRow" => {
+                let source = self.sources.master.borrow();
+                let key = ui.grid_selected_key(self.grid);
+                if command == "NewRow" {
+                    let mut key = -1;
+                    while source.table().row(key).is_some() {
+                        key -= 1;
+                    }
+                    let row = DataRow::new(
+                        key,
+                        vec![
+                            CellValue::Integer(key),
+                            CellValue::Text(format!("DOC-{key}")),
+                            CellValue::Text("DEV".into()),
+                            CellValue::Text(String::new()),
+                            CellValue::Integer(1),
+                            CellValue::Decimal(DecimalValue::new(0, 2).map_err(err)?),
+                            CellValue::Date(DateValue::new(2026, 1, 1).map_err(err)?),
+                            CellValue::Null,
+                        ],
+                    );
+                    drop(source);
+                    ui.begin_grid_insert(self.grid, row).map_err(err)?;
+                } else {
+                    drop(source);
+                    ui.begin_grid_row_edit(self.grid, key.ok_or("Выберите запись")?)
+                        .map_err(err)?;
+                }
+                let d = ui.grid_row_draft(self.grid).unwrap();
+                let title = d.row.values[3].display();
+                let qty = d.row.values[4].display();
+                ui.set_editor_value(self.row_title, &title).map_err(err)?;
+                ui.set_editor_value(self.row_quantity, &qty).map_err(err)?;
+                Ok("Открыт черновик строки".into())
+            }
+            "SaveRow" => {
+                let title = ui.document(self.row_title).unwrap().text().to_owned();
+                let qty = ui
+                    .document(self.row_quantity)
+                    .unwrap()
+                    .text()
+                    .parse::<i64>()
+                    .map_err(err)?;
+                ui.set_grid_draft_cell(self.grid, "Title", CellValue::Text(title))
+                    .map_err(err)?;
+                ui.set_grid_draft_cell(self.grid, "Quantity", CellValue::Integer(qty))
+                    .map_err(err)?;
+                ui.commit_grid_record(self.grid).map_err(err)?;
+                Ok("Строка записана".into())
+            }
+            "CancelRow" => {
+                ui.cancel_grid_record(self.grid).map_err(err)?;
+                Ok("Черновик отменён".into())
+            }
+            "DeleteRow" => {
+                ui.delete_grid_record(
+                    self.grid,
+                    ui.grid_selected_key(self.grid).ok_or("Выберите запись")?,
+                )
+                .map_err(err)?;
+                Ok("Строка удалена".into())
+            }
+            "Notes" => {
+                let items = self.active_items.ok_or("Откройте позиции заказа")?;
+                let key = ui.grid_selected_key(items).ok_or("Выберите позицию")?;
+                ui.open_grid_relation(
+                    items,
+                    key,
+                    "Notes",
+                    self.notes_host,
+                    rust_desktop_ui_core::LayoutStyle {
+                        height: rust_desktop_ui_core::Length::Px(90.),
+                        ..Default::default()
+                    },
+                )
+                .map_err(err)?;
+                Ok("Примечания к позиции открыты".into())
+            }
+            "Payments" | "OpenItems" => {
+                let child = ui
+                    .open_grid_relation(
+                        self.grid,
+                        ui.grid_selected_key(self.grid).ok_or("Выберите запись")?,
+                        if command == "Payments" {
+                            "Payments"
+                        } else {
+                            "Items"
+                        },
+                        self.items_host,
+                        rust_desktop_ui_core::LayoutStyle {
+                            height: rust_desktop_ui_core::Length::Px(140.),
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(err)?;
+                ui.hide_grid_relations(self.notes_host).map_err(err)?;
+                self.active_items = (command == "OpenItems").then_some(child);
+                if command == "Payments" {
+                    return Ok("Открыты платежи заказа".into());
+                }
+                if !ui.has_grid_relation(child, "Notes") {
+                    ui.register_grid_relation(
+                        child,
+                        rust_desktop_ui_controls::GridRelation {
+                            name: "Notes".into(),
+                            source: ui
+                                .data_source("WorkspaceNotes")
+                                .ok_or("Источник примечаний недоступен")?,
+                            master_field: "LineId".into(),
+                            foreign_field: "LineId".into(),
+                            settings: Default::default(),
+                        },
+                    )
+                    .map_err(err)?;
+                }
+                ui.configure_grid_row_drop(child, Some("Position"), true)
+                    .map_err(err)?;
+                ui.allow_grid_external_move(child, true).map_err(err)?;
+                Ok("Открыты позиции. Для перестановки отсортируйте по Position и тяните строку с Alt.".into())
+            }
             "Table" | "Cards" | "Group" => {
                 let mut settings = ui
                     .grid_presentation(self.grid)

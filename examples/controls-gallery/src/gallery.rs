@@ -956,6 +956,9 @@ impl DesktopApp for Gallery {
                 rust_desktop_ui_controls::ClipboardRequest::Copy(text) => {
                     ClipboardRequest::Copy(text)
                 }
+                rust_desktop_ui_controls::ClipboardRequest::CopyTable { text, html } => {
+                    ClipboardRequest::CopyTable { text, html }
+                }
                 rust_desktop_ui_controls::ClipboardRequest::Paste => ClipboardRequest::Paste,
             });
         }

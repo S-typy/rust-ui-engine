@@ -9,7 +9,7 @@
       <WrapPanel Spacing="8"><TextBox x:Name="WorkspaceFormula" Text='mul(to_decimal(field("Quantity")),field("Price"))' Width="410" AutomationName="Формула суммы строки"/><Button Content="Применить формулу" Command="GridWorkspaceFormula"/></WrapPanel>
       <TextBox x:Name="WorkspaceFilter" Text="{Binding Filter}" PlaceholderText="Фильтр по данным" Width="360"/>
     </StackPanel>
-    <GridControl x:Name="WorkspaceGrid" Grid.Row="2" DataSource="WorkspaceRecords" GroupFields="Category,Active" GroupMode="Hierarchy" ShowGroupPanel="True" StackedFields="Price=Quantity" RightPinnedFields="Active"
+    <GridControl ShowAutoFilterRow="True" ShowRowSelector="True" Criteria="{Binding Criteria}" IsCriteriaEnabled="{Binding RuleEnabled}" x:Name="WorkspaceGrid" Grid.Row="2" DataSource="WorkspaceRecords" GroupFields="Category,Active" GroupMode="Hierarchy" ShowGroupPanel="True" StackedFields="Price=Quantity" RightPinnedFields="Active"
                  SelectedValue="{Binding SelectedKey}" FilterText="{Binding Filter}" IsReadOnly="{Binding ReadOnly}" AutomationName="Таблица рабочих записей">
       <GridControl.Columns>
         <GridColumn FieldName="Code" Header="Код" Width="180" IsPinned="True" IsReadOnly="True"/>
@@ -23,10 +23,25 @@
       </GridControl.Columns>
       <GridControl.Summaries><GridSummary Function="CountRows" Title="Записей"/><GridSummary Function="Sum" FieldName="LineTotal" Title="Сумма" DisplayColumn="LineTotal"/></GridControl.Summaries>
       <GridControl.Bands><GridBand Header="Документ" Fields="Code,Category,Title"/><GridBand Header="Продажи"><GridBand Header="Показатели" Fields="Quantity,Price"/><GridBand Header="Результат" Fields="LineTotal"/></GridBand><GridBand Header="Состояние" Fields="Due,Active"/></GridControl.Bands>
+      <GridControl.Relations><GridRelation Name="Items" DataSource="WorkspaceDetails" MasterField="RecordId" ForeignField="OwnerId"/><GridRelation Name="Payments" DataSource="WorkspacePayments" MasterField="RecordId" ForeignField="OwnerId"/></GridControl.Relations>
       <GridControl.Detail><GridDetail DataSource="WorkspaceDetails" MasterField="RecordId" ForeignField="OwnerId"><GridColumn FieldName="Caption" Header="Позиция"/><GridColumn FieldName="Quantity" Header="Количество"/><GridColumn FieldName="Price" Header="Сумма"/></GridDetail></GridControl.Detail>
       <GridControl.CellTemplates><GridCellTemplate FieldName="Title" Icon="Edit" Emphasis="True"/><GridCellTemplate FieldName="Price" Suffix=" ₽"/></GridControl.CellTemplates>
       <GridControl.Editors><GridEditor FieldName="Title" Factory="Auto"/><GridEditor FieldName="Category" Factory="Lookup" ItemsSource="WorkspaceCategories" ValueField="Code" DisplayFields="Name,Area"/><GridEditor FieldName="Quantity" Factory="Auto"/><GridEditor FieldName="Price" Factory="Auto"/><GridEditor FieldName="Due" Factory="Auto"/><GridEditor FieldName="Active" Factory="Auto"/></GridControl.Editors>
     </GridControl>
-    <StackPanel Grid.Row="3" Spacing="6"><TextBlock x:Name="WorkspaceSummary" Text="" TextTone="Secondary" TextWrapping="Wrap"/><TextBlock x:Name="WorkspaceStored" Text="" TextWrapping="Wrap"/><TextBlock x:Name="WorkspaceStatus" Text="F2 или Enter открывает ячейку. Escape отменяет ввод; стрелки переходят между строками и колонками." TextWrapping="Wrap"/><WrapPanel Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel></StackPanel>
+    <StackPanel Grid.Row="3" Spacing="6">
+      <Expander x:Name="WorkspaceOperations" Header="Запись, условия и связанные позиции" IsExpanded="False">
+        <TabbedGroup x:Name="WorkspaceOperationTabs">
+          <GroupTab Header="Строка"><StackPanel Spacing="6">
+            <WrapPanel Spacing="6"><Button Content="Добавить" Command="GridWorkspaceNewRow"/><Button Content="Изменить" Command="GridWorkspaceEditRow"/><Button Content="Удалить" Command="GridWorkspaceDeleteRow"/></WrapPanel>
+            <WrapPanel Spacing="6"><TextBox x:Name="WorkspaceRowTitle" Width="260" AutomationName="Наименование записи"/><TextBox x:Name="WorkspaceRowQuantity" Width="150" AutomationName="Количество записи"/><Button Content="Записать" Command="GridWorkspaceSaveRow"/><Button Content="Отменить" Command="GridWorkspaceCancelRow"/></WrapPanel>
+          </StackPanel></GroupTab>
+          <GroupTab Header="Условие"><StackPanel Spacing="4"><FilterBuilder DataSource="WorkspaceRecords" Value="{Binding Criteria}" AutomationName="Условие отбора"/><WrapPanel Spacing="6"><CheckBox Content="Применять условие" IsChecked="{Binding RuleEnabled}"/><TextBlock Text="{Binding Criteria}" TextWrapping="Wrap"/></WrapPanel></StackPanel></GroupTab>
+          <GroupTab Header="Дерево"><GridControl x:Name="WorkspaceTopicsGrid" Height="180" DataSource="WorkspaceTopics" ParentField="ParentId" ShowAutoFilterRow="True"><GridControl.Columns><GridColumn FieldName="Title" Header="Раздел" Width="280"/></GridControl.Columns></GridControl></GroupTab>
+          <GroupTab Header="Связанные записи"><StackPanel Spacing="4">
+            <WrapPanel Spacing="6"><Button Content="Позиции" Command="GridWorkspaceOpenItems"/><Button Content="Платежи" Command="GridWorkspacePayments"/><Button Content="Примечания к позиции" Command="GridWorkspaceNotes"/></WrapPanel>
+            <StackPanel x:Name="WorkspaceItemsHost"/><StackPanel x:Name="WorkspaceNotesHost"/>
+          </StackPanel></GroupTab>
+        </TabbedGroup>
+      </Expander><TextBlock x:Name="WorkspaceSummary" Text="" TextTone="Secondary" TextWrapping="Wrap"/><TextBlock x:Name="WorkspaceStored" Text="" TextWrapping="Wrap"/><TextBlock x:Name="WorkspaceStatus" Text="F2 или Enter открывает ячейку. Escape отменяет ввод; стрелки переходят между строками и колонками." TextWrapping="Wrap"/><WrapPanel Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel></StackPanel>
   </Grid>
 </Window>

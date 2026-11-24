@@ -515,7 +515,8 @@ fn parse_entry(text: &str, formulas: bool) -> Result<CellInput, DataError> {
     };
     Ok(CellInput::Value(value))
 }
-fn parse_tsv(text: &str) -> Result<Vec<Vec<String>>, DataError> {
+/// Parse a bounded clipboard table, including quoted tabs, line breaks and quotes.
+pub fn parse_tsv(text: &str) -> Result<Vec<Vec<String>>, DataError> {
     if text.len() > 4 * 1024 * 1024 {
         return Err(invalid("clipboard payload limit exceeded"));
     }

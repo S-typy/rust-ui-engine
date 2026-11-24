@@ -163,9 +163,12 @@ impl TreeGridView {
             let first = (grid.scroll_y / f64::from(grid.config.row_height)).floor() as usize;
             let end = ((grid.scroll_y + f64::from(body.height)) / f64::from(grid.config.row_height))
                 .ceil() as usize;
-            let start = first.saturating_sub(grid.config.overscan);
+            let start = first
+                .saturating_sub(grid.config.overscan)
+                .saturating_mul(grid.record_lanes());
             let end = end
                 .saturating_add(grid.config.overscan)
+                .saturating_mul(grid.record_lanes())
                 .min(grid.row_count());
             if end.saturating_sub(start) > rust_desktop_ui_core::MAX_REALIZED_ITEMS {
                 return Err(GridError::Capacity);
@@ -174,8 +177,7 @@ impl TreeGridView {
                 let Some(row) = grid.row(source, index)? else {
                     continue;
                 };
-                let y = body.y
-                    + (index as f64 * f64::from(grid.config.row_height) - grid.scroll_y) as f32;
+                let y = body.y + (grid.record_top(index) - grid.scroll_y) as f32;
                 let row_bounds = Rect::new(body.x, y, body.width, grid.config.row_height);
                 paint_row(grid, source, &row, row_bounds, body, &mut frame);
                 frame.rows.push(row);
@@ -205,12 +207,18 @@ impl TreeGridView {
                 .query()
                 .sort
                 .iter()
-                .find(|sort| sort.column == column.id)
-                .map_or("", |sort| {
-                    if sort.direction == SortDirection::Ascending {
-                        " ↑"
+                .enumerate()
+                .find(|(_, sort)| sort.column == column.id)
+                .map_or_else(String::new, |(index, sort)| {
+                    let arrow = if sort.direction == SortDirection::Ascending {
+                        "↑"
                     } else {
-                        " ↓"
+                        "↓"
+                    };
+                    if grid.query().sort.len() > 1 {
+                        format!(" {}{arrow}", index + 1)
+                    } else {
+                        format!(" {arrow}")
                     }
                 });
             text(

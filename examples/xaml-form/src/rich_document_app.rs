@@ -427,6 +427,9 @@ impl DesktopApp for RichDocumentDemo {
                 rust_desktop_ui_controls::ClipboardRequest::Copy(t) => {
                     platform::ClipboardRequest::Copy(t)
                 }
+                rust_desktop_ui_controls::ClipboardRequest::CopyTable { text, html } => {
+                    platform::ClipboardRequest::CopyTable { text, html }
+                }
                 rust_desktop_ui_controls::ClipboardRequest::Paste => {
                     platform::ClipboardRequest::Paste
                 }

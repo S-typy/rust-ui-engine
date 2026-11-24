@@ -970,6 +970,8 @@ fn rewrite_binding(
             | "IsExpanded"
             | "SelectedIndex"
             | "FilterText"
+            | "Criteria"
+            | "IsCriteriaEnabled"
     ) && !matches!(kind, "TextBlock" | "ProgressBar" | "BusyIndicator");
     let parsed = binding::parse_binding(
         &document,

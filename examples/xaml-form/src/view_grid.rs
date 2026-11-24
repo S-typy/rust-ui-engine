@@ -96,6 +96,50 @@ pub(super) fn validate_source(
     let table = presentation(definition)
         .preview(&source_handle, &columns, detail.as_ref(), filter)
         .map_err(err)?;
+    for (_, detail) in &definition.relations {
+        let child = ui
+            .data_source(&detail.data_source)
+            .ok_or("Missing relation source")?;
+        let child = child.try_borrow().map_err(err)?;
+        let master = table
+            .schema()
+            .field(&detail.master_field)
+            .ok_or("Missing master field")?;
+        let foreign = child
+            .table()
+            .schema()
+            .field(&detail.foreign_field)
+            .ok_or("Missing foreign field")?;
+        if master.kind != foreign.kind
+            || detail
+                .columns
+                .iter()
+                .any(|c| child.table().schema().field(&c.field).is_none())
+        {
+            return Err("Invalid relation columns or link types".into());
+        }
+    }
+    if !definition.criteria.is_empty() {
+        rust_desktop_ui_data::parse_criteria_text(table.schema(), &definition.criteria)
+            .map_err(err)?;
+    }
+    if let Some(field) = &definition.parent_field {
+        if !table
+            .schema()
+            .field(field)
+            .is_some_and(|f| f.nullable && f.kind == rust_desktop_ui_data::FieldType::Integer)
+        {
+            return Err("ParentField requires a nullable integer".into());
+        }
+        if !definition.group_fields.is_empty()
+            || definition.detail.is_some()
+            || !definition.summaries.is_empty()
+        {
+            return Err(
+                "ParentField requires ungrouped records without inline details or summaries".into(),
+            );
+        }
+    }
     if let Some(key) = &definition.selected_value {
         let key = key.parse::<i64>().map_err(err)?;
         if let Some(filter) = filter {
@@ -299,12 +343,47 @@ impl MountedView {
         let id = ui
             .grid_control(parent, source, settings, style)
             .map_err(err)?;
+        ui.set_grid_workflow_rows(
+            id,
+            definition.show_auto_filter_row,
+            definition.show_row_selector,
+        )
+        .map_err(err)?;
+        if definition.criteria_disabled {
+            ui.set_grid_criteria_enabled(id, false).map_err(err)?;
+        }
+        if !definition.criteria.is_empty() {
+            ui.set_grid_criteria(id, &definition.criteria)
+                .map_err(err)?;
+        }
+        if let Some(parent) = &definition.parent_field {
+            ui.set_grid_parent_field(id, Some(parent)).map_err(err)?;
+        }
         if !definition.filter_text.is_empty() {
             ui.set_grid_filter(id, &definition.filter_text)
                 .map_err(err)?;
         }
         ui.set_grid_presentation(id, presentation(definition))
             .map_err(err)?;
+        for (name, relation) in &definition.relations {
+            let source = ui
+                .data_source(&relation.data_source)
+                .ok_or("Missing relation source")?;
+            ui.register_grid_relation(
+                id,
+                rust_desktop_ui_controls::GridRelation {
+                    name: name.clone(),
+                    settings: GridControlSettings {
+                        columns: columns(ui, &relation.columns, &source)?,
+                        is_read_only: definition.is_read_only,
+                    },
+                    source,
+                    master_field: relation.master_field.clone(),
+                    foreign_field: relation.foreign_field.clone(),
+                },
+            )
+            .map_err(err)?;
+        }
         if let Some(detail) = detail(ui, definition)? {
             ui.set_grid_detail(id, Some(detail)).map_err(err)?;
         }

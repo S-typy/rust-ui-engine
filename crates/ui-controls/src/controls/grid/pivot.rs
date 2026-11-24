@@ -119,7 +119,7 @@ impl Controls {
         grid.model = model;
         grid.frame = frame;
         grid.arrangement = arrangement;
-        grid.selected_key = selected;
+        grid.set_current(selected);
         grid.reveal_selected = false;
         grid.error = None;
         grid.source_error = None;

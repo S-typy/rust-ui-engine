@@ -39,6 +39,7 @@ pub(crate) struct Form {
     data_form: Option<crate::data_form_model::State>,
     tree: Option<crate::tree_model::State>,
     grid_workspace: Option<crate::grid_workspace_model::State>,
+    native_grid_drag: Option<WidgetId>,
     pub(crate) ui: Controls,
     pub(crate) view: MountedView,
     pub(crate) accessible: Accessibility,
@@ -302,6 +303,7 @@ impl Form {
             data_form,
             tree,
             grid_workspace,
+            native_grid_drag: None,
             ui,
             view,
             accessible: Accessibility::default(),
@@ -764,6 +766,43 @@ impl Form {
 }
 
 impl DesktopApp for Form {
+    fn accepts_native_text_drops(&self) -> bool {
+        self.grid_workspace.is_some()
+    }
+    fn native_text_drop(&mut self, point: rust_desktop_ui_core::Point, text: Option<&str>) -> bool {
+        if self.ui.grid_text_drop(point, text) {
+            return true;
+        }
+        let Some(editor) = self.find_name("WorkspaceRowTitle") else {
+            return false;
+        };
+        if self.ui.runtime.hit_test(point) != Some(editor)
+            || !self.ui.is_enabled(editor)
+            || self.ui.is_read_only(editor) != Some(false)
+        {
+            return false;
+        }
+        text.is_none_or(|t| {
+            !t.contains(['\r', '\n'])
+                && matches!(
+                    self.ui.set_editor_value(editor, t),
+                    Ok(rust_desktop_ui_controls::CommitOutcome::Committed
+                        | rust_desktop_ui_controls::CommitOutcome::Unchanged)
+                )
+        })
+    }
+    fn take_native_text_drag(&mut self) -> Option<rust_desktop_ui_platform_winit::NativeTextDrag> {
+        let (id, text, allow_move) = self.ui.take_grid_external_drag()?;
+        self.native_grid_drag = Some(id);
+        Some(rust_desktop_ui_platform_winit::NativeTextDrag { text, allow_move })
+    }
+    fn native_text_drag_finished(&mut self, moved: bool) {
+        if let Some(id) = self.native_grid_drag.take()
+            && let Err(err) = self.ui.finish_grid_external_drag(id, moved)
+        {
+            eprintln!("Record move rejected: {err}");
+        }
+    }
     fn take_dialog_request(&mut self) -> Option<rust_desktop_ui_platform_winit::DialogRequest> {
         self.workspace.native_request.take()
     }
@@ -1064,6 +1103,9 @@ impl DesktopApp for Form {
             .map(|request| match request {
                 rust_desktop_ui_controls::ClipboardRequest::Copy(text) => {
                     ClipboardRequest::Copy(text)
+                }
+                rust_desktop_ui_controls::ClipboardRequest::CopyTable { text, html } => {
+                    ClipboardRequest::CopyTable { text, html }
                 }
                 rust_desktop_ui_controls::ClipboardRequest::Paste => ClipboardRequest::Paste,
             })

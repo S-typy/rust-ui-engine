@@ -72,6 +72,9 @@ impl Projection {
                 next.synthetic.insert(key, SyntheticRow { identity, label });
                 Ok(key)
             };
+        if source.parent_field.is_some() {
+            return source.tree_projection();
+        }
         if options.group_fields.is_empty()
             && options.summaries.is_empty()
             && options.custom_summaries.is_empty()
@@ -162,11 +165,12 @@ impl Projection {
                     next.totals = result.aggregates;
                 }
                 if depth == 0 {
-                    next.roots = result.row_keys.into_iter().map(row_key).collect();
+                    next.roots = source.keys.iter().copied().map(row_key).collect();
                     break;
                 }
                 let mut current = HashMap::new();
-                for group in result.groups {
+                for mut group in result.groups {
+                    group.row_keys.sort_by_key(|key| source.positions[key]);
                     if next.groups.len() >= 4096 {
                         return Err(error("Grid presentation supports at most 4096 groups"));
                     }
@@ -356,7 +360,7 @@ impl SnapshotSource {
         // Evaluate the candidate legacy query and presentation without touching
         // the shared source. Aggregate/type failures therefore cannot publish a
         // half-applied query to sibling views.
-        if !self.formulas.is_empty() || !self.unbound.is_empty() {
+        if self.relation.is_some() || !self.formulas.is_empty() || !self.unbound.is_empty() {
             let mut next = self.clone();
             next.data_query = query;
             next.reload()?;
@@ -375,16 +379,14 @@ impl SnapshotSource {
         drop(data);
         let mut next = self.clone();
         next.table = preview.table().clone();
-        next.keys = (0..preview.len())
-            .filter_map(|i| preview.row_key(i))
-            .collect();
+        next.data_query = query.clone();
+        next.keys = next.filtered_keys(None)?;
         next.positions = next
             .keys
             .iter()
             .enumerate()
             .map(|(i, key)| (*key, i))
             .collect();
-        next.data_query = query.clone();
         next.projection = Projection::build(&next, &self.projection)?;
         {
             let mut data = self

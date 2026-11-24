@@ -9,6 +9,14 @@ use rust_desktop_ui_treegrid::{
 };
 use std::{cell::RefCell, rc::Rc};
 mod bands;
+mod filtering;
+mod records;
+mod relations;
+mod transfer;
+mod workflow;
+pub use records::{GridRecordEvent, GridRowDraft, GridRowIssue};
+pub use relations::GridRelation;
+pub use transfer::{GridCellRange, GridTransfer};
 mod chooser;
 pub use bands::{GridBandAddress, GridBandChange, GridBandItem};
 mod editors;
@@ -88,6 +96,10 @@ struct SnapshotSource {
     fields: Vec<String>,
     revision: u64,
     data_query: DataQuery,
+    filters: filtering::GridFilters,
+    relation: Option<(String, CellValue)>,
+    parent_field: Option<String>,
+    lazy_loaded: Option<HashSet<i64>>,
     presentation: GridPresentationSettings,
     detail: Option<GridDetailSettings>,
     projection: Projection,
@@ -124,6 +136,10 @@ impl SnapshotSource {
             fields,
             revision: data.revision(),
             data_query: data.query().clone(),
+            filters: Default::default(),
+            relation: None,
+            parent_field: None,
+            lazy_loaded: None,
             handle: Rc::clone(&handle),
             presentation: GridPresentationSettings::default(),
             detail: None,
@@ -143,10 +159,10 @@ impl SnapshotSource {
                 .map_err(|_| error("Grid source is already borrowed"))?;
             next.table = unbound::table(data.table(), &self.unbound, &self.formulas, None)?;
             next.value_revisions = unbound::revisions(&self.unbound)?;
-            if self.formulas.is_empty() && self.unbound.is_empty() {
+            if self.relation.is_none() && self.formulas.is_empty() && self.unbound.is_empty() {
                 next.data_query = data.query().clone();
             }
-            next.keys = next.data_query.row_keys(&next.table).map_err(error)?;
+            next.keys = next.filtered_keys(None)?;
             next.positions = next.keys.iter().enumerate().map(|(i, k)| (*k, i)).collect();
             next.revision = data.revision();
         }
@@ -185,6 +201,12 @@ impl SnapshotSource {
 
 impl TreeDataSource for SnapshotSource {
     fn child_count(&self, parent: Option<RowKey>) -> Option<usize> {
+        if let (Some(row), Some(loaded)) = (parent, &self.lazy_loaded)
+            && self.projection.children.get(&row).is_none_or(Vec::is_empty)
+            && !loaded.contains(&data_key(row))
+        {
+            return None;
+        }
         Some(parent.map_or(self.projection.roots.len(), |p| {
             self.projection.children.get(&p).map_or(0, Vec::len)
         }))
@@ -220,7 +242,7 @@ impl TreeDataSource for SnapshotSource {
                 .fields
                 .get(column.0 as usize)
                 .and_then(|field| self.table.schema().field(field))
-                .is_some_and(|field| !field.read_only)
+                .is_some_and(|field| !field.read_only && !self.locked_field(&field.name))
     }
     fn apply_query(&mut self, query: &GridQuery) -> Result<(), String> {
         let sort = query
@@ -259,6 +281,11 @@ struct CellSession {
 
 pub(super) struct GridState {
     settings: GridControlSettings,
+    auto_columns: bool,
+    records: records::RecordState,
+    transfer: transfer::TransferState,
+    relations: relations::Relations,
+    search: String,
     source: SnapshotSource,
     model: TreeGrid,
     frame: GridFrame,
@@ -274,6 +301,8 @@ pub(super) struct GridState {
     chooser: Option<chooser::Chooser>,
     selection_validator: Option<SelectionValidator>,
     filter_validator: Option<EditorValidator>,
+    criteria_validator: Option<EditorValidator>,
+    workflow: workflow::Workflow,
     reveal_selected: bool,
     bounds: Option<Rect>,
     selected_key: Option<i64>,
@@ -301,10 +330,17 @@ struct GridScrollDrag {
 }
 
 impl GridState {
+    fn set_current(&mut self, key: Option<i64>) {
+        self.selected_key = key;
+        self.records.observe(key);
+    }
     /// Preserve the first visible surviving row rather than a numeric index
     /// when collection inserts, removals, moves or field changes reorder rows.
     fn refresh_source(&mut self) -> Result<(), ControlError> {
-        if !self.source.formulas.is_empty()
+        if self.source.parent_field.is_some()
+            || self.source.relation.is_some()
+            || !self.source.filters.is_empty()
+            || !self.source.formulas.is_empty()
             || !self.source.unbound.is_empty()
             || self.source.presentation != GridPresentationSettings::default()
             || self.source.detail.is_some()
@@ -369,7 +405,7 @@ impl GridState {
     fn restore_selection(&mut self) -> Result<(), ControlError> {
         if let Some(key) = self.selected_key {
             if self.source.table.row(key).is_none() {
-                self.selected_key = None;
+                self.set_current(None);
                 self.model.clear_selection();
             } else if self.model.focused().is_none()
                 && self
@@ -459,11 +495,13 @@ impl GridState {
     }
     fn pointer_captured(&self) -> bool {
         self.model.pointer_captured()
+            || self.workflow.gesture.is_some()
             || self.scroll_drag.is_some()
             || self.group_drag.is_some()
             || self.band_drag.is_some()
     }
     fn cancel_pointer(&mut self) {
+        self.workflow.gesture = None;
         self.group_drag = None;
         self.band_drag = None;
         self.model.cancel_pointer();
@@ -471,8 +509,15 @@ impl GridState {
     }
     fn scroll_geometry(&mut self, bounds: Rect) -> Rect {
         let thickness = 12.0_f32.min(bounds.width).min(bounds.height);
-        let total_height =
-            self.model.row_count() as f64 * f64::from(self.model.config().row_height);
+        let cards = self.source.presentation.view == GridViewMode::Cards;
+        // Reserve a scrollbar before choosing lanes, so layout stays stable at a breakpoint.
+        let lanes = if cards {
+            ((bounds.width - thickness) / 300.0).floor().max(1.0) as usize
+        } else {
+            1
+        };
+        self.model.set_record_lanes(lanes);
+        let total_height = self.model.content_height();
         let (regular, mut pinned) = self.model.column_extents();
         let mut total_width = regular + pinned;
         if self.source.presentation.view == GridViewMode::Cards {
@@ -759,6 +804,7 @@ impl Controls {
         mut settings: GridControlSettings,
         mut style: LayoutStyle,
     ) -> Result<WidgetId, ControlError> {
+        let auto_columns = settings.columns.is_empty();
         let _ = source
             .try_borrow_mut()
             .map_err(|_| error("Grid source is already borrowed"))?
@@ -865,6 +911,11 @@ impl Controls {
             id,
             GridState {
                 settings,
+                auto_columns,
+                records: Default::default(),
+                transfer: Default::default(),
+                relations: Default::default(),
+                search: String::new(),
                 source: snapshot,
                 model,
                 frame: GridFrame::default(),
@@ -880,6 +931,8 @@ impl Controls {
                 chooser: None,
                 selection_validator: None,
                 filter_validator: None,
+                criteria_validator: None,
+                workflow: Default::default(),
                 reveal_selected: false,
                 bounds: None,
                 selected_key: None,
@@ -968,7 +1021,7 @@ impl Controls {
             return Ok(false);
         };
         grid.model
-            .scroll_to(x, row as f64 * f64::from(grid.model.config().row_height))
+            .scroll_to(x, grid.model.record_top(row))
             .map_err(error)?;
         grid.reveal_selected = false;
         self.scene_dirty = true;
@@ -1021,6 +1074,24 @@ impl Controls {
         }));
         Ok(())
     }
+    pub(crate) fn chain_grid_criteria_validator(
+        &mut self,
+        id: WidgetId,
+        validator: EditorValidator,
+    ) -> Result<(), ControlError> {
+        let grid = self
+            .grids
+            .get_mut(&id)
+            .ok_or_else(|| error("Unknown GridControl"))?;
+        let previous = grid.criteria_validator.take();
+        grid.criteria_validator = Some(EditorValidator::new(move |text| {
+            if let Some(previous) = &previous {
+                previous.check(text)?;
+            }
+            validator.check(text)
+        }));
+        Ok(())
+    }
     pub fn set_grid_selected_key(
         &mut self,
         id: WidgetId,
@@ -1041,6 +1112,10 @@ impl Controls {
             .ok_or_else(|| error("Unknown GridControl"))?;
         grid.validate_selection(key)?;
         if let Some(key) = key {
+            if let Some(row) = grid.source.table.row(key) {
+                grid.source
+                    .check_relation_row(grid.source.table.schema(), row)?;
+            }
             if grid.source.table.row(key).is_none() {
                 return Err(error("Unknown grid row"));
             }
@@ -1059,7 +1134,7 @@ impl Controls {
         } else {
             grid.model.clear_selection();
         }
-        grid.selected_key = key;
+        grid.set_current(key);
         self.scene_dirty = true;
         Ok(())
     }
@@ -1199,7 +1274,7 @@ impl Controls {
                 SelectionModifiers::default(),
             )
             .map_err(error)?;
-        grid.selected_key = Some(key);
+        grid.set_current(Some(key));
         self.runtime.apply(Mutation::Focus(Some(id)))?;
         self.synchronize_editor_focus()?;
         self.scene_dirty = true;
@@ -1234,6 +1309,12 @@ impl Controls {
         key: i64,
         field: &str,
     ) -> Result<(), ControlError> {
+        if !self.effective_enabled(id)
+            || !self.grid_relation_live(id)
+            || self.grid_row_draft(id).is_some()
+        {
+            return Err(error("Grid is disabled or a record edit is active"));
+        }
         if self.grid_editor(id).is_some() {
             return Err(error("A cell edit is already active"));
         }
@@ -1313,10 +1394,11 @@ impl Controls {
                 SelectionModifiers::default(),
             )
             .map_err(error)?;
-        grid.selected_key = Some(key);
+        grid.set_current(Some(key));
         grid.model
             .begin_edit(&grid.source, row_key(key), ColumnId(index as u64))
             .map_err(error)?;
+        grid.records.emit(GridRecordEvent::Begin(key));
         grid.session = Some(CellSession {
             row: key,
             field: field.to_owned(),
@@ -1396,8 +1478,17 @@ impl Controls {
                 return Ok(outcome);
             }
         }
+        if !self.grid_relation_live(id) {
+            return Ok(self.grid_edit_failure(id, "The master record changed".into()));
+        }
         let snapshot = &self.grids[&id].source;
-        let result = snapshot.write_cell(row, &field, &expected, value.clone());
+        let result = snapshot.write_cell(
+            row,
+            &field,
+            &expected,
+            value.clone(),
+            self.grids[&id].records.validator.as_ref(),
+        );
         match result {
             Ok(changed) => {
                 let control = self.controls.get_mut(&editor).unwrap();
@@ -1459,7 +1550,13 @@ impl Controls {
                 committed.is_some(),
             );
         }
-        grid.session = None;
+        if let Some(session) = grid.session.take() {
+            grid.records.emit(if committed.is_some() {
+                GridRecordEvent::Saved(session.row)
+            } else {
+                GridRecordEvent::Cancel(session.row)
+            });
+        }
         grid.model.cancel_edit();
         grid.error = None;
         let editor = grid.editor;
@@ -1529,9 +1626,25 @@ impl Controls {
                         .synchronize();
                 }
             }
+            let g = &self.grids[&id];
+            if g.auto_columns
+                && g.session.is_none()
+                && g.records.draft.is_none()
+                && g.source.relation.is_none()
+                && g.source.table.schema()
+                    != g.source
+                        .handle
+                        .try_borrow()
+                        .map_err(error)?
+                        .table()
+                        .schema()
+            {
+                self.replace_grid_source(id, g.source.handle.clone())?;
+            }
             let available = self.is_enabled(id);
             let bounds = self.runtime.bounds(id);
             let grid = self.grids.get_mut(&id).unwrap();
+            grid.records.observe(grid.selected_key);
             let was_captured = grid.pointer_captured();
             if grid.bounds.is_some_and(|previous| Some(previous) != bounds) {
                 grid.cancel_pointer();
@@ -1614,6 +1727,7 @@ impl Controls {
                 scene.fill(bar.track, chrome.card_surface);
                 scene.fill(bar.thumb, theme.muted);
             }
+            grid.paint_workflow(bounds, &mut scene);
             grid.paint_chooser(bounds, &mut scene);
             grid.source_error = grid
                 .source
@@ -1687,6 +1801,7 @@ impl Controls {
         if matches!(event, InputEvent::WindowFocused(false)) {
             self.cancel_grid_pointers();
             for grid in self.grids.values_mut() {
+                grid.workflow.panel = None;
                 grid.chooser = None;
             }
             return Ok(false);
@@ -1727,6 +1842,13 @@ impl Controls {
             | InputEvent::Wheel { position, .. } => self.runtime.hit_test(*position),
             _ => self.runtime.focused(),
         };
+        if matches!(event, InputEvent::PointerDown { .. }) {
+            for (owner, g) in &mut self.grids {
+                if Some(*owner) != hit && g.workflow.panel.take().is_some() {
+                    self.scene_dirty = true;
+                }
+            }
+        }
         let captured = self
             .grids
             .iter()
@@ -1764,6 +1886,9 @@ impl Controls {
             }
         }
         if self.grid_chooser_input(id, event)? {
+            return Ok(true);
+        }
+        if self.grid_workflow_input(id, event)? {
             return Ok(true);
         }
         if self.grid_band_input(id, event)? || self.grid_group_panel_input(id, event)? {
@@ -1957,7 +2082,18 @@ impl Controls {
         }
         if result.is_ok() {
             if let Some(candidate) = selection_candidate {
-                self.grids.get_mut(&id).unwrap().selected_key = candidate;
+                self.grids.get_mut(&id).unwrap().set_current(candidate);
+            }
+            if selection_candidate.is_some()
+                || matches!(
+                    event,
+                    InputEvent::KeyDown {
+                        key: Key::ArrowLeft | Key::ArrowRight,
+                        ..
+                    }
+                )
+            {
+                self.grid_range_after_navigation(id, event)?;
             }
             self.grids.get_mut(&id).unwrap().restore_selection()?;
         }

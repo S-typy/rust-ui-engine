@@ -19,7 +19,7 @@ pub struct TreeScrollAnchor {
 impl TreeGrid {
     pub fn capture_scroll_anchor(&self, source: &impl TreeDataSource) -> TreeScrollAnchor {
         let height = f64::from(self.config().row_height);
-        let index = (self.scroll_offset().1 / height).floor() as usize;
+        let index = (self.scroll_offset().1 / height).floor() as usize * self.record_lanes();
         TreeScrollAnchor {
             key: self
                 .row(source, index)
@@ -62,7 +62,7 @@ impl TreeGrid {
         let y = if self.row_count() == 0 {
             0.0
         } else {
-            index as f64 * f64::from(self.config().row_height) + anchor.within_row
+            self.record_top(index) + anchor.within_row
         };
         self.scroll_to(self.scroll_offset().0, y)
     }

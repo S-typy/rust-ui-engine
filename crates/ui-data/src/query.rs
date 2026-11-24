@@ -444,7 +444,8 @@ fn invalid(message: &str) -> DataError {
     DataError::Validation(format!("query: {message}"))
 }
 
-pub(super) fn compare_values(left: &CellValue, right: &CellValue) -> std::cmp::Ordering {
+/// Typed ordering used by query sorting, including NULL and exact decimals.
+pub fn compare_values(left: &CellValue, right: &CellValue) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     match (left, right) {
         (CellValue::Null, CellValue::Null) => Ordering::Equal,

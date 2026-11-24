@@ -29,6 +29,7 @@ pub(super) fn write_batch(
     let candidate = crate::write::apply_writes(&before, operations)?;
     for operation in operations {
         match operation {
+            DataWrite::CheckRow(_) => {} // Already checked under the immediate transaction above.
             DataWrite::Insert(row) => {
                 let mut columns = vec![quote(&adapter.config.key_column)];
                 let mut parameters = vec![Value::Integer(row.key)];

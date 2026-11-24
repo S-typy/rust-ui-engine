@@ -12,6 +12,8 @@ pub const MAX_DATA_WRITE_BYTES: usize = 64 * 1024 * 1024;
 /// the complete row so an unrelated field change also causes a conflict.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DataWrite {
+    /// Compare the complete row inside the adapter transaction, including read-only fields.
+    CheckRow(DataRow),
     Insert(DataRow),
     Update {
         key: i64,
@@ -51,6 +53,7 @@ impl WriteCapabilities {
         }
         if !self.atomic_batch
             || operations.iter().any(|operation| match operation {
+                DataWrite::CheckRow(_) => false,
                 DataWrite::Insert(_) => !self.insert,
                 DataWrite::Update { .. } => !self.update,
                 DataWrite::Delete { .. } => !self.delete,
@@ -76,7 +79,9 @@ pub(crate) fn validate_write_payload(
     let mut bytes = operations.len().saturating_mul(size_of::<DataWrite>());
     for operation in operations {
         match operation {
-            DataWrite::Insert(row) | DataWrite::Delete { expected: row } => {
+            DataWrite::CheckRow(row)
+            | DataWrite::Insert(row)
+            | DataWrite::Delete { expected: row } => {
                 if row.values.len() != schema.fields().len() {
                     return Err(DataError::Validation(
                         "write row width differs from schema".into(),
@@ -141,6 +146,13 @@ fn charge_value(bytes: &mut usize, limits: DataLimits, value: &CellValue) -> Res
     Ok(())
 }
 
+impl DataTable {
+    /// Validate a batch and return its candidate snapshot without changing the adapter.
+    pub fn preview_writes(&self, operations: &[DataWrite]) -> Result<Self, DataError> {
+        apply_writes(self, operations)
+    }
+}
+
 /// Shared transactional semantics used for source preflight and memory writes.
 pub(crate) fn apply_writes(
     table: &DataTable,
@@ -150,6 +162,11 @@ pub(crate) fn apply_writes(
     let mut rows = table.rows().to_vec();
     for operation in operations {
         match operation {
+            DataWrite::CheckRow(expected) => {
+                if rows.iter().find(|r| r.key == expected.key) != Some(expected) {
+                    return Err(DataError::Conflict(format!("row {} changed", expected.key)));
+                }
+            }
             DataWrite::Insert(row) => {
                 if rows.iter().any(|current| current.key == row.key) {
                     return Err(DataError::Conflict(format!(

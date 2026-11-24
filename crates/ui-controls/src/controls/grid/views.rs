@@ -95,8 +95,9 @@ impl GridState {
         if options.view == GridViewMode::Table {
             model.set_column_tracks(stacks, right).map_err(error)?;
         }
-        model.flat_presentation =
-            source.presentation.group_fields.is_empty() && source.detail.is_none();
+        model.flat_presentation = source.presentation.group_fields.is_empty()
+            && source.detail.is_none()
+            && source.parent_field.is_none();
         model.refresh(source).map_err(error)?;
         let expanded: Vec<_> = source
             .projection
@@ -150,6 +151,10 @@ impl GridState {
         }
         anchor.within_row = anchor.within_row.min(f64::from(config.row_height) - 0.001);
         model.restore_scroll_anchor(source, anchor).map_err(error)?;
+        model.retain_selected_records(self.model.selected().iter().copied().filter(|r| {
+            self.source.table.row(data_key(*r)).is_some()
+                && source.table.row(data_key(*r)).is_some()
+        }));
         Ok(model)
     }
     pub(super) fn current_arrangement(&self) -> Vec<GridColumnArrangement> {
@@ -221,10 +226,10 @@ impl GridState {
                 .min((bounds.height - panel - band).max(0.0))
         };
         Rect::new(
-            bounds.x,
-            bounds.y + panel + band,
-            bounds.width,
-            (bounds.height - panel - band - footer).max(0.0),
+            bounds.x + self.selector_width(bounds),
+            bounds.y + panel + band + self.filter_height(bounds),
+            (bounds.width - self.selector_width(bounds)).max(0.0),
+            (bounds.height - panel - band - footer - self.filter_height(bounds)).max(0.0),
         )
     }
     pub(super) fn decorate_frame(&self, bounds: Rect, frame: &mut GridFrame) {
@@ -273,18 +278,19 @@ impl PresentationPainter<'_> {
             let line_height = 28.0_f32.max(self.editor_height);
             frame.stats.visible_columns = columns.len();
             for row in &mut frame.semantics.rows {
+                let lane_width = bounds.width / self.model.record_lanes() as f32;
                 let card = Rect::new(
-                    bounds.x + 4.0,
+                    bounds.x + (row.index % self.model.record_lanes()) as f32 * lane_width + 4.0,
                     bounds.y
-                        + (row.index as f64 * f64::from(self.model.config().row_height)
-                            - self.model.scroll_offset().1) as f32
+                        + (self.model.record_top(row.index) - self.model.scroll_offset().1) as f32
                         + 3.0,
-                    (bounds.width - 8.0).max(0.0),
+                    (lane_width - 8.0).max(0.0),
                     (self.model.config().row_height - 6.0).max(0.0),
                 );
                 let clip = card
                     .intersection(bounds)
                     .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
+                row.bounds = clip;
                 frame.scene.rounded_fill(
                     card,
                     clip,
@@ -884,6 +890,16 @@ impl Controls {
         row: RowKey,
         expanded: bool,
     ) -> Result<(), ControlError> {
+        if expanded
+            && self.grids.get(&id).is_some_and(|g| {
+                g.source
+                    .lazy_loaded
+                    .as_ref()
+                    .is_some_and(|keys| !keys.contains(&data_key(row)))
+            })
+        {
+            return self.load_grid_branch(id, data_key(row));
+        }
         let grid = self
             .grids
             .get_mut(&id)

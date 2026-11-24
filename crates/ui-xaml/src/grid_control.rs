@@ -21,6 +21,11 @@ pub struct GridControlDefinition {
     pub columns: Vec<GridColumnDefinition>,
     pub is_read_only: bool,
     pub filter_text: String,
+    pub criteria: String,
+    pub criteria_disabled: bool,
+    pub show_auto_filter_row: bool,
+    pub show_row_selector: bool,
+    pub parent_field: Option<String>,
     /// A signed 64-bit row key represented as a decimal string, preserving all bits.
     pub selected_value: Option<String>,
     pub view: crate::GridViewDefinition,
@@ -39,6 +44,7 @@ pub struct GridControlDefinition {
     /// Additional nested header tiers, in top-to-bottom order.
     pub band_rows: Vec<Vec<crate::GridBandDefinition>>,
     pub detail: Option<crate::GridDetailDefinition>,
+    pub relations: Vec<(String, crate::GridDetailDefinition)>,
     pub cell_templates: Vec<crate::GridCellTemplateDefinition>,
     pub editors: Vec<crate::GridEditorDefinition>,
 }
@@ -103,6 +109,9 @@ pub fn validate_grid_control(grid: &GridControlDefinition) -> Result<(), String>
         return Err(
             "GridControl DataSource must be a registered identifier of at most 128 bytes".into(),
         );
+    }
+    if !valid_text(&grid.criteria) || grid.parent_field.as_deref().is_some_and(|f| !valid_name(f)) {
+        return Err("Invalid grid criteria or parent field".into());
     }
     if !valid_text(&grid.filter_text) {
         return Err("GridControl FilterText exceeds 4096 UTF-8 bytes or contains NUL".into());
@@ -191,6 +200,8 @@ pub fn validate_grid_control_bindings(common: &CommonProperties) -> Result<(), S
                     | "Width"
                     | "Height"
                     | "IsReadOnly"
+                    | "IsCriteriaEnabled"
+                    | "Criteria"
                     | "FilterText"
                     | "SelectedValue"
             )
