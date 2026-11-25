@@ -181,6 +181,164 @@ fn grid_header_sort_and_filter_keep_signed_identity() {
 }
 
 #[test]
+fn cell_click_activation_distinguishes_double_click_range_drag_and_modifiers() {
+    let (mut ui, id, _) = setup(4);
+    let p = hit(
+        &ui,
+        id,
+        GridHitKind::Cell {
+            row: RowKey((-10_i64) as u64),
+            column: ColumnId(0),
+        },
+    );
+    click(&mut ui, p);
+    assert!(ui.grid_editor(id).is_none());
+    frame(&mut ui);
+    click(&mut ui, p);
+    assert!(ui.grid_editor(id).is_some());
+    key(&mut ui, Key::Escape);
+    ui.set_grid_edit_on_click(id, true).unwrap();
+    let button = PointerButton::Primary;
+    for event in [
+        InputEvent::PointerDown {
+            position: p,
+            button,
+            modifiers: Default::default(),
+        },
+        InputEvent::PointerMoved {
+            position: Point::new(p.x + 15., p.y),
+        },
+        InputEvent::PointerMoved { position: p },
+        InputEvent::PointerUp {
+            position: p,
+            button,
+            modifiers: Default::default(),
+        },
+    ] {
+        ui.dispatch(event).unwrap();
+    }
+    assert!(ui.grid_editor(id).is_none());
+    for modifiers in [
+        Modifiers {
+            control: true,
+            ..Default::default()
+        },
+        Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+    ] {
+        ui.dispatch(InputEvent::PointerDown {
+            position: p,
+            button,
+            modifiers,
+        })
+        .unwrap();
+        ui.dispatch(InputEvent::PointerUp {
+            position: p,
+            button,
+            modifiers,
+        })
+        .unwrap();
+        assert!(ui.grid_editor(id).is_none());
+    }
+    click(&mut ui, p);
+    assert!(ui.grid_editor(id).is_some());
+}
+
+#[test]
+fn tab_between_cell_editors_validates_wraps_and_preserves_record_identity() {
+    let (mut ui, id, source) = setup(2);
+    ui.set_grid_edit_on_click(id, true).unwrap();
+    let p = hit(
+        &ui,
+        id,
+        GridHitKind::Cell {
+            row: RowKey((-10_i64) as u64),
+            column: ColumnId(1),
+        },
+    );
+    click(&mut ui, p);
+    let editor = ui.grid_editor(id).unwrap();
+    ui.set_text(editor, "bad").unwrap();
+    key(&mut ui, Key::Tab);
+    assert_eq!(ui.grid_editor(id), Some(editor));
+    assert_eq!(ui.grid_selected_key(id), Some(-10));
+    assert_eq!(
+        source.borrow().value(-10, "amount"),
+        Some(&CellValue::Integer(0))
+    );
+    ui.set_text(editor, "125").unwrap();
+    key(&mut ui, Key::Tab);
+    assert!(ui.grid_editor(id).is_some());
+    assert_eq!(ui.grid_selected_key(id), Some(-9));
+    assert_eq!(ui.grid_focused_column(id), Some(ColumnId(0)));
+    assert_eq!(
+        source.borrow().value(-10, "amount"),
+        Some(&CellValue::Integer(125))
+    );
+    ui.dispatch(InputEvent::KeyDown {
+        key: Key::Tab,
+        modifiers: Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+        repeat: false,
+    })
+    .unwrap();
+    assert_eq!(ui.grid_selected_key(id), Some(-10));
+    assert_eq!(ui.grid_focused_column(id), Some(ColumnId(1)));
+    let editor = ui.grid_editor(id).unwrap();
+    ui.set_text(editor, "700").unwrap();
+    key(&mut ui, Key::Escape);
+    assert_eq!(
+        source.borrow().value(-10, "amount"),
+        Some(&CellValue::Integer(125))
+    );
+    let after = ui
+        .text_box(ui.root(), "Next field", "", LayoutStyle::default())
+        .unwrap();
+    ui.begin_grid_edit(id, -9, "amount").unwrap();
+    key(&mut ui, Key::Tab);
+    assert!(ui.grid_editor(id).is_none());
+    assert_eq!(ui.runtime.focused(), Some(after));
+}
+
+#[test]
+fn committing_a_sort_key_keeps_tab_target_stable_and_ignores_a_moved_click_target() {
+    let (mut ui, id, source) = setup(3);
+    ui.set_grid_edit_on_click(id, true).unwrap();
+    let header = hit(&ui, id, GridHitKind::Header(ColumnId(1)));
+    click(&mut ui, header);
+    frame(&mut ui);
+    ui.begin_grid_edit(id, -10, "amount").unwrap();
+    let editor = ui.grid_editor(id).unwrap();
+    ui.set_text(editor, "95").unwrap();
+    key(&mut ui, Key::Tab);
+    assert_eq!(source.borrow().row_key(0), Some(-9));
+    assert_eq!(ui.grid_selected_key(id), Some(-9));
+    assert_eq!(ui.grid_focused_column(id), Some(ColumnId(0)));
+    key(&mut ui, Key::Escape);
+    frame(&mut ui);
+    ui.begin_grid_edit(id, -9, "amount").unwrap();
+    frame(&mut ui);
+    let editor = ui.grid_editor(id).unwrap();
+    ui.set_text(editor, "96").unwrap();
+    let old_second_row = hit(
+        &ui,
+        id,
+        GridHitKind::Cell {
+            row: RowKey((-8_i64) as u64),
+            column: ColumnId(0),
+        },
+    );
+    click(&mut ui, old_second_row);
+    assert_eq!(source.borrow().row_key(0), Some(-8));
+    assert!(ui.grid_editor(id).is_none());
+    assert_eq!(ui.grid_selected_key(id), Some(-9));
+}
+
+#[test]
 fn grid_keyboard_routes_selection_edit_commit_and_cancel() {
     let (mut ui, id, source) = setup(20);
     ui.runtime.apply(Mutation::Focus(Some(id))).unwrap();

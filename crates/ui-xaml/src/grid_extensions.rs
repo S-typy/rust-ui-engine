@@ -665,13 +665,14 @@ pub(super) fn code(grid: &GridControlDefinition) -> String {
     let templates = grid.cell_templates.iter().map(|t|format!("rust_desktop_ui_xaml::GridCellTemplateDefinition {{ field:{:?}.into(),prefix:{:?}.into(),suffix:{:?}.into(),icon:{},emphasis:{} }}",t.field,t.prefix,t.suffix,t.icon.map(|icon|format!("Some(rust_desktop_ui_xaml::IconSymbol::{icon:?})")).unwrap_or_else(||"None".into()),t.emphasis)).collect::<Vec<_>>().join(",");
     let editors = grid.editors.iter().map(|e|format!("rust_desktop_ui_xaml::GridEditorDefinition {{ field:{:?}.into(),factory:{:?}.into(),mask:{},command:{},when:{},choice:{} }}",e.field,e.factory,optional(&e.mask),optional(&e.command),e.when.as_ref().map(|(f,v)|format!("Some(({f:?}.into(),{v:?}.into()))")).unwrap_or_else(||"None".into()),e.choice.as_ref().map(|(s,k,d)|format!("Some(({s:?}.into(),{k:?}.into(),{}))",strings(d))).unwrap_or_else(||"None".into()))).collect::<Vec<_>>().join(",");
     format!(
-        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), criteria:{:?}.into(),criteria_disabled:{}, show_auto_filter_row:{},show_row_selector:{},parent_field:{}, selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},hierarchical_groups:{},group_sort_summary:{:?},group_descending:{},group_footer:{},show_group_panel:{},stacked_fields:vec![{stacks}],wrap_fields:{wrap},merge_fields:{merge},right_pinned_fields:{right},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],band_rows:vec![{band_rows}],detail:{detail},relations:vec![{relations}],text_templates:[{roles}].into(),format_rules:vec![{formats}],cell_templates:vec![{templates}],editors:vec![{editors}] }}",
+        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), criteria:{:?}.into(),criteria_disabled:{}, edit_on_click:{},show_auto_filter_row:{},show_row_selector:{},parent_field:{}, selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},hierarchical_groups:{},group_sort_summary:{:?},group_descending:{},group_footer:{},show_group_panel:{},stacked_fields:vec![{stacks}],wrap_fields:{wrap},merge_fields:{merge},right_pinned_fields:{right},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],band_rows:vec![{band_rows}],detail:{detail},relations:vec![{relations}],text_templates:[{roles}].into(),format_rules:vec![{formats}],cell_templates:vec![{templates}],editors:vec![{editors}] }}",
         grid.data_source,
         columns(&grid.columns),
         grid.is_read_only,
         grid.filter_text,
         grid.criteria,
         grid.criteria_disabled,
+        grid.edit_on_click,
         grid.show_auto_filter_row,
         grid.show_row_selector,
         grid.parent_field

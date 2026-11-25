@@ -532,6 +532,7 @@ impl GridState {
             || self.band_drag.is_some()
     }
     fn cancel_pointer(&mut self) {
+        self.reset_edit_click();
         self.workflow.gesture = None;
         self.group_drag = None;
         self.band_drag = None;
@@ -1908,6 +1909,7 @@ impl Controls {
             && !modifiers.super_key
         {
             match key {
+                Key::Tab => return self.tab_from_grid_editor(owner, modifiers.shift),
                 Key::Enter if !modifiers.shift => {
                     self.commit_grid_edit(owner)?;
                     return Ok(true);
@@ -1930,11 +1932,28 @@ impl Controls {
             | InputEvent::Wheel { position, .. } => self.runtime.hit_test(*position),
             _ => self.runtime.focused(),
         };
-        if matches!(event, InputEvent::PointerDown { .. }) {
+        if let InputEvent::PointerDown {
+            position,
+            button,
+            modifiers,
+        } = event
+        {
             for (owner, g) in &mut self.grids {
+                let plain = Some(*owner) == hit
+                    && *button == PointerButton::Primary
+                    && *modifiers == Default::default();
+                g.prepare_click(*position, plain);
                 if Some(*owner) != hit && g.workflow.panel.take().is_some() {
                     self.scene_dirty = true;
                 }
+            }
+        }
+        if matches!(
+            event,
+            InputEvent::KeyDown { .. } | InputEvent::Wheel { .. } | InputEvent::PointerLeft
+        ) {
+            for grid in self.grids.values_mut() {
+                grid.reset_edit_click();
             }
         }
         let captured = self
@@ -1962,12 +1981,20 @@ impl Controls {
             }
         }
         if self.grids[&id].session.is_some() {
-            if matches!(
-                event,
-                InputEvent::PointerDown { .. } | InputEvent::Wheel { .. }
-            ) && !self.commit_grid_edit(id)?
+            if let InputEvent::PointerDown { position, .. } | InputEvent::Wheel { position, .. } =
+                event
             {
-                return Ok(true);
+                let target = self.grids[&id].frame.hit_test(*position);
+                if !self.commit_grid_edit(id)? {
+                    return Ok(true);
+                }
+                self.update(self.viewport)?;
+                // Sorting, filtering or regrouping the committed value may move the clicked record.
+                if matches!(event, InputEvent::PointerDown { .. })
+                    && target != self.grids[&id].frame.hit_test(*position)
+                {
+                    return Ok(true);
+                }
             }
             if self.grids[&id].session.is_some() {
                 return Ok(false);
@@ -1994,6 +2021,7 @@ impl Controls {
         if self.grids[&id].workflow.panel.is_some() {
             return self.grid_workflow_input(id, event);
         }
+        let cell_click = self.grids[&id].cell_click(event);
         if self.grid_custom_input(id, event)? || self.grid_workflow_input(id, event)? {
             return Ok(true);
         }
@@ -2067,6 +2095,7 @@ impl Controls {
             return Err(error.into());
         }
         if report.default_prevented {
+            self.grids.get_mut(&id).unwrap().reset_edit_click();
             return Ok(true);
         }
         self.synchronize_editor_focus()?;
@@ -2074,7 +2103,9 @@ impl Controls {
         if let Some(candidate) = selection_candidate
             && let Err(message) = self.grids[&id].validate_selection(candidate)
         {
-            self.grids.get_mut(&id).unwrap().error = Some(message.to_string());
+            let grid = self.grids.get_mut(&id).unwrap();
+            grid.reset_edit_click();
+            grid.error = Some(message.to_string());
             self.scene_dirty = true;
             return Ok(true);
         }
@@ -2187,6 +2218,15 @@ impl Controls {
             return Ok(true);
         }
         if result.is_ok() {
+            if let Some((key, field, point)) = cell_click
+                && self
+                    .grids
+                    .get_mut(&id)
+                    .unwrap()
+                    .activate_cell_click(key, &field, point)
+            {
+                begin = Some((key, field));
+            }
             if let Some(candidate) = selection_candidate {
                 self.grids.get_mut(&id).unwrap().set_current(candidate);
             }

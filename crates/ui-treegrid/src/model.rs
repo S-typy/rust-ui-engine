@@ -1339,7 +1339,7 @@ impl TreeGrid {
         self.focused = Some(row);
         self.focused_column = Some(column);
         self.ensure_visible(position);
-        if self.flat_presentation {
+        if self.flat_presentation || self.tracks.is_some() {
             self.ensure_column_visible(column);
         }
         Ok(())

@@ -2,6 +2,88 @@
 use super::*;
 use rust_desktop_ui_data::FieldSchema;
 
+impl GridState {
+    /// Resolve the next target in the current presentation before the write can reorder rows.
+    fn next_edit_cell(&self, backwards: bool) -> Result<Option<(i64, String)>, ControlError> {
+        let Some(session) = &self.session else {
+            return Ok(None);
+        };
+        let row = row_key(session.row);
+        let mut columns = self.model.display_column_order();
+        if backwards {
+            columns.reverse();
+        }
+        columns.retain(|c| {
+            !self.settings.columns[c.0 as usize].read_only && self.source.editable(row, *c)
+        });
+        let Some(current) = columns
+            .iter()
+            .position(|c| self.source.fields[c.0 as usize] == session.field)
+        else {
+            return Ok(None);
+        };
+        if let Some(c) = columns.get(current + 1) {
+            return Ok(Some((
+                session.row,
+                self.source.fields[c.0 as usize].clone(),
+            )));
+        }
+        let Some(mut index) = self.model.visible_index(&self.source, row) else {
+            return Ok(None);
+        };
+        let step = if backwards { -1 } else { 1 };
+        while let Some(next) = index
+            .checked_add_signed(step)
+            .filter(|i| *i < self.model.row_count())
+        {
+            index = next;
+            if let Some(key) = self
+                .model
+                .row(&self.source, index)
+                .map_err(error)?
+                .and_then(|r| r.key)
+                && matches!(self.source.row_kind(key), Some(GridRowKind::Record(_)))
+            {
+                return Ok(Some((
+                    data_key(key),
+                    self.source.fields[columns[0].0 as usize].clone(),
+                )));
+            }
+        }
+        Ok(None)
+    }
+}
+
+impl Controls {
+    pub(super) fn tab_from_grid_editor(
+        &mut self,
+        id: WidgetId,
+        backwards: bool,
+    ) -> Result<bool, ControlError> {
+        let next = self.grids[&id].next_edit_cell(backwards)?;
+        if !self.commit_grid_edit(id)? {
+            return Ok(true);
+        }
+        let Some((key, field)) = next else {
+            return Ok(false);
+        };
+        self.sync_grids()?;
+        let grid = &self.grids[&id];
+        if grid
+            .model
+            .visible_index(&grid.source, row_key(key))
+            .is_none()
+        {
+            return Ok(false);
+        }
+        if let Err(message) = self.begin_grid_edit(id, key, &field) {
+            self.grids.get_mut(&id).unwrap().error = Some(message.to_string());
+            self.scene_dirty = true;
+        }
+        Ok(true)
+    }
+}
+
 /// Application-owned in-place editor. The grid owns commit, validation and optimistic writes.
 pub trait GridCellEditor {
     /// Validate a typed draft before the optimistic storage write.

@@ -16,12 +16,15 @@ pub(super) enum TextTarget {
 pub(super) struct Gesture {
     origin: (i64, String),
     point: Point,
+    click: bool,
     append: bool,
     external: bool,
     rows: Option<Vec<i64>>,
 }
 #[derive(Default)]
 pub(super) struct Workflow {
+    edit_on_click: bool,
+    last_click: Option<(i64, String, Point, Instant)>,
     auto_filter: bool,
     selector: bool,
     pub(super) panel: Option<Panel>,
@@ -33,7 +36,87 @@ pub(super) struct Workflow {
     external_move: bool,
     export: Option<Vec<rust_desktop_ui_data::DataRow>>,
 }
+impl Gesture {
+    fn moved(&self, p: Point) -> bool {
+        (self.point.x - p.x).abs() + (self.point.y - p.y).abs() > 4.
+    }
+}
+
 impl GridState {
+    pub(super) fn reset_edit_click(&mut self) {
+        self.workflow.last_click = None;
+        if let Some(gesture) = &mut self.workflow.gesture {
+            gesture.click = false;
+        }
+    }
+
+    pub(super) fn prepare_click(&mut self, point: Point, plain: bool) {
+        if !plain
+            || self
+                .workflow
+                .last_click
+                .as_ref()
+                .is_some_and(|(key, field, _, _)| {
+                    self.hit_cell(point)
+                        .is_none_or(|hit| hit.0 != *key || hit.1 != *field)
+                })
+        {
+            self.reset_edit_click();
+        }
+    }
+    pub(super) fn cell_click(&self, event: &InputEvent) -> Option<(i64, String, Point)> {
+        let InputEvent::PointerUp {
+            position,
+            button: PointerButton::Primary,
+            modifiers,
+        } = event
+        else {
+            return None;
+        };
+        let gesture = self.workflow.gesture.as_ref()?;
+        if !gesture.click
+            || gesture.moved(*position)
+            || *modifiers != Default::default()
+            || self.settings.is_read_only
+            || self.records.draft.is_some()
+        {
+            return None;
+        }
+        let GridHitKind::Cell { row, column } = self.frame.hit_test(*position)? else {
+            return None;
+        };
+        let key = data_key(row);
+        let field = &self.source.fields[column.0 as usize];
+        if gesture.origin.0 != key
+            || &gesture.origin.1 != field
+            || self.model.focused() != Some(row)
+            || self.model.focused_column() != Some(column)
+            || self.settings.columns[column.0 as usize].read_only
+            || !self.source.editable(row, column)
+        {
+            return None;
+        }
+        Some((key, field.clone(), *position))
+    }
+
+    pub(super) fn activate_cell_click(&mut self, key: i64, field: &str, point: Point) -> bool {
+        let now = Instant::now();
+        let previous = self.workflow.last_click.take();
+        if self.workflow.edit_on_click
+            || previous.is_some_and(|(k, f, p, t)| {
+                k == key
+                    && f == field
+                    && (p.x - point.x).abs() <= 4.
+                    && (p.y - point.y).abs() <= 4.
+                    && now.duration_since(t) < Duration::from_millis(500)
+            })
+        {
+            return true;
+        }
+        self.workflow.last_click = Some((key, field.into(), point, now));
+        false
+    }
+
     pub(super) fn filter_height(&self, b: Rect) -> f32 {
         if self.workflow.auto_filter && self.source.presentation.view == GridViewMode::Table {
             (26.0 * self.model.config().header_height
@@ -220,6 +303,20 @@ impl GridState {
     }
 }
 impl Controls {
+    /// Open editable cells on a single click. The default gesture is a double click.
+    pub fn set_grid_edit_on_click(
+        &mut self,
+        id: WidgetId,
+        enabled: bool,
+    ) -> Result<(), ControlError> {
+        let grid = self
+            .grids
+            .get_mut(&id)
+            .ok_or_else(|| error("Unknown grid"))?;
+        grid.reset_edit_click();
+        grid.workflow.edit_on_click = enabled;
+        Ok(())
+    }
     pub fn set_grid_workflow_rows(
         &mut self,
         id: WidgetId,
@@ -687,6 +784,7 @@ impl Controls {
                     self.grids.get_mut(&id).unwrap().workflow.gesture = Some(Gesture {
                         origin,
                         point: *p,
+                        click: *modifiers == Default::default(),
                         append: modifiers.control,
                         external: modifiers.alt && modifiers.control,
                         rows,
@@ -700,10 +798,15 @@ impl Controls {
             }
         }
         if let InputEvent::PointerMoved { position } = event
-            && let Some(gesture) = &self.grids[&id].workflow.gesture
-            && gesture.external
-            && (gesture.point.x - position.x).abs() + (gesture.point.y - position.y).abs() > 4.
+            && let Some(gesture) = &mut self.grids.get_mut(&id).unwrap().workflow.gesture
+            && gesture.moved(*position)
         {
+            gesture.click = false;
+            let external = gesture.external;
+            self.grids.get_mut(&id).unwrap().workflow.last_click = None;
+            if !external {
+                return Ok(false);
+            }
             let g = self.grids.get_mut(&id).unwrap();
             g.workflow.external_requested = true;
             g.workflow.gesture = None;
@@ -718,7 +821,7 @@ impl Controls {
             && let Some(gesture) = self.grids.get_mut(&id).unwrap().workflow.gesture.take()
         {
             self.runtime.apply(Mutation::CapturePointer(None))?;
-            if (position.x - gesture.point.x).abs() + (position.y - gesture.point.y).abs() > 4. {
+            if gesture.moved(*position) {
                 if let Some(keys) = gesture.rows {
                     if let Some(to) = self
                         .runtime

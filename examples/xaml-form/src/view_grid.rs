@@ -367,6 +367,8 @@ impl MountedView {
         let id = ui
             .grid_control(parent, source, settings, style)
             .map_err(err)?;
+        ui.set_grid_edit_on_click(id, definition.edit_on_click)
+            .map_err(err)?;
         ui.set_grid_workflow_rows(
             id,
             definition.show_auto_filter_row,

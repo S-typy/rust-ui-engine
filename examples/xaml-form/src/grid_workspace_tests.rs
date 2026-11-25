@@ -4,6 +4,185 @@ use rust_desktop_ui_core::Size;
 use rust_desktop_ui_data::CellValue;
 
 #[test]
+fn compiled_workspace_clicks_mount_editors_in_their_cells_and_write_through() {
+    use rust_desktop_ui_controls::GridRowKind;
+    use rust_desktop_ui_core::{InputEvent, Key, Point, PointerButton};
+    use rust_desktop_ui_treegrid::ColumnId;
+
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    ui.commands_mut().register("Light", "Light");
+    ui.commands_mut().register("Dark", "Dark");
+    let sources = demo::register(&mut ui).unwrap();
+    let root = ui.root();
+    let view = MountedView::mount_with_context(
+        &mut ui,
+        root,
+        &crate::generated_grid_workspace::window_definition().content,
+        demo::model().unwrap(),
+    )
+    .unwrap();
+    let _state = demo::State::install(&mut ui, &view, sources.clone())
+        .unwrap()
+        .unwrap();
+    let grid = view.find_name("WorkspaceGrid").unwrap();
+    let size = Size::new(1640., 920.);
+    ui.update(size).unwrap();
+    let frame = ui.grid_frame(grid).unwrap();
+    let row = frame
+        .semantics
+        .rows
+        .iter()
+        .find(|r| {
+            matches!(ui.grid_row_kind(grid, r.key), Some(GridRowKind::Record(_)))
+                && frame
+                    .cell_bounds(r.key, ColumnId(3))
+                    .is_some_and(|b| b.height >= 22.)
+        })
+        .unwrap()
+        .key;
+    let GridRowKind::Record(record) = ui.grid_row_kind(grid, row).unwrap() else {
+        unreachable!()
+    };
+    let click = |ui: &mut Controls, position| {
+        for event in [
+            InputEvent::PointerDown {
+                position,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            },
+            InputEvent::PointerUp {
+                position,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            },
+        ] {
+            ui.dispatch(event).unwrap();
+            ui.update(size).unwrap();
+        }
+    };
+    let click_column = |ui: &mut Controls, column| {
+        let b = ui
+            .grid_frame(grid)
+            .unwrap()
+            .cell_bounds(row, ColumnId(column))
+            .unwrap();
+        let position = Point::new(b.x + b.width / 2., b.y + b.height / 2.);
+        click(ui, position);
+    };
+    let key = |ui: &mut Controls, key| {
+        ui.dispatch(InputEvent::KeyDown {
+            key,
+            modifiers: Default::default(),
+            repeat: false,
+        })
+        .unwrap();
+        ui.update(size).unwrap();
+    };
+    for column in [0, 5] {
+        click_column(&mut ui, column);
+        assert!(ui.grid_editor(grid).is_none());
+    }
+    for column in [1, 2, 3, 4, 6, 7] {
+        click_column(&mut ui, column);
+        let editor = ui.grid_editor(grid).expect("one click opens a cell editor");
+        let mut host = editor;
+        while let Some(parent) = ui.runtime.tree().parent(host) {
+            if parent == grid {
+                break;
+            }
+            host = parent;
+        }
+        let b = ui.runtime.bounds(host).unwrap();
+        let cell = ui
+            .grid_frame(grid)
+            .unwrap()
+            .cell_bounds(row, ColumnId(column))
+            .unwrap();
+        assert!(
+            (b.x - cell.x).abs() < 1.
+                && (b.y - cell.y).abs() < 1.
+                && (b.width - cell.width).abs() < 1.
+                && (b.height - cell.height).abs() < 1.,
+            "column {column}: host {b:?}, cell {cell:?}"
+        );
+        if column == 7 {
+            assert!(ui.check_state(editor).is_some());
+        } else {
+            assert!(ui.document(editor).is_some());
+        }
+        key(&mut ui, Key::Escape);
+        assert!(ui.grid_editor(grid).is_none());
+    }
+    click_column(&mut ui, 4);
+    key(&mut ui, Key::Tab);
+    assert_eq!(
+        ui.grid_focused_column(grid),
+        Some(ColumnId(6)),
+        "skip the calculated total"
+    );
+    assert!(ui.grid_editor(grid).is_some());
+    key(&mut ui, Key::Escape);
+
+    click_column(&mut ui, 3);
+    let editor = ui.grid_editor(grid).unwrap();
+    ui.set_text(editor, "704").unwrap();
+    click_column(&mut ui, 2);
+    assert_eq!(
+        sources.master.borrow().value(record, "Quantity"),
+        Some(&CellValue::Integer(704))
+    );
+    assert_eq!(ui.grid_focused_column(grid), Some(ColumnId(2)));
+    let editor = ui.grid_editor(grid).unwrap();
+    ui.set_text(editor, "Проверка строки").unwrap();
+    key(&mut ui, Key::Enter);
+    assert_eq!(
+        sources.master.borrow().value(record, "Title"),
+        Some(&CellValue::Text("Проверка строки".into()))
+    );
+    for (column, label, field, expected) in [
+        (
+            6,
+            "23",
+            "Due",
+            CellValue::Date(rust_desktop_ui_data::DateValue::new(2026, 10, 23).unwrap()),
+        ),
+        (1, "Поставка", "Category", CellValue::Text("SUP".into())),
+    ] {
+        click_column(&mut ui, column);
+        let b = ui
+            .grid_frame(grid)
+            .unwrap()
+            .cell_bounds(row, ColumnId(column))
+            .unwrap();
+        click(
+            &mut ui,
+            Point::new(b.x + b.width - 14., b.y + b.height / 2.),
+        );
+        let bounds = ui
+            .scene()
+            .texts
+            .iter()
+            .rev()
+            .find(|t| t.text == label)
+            .expect("visible popup option")
+            .bounds;
+        click(
+            &mut ui,
+            Point::new(bounds.x + 4., bounds.y + bounds.height / 2.),
+        );
+        assert!(
+            ui.grid_editor(grid).is_some(),
+            "selecting an option keeps the grid session"
+        );
+        key(&mut ui, Key::Enter);
+        assert_eq!(
+            sources.master.borrow().value(record, field),
+            Some(&expected)
+        );
+    }
+}
+
+#[test]
 fn grid_workspace_demo_modes_recipes_conflict_and_binding_preserve_logical_key() {
     let definition =
         rust_desktop_ui_xaml::parse(include_str!("../GridWorkspaceWindow.xaml")).unwrap();

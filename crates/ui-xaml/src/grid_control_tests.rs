@@ -2,7 +2,7 @@ use crate::*;
 
 #[test]
 fn grid_extended_metadata_has_typed_shape_and_codegen() {
-    let markup = "<GridControl DataSource='Orders' View='Cards' GroupFields='Category, State'>
+    let markup = "<GridControl DataSource='Orders' View='Cards' EditOnClick='True' GroupFields='Category, State'>
       <GridColumn FieldName='Name'/><GridColumn FieldName='Amount'/>
       <GridControl.Summaries><GridSummary Function='CountRows' Title='Rows'/><GridSummary Function='Sum' FieldName='Amount' Title='Total'/></GridControl.Summaries>
       <GridControl.Bands><GridBand Header='Record' Fields='Name,Amount'/></GridControl.Bands>
@@ -12,6 +12,7 @@ fn grid_extended_metadata_has_typed_shape_and_codegen() {
     </GridControl>";
     let g = grid(markup);
     assert_eq!(g.view, GridViewDefinition::Cards);
+    assert!(g.edit_on_click);
     assert_eq!(g.group_fields, ["Category", "State"]);
     assert_eq!(g.summaries[1].function, GridSummaryFunction::Sum);
     assert_eq!(g.summaries[1].field.as_deref(), Some("Amount"));
@@ -29,6 +30,7 @@ fn grid_extended_metadata_has_typed_shape_and_codegen() {
         "GridCellTemplateDefinition",
         "IconSymbol::Check",
         "ExactAmount",
+        "edit_on_click:true",
     ] {
         assert!(code.contains(expected), "{expected}");
     }
@@ -61,6 +63,7 @@ fn grid_extended_metadata_rejects_ambiguous_or_executable_profiles() {
         );
     }
     for attribute in [
+        "EditOnClick='maybe'",
         "View='Unknown'",
         "View='{Binding Mode}'",
         "GroupFields='A,A'",
