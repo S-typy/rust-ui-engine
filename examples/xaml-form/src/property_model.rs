@@ -58,6 +58,13 @@ pub(crate) fn register(ui: &mut Controls) -> Result<(), String> {
         FieldSchema::new("count", FieldType::Integer),
         FieldSchema::new("price", FieldType::Decimal),
         FieldSchema::new("created", FieldType::Date),
+        FieldSchema::new("author", FieldType::Text),
+        FieldSchema::new("department", FieldType::Text),
+        FieldSchema::new("time", FieldType::Time),
+        FieldSchema::new("edition", FieldType::Integer),
+        FieldSchema::new("status", FieldType::Text),
+        FieldSchema::new("notes", FieldType::Text),
+        FieldSchema::new("cover", FieldType::Text),
     ])
     .map_err(err)?;
     let rows = vec![
@@ -70,6 +77,13 @@ pub(crate) fn register(ui: &mut Controls) -> Result<(), String> {
                 CellValue::Integer(i64::MIN),
                 CellValue::Decimal("12345.67".parse().map_err(err)?),
                 CellValue::Date("2026-10-17".parse().map_err(err)?),
+                CellValue::Text("Анна Мельникова".into()),
+                CellValue::Text("Редакция".into()),
+                CellValue::Time("09:30:00".parse().map_err(err)?),
+                CellValue::Integer(3),
+                CellValue::Text("На согласовании".into()),
+                CellValue::Text("Согласовать финальную редакцию с автором. После утверждения документ будет доступен всем участникам отдела.".into()),
+                CellValue::Text("Горный пейзаж".into()),
             ],
         ),
         DataRow::new(
@@ -81,6 +95,13 @@ pub(crate) fn register(ui: &mut Controls) -> Result<(), String> {
                 CellValue::Integer(i64::MAX),
                 CellValue::Decimal("12345.67".parse().map_err(err)?),
                 CellValue::Date("2026-10-17".parse().map_err(err)?),
+                CellValue::Text("Анна Мельникова".into()),
+                CellValue::Text("Редакция".into()),
+                CellValue::Time("09:30:00".parse().map_err(err)?),
+                CellValue::Integer(3),
+                CellValue::Text("На согласовании".into()),
+                CellValue::Text("Согласовать финальную редакцию с автором. После утверждения документ будет доступен всем участникам отдела.".into()),
+                CellValue::Text("Горный пейзаж".into()),
             ],
         ),
     ];
@@ -279,6 +300,7 @@ mod tests {
     fn property_demo_commands_expose_accepted_source_and_retained_mixed_editors() {
         let window = rust_desktop_ui_xaml::parse(include_str!("../PropertyWindow.xaml")).unwrap();
         let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        crate::visual_model::register_images(&mut ui).unwrap();
         register(&mut ui).unwrap();
         let root = ui.root();
         let mut view = MountedView::mount(&mut ui, root, &window.content).unwrap();
@@ -312,7 +334,13 @@ mod tests {
             ui.set_theme(theme).unwrap();
             ui.update(Size::new(1180.0, 880.0)).unwrap();
             assert_eq!(view.names["PropertyNameEditor"], editor);
-            assert!(ui.runtime.bounds(editor).unwrap().height >= 20.0);
+            assert!(ui.runtime.bounds(editor).is_none());
+            let grid = view.property_grids.get_mut(&state.owner).unwrap();
+            grid.begin_edit(&mut ui, "name").unwrap();
+            ui.update(Size::new(1180.0, 880.0)).unwrap();
+            assert!(ui.runtime.bounds(editor).unwrap().height >= 20.);
+            assert_eq!(ui.document(editor).unwrap().text(), "reject");
+            grid.begin_edit(&mut ui, "count").unwrap();
         }
         let diagnostic = state.diagnostics(&ui, &view);
         assert!(diagnostic.contains("source_revision"));

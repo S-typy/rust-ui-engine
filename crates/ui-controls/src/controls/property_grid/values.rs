@@ -87,9 +87,24 @@ pub(super) fn check_recipe(ui: &Controls, p: &Property) -> Result<(), ControlErr
     }
     Ok(())
 }
+pub(super) fn validate_choice(choices: &[String], value: &CellValue) -> Result<(), ControlError> {
+    if !choices.is_empty()
+        && !matches!(value, CellValue::Null)
+        && !matches!(value, CellValue::Text(v) if choices.contains(v))
+    {
+        return Err(invalid("Property value is outside its choices"));
+    }
+    Ok(())
+}
 pub(super) fn read(ui: &Controls, p: &Property) -> Result<CellValue, String> {
     let value = if p.null.is_some_and(|id| ui.checked(id) == Some(true)) {
         CellValue::Null
+    } else if !p.descriptor.choices.is_empty() {
+        ui.selected_keys(p.owner)
+            .and_then(|v| v.first())
+            .cloned()
+            .map(CellValue::Text)
+            .unwrap_or(CellValue::Null)
     } else if matches!(p.recipe, DataFormEditorFactory::CheckBox) {
         match ui
             .check_state(p.owner)
@@ -108,6 +123,7 @@ pub(super) fn read(ui: &Controls, p: &Property) -> Result<CellValue, String> {
                 .text(),
         )?
     };
+    validate_choice(&p.descriptor.choices, &value).map_err(|e| e.to_string())?;
     p.schema.validate(&value).map_err(|e| e.to_string())?;
     Ok(value)
 }
@@ -116,7 +132,15 @@ pub(super) fn load(ui: &mut Controls, p: &Property, value: &CellValue) -> Result
         .validate(value)
         .map_err(|e| invalid(e.to_string()))?;
     let text = checked_format(&p.recipe, &p.schema, value)?;
-    if matches!(p.recipe, DataFormEditorFactory::CheckBox) {
+    if !p.descriptor.choices.is_empty() {
+        validate_choice(&p.descriptor.choices, value)?;
+        let keys = if let CellValue::Text(v) = value {
+            std::slice::from_ref(v)
+        } else {
+            &[]
+        };
+        ui.set_selected_keys(p.owner, keys)?;
+    } else if matches!(p.recipe, DataFormEditorFactory::CheckBox) {
         ui.set_check_state(
             p.owner,
             match value {
@@ -156,34 +180,57 @@ pub(super) fn dirty(ui: &Controls, p: &Property) -> bool {
             .is_some_and(|d| d.composition().is_some())
 }
 pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), ControlError> {
-    let mixed = !p.editing;
-    for (id, visible) in [(p.owner, !mixed), (p.mixed, mixed), (p.edit, mixed)] {
-        let props = &ui
-            .runtime
-            .tree()
-            .node(id)
-            .ok_or_else(|| invalid("Property presentation was removed"))?
-            .props;
-        if props.visible != visible || props.collapsed == visible {
-            ui.edit_props(id, |n| {
-                n.visible = visible;
-                n.collapsed = !visible;
-            })?;
+    let writable = !p.descriptor.metadata.read_only;
+    let label = p
+        .descriptor
+        .metadata
+        .label
+        .as_ref()
+        .unwrap_or(&p.schema.title);
+    let preview = match aggregate(&p.baseline) {
+        PropertyValue::Mixed => "Разные значения".to_owned(),
+        PropertyValue::Uniform(CellValue::Null) => "Не задано".to_owned(),
+        PropertyValue::Uniform(CellValue::Bool(v)) => if v { "Да" } else { "Нет" }.to_owned(),
+        PropertyValue::Uniform(v) => checked_format(&p.recipe, &p.schema, &v)?,
+    };
+    if let Some(label) = p.value_label
+        && ui.controls.get(&label).is_some_and(|c| c.label != preview)
+        && ui
+            .button_content(p.edit)
+            .is_some_and(|root| ui.flyout_descendant(label, root))
+    {
+        if p.measure_value_width {
+            let width = ui
+                .measure_styled_text(&preview, 16_384., ui.text_style(label).unwrap())?
+                .width
+                .ceil()
+                + 16.;
+            ui.edit_props(label, |props| props.style.width = Length::Px(width))?;
         }
+        ui.set_label(label, &preview)?;
     }
+    if ui.controls[&p.edit].label != preview || ui.controls[&p.edit].automation_name.is_none() {
+        ui.set_automation_name(p.edit, format!("{label}: {preview}"))?;
+        ui.set_label(p.edit, preview)?;
+    }
+    show(ui, p.owner, p.active)?;
+    show(ui, p.edit, !p.active)?;
+    show(ui, p.apply, p.active && writable)?;
+    show(ui, p.reset, p.descriptor.default.is_some() && writable)?;
     if let Some(null) = p.null {
-        ui.edit_props(null, |n| {
-            n.visible = !mixed;
-            n.collapsed = mixed;
-        })?;
-        ui.set_enabled(null, !p.descriptor.metadata.read_only)?;
-        ui.set_enabled(p.owner, ui.checked(null) != Some(true))?;
+        show(ui, null, p.active)?;
+        enabled(ui, null, writable)?;
+        enabled(ui, p.owner, ui.checked(null) != Some(true))?;
     }
-    ui.set_enabled(p.edit, !p.descriptor.metadata.read_only)?;
-    ui.set_enabled(p.apply, !mixed && !p.descriptor.metadata.read_only)?;
-    ui.set_enabled(
-        p.reset,
-        p.descriptor.default.is_some() && !p.descriptor.metadata.read_only,
-    )?;
+    enabled(ui, p.edit, writable)?;
+    enabled(ui, p.apply, p.editing && writable)?;
+    enabled(ui, p.reset, p.descriptor.default.is_some() && writable)?;
+    Ok(())
+}
+
+fn enabled(ui: &mut Controls, id: WidgetId, value: bool) -> Result<(), ControlError> {
+    if ui.controls[&id].enabled != value {
+        ui.set_enabled(id, value)?;
+    }
     Ok(())
 }

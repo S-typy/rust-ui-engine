@@ -606,6 +606,7 @@ struct Control {
     button_icon: Option<ButtonIcon>,
     button_content_layout: ButtonContentLayout,
     button_chrome: ButtonChrome,
+    inspector_part: Option<property_grid::InspectorPart>,
     key_tip: Option<String>,
     split_parts: Option<SplitButton>,
     split_owner: Option<WidgetId>,
@@ -1578,6 +1579,7 @@ impl Controls {
                 button_icon: None,
                 button_content_layout: ButtonContentLayout::default(),
                 button_chrome: ButtonChrome::default(),
+                inspector_part: None,
                 key_tip: None,
                 split_parts: None,
                 split_owner: None,
@@ -3524,6 +3526,9 @@ impl Controls {
             if self.paint_status_control(id, bounds, clip)? {
                 continue;
             }
+            if self.paint_inspector_part(id, bounds, clip)? {
+                continue;
+            }
             if self.paint_group(id, bounds, clip)? {
                 if let Some(custom) = self.custom_scenes.get(&id) {
                     append_clipped(&mut self.scene, custom, clip);
@@ -3664,6 +3669,19 @@ impl Controls {
                         .button_style
                         .resolve_chrome(self.theme, state, control.button_chrome)
                 };
+                if !state.enabled
+                    && matches!(
+                        control.inspector_part,
+                        Some(property_grid::InspectorPart::Value)
+                    )
+                    && self
+                        .runtime
+                        .tree()
+                        .parent(id)
+                        .is_some_and(|parent| self.is_enabled(parent))
+                {
+                    style.foreground = tokens.muted;
+                }
                 if control.split_owner.is_some() {
                     // The container owns the common hover/checked surface. Only
                     // a pressed subarea receives an additional local fill.
@@ -3811,7 +3829,11 @@ impl Controls {
                         } else {
                             400
                         },
-                        align: if indicator {
+                        align: if indicator
+                            || matches!(
+                                control.inspector_part,
+                                Some(property_grid::InspectorPart::Value)
+                            ) {
                             TextAlign::Start
                         } else {
                             TextAlign::Center
@@ -3958,6 +3980,7 @@ impl Controls {
             let enabled = self.effective_enabled(id);
             let has_popup = self.rich_owner(id).is_none() && self.popup_expanded(id).is_some();
             let has_content = self.button_content(id).is_some();
+            let readable_label = self.readable_label(id, enabled);
             let Some(control) = self.controls.get_mut(&id) else {
                 continue;
             };
@@ -4053,7 +4076,7 @@ impl Controls {
                 },
                 color: editor_style.map_or(
                     if matches!(control.kind, Kind::Label) {
-                        control.text_style.color(self.theme, enabled)
+                        control.text_style.color(self.theme, readable_label)
                     } else if enabled {
                         tokens.text
                     } else {

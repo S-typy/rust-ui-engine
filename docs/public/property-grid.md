@@ -34,11 +34,27 @@ navigation and clipboard behavior. Collapsing a group retains editor IDs,
 selection, draft and history. The wrapper's `group` accessor exposes the retained
 expander for programmatic expansion.
 
+## Browsing and editing
+
+The inspector opens as a two-column list of property names and accepted values.
+Click an editable value or activate its button with the keyboard to open the
+inline editor. Apply or Enter in a text field submits the draft. Escape cancels
+editing. The reset icon restores the declared default. Its tooltip and accessible
+name identify the property. Only one editor is shown at a time. A prepared draft
+in another row is retained and can be reopened.
+
+Set `Scrollable="True"` in a height-constrained container to keep the toolbar visible
+while the rows scroll. The default intrinsic layout can be hosted inside a form.
+The toolbar switches between collapsible categories and a single alphabetical
+list. Search matches a label, field name or category path without case
+sensitivity. Matching groups expand during search. Clearing the query restores
+their previous expansion. Filtering and sorting reuse the original widgets.
+Rust callers can access the search field and both view selectors via `toolbar_parts`.
+
 ## Accepted values and transactions
 
 `accepted` returns `PropertyValue::Uniform(CellValue)` or `Mixed`. Mixed is not
-NULL, an empty string or false. A mixed row displays “Разные значения” and an
-explicit Edit action. Its hidden editor has a deterministic default or neutral
+NULL, an empty string or false. A mixed row displays “Разные значения” in its value cell. Activating the cell starts editing. Its hidden editor has a deterministic default or neutral
 value selected within the recipe's bounds; no object's value is chosen as the
 representative. `draft` returns `None` until editing begins.
 
@@ -91,6 +107,34 @@ The compiled profile accepts the built-in Auto/Text/Numeric/Date/Time/CheckBox
 recipes. Rust callers can supply named `DataFormFactories` recipes. Common
 geometry, visibility and enabled bindings are supported; property values belong
 to the typed source rather than a parallel string binding model.
+
+## Choices and display templates
+
+A text property can declare a finite list of distinct choices. The inspector
+shows the selected text in the value column and opens a selection editor when
+activated. Each choice is an allowed source value. The usual Apply, Cancel,
+nullable and multi-object rules also apply to these fields.
+
+```xml
+<Property FieldName="status" Label="Статус" Category="Документ"
+          Choices="Черновик|На согласовании|Утверждён">
+  <Property.DisplayTemplate>
+    <StackPanel Orientation="Horizontal" Spacing="4">
+      <Icon Symbol="Edit" Width="14" Height="14"/>
+      <TextBlock x:Name="PART_Value"/>
+    </StackPanel>
+  </Property.DisplayTemplate>
+</Property>
+```
+
+A display template accepts one noninteractive layout, text, icon or image root.
+An optional TextBlock named `PART_Value` receives the accepted display value,
+including mixed and null captions. Each template has its own namescope. Use
+`FullWidth="True"` to extend the value across both columns, for example for a
+wrapping document note. The normal typed editor still handles changes.
+Static group paths, finite text choices and display templates are supported.
+Editable collection children and interactive controls inside display templates
+are outside this profile.
 
 ## Bounds and verification
 

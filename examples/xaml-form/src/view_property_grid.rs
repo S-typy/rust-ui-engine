@@ -65,6 +65,8 @@ fn settings(ui: &Controls, value: &PropertyGridDefinition) -> Result<PropertyGri
                 },
                 category: p.category.clone(),
                 groups: p.groups.clone(),
+                choices: p.choices.clone(),
+                full_width: p.full_width,
                 default,
             })
         })
@@ -72,6 +74,7 @@ fn settings(ui: &Controls, value: &PropertyGridDefinition) -> Result<PropertyGri
     Ok(PropertyGridSettings {
         properties,
         label_width: value.label_width,
+        scrollable: value.scrollable,
         read_only: value.is_read_only,
     })
 }
@@ -91,12 +94,14 @@ impl MountedView {
         parent: WidgetId,
         value: &PropertyGridDefinition,
         style: LayoutStyle,
+        width: f32,
+        context: &str,
     ) -> Result<WidgetId, String> {
         let settings = settings(ui, value)?;
         let source = ui
             .data_source(&value.data_source)
             .ok_or("Property source is not registered")?;
-        let grid = PropertyGrid::mount(
+        let mut grid = PropertyGrid::mount(
             ui,
             parent,
             source,
@@ -106,6 +111,31 @@ impl MountedView {
             style,
         )
         .map_err(err)?;
+        for p in &value.properties {
+            if p.display_template.is_some() {
+                let button = grid
+                    .property_actions(&p.metadata.field)
+                    .ok_or("Missing property row")?
+                    .0;
+                let slot = self.mount_property_presentation(
+                    ui,
+                    button,
+                    p,
+                    if p.full_width {
+                        width
+                    } else {
+                        (width - value.label_width).max(0.)
+                    },
+                    context,
+                )?;
+                grid.configure_display_template(
+                    ui,
+                    &p.metadata.field,
+                    slot.map(|id| (id, p.value_part().is_some_and(|v| v.common.width.is_none()))),
+                )
+                .map_err(err)?;
+            }
+        }
         let id = grid.container;
         self.property_grids.insert(id, grid);
         Ok(id)
@@ -307,7 +337,12 @@ mod tests {
                 }
                 for field in ["price", "created"] {
                     let editor = grid.property_editor(field).unwrap();
-                    let rect = form.ui.runtime.bounds(editor).unwrap();
+                    assert!(form.ui.runtime.bounds(editor).is_none());
+                    let rect = form
+                        .ui
+                        .runtime
+                        .bounds(grid.property_actions(field).unwrap().0)
+                        .unwrap();
                     assert!(rect.width >= 200.0, "Narrow {field} editor: {rect:?}");
                     let text = form.ui.document(editor).unwrap().text();
                     assert!(
@@ -376,6 +411,125 @@ mod tests {
                     "Draft clipped: {run:?}"
                 );
             }
+        }
+    }
+    #[test]
+    fn compiled_inspector_filters_sorts_and_writes_a_templated_choice() {
+        use rust_desktop_ui_controls::SemanticAction;
+        let mut form = crate::form::Form::new_with_model(
+            crate::generated_properties::window_definition(),
+            false,
+            None,
+        )
+        .unwrap();
+        let ui = &mut form.ui;
+        let grid = form
+            .view
+            .property_grids
+            .get_mut(&form.view.names["DocumentProperties"])
+            .unwrap();
+        let size = Size::new(700., 850.);
+        ui.update(size).unwrap();
+        let (search, grouped, alphabetical) = grid.toolbar_parts();
+        let small = Size::new(500., 400.);
+        ui.update(small).unwrap();
+        grid.update_scroll_extent(ui).unwrap();
+        let viewport = grid.row_viewport().unwrap();
+        let initial = ui.runtime.bounds(search).unwrap();
+        ui.scroll_to(viewport, 180.).unwrap();
+        ui.update(small).unwrap();
+        assert!(ui.scroll_offset(viewport).unwrap().y > 100.);
+        assert_eq!(ui.runtime.bounds(search), Some(initial));
+        ui.scroll_to(viewport, 0.).unwrap();
+        ui.update(size).unwrap();
+        grid.update_scroll_extent(ui).unwrap();
+        let name = grid.property_editor("name").unwrap();
+        grid.set_draft(ui, "name", CellValue::Text("Черновик имени".into()))
+            .unwrap();
+        ui.perform_action(alphabetical, SemanticAction::Activate, None)
+            .unwrap();
+        grid.update(ui).unwrap();
+        ui.update(size).unwrap();
+        let row_y = |field: &str| {
+            ui.runtime
+                .bounds(grid.property_row(field).unwrap())
+                .unwrap()
+                .y
+        };
+        assert!(row_y("author") < row_y("edition") && row_y("edition") < row_y("name"));
+        ui.set_text(search, "СТАТУС").unwrap();
+        grid.update(ui).unwrap();
+        ui.update(size).unwrap();
+        assert!(ui.runtime.bounds(name).is_none());
+        assert!(
+            ui.runtime
+                .bounds(grid.property_row("status").unwrap())
+                .is_some()
+        );
+        assert!(
+            !ui.scene()
+                .texts
+                .iter()
+                .any(|run| run.text == "Свойства не найдены")
+        );
+        ui.set_text(search, "абракадабра").unwrap();
+        grid.update(ui).unwrap();
+        ui.update(size).unwrap();
+        assert!(
+            ui.scene()
+                .texts
+                .iter()
+                .any(|run| run.text == "Свойства не найдены")
+        );
+        ui.perform_action(grouped, SemanticAction::Activate, None)
+            .unwrap();
+        ui.set_text(search, "").unwrap();
+        grid.update(ui).unwrap();
+        ui.update(size).unwrap();
+        assert_eq!(ui.document(name).unwrap().text(), "Черновик имени");
+        let group = grid.group(&["Параметры", "Размеры"]).unwrap();
+        ui.set_expander_expanded(group.container, false).unwrap();
+        ui.set_text(search, "количество").unwrap();
+        grid.update(ui).unwrap();
+        assert_eq!(ui.expander_expanded(group.container), Some(true));
+        ui.set_text(search, "").unwrap();
+        grid.update(ui).unwrap();
+        assert_eq!(ui.expander_expanded(group.container), Some(false));
+        grid.begin_edit(ui, "status").unwrap();
+        let combo = grid.property("status").unwrap();
+        ui.set_selected_keys(combo, &["Утверждён".into()]).unwrap();
+        assert_eq!(grid.commit(ui, "status").unwrap(), PropertyCommit::Saved);
+        assert!(
+            grid.set_draft(ui, "status", CellValue::Text("Неизвестно".into()))
+                .is_err()
+        );
+        ui.update(size).unwrap();
+        assert!(ui.scene().texts.iter().any(|run| run.text == "Утверждён"));
+        ui.set_text(search, "Карточка документа").unwrap();
+        grid.update(ui).unwrap();
+        ui.update(size).unwrap();
+        let cover = ui
+            .runtime
+            .bounds(grid.property_row("cover").unwrap())
+            .unwrap();
+        let note = ui
+            .runtime
+            .bounds(grid.property_row("notes").unwrap())
+            .unwrap();
+        assert!(cover.height >= 112. && cover.y + cover.height <= note.y + 1.);
+        assert!(
+            ui.scene()
+                .texts
+                .iter()
+                .any(|run| run.text.starts_with("Согласовать финальную редакцию")
+                    && run.bounds.intersection(note).is_some())
+        );
+        let source = ui.data_source("InspectionObjects").unwrap();
+        for key in [1, 2] {
+            assert_eq!(
+                source.borrow().value(key, "status"),
+                Some(&CellValue::Text("Утверждён".into()))
+            );
         }
     }
 }

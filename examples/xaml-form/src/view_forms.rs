@@ -1403,6 +1403,9 @@ impl MountedView {
         if self.sync_automatic_heights(ui)? {
             ui.update(viewport).map_err(err)?;
         }
+        for grid in self.property_grids.values() {
+            grid.update_scroll_extent(ui).map_err(err)?;
+        }
         for scroll in &self.scrolls {
             let Some(bounds) = ui.runtime.bounds(scroll.viewport) else {
                 continue;

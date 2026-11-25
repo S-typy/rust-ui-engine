@@ -884,7 +884,11 @@ impl Compiler<'_> {
                     && child.offset == node.offset)
             {
                 children.push(child);
-            } else if node.name == "EditorButton" && child.name == "EditorButton.ContentTemplate" {
+            } else if matches!(
+                (node.name.as_str(), child.name.as_str()),
+                ("EditorButton", "EditorButton.ContentTemplate")
+                    | ("Property", "Property.DisplayTemplate")
+            ) {
                 // Inline button visuals share the resource template's private
                 // namescope policy while using their enclosing lexical scope.
                 let mut template = child.clone();
@@ -1159,7 +1163,10 @@ pub(crate) fn lower(source: &str) -> Result<Option<Lowered>, Diagnostic> {
     let needed = document.descendants().filter(Node::is_element).any(|node| {
         node.tag_name().name().ends_with(".Resources")
             || node.tag_name().name() == "ContentPresenter"
-            || node.tag_name().name() == "EditorButton.ContentTemplate"
+            || matches!(
+                node.tag_name().name(),
+                "EditorButton.ContentTemplate" | "Property.DisplayTemplate"
+            )
             || node.attributes().any(|a| {
                 matches!(
                     a.name(),

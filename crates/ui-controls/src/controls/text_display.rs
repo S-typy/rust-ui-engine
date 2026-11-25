@@ -247,7 +247,7 @@ impl Controls {
             return Ok(true);
         };
         let style = self.controls[&id].text_style;
-        let enabled = self.is_enabled(id);
+        let enabled = self.readable_label(id, self.is_enabled(id));
         if !enabled {
             for span in &mut display.spans {
                 span.color = None;

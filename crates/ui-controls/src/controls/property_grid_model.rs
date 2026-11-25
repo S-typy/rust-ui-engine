@@ -16,6 +16,10 @@ pub struct PropertyDescriptor {
     /// Static expandable path within a category, at most eight levels.
     pub groups: Vec<String>,
     pub default: Option<CellValue>,
+    /// Finite choices for a text property, in popup order.
+    pub choices: Vec<String>,
+    /// Let the value occupy the name column as well.
+    pub full_width: bool,
 }
 impl PropertyDescriptor {
     pub fn new(field: impl Into<String>) -> Self {
@@ -24,6 +28,8 @@ impl PropertyDescriptor {
             category: "Свойства".into(),
             groups: Vec::new(),
             default: None,
+            choices: Vec::new(),
+            full_width: false,
         }
     }
 }
@@ -33,6 +39,8 @@ pub struct PropertyGridSettings {
     /// Empty generates schema fields in one category.
     pub properties: Vec<PropertyDescriptor>,
     pub label_width: f32,
+    /// Keep the toolbar visible while the property rows scroll in a bounded host.
+    pub scrollable: bool,
     pub read_only: bool,
 }
 impl Default for PropertyGridSettings {
@@ -40,6 +48,7 @@ impl Default for PropertyGridSettings {
         Self {
             properties: Vec::new(),
             label_width: 180.0,
+            scrollable: false,
             read_only: false,
         }
     }
@@ -64,6 +73,18 @@ impl PropertyGridSettings {
                     "Property categories and group paths require 1..256 UTF-8 bytes and at most 8 groups",
                 ));
             }
+            if property.choices.len() > 128
+                || property
+                    .choices
+                    .iter()
+                    .any(|v| v.is_empty() || v.len() > 256 || v.chars().any(char::is_control))
+                || property.choices.iter().collect::<HashSet<_>>().len() != property.choices.len()
+            {
+                return Err(invalid(
+                    "Property choices require up to 128 unique nonempty labels",
+                ));
+            }
+            bytes += property.choices.iter().map(String::len).sum::<usize>();
             bytes += property.category.len()
                 + property.groups.iter().map(String::len).sum::<usize>()
                 + property.metadata.field.len()

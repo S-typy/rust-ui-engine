@@ -489,6 +489,11 @@ impl ElementDefinition {
             ElementKind::DockPanel(p) => p.children.iter().collect(),
             ElementKind::StatusBar(p) | ElementKind::RibbonStatusBar(p) => p.items.iter().collect(),
             ElementKind::StatusBarItem(p) => p.child.as_deref().into_iter().collect(),
+            ElementKind::PropertyGrid(p) => p
+                .properties
+                .iter()
+                .filter_map(|p| p.display_template.as_deref())
+                .collect(),
             ElementKind::ButtonEdit(p) => p
                 .buttons
                 .iter()
@@ -572,6 +577,11 @@ impl ElementDefinition {
                 p.items.iter_mut().collect()
             }
             ElementKind::StatusBarItem(p) => p.child.as_deref_mut().into_iter().collect(),
+            ElementKind::PropertyGrid(p) => p
+                .properties
+                .iter_mut()
+                .filter_map(|p| p.display_template.as_deref_mut())
+                .collect(),
             ElementKind::ButtonEdit(p) => p
                 .buttons
                 .iter_mut()

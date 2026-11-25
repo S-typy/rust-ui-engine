@@ -12,6 +12,7 @@ pub(super) type PresentationContext = (
 #[derive(Clone, Copy)]
 enum Owner {
     Button,
+    Property,
     EditorButton,
     Group,
     Tab,
@@ -55,7 +56,11 @@ impl MountedView {
             ui,
             header,
             &definition,
-            Axis::Horizontal,
+            if matches!(kind, Owner::Property) {
+                Axis::Vertical
+            } else {
+                Axis::Horizontal
+            },
             width,
             inherited_context,
         )?;
@@ -72,6 +77,38 @@ impl MountedView {
             },
         );
         Ok(())
+    }
+    pub(super) fn mount_property_presentation(
+        &mut self,
+        ui: &mut Controls,
+        owner: WidgetId,
+        property: &rust_desktop_ui_xaml::PropertyDefinition,
+        width: f32,
+        context: &str,
+    ) -> Result<Option<WidgetId>, String> {
+        let Some(template) = property.display_template.as_deref() else {
+            return Ok(None);
+        };
+        self.mount_presentation(
+            ui,
+            (owner, owner, Owner::Property),
+            template,
+            width,
+            context,
+        )?;
+        let Some(part) = property.value_part() else {
+            return Ok(None);
+        };
+        let name = format!(
+            "__live_template_{}_{}",
+            self.presentation_revision,
+            part.common.name.as_deref().unwrap()
+        );
+        self.presentations[&owner]
+            .view
+            .find_name(&name)
+            .map(Some)
+            .ok_or_else(|| "Missing property value presenter".into())
     }
     pub(super) fn mount_control_presentation(
         &mut self,
@@ -342,7 +379,7 @@ impl MountedView {
 }
 fn attach(ui: &mut Controls, owner: WidgetId, root: WidgetId, kind: Owner) -> Result<(), String> {
     match kind {
-        Owner::Button => ui.set_button_content(owner, Some(root)),
+        Owner::Button | Owner::Property => ui.set_button_content(owner, Some(root)),
         Owner::EditorButton => ui.set_editor_button_content(owner, Some(root)),
         Owner::Group => ui.set_group_header_content(owner, Some(root)),
         Owner::Tab => ui.set_tab_header_content(owner, Some(root)),

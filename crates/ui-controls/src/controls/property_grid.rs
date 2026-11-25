@@ -2,12 +2,16 @@
 use super::data_form::{checked_format, create_editor, parse_value};
 use super::property_grid_model::{aggregate, invalid};
 use super::*;
-use rust_desktop_ui_core::{Align, GridTrack};
+use rust_desktop_ui_core::{Align, GridTrack, Modifiers};
 use rust_desktop_ui_data::{CellValue, DataWrite, FieldSchema, TableSchema};
 
 #[path = "property_grid/values.rs"]
 mod values;
 use values::*;
+#[path = "property_grid/presentation.rs"]
+mod presentation;
+pub(super) use presentation::InspectorPart;
+use presentation::{action_icon, show, vertical_stack};
 
 struct Property {
     descriptor: PropertyDescriptor,
@@ -17,7 +21,9 @@ struct Property {
     host: WidgetId,
     owner: WidgetId,
     editor: WidgetId,
-    mixed: WidgetId,
+    active: bool,
+    value_label: Option<WidgetId>,
+    measure_value_width: bool,
     edit: WidgetId,
     apply: WidgetId,
     reset: WidgetId,
@@ -40,6 +46,16 @@ pub struct PropertyGrid {
     properties: Vec<Property>,
     groups: Vec<(Vec<String>, Expander)>,
     parents: Vec<(WidgetId, WidgetId)>,
+    search: WidgetId,
+    categorized: WidgetId,
+    sorted: WidgetId,
+    flat_host: WidgetId,
+    viewport: Option<ScrollViewer>,
+    empty: WidgetId,
+    filter: String,
+    flat: bool,
+    saved_expansion: Vec<(WidgetId, bool)>,
+    grouped_order: Vec<(WidgetId, WidgetId)>,
     error: Option<String>,
     changes: Vec<PropertyChanged>,
 }
@@ -106,7 +122,28 @@ impl PropertyGrid {
                     .map_err(|e| invalid(e.to_string()))?;
                 checked_format(&recipe, &field, default)?;
             }
-            let seed = neutral_value(&recipe, &field, descriptor.default.as_ref())?;
+            let seed = if descriptor.choices.is_empty() {
+                neutral_value(&recipe, &field, descriptor.default.as_ref())?
+            } else {
+                if field.kind != rust_desktop_ui_data::FieldType::Text
+                    || !matches!(recipe, DataFormEditorFactory::Text(_))
+                    || !matches!(descriptor.metadata.editor.as_str(), "Auto" | "Text")
+                {
+                    return Err(invalid(
+                        "Choices requires an Auto or Text editor on a text field",
+                    ));
+                }
+                for value in baseline.iter().chain(descriptor.default.as_ref()) {
+                    validate_choice(&descriptor.choices, value)?;
+                }
+                descriptor.default.clone().unwrap_or_else(|| {
+                    if field.nullable {
+                        CellValue::Null
+                    } else {
+                        CellValue::Text(descriptor.choices[0].clone())
+                    }
+                })
+            };
             metadata_bytes += descriptor.category.len()
                 + descriptor.groups.iter().map(String::len).sum::<usize>()
                 + field.name.len()
@@ -130,19 +167,51 @@ impl PropertyGrid {
             definitions.push((descriptor, field, recipe, baseline, seed));
         }
         drop(data);
-        style.kind = LayoutKind::Stack(Axis::Vertical);
-        style.gap = 8.0;
+        if settings.scrollable {
+            style.kind = LayoutKind::Grid;
+            style.grid_columns = vec![GridTrack::Fr(1.)];
+            style.grid_rows = vec![GridTrack::Auto, GridTrack::Fr(1.), GridTrack::Auto];
+        } else {
+            style.kind = LayoutKind::Stack(Axis::Vertical);
+        }
+        style.gap = 0.0;
         let container = ui.transparent_panel(parent, style)?;
         ui.set_role(container, Role::Group);
         ui.set_automation_name(container, "Свойства объектов")?;
         let result = (|| {
+            let (search, categorized, sorted) = presentation::toolbar(ui, container)?;
+            let viewport = if settings.scrollable {
+                let scroll = ui.scroll_view(container, LayoutStyle::default(), 0.)?;
+                ui.set_surface(scroll.viewport, SurfaceKind::Transparent)?;
+                ui.controls
+                    .get_mut(&scroll.viewport)
+                    .unwrap()
+                    .inspector_part = Some(InspectorPart::Viewport);
+                ui.set_surface(scroll.content, SurfaceKind::Transparent)?;
+                ui.edit_props(scroll.content, |n| {
+                    n.clip = false;
+                    n.style = vertical_stack();
+                    n.style.padding = Edges {
+                        left: 1.,
+                        top: 1.,
+                        right: 10.,
+                        bottom: 1.,
+                    };
+                })?;
+                Some(scroll)
+            } else {
+                None
+            };
+            let body = viewport.as_ref().map_or(container, |scroll| scroll.content);
+            let flat_host = ui.transparent_panel(body, vertical_stack())?;
+            show(ui, flat_host, false)?;
             let mut groups: Vec<(Vec<String>, Expander)> = Vec::new();
             let mut properties = Vec::new();
             for (descriptor, schema, recipe, baseline, seed) in definitions {
                 let path: Vec<_> = std::iter::once(descriptor.category.clone())
                     .chain(descriptor.groups.clone())
                     .collect();
-                let mut host = container;
+                let mut host = body;
                 for depth in 1..=path.len() {
                     let prefix = path[..depth].to_vec();
                     if let Some((_, group)) = groups.iter().find(|(key, _)| *key == prefix) {
@@ -159,7 +228,7 @@ impl PropertyGrid {
                                 header: path[depth - 1].clone(),
                                 appearance: GroupAppearance::Plain,
                                 header_style: GroupHeaderStyle::Light,
-                                padding: Edges::all(6.0),
+                                padding: Edges::default(),
                                 ..Default::default()
                             },
                             true,
@@ -168,51 +237,85 @@ impl PropertyGrid {
                                 ..Default::default()
                             },
                         )?;
+                        ui.controls.get_mut(&group.header).unwrap().inspector_part =
+                            Some(InspectorPart::Category {
+                                owner: group.container,
+                                depth: depth - 1,
+                            });
+                        ui.edit_props(group.header, |p| p.style.height = Length::Px(28.0))?;
                         ui.edit_props(group.content, |p| {
                             p.style.kind = LayoutKind::Stack(Axis::Vertical);
-                            p.style.gap = 6.0;
+                            p.style.gap = 0.0;
                         })?;
                         host = group.content;
                         groups.push((prefix, group));
                     }
                 }
+                let split = if descriptor.full_width {
+                    0.
+                } else {
+                    settings.label_width
+                };
                 let row = ui.transparent_panel(
                     host,
                     LayoutStyle {
                         kind: LayoutKind::Grid,
                         grid_columns: vec![
-                            GridTrack::Px(settings.label_width),
+                            GridTrack::Px(split),
                             GridTrack::Fr(1.0),
                             GridTrack::Auto,
                             GridTrack::Auto,
-                            GridTrack::Auto,
                         ],
-                        gap: 6.0,
+                        min_size: Size::new(0., 32.),
+                        padding: Edges {
+                            bottom: 1.,
+                            ..Default::default()
+                        },
                         width: Length::Percent(1.0),
                         ..Default::default()
                     },
                 )?;
+                ui.controls.get_mut(&row).unwrap().inspector_part = Some(InspectorPart::Row {
+                    split,
+                    alternate: properties.len() % 2 != 0,
+                });
                 let label = descriptor
                     .metadata
                     .label
                     .as_deref()
                     .unwrap_or(&schema.title);
-                ui.label(
+                let name_label = ui.label(
                     row,
                     label,
                     LayoutStyle {
+                        height: Length::Px(20.),
+                        margin: Edges {
+                            left: 16.,
+                            ..Default::default()
+                        },
                         vertical_alignment: Some(Align::Center),
                         ..Default::default()
                     },
                 )?;
+                if descriptor.full_width {
+                    show(ui, name_label, false)?;
+                }
                 let host = ui.transparent_panel(
                     row,
                     LayoutStyle {
                         // Stack deliberately ignores child flex_grow. The
                         // editor and mixed-value caption share this remaining
                         // Grid column, while the NULL toggle keeps its width.
+                        grid_column: rust_desktop_ui_core::GridPlacement {
+                            start: Some(2),
+                            span: 1,
+                        },
                         kind: LayoutKind::Flex(Axis::Horizontal),
-                        gap: 6.0,
+                        margin: Edges {
+                            left: 1.,
+                            ..Default::default()
+                        },
+                        gap: 2.0,
                         ..Default::default()
                     },
                 )?;
@@ -221,7 +324,32 @@ impl PropertyGrid {
                     PropertyValue::Uniform(v) => v,
                     PropertyValue::Mixed => &seed,
                 };
-                let (owner, editor) = create_editor(ui, host, label, &schema, &recipe, value)?;
+                let (owner, editor) = if descriptor.choices.is_empty() {
+                    create_editor(ui, host, label, &schema, &recipe, value)?
+                } else {
+                    let choices = descriptor
+                        .choices
+                        .iter()
+                        .map(|v| SelectionItem::new(v, v))
+                        .collect();
+                    let parts = ui.combo_box(
+                        host,
+                        label,
+                        choices,
+                        ComboBoxSettings {
+                            editable: false,
+                            read_only: descriptor.metadata.read_only,
+                        },
+                        LayoutStyle {
+                            height: Length::Px(32.),
+                            ..Default::default()
+                        },
+                    )?;
+                    if let CellValue::Text(v) = value {
+                        ui.set_selected_keys(parts.container, std::slice::from_ref(v))?;
+                    }
+                    (parts.container, parts.editor)
+                };
                 ui.edit_props(owner, |p| {
                     p.style.flex_grow = 1.0;
                 })?;
@@ -245,27 +373,29 @@ impl PropertyGrid {
                 } else {
                     None
                 };
-                let mixed = ui.label(
+                let edit = ui.button(
                     host,
-                    "Разные значения",
+                    "",
+                    None,
                     LayoutStyle {
-                        flex_grow: 1.0,
-                        vertical_alignment: Some(Align::Center),
+                        flex_grow: 1.,
                         ..Default::default()
                     },
                 )?;
-                ui.set_text_auto_height(mixed, true)?;
-                ui.set_automation_name(mixed, format!("{label}: разные значения"))?;
-                let edit = ui.button(row, "Изменить", None, button_style(90.0))?;
-                let apply = ui.button(row, "Применить", None, button_style(104.0))?;
-                let reset = ui.button(row, "Сбросить", None, button_style(94.0))?;
-                for (id, action) in [
-                    (edit, "изменить"),
-                    (apply, "применить ко всем"),
-                    (reset, "значение по умолчанию"),
-                ] {
-                    ui.set_automation_name(id, format!("{label}: {action}"))?;
-                }
+                ui.controls.get_mut(&edit).unwrap().inspector_part = Some(InspectorPart::Value);
+                ui.set_button_chrome(edit, ButtonChrome::Flat)?;
+                let apply = action_icon(
+                    ui,
+                    row,
+                    IconSymbol::Check,
+                    &format!("{label}: применить ко всем"),
+                )?;
+                let reset = action_icon(
+                    ui,
+                    row,
+                    IconSymbol::Eraser,
+                    &format!("{label}: значение по умолчанию"),
+                )?;
                 if matches!(recipe, DataFormEditorFactory::CheckBox) {
                     ui.set_enabled(owner, !descriptor.metadata.read_only)?;
                 } else if owner != editor {
@@ -285,7 +415,9 @@ impl PropertyGrid {
                     host,
                     owner,
                     editor,
-                    mixed,
+                    active: false,
+                    value_label: None,
+                    measure_value_width: false,
                     edit,
                     apply,
                     reset,
@@ -297,9 +429,27 @@ impl PropertyGrid {
                 present(ui, &mut property)?;
                 properties.push(property);
             }
+            let empty = ui.label(body, "Свойства не найдены", LayoutStyle::default())?;
+            show(
+                ui,
+                empty,
+                !properties.iter().any(|p| p.descriptor.metadata.visible),
+            )?;
+            let grouped_order = groups
+                .iter()
+                .flat_map(|(_, group)| {
+                    ui.runtime
+                        .tree()
+                        .children(group.content)
+                        .unwrap_or(&[])
+                        .iter()
+                        .map(move |&id| (id, group.content))
+                })
+                .collect();
             let summary = ui.label(container, "", LayoutStyle::default())?;
             ui.set_automation_name(summary, "Результат изменения свойств")?;
             ui.set_text_auto_height(summary, true)?;
+            show(ui, summary, false)?;
             let mut parents = Vec::new();
             let mut stack = ui
                 .runtime
@@ -314,6 +464,16 @@ impl PropertyGrid {
             Ok(Self {
                 container,
                 summary,
+                search,
+                categorized,
+                sorted,
+                flat_host,
+                viewport,
+                empty,
+                grouped_order,
+                flat: false,
+                filter: String::new(),
+                saved_expansion: Vec::new(),
                 source,
                 schema,
                 objects: objects.to_vec(),
@@ -328,6 +488,54 @@ impl PropertyGrid {
             let _ = ui.remove(container);
         }
         result
+    }
+    /// Size the value button to its installed display template. An optional text
+    /// slot receives the accepted value. Auto-sized slots in horizontal stacks
+    /// are remeasured when that value changes.
+    pub fn configure_display_template(
+        &mut self,
+        ui: &mut Controls,
+        field: &str,
+        slot: Option<(WidgetId, bool)>,
+    ) -> Result<(), ControlError> {
+        let i = self.index(field)?;
+        let p = &mut self.properties[i];
+        let root = ui
+            .button_content(p.edit)
+            .ok_or_else(|| invalid("Property has no display template"))?;
+        if let Some((label, auto_width)) = slot {
+            if ui.text_style(label).is_none() || !ui.flyout_descendant(label, root) {
+                return Err(invalid(
+                    "Value label must belong to this property's display template",
+                ));
+            }
+            p.measure_value_width = auto_width
+                && ui
+                    .runtime
+                    .tree()
+                    .parent(label)
+                    .and_then(|id| ui.runtime.tree().node(id))
+                    .is_some_and(|parent| {
+                        parent.props.style.kind == LayoutKind::Stack(Axis::Horizontal)
+                    });
+            if p.descriptor.metadata.read_only {
+                ui.controls.get_mut(&label).unwrap().inspector_part =
+                    Some(InspectorPart::ReadOnlyText { host: p.host });
+            }
+        }
+        p.value_label = slot.map(|(id, _)| id);
+        ui.edit_props(p.edit, |n| {
+            n.style.kind = LayoutKind::Grid;
+            n.style.grid_columns = vec![GridTrack::Fr(1.)];
+            n.style.grid_rows = vec![GridTrack::Fr(1.)];
+            n.style.height = Length::Auto;
+            n.style.min_size.height = 32.;
+        })?;
+        present(ui, p)
+    }
+    /// Search box and the categorized/alphabetical view selectors in tab order.
+    pub fn toolbar_parts(&self) -> (WidgetId, WidgetId, WidgetId) {
+        (self.search, self.categorized, self.sorted)
     }
     pub fn object_keys(&self) -> &[i64] {
         &self.objects
@@ -431,8 +639,9 @@ impl PropertyGrid {
             let seed = p.seed.clone();
             load(ui, p, &seed)?;
             p.editing = true;
-            present(ui, p)?;
         }
+        self.activate(ui, i)?;
+        let p = &self.properties[i];
         if ui.window_focused
             && ui.effective_enabled(p.editor)
             && ui
@@ -463,7 +672,7 @@ impl PropertyGrid {
         }
         load(ui, p, &value)?;
         p.editing = true;
-        present(ui, p)
+        self.activate(ui, i)
     }
     pub fn cancel(&mut self, ui: &mut Controls, name: &str) -> Result<(), ControlError> {
         self.check(ui)?;
@@ -482,6 +691,7 @@ impl PropertyGrid {
         }
         load(ui, p, &value)?;
         p.editing = matches!(aggregate(&p.baseline), PropertyValue::Uniform(_));
+        p.active = false;
         present(ui, p)
     }
     pub fn reset(&mut self, ui: &mut Controls, name: &str) -> Result<PropertyCommit, ControlError> {
@@ -525,7 +735,10 @@ impl PropertyGrid {
             Ok(v) => v,
             Err(e) => return self.reject(ui, &e),
         };
-        if ui.document(p.editor).is_some() && p.null.is_none_or(|id| ui.checked(id) != Some(true)) {
+        if p.descriptor.choices.is_empty()
+            && ui.document(p.editor).is_some()
+            && p.null.is_none_or(|id| ui.checked(id) != Some(true))
+        {
             match ui.commit_edit(p.editor)? {
                 CommitOutcome::Invalid(e) => return self.reject(ui, &e),
                 CommitOutcome::Pending | CommitOutcome::CompositionActive => {
@@ -556,6 +769,7 @@ impl PropertyGrid {
             .collect();
         // All UI validation happens before storage. Success publishes only owned data.
         ui.set_label(self.summary, "")?;
+        show(ui, self.summary, false)?;
         self.error = None;
         let result = self
             .source
@@ -565,10 +779,13 @@ impl PropertyGrid {
         if let Err(e) = result {
             return self.reject(ui, &e.to_string());
         }
+        self.properties[i].active = false;
         if !changed {
+            present(ui, &mut self.properties[i])?;
             return Ok(PropertyCommit::Unchanged);
         }
         self.properties[i].baseline = vec![value.clone(); self.objects.len()];
+        present(ui, &mut self.properties[i])?;
         self.changes.push(PropertyChanged {
             field: name.into(),
             value,
@@ -582,6 +799,7 @@ impl PropertyGrid {
             message = "Property change was rejected".into();
         }
         ui.set_label(self.summary, &message)?;
+        show(ui, self.summary, true)?;
         self.error = Some(message.clone());
         Ok(PropertyCommit::Rejected(message))
     }
@@ -622,6 +840,7 @@ impl PropertyGrid {
             load(ui, p, &value)?;
             p.baseline = new;
             p.editing = editing;
+            p.active &= editing;
             present(ui, p)?;
         }
         if conflict {
@@ -635,8 +854,13 @@ impl PropertyGrid {
     /// Consumes only this inspector's action buttons; other activations remain.
     pub fn update(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
         self.check(ui)?;
+        let mut view_mode = self.flat;
         let mut actions = Vec::new();
         ui.activated.retain(|id| {
+            if *id == self.categorized || *id == self.sorted {
+                view_mode = *id == self.sorted;
+                return false;
+            }
             if let Some((i, action)) = self.properties.iter().enumerate().find_map(|(i, p)| {
                 [(p.edit, 0), (p.apply, 1), (p.reset, 2)]
                     .iter()
@@ -649,7 +873,20 @@ impl PropertyGrid {
                 true
             }
         });
-        let changed = !actions.is_empty();
+        let query = ui
+            .document(self.search)
+            .unwrap()
+            .text()
+            .trim()
+            .to_lowercase();
+        let changed = !actions.is_empty() || view_mode != self.flat || query != self.filter;
+        self.arrange(ui, view_mode, query)?;
+        if ui.checked(self.categorized) != Some(!view_mode) {
+            ui.set_checked(self.categorized, !view_mode)?;
+        }
+        if ui.checked(self.sorted) != Some(view_mode) {
+            ui.set_checked(self.sorted, view_mode)?;
+        }
         for (i, action) in actions {
             let name = self.properties[i].schema.name.clone();
             let result = match action {
@@ -661,34 +898,63 @@ impl PropertyGrid {
                 let _ = self.reject(ui, &e.to_string())?;
             }
         }
-        for p in &mut self.properties {
+        for p in self
+            .properties
+            .iter_mut()
+            .filter(|p| p.active && p.null.is_some())
+        {
             present(ui, p)?;
         }
+        self.update_scroll_extent(ui)?;
         Ok(changed)
     }
     /// Optional pre-dispatch Escape route: composition first, then this draft.
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
-        if !matches!(
-            event,
-            InputEvent::KeyDown {
-                key: Key::Escape,
-                repeat: false,
-                ..
-            }
-        ) {
+        let InputEvent::KeyDown {
+            key,
+            modifiers,
+            repeat: false,
+        } = event
+        else {
+            return Ok(false);
+        };
+        if !matches!(key, Key::Escape | Key::Enter)
+            || *modifiers != Modifiers::default()
+            || ui.popup_open()
+        {
             return Ok(false);
         }
-        let name = ui.runtime.focused().and_then(|id| {
-            self.properties
-                .iter()
-                .find(|p| ui.flyout_descendant(id, p.host))
-                .map(|p| p.schema.name.clone())
-        });
-        if let Some(name) = name {
-            self.cancel(ui, &name)?;
-            return Ok(true);
+        let Some(id) = ui.runtime.focused() else {
+            return Ok(false);
+        };
+        let Some(p) = self
+            .properties
+            .iter()
+            .find(|p| p.active && ui.flyout_descendant(id, p.host))
+        else {
+            return Ok(false);
+        };
+        if *key == Key::Enter
+            && (id != p.editor
+                || ui.document(id).is_none()
+                || ui.document(id).is_some_and(|d| d.composition().is_some()))
+        {
+            return Ok(false);
         }
-        Ok(false)
+        let name = p.schema.name.clone();
+        let button = p.edit;
+        if *key == Key::Escape {
+            self.cancel(ui, &name)?;
+        } else {
+            self.commit(ui, &name)?;
+        }
+        if !self.properties[self.index(&name)?].active && ui.window_focused {
+            match ui.runtime.apply(Mutation::Focus(Some(button))) {
+                Ok(()) | Err(RuntimeError::IneligibleFocus(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(true)
     }
 }
 fn button_style(width: f32) -> LayoutStyle {

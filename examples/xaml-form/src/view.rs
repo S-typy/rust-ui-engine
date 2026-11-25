@@ -539,7 +539,7 @@ impl MountedView {
                 common.name.as_deref().unwrap_or("Font"),
             )?,
             ElementKind::PropertyGrid(definition) => {
-                self.mount_property_grid(ui, parent, definition, style)?
+                self.mount_property_grid(ui, parent, definition, style, available_width, &context)?
             }
             ElementKind::DataForm(definition) => {
                 self.mount_data_form(ui, parent, definition, style)?

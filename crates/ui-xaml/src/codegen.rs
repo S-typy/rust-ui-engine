@@ -276,7 +276,7 @@ fn form_kind(kind: &ElementKind) -> String {
     format!("rust_desktop_ui_xaml::ElementKind::{name}({definition})")
 }
 
-fn optional_child(child: Option<&ElementDefinition>) -> String {
+pub(crate) fn optional_child(child: Option<&ElementDefinition>) -> String {
     child.map_or_else(
         || "None".into(),
         |child| format!("Some(Box::new({}))", element(child)),
