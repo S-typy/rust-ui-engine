@@ -2116,12 +2116,12 @@ impl Controls {
                     InputEvent::Wheel {
                         delta, modifiers, ..
                     } => {
-                        let (dx, dy) = if modifiers.shift {
-                            (delta.y + delta.x, 0.0)
+                        let (dx, dy) = (f64::from(delta.x), f64::from(delta.y));
+                        if modifiers.shift {
+                            grid.model.scroll_by(dx + dy, 0.0)
                         } else {
-                            (delta.x, delta.y)
-                        };
-                        grid.model.scroll_by(-f64::from(dx), -f64::from(dy))
+                            grid.model.scroll_by(dx, dy)
+                        }
                     }
                     InputEvent::KeyDown {
                         key,

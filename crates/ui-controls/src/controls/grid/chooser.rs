@@ -183,9 +183,9 @@ impl Controls {
             InputEvent::Wheel {
                 position, delta, ..
             } if area.contains(position.x, position.y) => {
-                if delta.y > 0. {
+                if delta.y < 0. {
                     index = index.saturating_sub(1)
-                } else {
+                } else if delta.y > 0. {
                     index = index.saturating_add(1)
                 }
             }

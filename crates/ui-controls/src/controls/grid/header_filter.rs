@@ -280,9 +280,9 @@ impl FilterPopup {
                 Key::PageDown if !self.rules => self.move_cursor(l.page() as isize, l.page()),
                 _ => {}
             },
-            InputEvent::Wheel { delta, .. } if !self.rules => {
+            InputEvent::Wheel { delta, .. } if !self.rules && delta.y != 0. => {
                 let lines = (delta.y.abs() / ROW).ceil() as usize;
-                self.first = if delta.y > 0. {
+                self.first = if delta.y < 0. {
                     self.first.saturating_sub(lines)
                 } else {
                     self.first

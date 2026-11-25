@@ -854,6 +854,89 @@ fn grid_source_revision_cancels_pending_header_click_and_late_release() {
 }
 
 #[test]
+fn grid_wheel_moves_through_records_and_back_without_moving_selection() {
+    let (mut ui, id, _) = setup(100);
+    ui.set_grid_selected_key(id, Some(-10)).unwrap();
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let position = Point::new(bounds.x + 60.0, bounds.y + 80.0);
+    let row_at_pointer = |ui: &Controls| {
+        let frame = ui.grid_frame(id).unwrap();
+        let Some(GridHitKind::Cell { row, .. }) = frame.hit_test(position) else {
+            panic!("Expected a record under the pointer");
+        };
+        frame
+            .semantics
+            .rows
+            .iter()
+            .find(|r| r.key == row)
+            .unwrap()
+            .index
+    };
+    let start = row_at_pointer(&ui);
+    let height = ui.grid_frame(id).unwrap().semantics.rows[0].bounds.height;
+    for (dy, steps) in [(3.0, 3), (1.0, 4), (-1.0, 3), (-3.0, 0), (-3.0, 0)] {
+        ui.dispatch(InputEvent::Wheel {
+            position,
+            delta: Point::new(0.0, dy * height),
+            modifiers: Modifiers::default(),
+        })
+        .unwrap();
+        frame(&mut ui);
+        assert_eq!(row_at_pointer(&ui), start + steps);
+        assert_eq!(ui.grid_selected_key(id), Some(-10));
+    }
+}
+
+#[test]
+fn grid_wheel_scrolls_the_open_filter_or_chooser() {
+    let (mut ui, id, _) = setup(100);
+    let (_, filter) = ui.grid_frame(id).unwrap().header_filters[0];
+    click(
+        &mut ui,
+        Point::new(filter.x + filter.width / 2., filter.y + filter.height / 2.),
+    );
+    frame(&mut ui);
+    let first_value = |ui: &Controls| {
+        ui.scene()
+            .texts
+            .iter()
+            .find(|t| t.text.starts_with("Row ") && t.text.ends_with("  (1)"))
+            .expect("visible value in the filter")
+            .clone()
+    };
+    let first = first_value(&ui);
+    let position = Point::new(first.bounds.x + 2., first.bounds.y + 2.);
+    let wheel = |ui: &mut Controls, position, delta| {
+        ui.dispatch(InputEvent::Wheel {
+            position,
+            delta,
+            modifiers: Modifiers::default(),
+        })
+        .unwrap();
+        frame(ui);
+    };
+    wheel(&mut ui, position, Point::new(0., 24.));
+    assert_eq!(first_value(&ui).text, "Row 000001  (1)");
+    wheel(&mut ui, position, Point::new(0., -24.));
+    assert_eq!(first_value(&ui).text, first.text);
+    key(&mut ui, Key::Escape);
+    ui.set_grid_column_chooser_open(id, true).unwrap();
+    frame(&mut ui);
+    let bounds = ui.runtime.bounds(id).unwrap();
+    let position = Point::new(bounds.x + bounds.width - 60., bounds.y + 60.);
+    wheel(&mut ui, position, Point::new(0., 84.));
+    key(&mut ui, Key::Space);
+    assert!(!ui.grid_arrangement(id).unwrap()[1].visible);
+    key(&mut ui, Key::Space);
+    wheel(&mut ui, position, Point::new(0., -84.));
+    wheel(&mut ui, position, Point::new(12., 0.));
+    key(&mut ui, Key::Space);
+    assert!(!ui.grid_arrangement(id).unwrap()[0].visible);
+    assert_eq!(ui.grid_frame(id).unwrap().rows[0].index, 0);
+}
+
+#[test]
 fn grid_horizontal_keyboard_and_shift_wheel_reveal_columns_beyond_viewport() {
     let mut ui = Controls::new(Theme::FluentLight).unwrap();
     let id = ui
@@ -890,7 +973,7 @@ fn grid_horizontal_keyboard_and_shift_wheel_reveal_columns_beyond_viewport() {
     let bounds = ui.runtime.bounds(id).unwrap();
     ui.dispatch(InputEvent::Wheel {
         position: Point::new(bounds.x + 10.0, bounds.y + 50.0),
-        delta: Point::new(0.0, 150.0),
+        delta: Point::new(0.0, -150.0),
         modifiers: Modifiers {
             shift: true,
             ..Default::default()
@@ -904,6 +987,20 @@ fn grid_horizontal_keyboard_and_shift_wheel_reveal_columns_beyond_viewport() {
             .columns
             .iter()
             .any(|c| c.id == ColumnId(0) && c.clip.width > 100.0)
+    );
+    ui.dispatch(InputEvent::Wheel {
+        position: Point::new(bounds.x + 10.0, bounds.y + 50.0),
+        delta: Point::new(150.0, 0.0),
+        modifiers: Modifiers::default(),
+    })
+    .unwrap();
+    frame(&mut ui);
+    assert!(
+        ui.grid_frame(id)
+            .unwrap()
+            .columns
+            .iter()
+            .any(|c| c.id == ColumnId(1) && c.clip.width > 370.0)
     );
 }
 

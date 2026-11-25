@@ -120,6 +120,17 @@ mod tests {
         );
     }
     #[test]
+    fn wheel_notches_map_to_viewport_offsets_in_both_directions() {
+        assert_eq!(
+            wheel(MouseScrollDelta::LineDelta(0., -1.), 1.5),
+            Point::new(0., 84.)
+        );
+        assert_eq!(
+            wheel(MouseScrollDelta::LineDelta(0., 1.), 1.5),
+            Point::new(0., -84.)
+        );
+    }
+    #[test]
     fn pixel_wheel_uses_logical_coordinates_and_keeps_both_axes() {
         let p = winit::dpi::PhysicalPosition::new(30.0, -60.0);
         assert_eq!(
