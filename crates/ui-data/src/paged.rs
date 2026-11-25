@@ -197,6 +197,9 @@ impl PagedDataSource {
     pub fn schema(&self) -> &TableSchema {
         &self.schema
     }
+    pub fn limits(&self) -> DataLimits {
+        self.limits
+    }
     pub fn settings(&self) -> PageCacheSettings {
         self.settings
     }
@@ -214,6 +217,10 @@ impl PagedDataSource {
     }
     pub fn total(&self) -> PageTotal {
         self.total
+    }
+    /// True for tokens issued by this source in its current query generation.
+    pub fn owns_generation(&self, token: PageToken) -> bool {
+        token.source == self.source && token.generation == self.generation
     }
     pub fn snapshot_revision(&self) -> Option<u64> {
         self.snapshot_revision

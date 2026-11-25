@@ -160,16 +160,17 @@ impl TreeGridView {
             bounds.height - header_height,
         );
         if body.height > 0.0 {
-            let first = (grid.scroll_y / f64::from(grid.config.row_height)).floor() as usize;
-            let end = ((grid.scroll_y + f64::from(body.height)) / f64::from(grid.config.row_height))
-                .ceil() as usize;
-            let start = first
-                .saturating_sub(grid.config.overscan)
-                .saturating_mul(grid.record_lanes());
-            let end = end
-                .saturating_add(grid.config.overscan)
-                .saturating_mul(grid.record_lanes())
-                .min(grid.row_count());
+            let first = grid.first_at_offset(grid.scroll_y);
+            let bottom = grid.scroll_y + f64::from(body.height);
+            let edge = grid.first_at_offset(bottom);
+            let end = if grid.record_top(edge) < bottom {
+                edge.saturating_add(grid.record_lanes())
+            } else {
+                edge
+            };
+            let buffer = grid.config.overscan.saturating_mul(grid.record_lanes());
+            let start = first.saturating_sub(buffer);
+            let end = end.saturating_add(buffer).min(grid.row_count());
             if end.saturating_sub(start) > rust_desktop_ui_core::MAX_REALIZED_ITEMS {
                 return Err(GridError::Capacity);
             }
@@ -178,7 +179,7 @@ impl TreeGridView {
                     continue;
                 };
                 let y = body.y + (grid.record_top(index) - grid.scroll_y) as f32;
-                let row_bounds = Rect::new(body.x, y, body.width, grid.config.row_height);
+                let row_bounds = Rect::new(body.x, y, body.width, grid.record_height(index));
                 paint_row(grid, source, &row, row_bounds, body, &mut frame);
                 frame.rows.push(row);
             }

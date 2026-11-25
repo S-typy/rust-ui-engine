@@ -554,6 +554,8 @@ pub(super) fn property(
                     })?)
                 }
                 "GroupDescending" => grid.group_descending = boolean(document, attr)?,
+                "WrapFields" => grid.wrap_fields = grid_extensions::fields(document, attr, 64)?,
+                "MergeFields" => grid.merge_fields = grid_extensions::fields(document, attr, 64)?,
                 "RightPinnedFields" => {
                     grid.right_pinned_fields = grid_extensions::fields(document, attr, 64)?
                 }

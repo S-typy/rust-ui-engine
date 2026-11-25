@@ -134,7 +134,13 @@ impl GridState {
                 let r = Rect::new(b.x, row.bounds.y, self.selector_width(b), row.bounds.height);
                 if let Some(r) = r.intersection(b) {
                     scene.fill(r, palette.header);
-                    label(scene, r, if row.selected { "  ☑" } else { "  ☐" }.into());
+                    label(
+                        scene,
+                        r,
+                        self.source
+                            .presentation
+                            .role_text("Indicator", if row.selected { "☑" } else { "☐" }),
+                    );
                 }
             }
             for cell in &row.cells {

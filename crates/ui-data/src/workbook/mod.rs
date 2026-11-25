@@ -14,7 +14,7 @@ mod xlsx;
 
 use crate::{CellValue, DataError, DataRow, DataTable, TableSchema};
 use std::collections::{BTreeMap, BTreeSet};
-pub use xlsx::{WorkbookDiagnostic, WorkbookImport};
+pub use xlsx::{WorkbookDiagnostic, WorkbookImport, export_data_sheet};
 
 pub const MAX_SHEETS: usize = 64;
 pub const MAX_CELLS: usize = 16_384;

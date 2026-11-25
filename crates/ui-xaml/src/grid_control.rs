@@ -37,6 +37,8 @@ pub struct GridControlDefinition {
     pub show_group_panel: bool,
     /// (field, track root) for multi-row cells within a band.
     pub stacked_fields: Vec<(String, String)>,
+    pub wrap_fields: Vec<String>,
+    pub merge_fields: Vec<String>,
     pub right_pinned_fields: Vec<String>,
     pub group_fields: Vec<String>,
     pub summaries: Vec<crate::GridSummaryDefinition>,
@@ -45,6 +47,8 @@ pub struct GridControlDefinition {
     pub band_rows: Vec<Vec<crate::GridBandDefinition>>,
     pub detail: Option<crate::GridDetailDefinition>,
     pub relations: Vec<(String, crate::GridDetailDefinition)>,
+    pub text_templates: std::collections::BTreeMap<String, (String, String)>,
+    pub format_rules: Vec<crate::GridFormatDefinition>,
     pub cell_templates: Vec<crate::GridCellTemplateDefinition>,
     pub editors: Vec<crate::GridEditorDefinition>,
 }

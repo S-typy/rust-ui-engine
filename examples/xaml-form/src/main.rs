@@ -69,6 +69,7 @@ mod gallery_diagnostics;
 mod gallery_model;
 mod gauge_model;
 mod grid_workspace_model;
+mod grid_workspace_tools;
 #[cfg(test)]
 mod group_adapter_tests;
 #[cfg(test)]
@@ -375,6 +376,9 @@ fn start() -> Result<(), String> {
             "--gauges" => gauge = true,
             "--data-form" => data_form = true,
             "--tree" => tree = true,
+            "--grid-export" | "--grid-print" | "--grid-print-file" | "--grid-design" => {
+                return grid_workspace_tools::cli(&argument, arguments.collect());
+            }
             "--grid-workspace" => grid_workspace = true,
             "--docking" => docking = true,
             "--documents" => {

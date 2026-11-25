@@ -35,6 +35,23 @@ impl SqliteAdapter {
         offset: usize,
         limit: usize,
     ) -> Result<SqliteQueryPage, DataError> {
+        self.query_page_with_totals(request, offset, limit, &[])
+            .map(|(page, _)| page)
+    }
+    /// Read a row page, total count and scalar summaries in the same transaction.
+    /// Count and integer sum/min/max run in SQLite for pushdown-compatible queries.
+    pub fn query_page_with_totals(
+        &mut self,
+        request: &QueryRequest,
+        offset: usize,
+        limit: usize,
+        totals: &[crate::Aggregate],
+    ) -> Result<(SqliteQueryPage, Vec<CellValue>), DataError> {
+        let summary_request = QueryRequest {
+            aggregates: totals.to_vec(),
+            ..request.clone()
+        };
+        let compiled_summary = QueryEngine::compile(&self.config.schema, &summary_request)?;
         if limit == 0
             || limit > self.limits.max_rows
             || offset.checked_add(limit).is_none()
@@ -63,7 +80,12 @@ impl SqliteAdapter {
             .transaction_with_behavior(TransactionBehavior::Deferred)
             .map_err(adapter_error)?;
         check_schema(&transaction, cookie, plan.is_some())?;
-        let page = if let Some(plan) = plan {
+        let mut summary = Vec::new();
+        let selections = totals
+            .iter()
+            .map(|a| aggregate_sql(&self.config, a))
+            .collect::<Option<Vec<_>>>();
+        let page = if let Some(plan) = plan.filter(|_| selections.is_some()) {
             let validated_count =
                 validate_storage(&transaction, &self.config, self.limits, &compiled)?;
             let count_sql = format!(
@@ -84,6 +106,28 @@ impl SqliteAdapter {
                 return Err(DataError::Adapter(
                     "SQLite criteria disagreed with typed validation".into(),
                 ));
+            }
+            if !totals.is_empty() {
+                let sql = format!(
+                    "SELECT {} FROM {} AS t WHERE {}",
+                    selections.unwrap().join(", "),
+                    quote(&self.config.table),
+                    plan.filter
+                );
+                let mut stmt = transaction.prepare(&sql).map_err(adapter_error)?;
+                let mut rows = stmt
+                    .query(rusqlite::params_from_iter(
+                        &plan.parameters[..plan.filter_parameter_count],
+                    ))
+                    .map_err(adapter_error)?;
+                let row = rows
+                    .next()
+                    .map_err(adapter_error)?
+                    .ok_or_else(|| DataError::Adapter("Missing SQLite summaries".into()))?;
+                for i in 0..totals.len() {
+                    let value: Option<i64> = row.get(i).map_err(adapter_error)?;
+                    summary.push(value.map_or(CellValue::Null, CellValue::Integer));
+                }
             }
             let mut parameters = plan.parameters;
             let sql = format!(
@@ -106,7 +150,8 @@ impl SqliteAdapter {
             }
         } else {
             let table = read_table(&transaction, &self.config, self.limits)?;
-            let result = compiled.execute(&table)?;
+            let result = compiled_summary.execute(&table)?;
+            summary = result.aggregates;
             let total_rows = result.row_keys.len();
             let rows = result
                 .row_keys
@@ -124,10 +169,28 @@ impl SqliteAdapter {
             }
         };
         transaction.commit().map_err(adapter_error)?;
-        Ok(page)
+        Ok((page, summary))
     }
 }
 
+fn aggregate_sql(config: &SqliteTableConfig, aggregate: &crate::Aggregate) -> Option<String> {
+    use crate::AggregateFunction as F;
+    if aggregate.function == F::CountRows {
+        return Some("count(*)".into());
+    }
+    let QueryExpression::Field(name) = aggregate.expression.as_ref()? else {
+        return None;
+    };
+    let field = config.schema.field(name)?;
+    let function = match aggregate.function {
+        F::CountValues => "count",
+        F::Sum if field.kind == FieldType::Integer => "sum",
+        F::Minimum if field.kind == FieldType::Integer => "min",
+        F::Maximum if field.kind == FieldType::Integer => "max",
+        _ => return None,
+    };
+    Some(format!("{function}(t.{})", quote(name)))
+}
 pub(super) fn is_utf8(connection: &Connection) -> Result<bool, DataError> {
     let encoding: String = connection
         .query_row("PRAGMA encoding", [], |row| row.get(0))
@@ -309,6 +372,16 @@ fn criteria_sql(
                 ComparisonOperator::GreaterOrEqual => ">=",
             };
             format!("({left} {operator} {right})")
+        }
+        Criteria::TextMatch {
+            text,
+            pattern,
+            operator: crate::TextMatchOperator::Contains,
+            comparison: crate::TextComparison::Ordinal,
+        } => {
+            let text = expression_sql(text, parameters)?;
+            let pattern = expression_sql(pattern, parameters)?;
+            format!("(instr({text},{pattern})>0)")
         }
         Criteria::IsNull(expression) => {
             format!("({} IS NULL)", expression_sql(expression, parameters)?)

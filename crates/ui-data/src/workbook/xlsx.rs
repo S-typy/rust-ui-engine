@@ -24,6 +24,10 @@ impl Workbook {
     /// Write an unencrypted, macro-free XLSX package. No filesystem I/O occurs.
     /// Decimal and integers beyond exact spreadsheet precision are rejected.
     pub fn to_xlsx(&self) -> Result<Vec<u8>, DataError> {
+        self.package(None)
+    }
+    fn package(&self, sheet_override: Option<String>) -> Result<Vec<u8>, DataError> {
+        let mut sheet_override = sheet_override;
         let mut parts = BTreeMap::new();
         let mut styles = vec![CellStyle::default()];
         for sheet in &self.sheets {
@@ -143,7 +147,10 @@ impl Workbook {
             let xml = format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?><worksheet xmlns=\"{NS}\">{format}{columns}<sheetData>{data}</sheetData>{merges}</worksheet>"
             );
-            parts.insert(format!("xl/worksheets/sheet{n}.xml"), xml.into_bytes());
+            parts.insert(
+                format!("xl/worksheets/sheet{n}.xml"),
+                sheet_override.take().unwrap_or(xml).into_bytes(),
+            );
         }
         parts.insert("xl/workbook.xml".into(),format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><workbook xmlns=\"{NS}\" xmlns:r=\"{REL}\"><sheets>{sheets}</sheets><calcPr calcId=\"0\" fullCalcOnLoad=\"1\"/></workbook>").into_bytes());
         parts.insert("xl/_rels/workbook.xml.rels".into(),format!("<Relationships xmlns=\"{PKG}\">{rels}<Relationship Id=\"styles\" Type=\"{REL}/styles\" Target=\"styles.xml\"/></Relationships>").into_bytes());
@@ -156,6 +163,76 @@ impl Workbook {
     pub fn from_xlsx(bytes: &[u8]) -> Result<WorkbookImport, DataError> {
         read_workbook(bytes)
     }
+}
+/// Write a single typed data sheet with a filter header and outline levels.
+/// Uses the same package, string escaping and scalar encodings as Workbook.
+pub fn export_data_sheet<'a>(
+    name: &str,
+    headers: &[String],
+    rows: impl Iterator<Item = (u8, &'a [CellValue])>,
+) -> Result<Vec<u8>, DataError> {
+    use std::fmt::Write as _;
+    if headers.is_empty() || headers.len() > 64 {
+        return Err(invalid("data sheet needs 1..64 columns"));
+    }
+    let book = Workbook::new(name)?;
+    let mut xml = format!("<worksheet xmlns=\"{NS}\"><sheetData>");
+    let head: Vec<_> = headers.iter().cloned().map(CellValue::Text).collect();
+    let mut count = 0usize;
+    let mut append_row = |level: u8, row: &[CellValue]| -> Result<(), DataError> {
+        let i = count;
+        if i >= MAX_ROWS as usize || level > 7 || row.len() > headers.len() {
+            return Err(invalid("data sheet dimensions"));
+        }
+        write!(xml, "<row r=\"{}\" outlineLevel=\"{level}\">", i + 1).unwrap();
+        for (j, cell) in row.iter().enumerate() {
+            let value = match cell {
+                CellValue::Decimal(d) if d.coefficient().unsigned_abs().to_string().len() <= 15 => {
+                    CellValue::Real(
+                        d.to_string()
+                            .parse()
+                            .map_err(|_| invalid("decimal conversion"))?,
+                    )
+                }
+                CellValue::Decimal(_) | CellValue::Binary(_) => CellValue::Text(cell.display()),
+                CellValue::Integer(v) if v.unsigned_abs() > 999_999_999_999_999 => {
+                    CellValue::Text(v.to_string())
+                }
+                c => c.clone(),
+            };
+            if let CellValue::Text(t) = &value
+                && (t.encode_utf16().count() > 32767 || !valid_xml(t))
+            {
+                return Err(invalid("invalid spreadsheet string"));
+            }
+            let (kind, text) = value_xml(&WorkbookValue::Scalar(value.clone()))?;
+            let address = CellAddress::new(i as u32, j as u32)?.a1();
+            write!(xml, "<c r=\"{address}\"{kind}>").unwrap();
+            if matches!(value, CellValue::Text(_)) {
+                write!(xml, "<is><t xml:space=\"preserve\">{text}</t></is>").unwrap();
+            } else if !text.is_empty() {
+                write!(xml, "<v>{text}</v>").unwrap();
+            }
+            xml.push_str("</c>");
+            if xml.len() > MAX_PART {
+                return Err(invalid("data sheet exceeds part limit"));
+            }
+        }
+        xml.push_str("</row>");
+        count = i + 1;
+        Ok(())
+    };
+    append_row(0, &head)?;
+    for (depth, row) in rows {
+        append_row(depth, row)?;
+    }
+    let last = CellAddress::new(count as u32 - 1, headers.len() as u32 - 1)?.a1();
+    write!(
+        xml,
+        "</sheetData><autoFilter ref=\"A1:{last}\"/></worksheet>"
+    )
+    .unwrap();
+    book.package(Some(xml))
 }
 fn effective_style(cell: &WorkbookCell) -> CellStyle {
     let mut s = cell.style.clone();

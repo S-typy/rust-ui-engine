@@ -20,6 +20,7 @@ pub(super) struct SyntheticRow {
 #[derive(Clone, Default)]
 pub(super) struct Projection {
     pub roots: Vec<RowKey>,
+    pub(super) formats: Vec<appearance::FormatScope>,
     pub children: HashMap<RowKey, Vec<RowKey>>,
     pub parents: HashMap<RowKey, RowKey>,
     pub positions: HashMap<RowKey, usize>,
@@ -33,6 +34,11 @@ pub(super) struct Projection {
 
 impl Projection {
     pub fn build(source: &SnapshotSource, previous: &Self) -> Result<Self, ControlError> {
+        let mut result = Self::build_rows(source, previous)?;
+        result.formats = appearance::compile(source)?;
+        Ok(result)
+    }
+    fn build_rows(source: &SnapshotSource, previous: &Self) -> Result<Self, ControlError> {
         let options = &source.presentation;
         let mut next = Self::default();
         let mut occupied: HashSet<_> = source.table.rows().iter().map(|r| row_key(r.key)).collect();
@@ -357,6 +363,11 @@ pub(super) fn value_identity(value: &CellValue) -> String {
 
 impl SnapshotSource {
     pub(super) fn apply_data_query(&mut self, query: DataQuery) -> Result<(), ControlError> {
+        if let Some(pending) = &self.page_query {
+            self.data_query = query.clone();
+            *pending.borrow_mut() = Some(query);
+            return Ok(());
+        }
         // Evaluate the candidate legacy query and presentation without touching
         // the shared source. Aggregate/type failures therefore cannot publish a
         // half-applied query to sibling views.

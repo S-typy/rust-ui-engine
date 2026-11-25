@@ -7,12 +7,12 @@ use rust_desktop_ui_data::{
 use std::collections::BTreeMap;
 #[derive(Clone, Default)]
 pub(super) struct GridFilters {
-    columns: BTreeMap<String, Criteria>,
+    pub(super) columns: BTreeMap<String, Criteria>,
     pub(super) facets: BTreeMap<String, Vec<CellValue>>,
     pub(super) inputs: BTreeMap<String, String>,
     pub(super) rule: Option<Criteria>,
     pub(super) disabled: bool,
-    priorities: BTreeMap<String, Vec<CellValue>>,
+    pub(super) priorities: BTreeMap<String, Vec<CellValue>>,
 }
 impl GridFilters {
     pub(super) fn is_empty(&self) -> bool {
@@ -33,7 +33,7 @@ fn equals(field: &str, value: CellValue) -> Criteria {
         }
     }
 }
-fn auto_rule(field: &FieldSchema, input: &str) -> Result<Criteria, ControlError> {
+pub(super) fn auto_rule(field: &FieldSchema, input: &str) -> Result<Criteria, ControlError> {
     let name = &field.name;
     let input = input.trim();
     if input.eq_ignore_ascii_case("NULL") {

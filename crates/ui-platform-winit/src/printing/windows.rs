@@ -123,7 +123,29 @@ pub(super) fn print(
     unsafe {
         let driver = wide("WINSPOOL");
         let printer = wide(&ticket.printer);
-        let dc = Dc(CreateDCW(driver.as_ptr(), printer.as_ptr(), null(), null()));
+        let settings = ticket.media.map(|media| {
+            let (paper, orientation) = match media {
+                PrintMedia::A4 => (DMPAPER_A4, DMORIENT_PORTRAIT),
+                PrintMedia::A4Landscape => (DMPAPER_A4, DMORIENT_LANDSCAPE),
+                PrintMedia::A5 => (DMPAPER_A5, DMORIENT_PORTRAIT),
+                PrintMedia::Letter => (DMPAPER_LETTER, DMORIENT_PORTRAIT),
+            };
+            let mut mode = DEVMODEW {
+                dmSize: size_of::<DEVMODEW>() as u16,
+                dmSpecVersion: DM_SPECVERSION as u16,
+                dmFields: DM_PAPERSIZE | DM_ORIENTATION,
+                ..Default::default()
+            };
+            mode.Anonymous1.Anonymous1.dmPaperSize = paper as i16;
+            mode.Anonymous1.Anonymous1.dmOrientation = orientation as i16;
+            mode
+        });
+        let dc = Dc(CreateDCW(
+            driver.as_ptr(),
+            printer.as_ptr(),
+            null(),
+            settings.as_ref().map_or(null(), std::ptr::from_ref),
+        ));
         if dc.0.is_null() {
             return Err(native("CreateDCW"));
         }
@@ -133,6 +155,21 @@ pub(super) fn print(
         let height = GetDeviceCaps(dc.0, VERTRES as i32) as f32;
         if dpi_x <= 0.0 || dpi_y <= 0.0 || width <= 0.0 || height <= 0.0 {
             return Err(native("printer capabilities"));
+        }
+        if let Some(media) = ticket.media {
+            let (w, h) = match media {
+                PrintMedia::A4 => (210.0, 297.0),
+                PrintMedia::A4Landscape => (297.0, 210.0),
+                PrintMedia::A5 => (148.0, 210.0),
+                PrintMedia::Letter => (215.9, 279.4),
+            };
+            let mm_x = GetDeviceCaps(dc.0, PHYSICALWIDTH as i32) as f32 * 25.4 / dpi_x;
+            let mm_y = GetDeviceCaps(dc.0, PHYSICALHEIGHT as i32) as f32 * 25.4 / dpi_y;
+            if (mm_x - w).abs() > 2. || (mm_y - h).abs() > 2. {
+                return Err(PrintError::Unsupported(
+                    "printer does not support the requested paper".into(),
+                ));
+            }
         }
         let raster = pages
             .iter()

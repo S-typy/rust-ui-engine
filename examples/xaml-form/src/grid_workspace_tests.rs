@@ -24,6 +24,23 @@ fn grid_workspace_demo_modes_recipes_conflict_and_binding_preserve_logical_key()
     assert_eq!(ui.grid_selected_key(grid), Some(i64::MIN));
     assert!(ui.grid_frame(grid).unwrap().semantics.rows.len() < 40);
     let size = Size::new(1320., 820.);
+    for cmd in ["AddFormat", "RaiseFormat", "ToggleFormat"] {
+        state
+            .command(&mut ui, &format!("GridWorkspace{cmd}"))
+            .unwrap();
+    }
+    let rules = &ui.grid_presentation(grid).unwrap().format_rules;
+    assert_eq!(rules.len(), 4);
+    assert!(!rules[2].enabled);
+    state.command(&mut ui, "GridWorkspaceRemoveFormat").unwrap();
+    assert_eq!(ui.grid_presentation(grid).unwrap().format_rules.len(), 3);
+    // Build and mount the same preview used by the form without printing a job.
+    state.command(&mut ui, "GridWorkspacePreview").unwrap();
+    assert!(
+        ui.label_text(view.find_name("WorkspaceStatus").unwrap())
+            .unwrap()
+            .contains("Предпросмотр")
+    );
     let before = ui.grid_summaries(grid).unwrap().to_vec();
     context
         .borrow_mut()
@@ -211,4 +228,119 @@ fn compiled_record_form_commands_share_the_draft_and_the_detail_source() {
     ui.load_grid_branch(tree, 1).unwrap();
     let tree_data = ui.grid_source(tree).unwrap();
     assert!(tree_data.borrow().table().row(10).is_some());
+}
+
+#[test]
+fn schema_design_mount_and_sqlite_page_publish_share_typed_fields() {
+    use rust_desktop_ui_controls::{GridContextTarget, GridPageView};
+    use rust_desktop_ui_data::*;
+    let schema = TableSchema::new(vec![
+        FieldSchema::new("N", FieldType::Integer),
+        FieldSchema::new("Name", FieldType::Text),
+    ])
+    .unwrap();
+    let form =
+        rust_desktop_ui_xaml::design_grid_form("Orders", &schema, &["Name".into(), "N".into()])
+            .unwrap();
+    assert!(
+        rust_desktop_ui_xaml::design_grid_form("Orders", &schema, &["missing".into()]).is_err()
+    );
+    assert!(
+        rust_desktop_ui_xaml::design_grid_form("Orders", &schema, &["N".into(), "N".into()])
+            .is_err()
+    );
+    let conn = SqliteConnection::open_in_memory().unwrap();
+    conn.execute_batch("CREATE TABLE Orders (K INTEGER PRIMARY KEY, N INTEGER, Name TEXT); INSERT INTO Orders VALUES (1,2,'One'),(2,9,'Two')").unwrap();
+    let mut adapter = SqliteAdapter::from_connection(
+        conn,
+        SqliteTableConfig::new("Orders", "K", schema.clone()).unwrap(),
+    )
+    .unwrap();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    ui.register_data_source(
+        "Orders",
+        std::rc::Rc::new(std::cell::RefCell::new(
+            DataSource::new(CollectionAdapter::new(adapter.load().unwrap())).unwrap(),
+        )),
+    )
+    .unwrap();
+    let desc = rust_desktop_ui_xaml::parse(&form).unwrap();
+    let _view =
+        MountedView::mount_with_context(&mut ui, root, &desc.content, demo::model().unwrap())
+            .unwrap();
+    let pages = PagedDataSource::new(
+        schema,
+        Default::default(),
+        PageCacheSettings {
+            page_size: 1,
+            ..Default::default()
+        },
+        QueryCapabilities::complete(),
+    )
+    .unwrap();
+    let mut grid = GridPageView::mount(&mut ui, root, pages, Default::default()).unwrap();
+    ui.set_grid_sort(
+        grid.id(),
+        vec![SortDescriptor {
+            field: "N".into(),
+            direction: SortDirection::Descending,
+        }],
+    )
+    .unwrap();
+    let req = grid.take_input(&mut ui).unwrap().pop().unwrap();
+    let (page, summary) = adapter
+        .query_page_with_totals(
+            &req.query,
+            req.offset as usize,
+            req.limit,
+            &[Aggregate {
+                function: AggregateFunction::Sum,
+                expression: Some(QueryExpression::field("N")),
+            }],
+        )
+        .unwrap();
+    assert_eq!(page.execution, QueryExecution::Pushdown);
+    assert_eq!(page.table.rows()[0].key, 2);
+    grid.source()
+        .completion_sender()
+        .try_complete(
+            &req,
+            Ok(PageResponse {
+                total: PageTotal::Known(2),
+                has_more: true,
+                table: page.table,
+                snapshot_revision: 7,
+            }),
+        )
+        .unwrap();
+    grid.poll(&mut ui).unwrap();
+    assert!(
+        grid.accept_totals(req.token, 7, vec![("Total".into(), summary[0].clone())])
+            .unwrap()
+    );
+    assert_eq!(grid.totals()[0].1, CellValue::Integer(11));
+    assert_eq!(
+        ui.grid_source(grid.id()).unwrap().borrow().table().rows()[0].key,
+        2
+    );
+    assert!(
+        !ui.open_grid_context(grid.id(), GridContextTarget::Record(2))
+            .unwrap()
+    );
+    let base = QueryRequest {
+        filter: Some(Criteria::Compare {
+            left: QueryExpression::field("N"),
+            operator: ComparisonOperator::Greater,
+            right: QueryExpression::literal(CellValue::Integer(3)),
+        }),
+        ..Default::default()
+    };
+    grid.query(&mut ui, base.clone()).unwrap();
+    ui.set_grid_filter(grid.id(), "Two").unwrap();
+    let find = grid.take_input(&mut ui).unwrap().pop().unwrap();
+    assert!(matches!(find.query.filter, Some(Criteria::All(_))));
+    ui.set_grid_filter(grid.id(), "").unwrap();
+    let cleared = grid.take_input(&mut ui).unwrap().pop().unwrap();
+    assert_eq!(*cleared.query, base);
 }

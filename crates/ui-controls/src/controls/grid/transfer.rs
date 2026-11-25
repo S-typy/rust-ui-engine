@@ -24,7 +24,7 @@ impl TransferState {
         self.masks.clear();
     }
 }
-fn html(value: &str) -> String {
+pub(super) fn html(value: &str) -> String {
     value
         .replace('&', "&amp;")
         .replace('<', "&lt;")

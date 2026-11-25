@@ -59,7 +59,8 @@ impl PartialEq for GridCustomSummary {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GridBand {
     pub title: String,
     /// Disjoint fields. Reordering, hiding or pinning can split a band into fragments.
@@ -69,6 +70,10 @@ pub struct GridBand {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GridPresentationSettings {
     pub view: GridViewMode,
+    /// Formatting rules in descending priority. The first matching rule wins.
+    pub format_rules: Vec<GridFormatRule>,
+    /// Prefix and suffix by role: Header, Indicator or Summary.
+    pub text_templates: std::collections::BTreeMap<String, (String, String)>,
     /// Build one branch per prefix of the group fields. Defaults to composite groups.
     pub hierarchical_groups: bool,
     /// Optional zero-based group summary to sort by, otherwise order by grouping key.
@@ -78,6 +83,8 @@ pub struct GridPresentationSettings {
     pub show_group_panel: bool,
     /// (field, track root) for multi-row cells within a band.
     pub stacked_fields: Vec<(String, String)>,
+    pub wrap_fields: Vec<String>,
+    pub merge_fields: Vec<String>,
     pub right_pinned_fields: Vec<String>,
     /// An ordered grouping key. At most eight fields; NULL uses QueryEngine semantics.
     pub group_fields: Vec<String>,
@@ -102,7 +109,8 @@ pub struct GridDetailSettings {
     pub columns: Vec<GridControlColumn>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GridColumnArrangement {
     pub field: String,
     pub visible: bool,
@@ -120,6 +128,12 @@ pub enum GridRowKind {
 }
 
 impl GridPresentationSettings {
+    pub fn role_text(&self, role: &str, value: &str) -> String {
+        self.text_templates.get(role).map_or_else(
+            || value.into(),
+            |(before, after)| format!("{before}{value}{after}"),
+        )
+    }
     pub(super) fn footer_lines(&self) -> usize {
         let count = self.summaries.len() + self.custom_summaries.len();
         usize::from(count > 0)
@@ -182,6 +196,15 @@ impl GridPresentationSettings {
     }
 
     pub(super) fn validate(&self, columns: &[GridControlColumn]) -> Result<(), ControlError> {
+        if self.text_templates.iter().any(|(k, (a, b))| {
+            !matches!(k.as_str(), "Header" | "Indicator" | "Summary")
+                || a.len() > 256
+                || b.len() > 256
+                || a.contains('\0')
+                || b.contains('\0')
+        }) {
+            return Err(error("Invalid grid text template"));
+        }
         if self.group_fields.len() > 8
             || self.summaries.len() + self.custom_summaries.len() > 16
             || self.bands.len() > 16
@@ -197,6 +220,15 @@ impl GridPresentationSettings {
             return Err(error("Group sort summary index is outside summaries"));
         }
         let known: HashSet<_> = columns.iter().map(|c| c.field.as_str()).collect();
+        for fields in [&self.wrap_fields, &self.merge_fields] {
+            let mut seen = HashSet::new();
+            if fields
+                .iter()
+                .any(|f| !known.contains(f.as_str()) || !seen.insert(f))
+            {
+                return Err(error("Unknown or duplicate wrap/merge field"));
+            }
+        }
         let mut group_rules = HashSet::new();
         if self.group_expressions.iter().any(|(f, e)| {
             !known.contains(f.as_str())

@@ -31,9 +31,20 @@ impl std::fmt::Display for PrintError {
     }
 }
 impl std::error::Error for PrintError {}
+/// Standard paper sizes selectable for an individual printer job.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrintMedia {
+    A4,
+    A4Landscape,
+    A5,
+    Letter,
+}
+
 #[derive(Clone, Debug)]
 pub struct PrintTicket {
     pub printer: String,
+    /// None keeps the current paper selected by the driver.
+    pub media: Option<PrintMedia>,
     /// Zero-based page indices, in output order. Empty selects all pages.
     pub pages: Vec<usize>,
     pub copies: u16,
@@ -49,6 +60,7 @@ impl PrintTicket {
     pub fn new(printer: impl Into<String>) -> Self {
         Self {
             printer: printer.into(),
+            media: None,
             pages: Vec::new(),
             copies: 1,
             fit_to_printable_area: true,

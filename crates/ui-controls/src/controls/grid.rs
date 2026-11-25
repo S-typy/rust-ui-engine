@@ -8,7 +8,18 @@ use rust_desktop_ui_treegrid::{
     SortDirection, SortOrder, TreeDataSource, TreeGrid,
 };
 use std::{cell::RefCell, rc::Rc};
+mod appearance;
 mod bands;
+mod customize;
+pub use customize::GridContextTarget;
+mod output;
+mod page_branches;
+mod pages;
+pub use page_branches::GridPageBranches;
+mod profiles;
+pub use appearance::{GridFormatKind, GridFormatRule};
+pub use output::{GridOutput, GridPrintOptions};
+pub use pages::GridPageView;
 mod filtering;
 mod records;
 mod relations;
@@ -23,6 +34,8 @@ mod editors;
 mod grouping;
 mod unbound;
 pub use unbound::GridUnboundColumn;
+#[cfg(test)]
+mod delivery_tests;
 mod pivot;
 mod presentation;
 #[cfg(test)]
@@ -96,6 +109,7 @@ struct SnapshotSource {
     fields: Vec<String>,
     revision: u64,
     data_query: DataQuery,
+    page_query: Option<Rc<RefCell<Option<DataQuery>>>>,
     filters: filtering::GridFilters,
     relation: Option<(String, CellValue)>,
     parent_field: Option<String>,
@@ -136,6 +150,7 @@ impl SnapshotSource {
             fields,
             revision: data.revision(),
             data_query: data.query().clone(),
+            page_query: None,
             filters: Default::default(),
             relation: None,
             parent_field: None,
@@ -151,6 +166,9 @@ impl SnapshotSource {
         Ok(result)
     }
     fn reload(&mut self) -> Result<(), ControlError> {
+        self.reload_with_query(None)
+    }
+    fn reload_with_query(&mut self, query: Option<DataQuery>) -> Result<(), ControlError> {
         let mut next = self.clone();
         {
             let data = self
@@ -159,7 +177,10 @@ impl SnapshotSource {
                 .map_err(|_| error("Grid source is already borrowed"))?;
             next.table = unbound::table(data.table(), &self.unbound, &self.formulas, None)?;
             next.value_revisions = unbound::revisions(&self.unbound)?;
-            if self.relation.is_none() && self.formulas.is_empty() && self.unbound.is_empty() {
+            if let Some(query) = query {
+                next.data_query = query;
+            } else if self.relation.is_none() && self.formulas.is_empty() && self.unbound.is_empty()
+            {
                 next.data_query = data.query().clone();
             }
             next.keys = next.filtered_keys(None)?;
@@ -303,6 +324,7 @@ pub(super) struct GridState {
     filter_validator: Option<EditorValidator>,
     criteria_validator: Option<EditorValidator>,
     workflow: workflow::Workflow,
+    custom: customize::Customization,
     reveal_selected: bool,
     bounds: Option<Rect>,
     selected_key: Option<i64>,
@@ -933,6 +955,7 @@ impl Controls {
                 filter_validator: None,
                 criteria_validator: None,
                 workflow: Default::default(),
+                custom: Default::default(),
                 reveal_selected: false,
                 bounds: None,
                 selected_key: None,
@@ -1710,6 +1733,10 @@ impl Controls {
             // Thumb positions must use the offset after selection reveal/clamping.
             grid.scroll_geometry(grid.presentation_bounds(bounds));
             let mut frame = grid.model.paint(&grid.source, view_bounds).map_err(error)?;
+            if grid.measure_visible_rows(&frame, &mut self.engine)? {
+                let body = grid.scroll_geometry(grid.presentation_bounds(bounds));
+                frame = grid.model.paint(&grid.source, body).map_err(error)?;
+            }
             grid.decorate_frame(view_bounds, &mut frame);
             views::center_scene_text(&mut frame.scene, &mut self.engine)?;
             grid.frame = frame;
@@ -1728,6 +1755,8 @@ impl Controls {
                 scene.fill(bar.thumb, theme.muted);
             }
             grid.paint_workflow(bounds, &mut scene);
+            grid.update_search_marks();
+            grid.paint_navigation(bounds, &mut scene);
             grid.paint_chooser(bounds, &mut scene);
             grid.source_error = grid
                 .source
@@ -1888,7 +1917,7 @@ impl Controls {
         if self.grid_chooser_input(id, event)? {
             return Ok(true);
         }
-        if self.grid_workflow_input(id, event)? {
+        if self.grid_custom_input(id, event)? || self.grid_workflow_input(id, event)? {
             return Ok(true);
         }
         if self.grid_band_input(id, event)? || self.grid_group_panel_input(id, event)? {

@@ -247,12 +247,36 @@ fn presentation(definition: &GridControlDefinition) -> GridPresentationSettings 
             GridViewDefinition::Table => GridViewMode::Table,
             GridViewDefinition::Cards => GridViewMode::Cards,
         },
+        text_templates: definition.text_templates.clone(),
+        format_rules: definition
+            .format_rules
+            .iter()
+            .map(|r| {
+                use rust_desktop_ui_controls::{GridFormatKind as K, GridFormatRule};
+                GridFormatRule {
+                    field: r.field.clone(),
+                    kind: match r.kind.as_str() {
+                        "Expression" => K::Expression(r.criteria.clone()),
+                        "Top" => K::Top(r.count),
+                        "Duplicates" => K::Duplicates,
+                        "AboveAverage" => K::AboveAverage,
+                        "Icons" => K::Icons,
+                        "ColorScale" => K::ColorScale,
+                        _ => K::DataBar,
+                    },
+                    whole_row: r.whole_row,
+                    enabled: r.enabled,
+                }
+            })
+            .collect(),
         hierarchical_groups: definition.hierarchical_groups,
         group_sort_summary: definition.group_sort_summary,
         group_descending: definition.group_descending,
         group_footer: definition.group_footer,
         show_group_panel: definition.show_group_panel,
         stacked_fields: definition.stacked_fields.clone(),
+        wrap_fields: definition.wrap_fields.clone(),
+        merge_fields: definition.merge_fields.clone(),
         right_pinned_fields: definition.right_pinned_fields.clone(),
         group_fields: definition.group_fields.clone(),
         group_expressions: definition

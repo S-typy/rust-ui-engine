@@ -38,6 +38,15 @@ pub struct GridDetailDefinition {
     pub columns: Vec<GridColumnDefinition>,
 }
 #[derive(Clone, Debug, Default, PartialEq)]
+pub struct GridFormatDefinition {
+    pub field: String,
+    pub kind: String,
+    pub criteria: String,
+    pub count: usize,
+    pub whole_row: bool,
+    pub enabled: bool,
+}
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct GridCellTemplateDefinition {
     pub field: String,
     pub prefix: String,
@@ -155,6 +164,32 @@ pub(super) fn validate(grid: &GridControlDefinition) -> Result<(), String> {
         }
     }
     let mut fields = HashSet::new();
+    if grid.text_templates.iter().any(|(k, (a, b))| {
+        !matches!(k.as_str(), "Header" | "Indicator" | "Summary") || a.len() > 256 || b.len() > 256
+    }) {
+        return Err("Invalid grid text template".into());
+    }
+    if grid.format_rules.len() > 32
+        || grid.format_rules.iter().any(|r| {
+            !field(&r.field)
+                || !grid.columns.is_empty() && !grid.columns.iter().any(|c| c.field == r.field)
+                || !matches!(
+                    r.kind.as_str(),
+                    "Expression"
+                        | "Top"
+                        | "Duplicates"
+                        | "AboveAverage"
+                        | "DataBar"
+                        | "Icons"
+                        | "ColorScale"
+                )
+                || (r.kind == "Expression") == r.criteria.trim().is_empty()
+                || r.criteria.len() > 16384
+                || r.count == 0
+        })
+    {
+        return Err("Invalid GridFormatRule field, kind or arguments".into());
+    }
     if grid.cell_templates.len() > MAX_GRID_COLUMNS
         || grid.cell_templates.iter().any(|t| {
             !field(&t.field)
@@ -247,6 +282,8 @@ pub(super) fn is_property(name: &str) -> bool {
             | "GridControl.Bands"
             | "GridControl.Relations"
             | "GridControl.Detail"
+            | "GridControl.TextTemplates"
+            | "GridControl.FormatRules"
             | "GridControl.CellTemplates"
             | "GridControl.Editors"
     )
@@ -300,6 +337,8 @@ pub(super) fn parse_property(
         "GridControl.Bands" => ("GridBand", 16),
         "GridControl.Detail" => ("GridDetail", 1),
         "GridControl.Relations" => ("GridRelation", 32),
+        "GridControl.TextTemplates" => ("GridTextTemplate", 3),
+        "GridControl.FormatRules" => ("GridFormatRule", 32),
         "GridControl.CellTemplates" => ("GridCellTemplate", 64),
         "GridControl.Editors" => ("GridEditor", 64),
         _ => unreachable!(),
@@ -338,6 +377,57 @@ pub(super) fn parse_property(
             }
             "GridBand" => {
                 parse_band(item, depth + 1, count, 0, grid)?;
+            }
+            "GridTextTemplate" => {
+                attributes(item, &["Target", "Prefix", "Suffix"])?;
+                empty(item)?;
+                if grid
+                    .text_templates
+                    .insert(
+                        value(item, "Target"),
+                        (value(item, "Prefix"), value(item, "Suffix")),
+                    )
+                    .is_some()
+                {
+                    return Err(at_node(item, "Repeated template target"));
+                }
+            }
+            "GridFormatRule" => {
+                attributes(
+                    item,
+                    &[
+                        "FieldName",
+                        "Kind",
+                        "Criteria",
+                        "Count",
+                        "WholeRow",
+                        "IsEnabled",
+                    ],
+                )?;
+                empty(item)?;
+                let flag = |name, default| {
+                    item.attribute_node(name)
+                        .map(|a| boolean(item.document(), a))
+                        .transpose()
+                        .map(|v| v.unwrap_or(default))
+                };
+                let count = item
+                    .attribute("Count")
+                    .unwrap_or("1")
+                    .parse()
+                    .map_err(|_| at_node(item, "Invalid format Count"))?;
+                let kind = value(item, "Kind");
+                if item.attribute("Count").is_some() && kind != "Top" {
+                    return Err(at_node(item, "Count requires Top"));
+                }
+                grid.format_rules.push(GridFormatDefinition {
+                    field: value(item, "FieldName"),
+                    kind,
+                    criteria: value(item, "Criteria"),
+                    count,
+                    whole_row: flag("WholeRow", false)?,
+                    enabled: flag("IsEnabled", true)?,
+                });
             }
             "GridCellTemplate" => {
                 attributes(item, &["FieldName", "Prefix", "Suffix", "Icon", "Emphasis"])?;
@@ -524,6 +614,8 @@ pub(super) fn code(grid: &GridControlDefinition) -> String {
         .map(|(f, r)| format!("({f:?}.into(),{r:?}.into())"))
         .collect::<Vec<_>>()
         .join(",");
+    let wrap = strings(&grid.wrap_fields);
+    let merge = strings(&grid.merge_fields);
     let right = strings(&grid.right_pinned_fields);
     let band_code = |row: &[GridBandDefinition]| {
         row.iter()
@@ -563,10 +655,17 @@ pub(super) fn code(grid: &GridControlDefinition) -> String {
         .map(|(n, d)| format!("({n:?}.into(),{})", emit_detail(d)))
         .collect::<Vec<_>>()
         .join(",");
+    let roles = grid
+        .text_templates
+        .iter()
+        .map(|(k, (a, b))| format!("({k:?}.into(),({a:?}.into(),{b:?}.into()))"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let formats=grid.format_rules.iter().map(|r|format!("rust_desktop_ui_xaml::GridFormatDefinition{{field:{:?}.into(),kind:{:?}.into(),criteria:{:?}.into(),count:{},whole_row:{},enabled:{}}}",r.field,r.kind,r.criteria,r.count,r.whole_row,r.enabled)).collect::<Vec<_>>().join(",");
     let templates = grid.cell_templates.iter().map(|t|format!("rust_desktop_ui_xaml::GridCellTemplateDefinition {{ field:{:?}.into(),prefix:{:?}.into(),suffix:{:?}.into(),icon:{},emphasis:{} }}",t.field,t.prefix,t.suffix,t.icon.map(|icon|format!("Some(rust_desktop_ui_xaml::IconSymbol::{icon:?})")).unwrap_or_else(||"None".into()),t.emphasis)).collect::<Vec<_>>().join(",");
     let editors = grid.editors.iter().map(|e|format!("rust_desktop_ui_xaml::GridEditorDefinition {{ field:{:?}.into(),factory:{:?}.into(),mask:{},command:{},when:{},choice:{} }}",e.field,e.factory,optional(&e.mask),optional(&e.command),e.when.as_ref().map(|(f,v)|format!("Some(({f:?}.into(),{v:?}.into()))")).unwrap_or_else(||"None".into()),e.choice.as_ref().map(|(s,k,d)|format!("Some(({s:?}.into(),{k:?}.into(),{}))",strings(d))).unwrap_or_else(||"None".into()))).collect::<Vec<_>>().join(",");
     format!(
-        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), criteria:{:?}.into(),criteria_disabled:{}, show_auto_filter_row:{},show_row_selector:{},parent_field:{}, selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},hierarchical_groups:{},group_sort_summary:{:?},group_descending:{},group_footer:{},show_group_panel:{},stacked_fields:vec![{stacks}],right_pinned_fields:{right},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],band_rows:vec![{band_rows}],detail:{detail},relations:vec![{relations}],cell_templates:vec![{templates}],editors:vec![{editors}] }}",
+        "rust_desktop_ui_xaml::GridControlDefinition {{ data_source: {:?}.into(), columns: {}, is_read_only: {}, filter_text: {:?}.into(), criteria:{:?}.into(),criteria_disabled:{}, show_auto_filter_row:{},show_row_selector:{},parent_field:{}, selected_value: {}, view:rust_desktop_ui_xaml::GridViewDefinition::{:?},hierarchical_groups:{},group_sort_summary:{:?},group_descending:{},group_footer:{},show_group_panel:{},stacked_fields:vec![{stacks}],wrap_fields:{wrap},merge_fields:{merge},right_pinned_fields:{right},group_fields:{},summaries:vec![{summaries}],bands:vec![{bands}],band_rows:vec![{band_rows}],detail:{detail},relations:vec![{relations}],text_templates:[{roles}].into(),format_rules:vec![{formats}],cell_templates:vec![{templates}],editors:vec![{editors}] }}",
         grid.data_source,
         columns(&grid.columns),
         grid.is_read_only,

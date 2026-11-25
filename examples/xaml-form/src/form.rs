@@ -745,7 +745,11 @@ impl Form {
         if let Some(state) = &mut self.tree {
             state.refresh(&mut self.ui)?;
         }
-        self.ui.drain_activated();
+        for id in self.ui.drain_activated() {
+            if let Some(state) = &mut self.grid_workspace {
+                state.tools.activate(&mut self.ui, id)?
+            }
+        }
         let focus = self.ui.runtime.focused();
         if focus != self.last_focus {
             self.last_focus = focus;
@@ -837,6 +841,11 @@ impl DesktopApp for Form {
                 waker.wake();
             }) as std::sync::Arc<dyn Fn() + Send + Sync>
         }));
+        if let Some(state) = &self.grid_workspace
+            && let Err(e) = state.tools.wake(waker.clone())
+        {
+            eprintln!("{e}")
+        }
         let data_wake = waker.clone().map(|waker| {
             std::rc::Rc::new(move || {
                 waker.wake();

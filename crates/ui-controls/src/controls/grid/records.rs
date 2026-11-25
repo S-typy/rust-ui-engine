@@ -30,7 +30,7 @@ pub(super) type Validator = Rc<dyn Fn(&TableSchema, &DataRow) -> Result<(), Grid
 #[derive(Default)]
 pub(super) struct RecordState {
     pub(super) draft: Option<GridRowDraft>,
-    issue: Option<GridRowIssue>,
+    pub(super) issue: Option<GridRowIssue>,
     pub(super) validator: Option<Validator>,
     events: VecDeque<GridRecordEvent>,
     observed: Option<i64>,

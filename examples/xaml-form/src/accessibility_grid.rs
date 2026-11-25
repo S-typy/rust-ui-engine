@@ -126,6 +126,21 @@ impl GridAccessibility {
         let focused_column = ui.grid_focused_column(widget);
         node.set_row_count(frame.semantics.row_count);
         node.set_column_count(frame.semantics.column_count);
+        let presentation = ui.grid_presentation(widget)?;
+        if let Some(totals) = ui.grid_summaries(widget)
+            && !totals.is_empty()
+        {
+            node.set_description(
+                presentation
+                    .summary_titles()
+                    .zip(totals)
+                    .map(|(title, v)| {
+                        presentation.role_text("Summary", &format!("{title}: {}", v.display()))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" · "),
+            );
+        }
         if !cards
             && let (Some(revision), Some(columns)) = (
                 ui.grid_structure_revision(widget),
@@ -178,7 +193,10 @@ impl GridAccessibility {
             };
             let id = self.id(widget, Part::Header(column.id), next);
             let mut header = Node::new(Role::ColumnHeader);
-            header.set_label(settings.title.clone());
+            header.set_label(
+                ui.grid_presentation(widget)?
+                    .role_text("Header", &settings.title),
+            );
             header.set_column_index(order[&column.id]);
             header.set_read_only();
             if !enabled {
@@ -225,6 +243,11 @@ impl GridAccessibility {
             let id = self.id(widget, Part::Row(row.key), next);
             let mut row_node = Node::new(Role::Row);
             row_node.set_row_index(row.index);
+            if presentation.text_templates.contains_key("Indicator") {
+                row_node.set_description(
+                    presentation.role_text("Indicator", if row.selected { "☑" } else { "☐" }),
+                );
+            }
             row_node.set_level(row.depth);
             row_node.set_label(
                 visible_cells
@@ -262,7 +285,16 @@ impl GridAccessibility {
             for cell in visible_cells {
                 let cell_id = self.id(widget, Part::Cell(row.key, cell.column), next);
                 let mut cell_node = Node::new(Role::Cell);
-                cell_node.set_label(cell.label.clone());
+                cell_node.set_label(
+                    if matches!(
+                        ui.grid_row_kind(widget, row.key),
+                        Some(GridRowKind::Record(_))
+                    ) {
+                        ui.grid_cell_accessible_label(widget, cell.column, &cell.label)
+                    } else {
+                        cell.label.clone()
+                    },
+                );
                 cell_node.set_value(cell.label.clone());
                 cell_node.set_row_index(row.index);
                 cell_node.set_selected(row.selected);

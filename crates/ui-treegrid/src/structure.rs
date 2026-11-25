@@ -18,8 +18,7 @@ pub struct TreeScrollAnchor {
 
 impl TreeGrid {
     pub fn capture_scroll_anchor(&self, source: &impl TreeDataSource) -> TreeScrollAnchor {
-        let height = f64::from(self.config().row_height);
-        let index = (self.scroll_offset().1 / height).floor() as usize * self.record_lanes();
+        let index = self.first_at_offset(self.scroll_offset().1);
         TreeScrollAnchor {
             key: self
                 .row(source, index)
@@ -27,7 +26,7 @@ impl TreeGrid {
                 .flatten()
                 .and_then(|r| r.key.or(r.parent)),
             fallback_index: index,
-            within_row: self.scroll_offset().1 % height,
+            within_row: (self.scroll_offset().1 - self.record_top(index)).max(0.),
         }
     }
     /// Surviving keys retain their viewport location; a hidden key resolves to
@@ -39,7 +38,9 @@ impl TreeGrid {
     ) -> Result<(), GridError> {
         if !anchor.within_row.is_finite()
             || anchor.within_row < 0.0
-            || anchor.within_row >= f64::from(self.config().row_height)
+            || anchor.within_row
+                >= f64::from(self.record_height(anchor.fallback_index))
+                    .max(f64::from(self.config().row_height))
         {
             return Err(GridError::InvalidGeometry("invalid tree anchor fraction"));
         }
@@ -62,7 +63,10 @@ impl TreeGrid {
         let y = if self.row_count() == 0 {
             0.0
         } else {
-            self.record_top(index) + anchor.within_row
+            self.record_top(index)
+                + anchor
+                    .within_row
+                    .min(f64::from(self.record_height(index)) - 0.001)
         };
         self.scroll_to(self.scroll_offset().0, y)
     }

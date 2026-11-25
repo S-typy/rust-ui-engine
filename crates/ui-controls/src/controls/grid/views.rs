@@ -29,7 +29,7 @@ impl GridState {
                 let c = &self.settings.columns[index];
                 GridColumn {
                     id: ColumnId(index as u64),
-                    title: c.title.clone(),
+                    title: source.presentation.role_text("Header", &c.title),
                     width: a.width,
                     min_width: c.min_width,
                     max_width: c.max_width,
@@ -229,7 +229,13 @@ impl GridState {
             bounds.x + self.selector_width(bounds),
             bounds.y + panel + band + self.filter_height(bounds),
             (bounds.width - self.selector_width(bounds)).max(0.0),
-            (bounds.height - panel - band - footer - self.filter_height(bounds)).max(0.0),
+            (bounds.height
+                - panel
+                - band
+                - footer
+                - self.filter_height(bounds)
+                - self.pinned_height())
+            .max(0.0),
         )
     }
     pub(super) fn decorate_frame(&self, bounds: Rect, frame: &mut GridFrame) {
@@ -370,6 +376,8 @@ impl PresentationPainter<'_> {
                 }
             }
         }
+        customize::decorate_cells(self.source, frame);
+        appearance::paint(self.source, frame);
         for row in &frame.semantics.rows {
             if self.source.projection.synthetic.contains_key(&row.key) {
                 continue;
@@ -483,8 +491,7 @@ impl PresentationPainter<'_> {
                 });
                 let row_y = bounds.y
                     + self.model.config().header_height
-                    + (row.index as f64 * f64::from(self.model.config().row_height)
-                        - self.model.scroll_offset().1) as f32;
+                    + (self.model.record_top(row.index) - self.model.scroll_offset().1) as f32;
                 let icon = Rect::new(
                     rect.x + indent + 5.0,
                     row_y + (self.model.config().row_height - 16.0) * 0.5,
@@ -665,7 +672,7 @@ impl PresentationPainter<'_> {
                 } else {
                     Rect::new(rect.x, rect.y + height - line, rect.width, line)
                 };
-                let text = format!("{title}: {}", value.display());
+                let text = options.role_text("Summary", &format!("{title}: {}", value.display()));
                 if let Some((_, parts)) = cells.iter_mut().find(|(bounds, _)| *bounds == area) {
                     parts.push(text);
                 } else {
@@ -727,6 +734,20 @@ pub(super) fn center_scene_text(
 }
 
 impl Controls {
+    pub fn grid_cell_accessible_label(
+        &self,
+        id: WidgetId,
+        column: ColumnId,
+        value: &str,
+    ) -> String {
+        self.grids
+            .get(&id)
+            .and_then(|g| g.cell_templates.get(&column))
+            .map_or_else(
+                || value.into(),
+                |t| format!("{}{}{}", t.prefix, value, t.suffix),
+            )
+    }
     pub fn grid_presentation(&self, id: WidgetId) -> Option<&GridPresentationSettings> {
         self.grids.get(&id).map(|g| &g.source.presentation)
     }
@@ -834,8 +855,17 @@ impl Controls {
     pub(super) fn install_grid_presentation(
         &mut self,
         id: WidgetId,
+        source: SnapshotSource,
+        arrangement: Vec<GridColumnArrangement>,
+    ) -> Result<(), ControlError> {
+        self.install_grid_profile(id, source, arrangement, None)
+    }
+    pub(super) fn install_grid_profile(
+        &mut self,
+        id: WidgetId,
         mut source: SnapshotSource,
         arrangement: Vec<GridColumnArrangement>,
+        query: Option<DataQuery>,
     ) -> Result<(), ControlError> {
         let grid = self
             .grids
@@ -847,7 +877,7 @@ impl Controls {
             ));
         }
         grid.validate_arrangement(&arrangement)?;
-        source.reload()?;
+        source.reload_with_query(query.clone())?;
         let mut model = grid.make_model(&mut source, &arrangement)?;
         let bounds = grid.bounds.unwrap_or(Rect::new(0.0, 0.0, 480.0, 320.0));
         let mut frame = model.paint(&source, bounds).map_err(error)?;
@@ -876,6 +906,15 @@ impl Controls {
             self.measure_text(title, 4096.0, false)?;
         }
         let grid = self.grids.get_mut(&id).unwrap();
+        if let Some(query) = query
+            && source.relation.is_none()
+            && source.formulas.is_empty()
+            && source.unbound.is_empty()
+        {
+            let mut adapter = source.handle.try_borrow_mut().map_err(error)?;
+            adapter.set_query(query).map_err(error)?;
+            source.revision = adapter.revision();
+        }
         grid.source = source;
         grid.model = model;
         grid.arrangement = arrangement;

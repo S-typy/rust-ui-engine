@@ -718,3 +718,51 @@ fn sqlite_page_rows_and_count_share_a_snapshot_during_wal_writes() {
         51
     );
 }
+
+#[test]
+fn grid_page_and_sql_summaries_match_collection_for_filtered_ordered_rows() {
+    let mut adapter = adapter();
+    let all = adapter.load().unwrap();
+    let filter =
+        parse_criteria_text(all.schema(), r#"contains(field("Name"),text("lpha"))"#).unwrap();
+    let query = QueryRequest {
+        filter: Some(filter),
+        order_by: vec![QueryOrder {
+            expression: QueryExpression::field("N"),
+            direction: SortDirection::Descending,
+        }],
+        ..Default::default()
+    };
+    let totals = vec![
+        Aggregate {
+            function: AggregateFunction::CountRows,
+            expression: None,
+        },
+        Aggregate {
+            function: AggregateFunction::Sum,
+            expression: Some(QueryExpression::field("N")),
+        },
+    ];
+    let expected = QueryEngine::execute(
+        &all,
+        &QueryRequest {
+            aggregates: totals.clone(),
+            ..query.clone()
+        },
+    )
+    .unwrap();
+    let (page, summary) = adapter
+        .query_page_with_totals(&query, 1, 1, &totals)
+        .unwrap();
+    assert_eq!(page.execution, QueryExecution::Pushdown);
+    assert_eq!(summary, expected.aggregates);
+    assert_eq!(page.total_rows, 2);
+    assert_eq!(page.table.rows()[0].key, expected.row_keys[1]);
+    let q = QueryRequest {
+        filter: Some(Criteria::Constant(false)),
+        ..query
+    };
+    let (page, summary) = adapter.query_page_with_totals(&q, 0, 1, &totals).unwrap();
+    assert!(page.table.rows().is_empty());
+    assert_eq!(summary, [CellValue::Integer(0), CellValue::Null]);
+}

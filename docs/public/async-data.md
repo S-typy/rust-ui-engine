@@ -127,11 +127,7 @@ concurrently with destruction; it is a wake hint, not ownership of the source.
 
 ## Integration and checks
 
-Current `GridControl` takes a complete `DataSourceHandle`. Connecting a paged source
-to a window, loading indicator, selection view, or a provider-specific grid bridge
-is application-owned; this API does not add a second grid or treat the resident
-window as a complete sortable dataset. Network protocols, authentication, worker
-pools, and remote writeback are outside this row-page contract.
+A mounted `GridPageView` presents one provider window in GridControl. Applications dispatch typed requests to workers, attach a completion waker and poll on the owner thread. `GridPageBranches` coordinates independently expanded paths. [Provider windows and GridControl output](grid-output-and-provider.md)
 
 `cargo run -p rust-desktop-ui-data --example paged_loading` runs a finite worker
 example with a stale request, wake delivery, unknown total, eviction, retained

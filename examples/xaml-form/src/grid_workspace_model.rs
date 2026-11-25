@@ -64,7 +64,11 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
                 CellValue::Integer(key),
                 CellValue::Text(format!("DOC-{index:05}")),
                 CellValue::Text(["DEV", "SUP", "SVC"][index as usize % 3].into()),
-                CellValue::Text(format!("Рабочая запись {index:05}")),
+                CellValue::Text(if index == 7 {
+                    "Заказ, \"Север\"\r\nВторая строка".into()
+                } else {
+                    format!("Рабочая запись {index:05}")
+                }),
                 CellValue::Integer(if index == 0 {
                     9_007_199_254_740_993
                 } else {
@@ -201,6 +205,30 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
     ui.register_data_source("WorkspaceDetails", detail.clone())
         .map_err(err)?;
     for (id, label) in [
+        ("SaveLayout", "Сохранить раскладку"),
+        ("RestoreLayout", "Восстановить раскладку"),
+        ("FitColumn", "Подобрать ширину"),
+        ("CollapseContext", "Свернуть группу"),
+        ("ContextEdit", "Редактировать"),
+        ("PinRecord", "Закрепить запись"),
+        ("AddFormat", "Добавить правило"),
+        ("LowerFormat", "Ниже"),
+        ("RaiseFormat", "Поднять приоритет"),
+        ("ToggleFormat", "Включить или выключить"),
+        ("RemoveFormat", "Удалить правило"),
+        ("Preview", "Предпросмотр"),
+        ("Print", "Печать"),
+        ("CancelPrint", "Отменить печать"),
+        ("Export", "Экспорт"),
+        ("RegionZero", "Открыть регион 0"),
+        ("RegionOne", "Открыть регион 1"),
+        ("CollapseBranches", "Свернуть группы"),
+        ("FirstPage", "В начало"),
+        ("NextPage", "Вперёд"),
+        ("LastPage", "В конец"),
+        ("RetryPage", "Повторить"),
+        ("Branch", "Регион 1"),
+        ("RootPages", "Все регионы"),
         ("NewRow", "Добавить"),
         ("EditRow", "Изменить"),
         ("DeleteRow", "Удалить"),
@@ -234,6 +262,7 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
     Ok(Sources { master, detail })
 }
 pub(crate) struct State {
+    pub(crate) tools: crate::grid_workspace_tools::Tools,
     grid: WidgetId,
     formula: WidgetId,
     row_title: WidgetId,
@@ -261,6 +290,7 @@ impl State {
                 .ok_or_else(|| format!("Missing {name}"))
         };
         let state = Self {
+            tools: crate::grid_workspace_tools::Tools::new(ui, view, grid)?,
             grid,
             row_title: required("WorkspaceRowTitle")?,
             row_quantity: required("WorkspaceRowQuantity")?,
@@ -316,6 +346,17 @@ impl State {
         Ok(true)
     }
     fn run(&mut self, ui: &mut Controls, command: &str) -> Result<String, String> {
+        if let Some(message) = self.tools.command(ui, command)? {
+            return Ok(message);
+        }
+        if command == "ContextEdit"
+            && let Some(rust_desktop_ui_controls::GridContextTarget::Record(key)) =
+                ui.grid_context_target(self.grid)
+        {
+            ui.set_grid_selected_key(self.grid, Some(*key))
+                .map_err(err)?;
+            return self.run(ui, "EditRow");
+        }
         match command {
             "NewRow" | "EditRow" => {
                 let source = self.sources.master.borrow();
@@ -578,6 +619,7 @@ impl State {
         }
     }
     pub(crate) fn refresh(&self, ui: &mut Controls) -> Result<(), String> {
+        self.tools.refresh(ui)?;
         let source = self.sources.master.borrow();
         let selected = ui.grid_selected_key(self.grid);
         let frame = ui.grid_frame(self.grid);

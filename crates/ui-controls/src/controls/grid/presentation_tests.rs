@@ -20,7 +20,7 @@ fn table(rows: Vec<DataRow>) -> DataSourceHandle {
         .unwrap(),
     ))
 }
-fn fixture() -> (Controls, WidgetId, DataSourceHandle) {
+pub(super) fn fixture() -> (Controls, WidgetId, DataSourceHandle) {
     let source = table(vec![
         DataRow::new(
             i64::MIN,
@@ -48,7 +48,7 @@ fn fixture() -> (Controls, WidgetId, DataSourceHandle) {
     ui.update(Size::new(600.0, 400.0)).unwrap();
     (ui, id, source)
 }
-fn grouped() -> GridPresentationSettings {
+pub(super) fn grouped() -> GridPresentationSettings {
     GridPresentationSettings {
         group_fields: vec!["category".into()],
         summaries: vec![GridSummary {

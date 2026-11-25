@@ -156,6 +156,7 @@ pub struct TreeGrid {
     /// Flat tables omit the hierarchy gutter; hierarchical geometry is the default.
     pub flat_presentation: bool,
     pub(crate) lanes: usize,
+    row_sizes: Option<rust_desktop_ui_core::SparseAxis>,
     pub(crate) columns: Vec<GridColumn>,
     pub(crate) config: GridConfig,
     pub(crate) regular: Vec<usize>,
@@ -234,6 +235,7 @@ impl TreeGrid {
             .checked_add(1)
             .ok_or(GridError::Capacity)?;
         self.expanded = expanded;
+        self.row_sizes = None;
         self.index = index;
         self.restore_scroll_anchor(source, anchor)?;
         Ok(())
@@ -257,6 +259,7 @@ impl TreeGrid {
             palette: GridPalette::default(),
             flat_presentation: false,
             lanes: 1,
+            row_sizes: None,
             columns,
             config,
             regular: Vec::new(),
@@ -397,6 +400,7 @@ impl TreeGrid {
         self.locations.clear();
         self.failures.clear();
         self.epoch = next;
+        self.row_sizes = None;
         self.index = index;
         self.editor = None;
         if self
@@ -413,6 +417,9 @@ impl TreeGrid {
 
     /// Number of records sharing one horizontal strip in a wrapping view.
     pub fn set_record_lanes(&mut self, lanes: usize) {
+        if self.lanes != lanes.clamp(1, 64) {
+            self.row_sizes = None;
+        }
         self.lanes = lanes.clamp(1, 64);
         self.clamp_scroll();
     }
@@ -420,10 +427,58 @@ impl TreeGrid {
         self.lanes
     }
     pub fn content_height(&self) -> f64 {
-        self.row_count().div_ceil(self.lanes) as f64 * f64::from(self.config.row_height)
+        self.row_sizes.as_ref().map_or_else(
+            || self.row_count().div_ceil(self.lanes) as f64 * f64::from(self.config.row_height),
+            |axis| axis.total_extent(),
+        )
     }
     pub fn record_top(&self, index: usize) -> f64 {
-        (index / self.lanes) as f64 * f64::from(self.config.row_height)
+        self.row_sizes
+            .as_ref()
+            .and_then(|axis| axis.offset_of(index))
+            .unwrap_or_else(|| (index / self.lanes) as f64 * f64::from(self.config.row_height))
+    }
+    pub fn record_height(&self, index: usize) -> f32 {
+        self.row_sizes
+            .as_ref()
+            .and_then(|a| a.extent_at(index))
+            .map_or(self.config.row_height, |n| n as f32)
+    }
+    pub fn first_at_offset(&self, offset: f64) -> usize {
+        self.row_sizes.as_ref().map_or_else(
+            || (offset / f64::from(self.config.row_height)).floor() as usize * self.lanes,
+            |a| a.index_at(offset).unwrap_or(self.row_count()),
+        )
+    }
+    /// Height in logical pixels for a realized record. Indexed overrides are cleared on structural changes.
+    pub fn measure_row(&mut self, index: usize, height: f32) -> Result<bool, GridError> {
+        if self.lanes != 1
+            || index >= self.row_count()
+            || !height.is_finite()
+            || !(1.0..=4096.).contains(&height)
+        {
+            return Err(GridError::InvalidGeometry("invalid measured row"));
+        }
+        let height = (height * 4.).ceil() / 4.;
+        if self.record_height(index) == height {
+            return Ok(false);
+        }
+        if self.row_sizes.is_none() {
+            self.row_sizes = Some(
+                rust_desktop_ui_core::SparseAxis::new(
+                    self.row_count(),
+                    self.config.row_height.into(),
+                )
+                .map_err(|_| GridError::Capacity)?,
+            )
+        }
+        self.row_sizes
+            .as_mut()
+            .unwrap()
+            .set_extent(index, Some(height.into()))
+            .map_err(|_| GridError::Capacity)?;
+        self.clamp_scroll();
+        Ok(true)
     }
     pub fn set_viewport(&mut self, viewport: Size) -> Result<(), GridError> {
         if !viewport.is_valid() {
@@ -466,8 +521,7 @@ impl TreeGrid {
         }
         self.set_viewport(Size::new(bounds.width, bounds.height))?;
         let frame = TreeGridView::paint(self, source, bounds)?;
-        let height = f64::from(self.config.row_height);
-        let index = (self.scroll_y / height).floor() as usize * self.lanes;
+        let index = self.first_at_offset(self.scroll_y);
         self.viewport_anchor = Some(crate::TreeScrollAnchor {
             key: frame
                 .rows
@@ -475,7 +529,7 @@ impl TreeGrid {
                 .find(|r| r.index == index)
                 .and_then(|r| r.key.or(r.parent)),
             fallback_index: index,
-            within_row: self.scroll_y % height,
+            within_row: (self.scroll_y - self.record_top(index)).max(0.),
         });
         Ok(frame)
     }
@@ -867,6 +921,7 @@ impl TreeGrid {
             .checked_add(1)
             .ok_or(GridError::Capacity)?;
         self.expanded = next_expanded;
+        self.row_sizes = None;
         self.index = next_index;
         if expanded {
             if let Some(sequence) = next_sequence {
@@ -1318,6 +1373,7 @@ impl TreeGrid {
             .iter_mut()
             .find(|column| column.id == id)
             .ok_or(GridError::UnknownColumn(id))?;
+        self.row_sizes = None;
         column.width = width.clamp(column.min_width, column.max_width);
         self.index_columns();
         self.clamp_scroll();
@@ -1442,6 +1498,7 @@ impl TreeGrid {
             .structure_epoch
             .checked_add(1)
             .ok_or(GridError::Capacity)?;
+        self.row_sizes = None;
         self.index = index;
         self.clamp_scroll();
         Ok(())
@@ -1493,7 +1550,7 @@ impl TreeGrid {
 
     fn ensure_visible(&mut self, index: usize) {
         let top = self.record_top(index);
-        let bottom = top + f64::from(self.config.row_height);
+        let bottom = top + f64::from(self.record_height(index));
         let height = f64::from((self.viewport.height - self.config.header_height).max(0.0));
         if top < self.scroll_y {
             self.scroll_y = top;

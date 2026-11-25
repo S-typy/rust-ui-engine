@@ -270,10 +270,12 @@ pub use choices::{CheckPresentation, CheckState, RadioChoiceGroup};
 pub use flyout::{Flyout, FlyoutPlacement};
 pub use grid::{
     DataSourceHandle, GridBand, GridBandAddress, GridBandChange, GridBandItem, GridCellEditor,
-    GridCellRange, GridCellTemplate, GridChoiceEditor, GridColumnArrangement, GridControlColumn,
-    GridControlSettings, GridCustomSummary, GridDetailSettings, GridLookupRequest,
-    GridPresentationSettings, GridRecordEvent, GridRelation, GridRowDraft, GridRowIssue,
-    GridRowKind, GridSummary, GridTextCellEditor, GridTransfer, GridUnboundColumn, GridViewMode,
+    GridCellRange, GridCellTemplate, GridChoiceEditor, GridColumnArrangement, GridContextTarget,
+    GridControlColumn, GridControlSettings, GridCustomSummary, GridDetailSettings, GridFormatKind,
+    GridFormatRule, GridLookupRequest, GridOutput, GridPageBranches, GridPageView,
+    GridPresentationSettings, GridPrintOptions, GridRecordEvent, GridRelation, GridRowDraft,
+    GridRowIssue, GridRowKind, GridSummary, GridTextCellEditor, GridTransfer, GridUnboundColumn,
+    GridViewMode,
 };
 pub use images::{ImageSettings, ImageStretch};
 pub use memo::{MemoEdit, MemoEditSettings};
