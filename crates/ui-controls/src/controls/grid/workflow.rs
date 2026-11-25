@@ -109,6 +109,7 @@ impl GridState {
         let strip = self.filter_strip(b);
         if strip.height > 0. {
             scene.fill(strip, palette.header);
+            palette.paint_cell_edges(scene, strip, strip);
             for (id, cell, r) in self.filter_cells(b) {
                 let field = &self.source.fields[id.0 as usize];
                 let val = self

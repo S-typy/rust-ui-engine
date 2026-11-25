@@ -128,6 +128,18 @@ pub enum GridRowKind {
 }
 
 impl GridPresentationSettings {
+    /// A leaf header occupies the remaining tiers above its column headers.
+    pub(super) fn band_span(&self, level: usize, band: &GridBand) -> usize {
+        if self.band_rows.get(level).is_some_and(|children| {
+            children
+                .iter()
+                .any(|child| band.fields.contains(&child.fields[0]))
+        }) {
+            1
+        } else {
+            self.band_rows.len() + 1 - level
+        }
+    }
     pub fn role_text(&self, role: &str, value: &str) -> String {
         self.text_templates.get(role).map_or_else(
             || value.into(),

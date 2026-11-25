@@ -56,6 +56,42 @@ fn bounds() -> Rect {
 }
 
 #[test]
+fn center_tracks_fill_up_to_their_limits_between_fixed_columns() {
+    let mut cols = columns(5);
+    cols[1].max_width = 240.;
+    cols[2].max_width = 160.; // stricter limit on the second field of the shared track
+    cols[3].max_width = 220.;
+    let mut grid = TreeGrid::new(cols).unwrap();
+    grid.set_column_tracks([(ColumnId(2), ColumnId(1))].into(), [ColumnId(4)].into())
+        .unwrap();
+    let mut source = IndexedRows::new(3);
+    grid.refresh(&mut source).unwrap();
+    let saved = grid.save_columns();
+    for (width, first, second, gap) in [
+        (610., 150., 180., 0.),
+        (700., 160., 220., 40.),
+        (560., 140., 140., 0.),
+    ] {
+        let f = grid
+            .paint(&source, Rect::new(17., 4., width, 200.))
+            .unwrap();
+        let col = |i| {
+            f.columns
+                .iter()
+                .find(|c| c.id == ColumnId(i))
+                .unwrap()
+                .bounds
+        };
+        assert_eq!(col(0).width, 140.);
+        assert_eq!(col(1), col(2));
+        assert_eq!((col(2).width, col(3).width), (first, second));
+        assert_eq!(col(4).x + col(4).width, 17. + width);
+        assert_eq!(col(4).x - col(3).x - col(3).width, gap);
+        assert_eq!(grid.save_columns(), saved);
+    }
+}
+
+#[test]
 fn million_logical_rows_and_wide_columns_materialize_only_the_viewport() {
     for count in [1_000, 100_000, 1_000_000] {
         let mut source = IndexedRows::new(count);

@@ -20,6 +20,22 @@ fn grid_workspace_demo_modes_recipes_conflict_and_binding_preserve_logical_key()
         .unwrap()
         .unwrap();
     let grid = view.find_name("WorkspaceGrid").unwrap();
+    ui.update(Size::new(1640., 920.)).unwrap();
+    let frame = ui.grid_frame(grid).unwrap();
+    let bounds_of = |id| frame.columns.iter().find(|c| c.id.0 == id).unwrap().clip;
+    let due = bounds_of(6);
+    let active = bounds_of(7);
+    assert!((due.x + due.width - active.x).abs() < 0.01);
+    for title in ["Документ", "Состояние"] {
+        assert_eq!(
+            ui.scene()
+                .texts
+                .iter()
+                .filter(|run| run.text == title)
+                .count(),
+            1
+        );
+    }
     ui.update(Size::new(1320.0, 820.0)).unwrap();
     assert_eq!(ui.grid_selected_key(grid), Some(i64::MIN));
     assert!(ui.grid_frame(grid).unwrap().semantics.rows.len() < 40);

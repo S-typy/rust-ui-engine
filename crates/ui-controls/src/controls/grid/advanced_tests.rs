@@ -1,6 +1,50 @@
 use super::*;
 
 #[test]
+fn band_leaves_span_unused_tiers_and_the_table_frame_surrounds_the_footer() {
+    let (mut ui, id, _) = fixture();
+    let mut options = grouped();
+    options.show_group_panel = true;
+    options.bands = vec![band("Document", &["category"]), band("Values", &["amount"])];
+    options.band_rows = vec![vec![band("Measure", &["amount"])]];
+    options.right_pinned_fields = vec!["amount".into()];
+    ui.set_grid_presentation(id, options).unwrap();
+    ui.set_grid_workflow_rows(id, true, true).unwrap();
+    ui.update(Size::new(600., 400.)).unwrap();
+    let g = &ui.grids[&id];
+    let b = g.bounds.unwrap();
+    let top = b.y + g.source.presentation.panel_height(b);
+    let x = g.frame.columns[0].clip.x + 10.;
+    let fill_at = |x, y| {
+        ui.scene()
+            .rectangles
+            .iter()
+            .rev()
+            .find(|r| r.bounds.contains(x, y))
+            .unwrap()
+            .color
+    };
+    let line = g.model.palette.line;
+    for at_x in [b.x + 1., x, b.x + b.width - 2.] {
+        for y in [b.y + 0.5, top + 0.5, top + 47.5, b.y + b.height - 0.5] {
+            assert_eq!(fill_at(at_x, y), line);
+        }
+    }
+    assert_eq!(fill_at(x, top + 23.5), g.model.palette.header);
+    assert_eq!(
+        ui.scene()
+            .texts
+            .iter()
+            .filter(|text| text.text == "Document")
+            .count(),
+        1
+    );
+    let lower_half = Point::new(x, top + 35.);
+    assert!(ui.grid_band_input(id, &pointer(lower_half, true)).unwrap());
+    assert!(ui.grid_band_input(id, &pointer(lower_half, false)).unwrap());
+}
+
+#[test]
 fn table_rules_follow_stacked_fields_through_bands_headers_filters_and_selection() {
     let (mut ui, id, _) = fixture();
     ui.set_grid_presentation(

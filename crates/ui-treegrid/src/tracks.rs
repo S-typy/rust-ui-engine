@@ -6,6 +6,8 @@ pub(crate) struct Slot {
     pub zone: usize,
     pub start: f64,
     pub width: f64,
+    growth_before: f64,
+    growth: f64,
     row: usize,
     rows: usize,
 }
@@ -14,12 +16,21 @@ pub(crate) struct ColumnTracks {
     right: HashSet<ColumnId>,
     pub slots: HashMap<ColumnId, Slot>,
     pub widths: [f64; 3],
+    center_growth: f64,
+}
+struct Track {
+    zone: usize,
+    root: ColumnId,
+    width: f64,
+    limit: f64,
+    fields: Vec<ColumnId>,
 }
 impl ColumnTracks {
     pub fn rebuild(&mut self, columns: &[GridColumn]) {
         self.slots.clear();
         self.widths = [0.; 3];
-        let mut tracks: Vec<(usize, ColumnId, f64, Vec<ColumnId>)> = Vec::new();
+        self.center_growth = 0.;
+        let mut tracks: Vec<Track> = Vec::new();
         for col in columns {
             let zone = if self.right.contains(&col.id) {
                 2
@@ -28,18 +39,36 @@ impl ColumnTracks {
             } else {
                 1
             };
-            let track = self.stack.get(&col.id).copied().unwrap_or(col.id);
-            if let Some((_, _, width, ids)) = tracks
-                .iter_mut()
-                .find(|(z, id, _, _)| *z == zone && *id == track)
-            {
-                *width = width.max(f64::from(col.width));
-                ids.push(col.id);
+            let root = self.stack.get(&col.id).copied().unwrap_or(col.id);
+            if let Some(track) = tracks.iter_mut().find(|t| t.zone == zone && t.root == root) {
+                track.width = track.width.max(f64::from(col.width));
+                track.limit = track.limit.min(f64::from(col.max_width));
+                track.fields.push(col.id);
             } else {
-                tracks.push((zone, track, f64::from(col.width), vec![col.id]));
+                tracks.push(Track {
+                    zone,
+                    root,
+                    width: col.width.into(),
+                    limit: col.max_width.into(),
+                    fields: vec![col.id],
+                });
             }
         }
-        for (zone, root, width, mut ids) in tracks {
+        for Track {
+            zone,
+            root,
+            width,
+            limit,
+            fields: mut ids,
+        } in tracks
+        {
+            let growth_before = if zone == 1 { self.center_growth } else { 0. };
+            let growth = if zone == 1 {
+                (limit - width).max(0.)
+            } else {
+                0.
+            };
+            self.center_growth += growth;
             if let Some(root_index) = ids.iter().position(|id| *id == root) {
                 ids[..=root_index].rotate_right(1);
             }
@@ -51,6 +80,8 @@ impl ColumnTracks {
                         zone,
                         start: self.widths[zone],
                         width,
+                        growth_before,
+                        growth,
                         row,
                         rows,
                     },
@@ -63,6 +94,13 @@ impl ColumnTracks {
         let left = (self.widths[0] as f32).min(bounds.width);
         let right = (self.widths[2] as f32).min(bounds.width - left);
         let mid = bounds.width - left - right;
+        // Give the space before a trailing fixed column to the center tracks.
+        // All fields in a stacked track share its allocation and its tightest limit.
+        let fill = if right > 0. && self.center_growth > 0. {
+            ((f64::from(mid) - self.widths[1]) / self.center_growth).clamp(0., 1.)
+        } else {
+            0.
+        };
         let origins = [
             bounds.x,
             bounds.x + left - grid.scroll_x as f32,
@@ -84,9 +122,9 @@ impl ColumnTracks {
             .filter_map(|(index, col)| {
                 let slot = &self.slots[&col.id];
                 let rect = Rect::new(
-                    origins[slot.zone] + slot.start as f32,
+                    origins[slot.zone] + (slot.start + fill * slot.growth_before) as f32,
                     bounds.y,
-                    slot.width as f32,
+                    (slot.width + fill * slot.growth) as f32,
                     bounds.height,
                 );
                 let clip = clips[slot.zone].intersection(rect)?;
@@ -138,6 +176,7 @@ impl TreeGrid {
                 right,
                 slots: HashMap::new(),
                 widths: [0.; 3],
+                center_growth: 0.,
             };
             tracks.rebuild(&self.columns);
             Some(tracks)

@@ -243,10 +243,15 @@ impl GridState {
                     .columns
                     .iter()
                     .find(|c| self.source.fields[c.id.0 as usize] == field)?;
-                let y = bounds.y + panel + 24. * band.level as f32;
+                let header = &std::iter::once(&settings.bands)
+                    .chain(&settings.band_rows)
+                    .nth(band.level)?[band.index];
+                let bottom = bounds.y
+                    + panel
+                    + 24. * (band.level + settings.band_span(band.level, header)) as f32;
                 // Underline the destination band segment under the pointer. The
                 // modifiers on release select adjacency or nesting for band moves.
-                Some(Rect::new(col.clip.x, y + 21., col.clip.width, 3.))
+                Some(Rect::new(col.clip.x, bottom - 3., col.clip.width, 3.))
             })
         };
         Some(HeaderDragPreview {
@@ -266,27 +271,34 @@ impl GridState {
         if y < 0. {
             return None;
         }
-        let level = (y / 24.).floor() as usize;
-        let row = std::iter::once(&settings.bands)
-            .chain(&settings.band_rows)
-            .nth(level)?;
+        let tier = (y / 24.).floor() as usize;
+        if tier > settings.band_rows.len() {
+            return None;
+        }
         let column = self
             .frame
             .columns
             .iter()
             .find(|c| p.x >= c.clip.x && p.x < c.clip.x + c.clip.width)?;
         let field = &self.source.fields[column.id.0 as usize];
-        let index = row.iter().position(|b| b.fields.contains(field))?;
+        let (level, index, band) = std::iter::once(&settings.bands)
+            .chain(&settings.band_rows)
+            .take(tier + 1)
+            .enumerate()
+            .find_map(|(level, row)| {
+                let index = row.iter().position(|b| b.fields.contains(field))?;
+                (tier < level + settings.band_span(level, &row[index])).then_some((
+                    level,
+                    index,
+                    &row[index],
+                ))
+            })?;
         // Stacked fields share their track and are counted only once.
         let mut spans: Vec<_> = self
             .frame
             .columns
             .iter()
-            .filter(|c| {
-                row[index]
-                    .fields
-                    .contains(&self.source.fields[c.id.0 as usize])
-            })
+            .filter(|c| band.fields.contains(&self.source.fields[c.id.0 as usize]))
             .map(|c| (c.clip.x, c.clip.width))
             .collect();
         spans.sort_by(|a, b| a.0.total_cmp(&b.0));

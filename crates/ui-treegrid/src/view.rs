@@ -42,12 +42,7 @@ impl GridPalette {
             clip,
             self.line,
         );
-        line(
-            scene,
-            Rect::new(cell.x, cell.y + cell.height - 1., cell.width, 1.),
-            clip,
-            self.line,
-        );
+        bottom_rule(scene, cell, clip, self.line);
     }
 }
 
@@ -218,6 +213,7 @@ impl TreeGridView {
         let header = Rect::new(bounds.x, bounds.y, bounds.width, header_height);
         frame.header_bounds = Some(header);
         frame.scene.fill(header, grid.palette.header);
+        bottom_rule(&mut frame.scene, header, header, grid.palette.line);
         for visible in &frame.columns {
             let column = &grid.columns[visible.index];
             let cell = grid.track_cell(
@@ -397,6 +393,9 @@ fn paint_row(
         },
     );
     let (position_in_set, set_size) = grid.sibling_position(source, key).unwrap_or((0, 0));
+    // Cover any space left after fields reach their maximum widths. Merged
+    // cells and focus borders are painted over this shared rule.
+    bottom_rule(&mut frame.scene, bounds, row_clip, grid.palette.line);
     let mut semantics = GridSemanticRow {
         key,
         index: row.index,
@@ -547,6 +546,15 @@ fn line(scene: &mut Scene, bounds: Rect, clip: Rect, color: Color) {
     if let Some(bounds) = bounds.intersection(clip) {
         scene.fill(bounds, color);
     }
+}
+
+fn bottom_rule(scene: &mut Scene, rect: Rect, clip: Rect, color: Color) {
+    line(
+        scene,
+        Rect::new(rect.x, rect.y + rect.height - 1., rect.width, 1.),
+        clip,
+        color,
+    );
 }
 
 fn border(scene: &mut Scene, rect: Rect, clip: Rect, color: Color) {

@@ -584,13 +584,19 @@ impl PresentationPainter<'_> {
         }
         if self.source.presentation.view == GridViewMode::Table {
             let options = &self.source.presentation;
+            let bands_top = bounds.y + panel;
+            let height = (24. * (1 + options.band_rows.len()) as f32).min(bounds.height - panel);
+            let band_area = Rect::new(bounds.x, bands_top, bounds.width, height);
+            if !options.bands.is_empty() {
+                scene.fill(band_area, palette.header);
+            }
             for (level, band) in std::iter::once(&options.bands)
                 .chain(&options.band_rows)
                 .enumerate()
                 .flat_map(|(level, row)| row.iter().map(move |b| (level, b)))
             {
-                // Use clipped visible column geometry, merging only adjacent
-                // fragments in the same pinned/scrolling coordinate region.
+                // Adjacent fields share one caption, including across a pinned seam.
+                let band_height = 24. * options.band_span(level, band) as f32;
                 let mut columns: Vec<_> = frame
                     .columns
                     .iter()
@@ -600,7 +606,7 @@ impl PresentationPainter<'_> {
                     })
                     .collect();
                 columns.sort_by(|a, b| a.clip.x.total_cmp(&b.clip.x));
-                let mut fragments: Vec<(Rect, (bool, bool), f32)> = Vec::new();
+                let mut fragments: Vec<(Rect, f32)> = Vec::new();
                 for column in columns {
                     let Some(visible) = column.bounds.intersection(column.clip) else {
                         continue;
@@ -612,28 +618,21 @@ impl PresentationPainter<'_> {
                         visible.x,
                         bounds.y + panel + level as f32 * 24.0,
                         visible.width,
-                        (bounds.height - panel - level as f32 * 24.0).clamp(0.0, 24.0),
-                    );
-                    let zone = (
-                        column.pinned,
-                        options
-                            .right_pinned_fields
-                            .contains(&self.source.fields[column.id.0 as usize]),
+                        (bounds.height - panel - level as f32 * 24.0).clamp(0.0, band_height),
                     );
                     let field_end = column.bounds.x + column.bounds.width;
-                    if let Some((last, pinned, end)) = fragments.last_mut()
-                        && *pinned == zone
-                        && rect.x <= last.x + last.width + 0.5
+                    if let Some((last, end)) = fragments.last_mut()
+                        && rect.x <= last.x + last.width + 0.01
                     {
                         last.width = last.width.max(rect.x + rect.width - last.x);
                         *end = end.max(field_end);
                     } else {
-                        fragments.push((rect, zone, field_end));
+                        fragments.push((rect, field_end));
                     }
                 }
-                for (rect, _, end) in fragments {
+                for (rect, end) in fragments {
                     scene.fill(rect, palette.header);
-                    let band_cell = Rect::new(rect.x, rect.y, end - rect.x, 24.);
+                    let band_cell = Rect::new(rect.x, rect.y, end - rect.x, band_height);
                     palette.paint_cell_edges(scene, band_cell, rect);
                     let text = Rect::new(
                         rect.x + 6.0,
@@ -652,6 +651,12 @@ impl PresentationPainter<'_> {
                     );
                 }
             }
+            if !options.bands.is_empty() && height > 0. {
+                let rule = height.min(1.);
+                for y in [bands_top, bands_top + height - rule] {
+                    scene.fill(Rect::new(bounds.x, y, bounds.width, rule), palette.line);
+                }
+            }
         }
         if self.source.presentation.summary_titles().next().is_some() {
             let options = &self.source.presentation;
@@ -664,6 +669,12 @@ impl PresentationPainter<'_> {
                 height,
             );
             scene.fill(rect, palette.header);
+            if options.view == GridViewMode::Table {
+                scene.fill(
+                    Rect::new(rect.x, rect.y, rect.width, 1_f32.min(rect.height)),
+                    palette.line,
+                );
+            }
             let line = height / lines as f32;
             let mut cells: Vec<(Rect, Vec<String>)> = Vec::new();
             for (i, (title, value)) in options
@@ -695,9 +706,10 @@ impl PresentationPainter<'_> {
                 }
             }
             for (area, parts) in cells {
+                let inset = area.width.min(8.);
                 draw_text(
                     scene,
-                    area,
+                    Rect::new(area.x + inset, area.y, area.width - inset, area.height),
                     area,
                     parts.join("  ·  "),
                     palette.text,

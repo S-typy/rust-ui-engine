@@ -1764,7 +1764,6 @@ impl Controls {
             grid.paint_workflow(bounds, &mut scene);
             grid.update_search_marks();
             grid.paint_navigation(bounds, &mut scene);
-            grid.paint_chooser(bounds, &mut scene);
             grid.source_error = grid
                 .source
                 .handle
@@ -1808,6 +1807,19 @@ impl Controls {
                     wrap: false,
                 });
             }
+            if grid.source.presentation.view == GridViewMode::Table {
+                let w = bounds.width.min(1.);
+                let h = bounds.height.min(1.);
+                for edge in [
+                    Rect::new(bounds.x, bounds.y, bounds.width, h),
+                    Rect::new(bounds.x, bounds.y + bounds.height - h, bounds.width, h),
+                    Rect::new(bounds.x, bounds.y, w, bounds.height),
+                    Rect::new(bounds.x + bounds.width - w, bounds.y, w, bounds.height),
+                ] {
+                    scene.fill(edge, grid.model.palette.line);
+                }
+            }
+            grid.paint_chooser(bounds, &mut scene);
             if let Some(preview) = grid.header_feedback(bounds) {
                 preview.paint(&mut scene, bounds, grid.model.palette);
             }
