@@ -1,15 +1,40 @@
 <Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Таблица и представления" Width="1360" Height="900" Padding="24">
-  <Grid Spacing="14">
+        Title="Реестр документов" Width="1360" Height="900" Padding="16" Density="Compact">
+  <Grid Spacing="8">
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <StackPanel Spacing="6"><TextBlock Text="Таблица и представления" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Щёлкните по значению в ячейке, чтобы изменить его. Enter — сохранить, Escape — отменить." TextTone="Secondary" TextWrapping="Wrap"/></StackPanel>
-    <StackPanel Grid.Row="1" Spacing="8">
-      <WrapPanel Spacing="8"><Button Content="Таблица" Command="GridWorkspaceTable"/><Button Content="Карточки" Command="GridWorkspaceCards"/><Button Content="Группировка" Command="GridWorkspaceGroup"/><Button Content="Порядок групп" Command="GridWorkspaceSortGroups"/><Button Content="Итоги под группой" Command="GridWorkspaceFooter"/><Button Content="Подробности" Command="GridWorkspaceDetails"/><Button Content="Выбрать колонки" Command="GridWorkspaceChooser"/><Button Content="Переставить колонки" Command="GridWorkspaceReorder"/><Button Content="Закрепить категорию" Command="GridWorkspacePin"/><Button Content="Показать дату" Command="GridWorkspaceDate"/></WrapPanel>
-      <WrapPanel Spacing="8"><Button Content="Количество" Command="GridWorkspaceQuantity"/><Button Content="Сумма" Command="GridWorkspacePrice"/><Button Content="Дата" Command="GridWorkspaceDue"/><Button Content="Согласовано" Command="GridWorkspaceActive"/><Button Content="Подтвердить" Command="GridWorkspaceCommit"/><Button Content="Отменить" Command="GridWorkspaceCancel"/><Button Content="Конфликт записи" Command="GridWorkspaceConflict"/><CheckBox Content="Только чтение" IsChecked="{Binding ReadOnly}"/></WrapPanel>
-      <WrapPanel Spacing="8"><TextBox x:Name="WorkspaceFormula" Text='mul(to_decimal(field("Quantity")),field("Price"))' Width="410" AutomationName="Формула суммы строки"/><Button Content="Применить формулу" Command="GridWorkspaceFormula"/></WrapPanel>
-      <TextBox x:Name="WorkspaceFilter" Text="{Binding Filter}" PlaceholderText="Фильтр по данным" Width="360"/>
-    </StackPanel>
-    <GridControl EditOnClick="True" ShowAutoFilterRow="False" ShowRowSelector="True" Criteria="{Binding Criteria}" IsCriteriaEnabled="{Binding RuleEnabled}" x:Name="WorkspaceGrid" Grid.Row="2" DataSource="WorkspaceRecords" GroupFields="Category,Active" GroupMode="Hierarchy" ShowGroupPanel="True" StackedFields="Price=Quantity" RightPinnedFields="Active" WrapFields="Title" MergeFields="Category"
+    <TextBlock Text="Документы" FontSize="24" FontWeight="SemiBold"/>
+    <WrapPanel Grid.Row="1" Spacing="8">
+      <TextBox x:Name="WorkspaceFilter" Text="{Binding Filter}" PlaceholderText="Поиск по документам" AutomationName="Фильтр по данным" Width="260"/>
+      <DropDownButton x:Name="WorkspaceViewMenu" Content="Вид">
+        <MenuItem Header="Таблица" Command="GridWorkspaceTable"/>
+        <MenuItem Header="Карточки" Command="GridWorkspaceCards"/>
+        <Separator/>
+        <MenuItem Header="Группировка" Command="GridWorkspaceGroup"/>
+        <MenuItem Header="Порядок групп" Command="GridWorkspaceSortGroups"/>
+        <MenuItem Header="Итоги под группой" Command="GridWorkspaceFooter"/>
+        <MenuItem Header="Подробности" Command="GridWorkspaceDetails"/>
+        <Separator/>
+        <MenuItem Header="Светлая тема" Command="Light"/>
+        <MenuItem Header="Тёмная тема" Command="Dark"/>
+      </DropDownButton>
+      <DropDownButton x:Name="WorkspaceColumnMenu" Content="Колонки">
+        <MenuItem Header="Выбрать колонки" Command="GridWorkspaceChooser"/>
+        <MenuItem Header="Переставить колонки" Command="GridWorkspaceReorder"/>
+        <MenuItem Header="Закрепить категорию" Command="GridWorkspacePin"/>
+        <MenuItem Header="Показать дату" Command="GridWorkspaceDate"/>
+      </DropDownButton>
+      <DropDownButton x:Name="WorkspaceEditMenu" Content="Правка">
+        <MenuItem Header="Количество" Command="GridWorkspaceQuantity"/>
+        <MenuItem Header="Сумма" Command="GridWorkspacePrice"/>
+        <MenuItem Header="Дата" Command="GridWorkspaceDue"/>
+        <MenuItem Header="Согласовано" Command="GridWorkspaceActive"/>
+        <Separator/>
+        <MenuItem Header="Подтвердить" Command="GridWorkspaceCommit"/>
+        <MenuItem Header="Отменить" Command="GridWorkspaceCancel"/>
+        <MenuItem Header="Конфликт записи" Command="GridWorkspaceConflict"/>
+      </DropDownButton>
+    </WrapPanel>
+    <GridControl NumberCulture="ru-RU" EditOnClick="True" ShowAutoFilterRow="False" ShowRowSelector="True" Criteria="{Binding Criteria}" IsCriteriaEnabled="{Binding RuleEnabled}" x:Name="WorkspaceGrid" Grid.Row="2" DataSource="WorkspaceRecords" GroupFields="Category,Active" GroupMode="Hierarchy" ShowGroupPanel="True" StackedFields="Price=Quantity" RightPinnedFields="Active" WrapFields="Title" MergeFields="Category"
                  SelectedValue="{Binding SelectedKey}" FilterText="{Binding Filter}" IsReadOnly="{Binding ReadOnly}" AutomationName="Таблица рабочих записей">
       <GridControl.Columns>
         <GridColumn FieldName="Code" Header="Код" Width="180" IsPinned="True" IsReadOnly="True"/>
@@ -21,19 +46,22 @@
         <GridColumn FieldName="Due" Header="Дата" Width="145"/>
         <GridColumn FieldName="Active" Header="Согласовано" Width="160"/>
       </GridControl.Columns>
-      <GridControl.Summaries><GridSummary Function="CountRows" Title="Записей"/><GridSummary Function="Sum" FieldName="LineTotal" Title="Сумма" DisplayColumn="LineTotal"/></GridControl.Summaries>
+      <GridControl.Summaries><GridSummary Function="CountRows" Title="Записей"/><GridSummary Function="Sum" FieldName="LineTotal" Title="Сумма"/></GridControl.Summaries>
       <GridControl.Bands><GridBand Header="Документ" Fields="Code,Category,Title"/><GridBand Header="Продажи"><GridBand Header="Показатели" Fields="Quantity,Price"/><GridBand Header="Результат" Fields="LineTotal"/></GridBand><GridBand Header="Состояние" Fields="Due,Active"/></GridControl.Bands>
       <GridControl.Relations><GridRelation Name="Items" DataSource="WorkspaceDetails" MasterField="RecordId" ForeignField="OwnerId"/><GridRelation Name="Payments" DataSource="WorkspacePayments" MasterField="RecordId" ForeignField="OwnerId"/></GridControl.Relations>
       <GridControl.Detail><GridDetail DataSource="WorkspaceDetails" MasterField="RecordId" ForeignField="OwnerId"><GridColumn FieldName="Caption" Header="Позиция"/><GridColumn FieldName="Quantity" Header="Количество"/><GridColumn FieldName="Price" Header="Сумма"/></GridDetail></GridControl.Detail>
-      <GridControl.TextTemplates><GridTextTemplate Target="Summary" Prefix="Итого · "/></GridControl.TextTemplates>
-      <GridControl.FormatRules><GridFormatRule FieldName="Quantity" Kind="DataBar"/><GridFormatRule FieldName="LineTotal" Kind="ColorScale"/><GridFormatRule FieldName="Active" Kind="Expression" Criteria='eq(field("Active"),bool("false"))'/></GridControl.FormatRules>
-      <GridControl.CellTemplates><GridCellTemplate FieldName="Title" Icon="Edit" Emphasis="True"/><GridCellTemplate FieldName="Price" Suffix=" ₽"/></GridControl.CellTemplates>
+      <GridControl.FormatRules><GridFormatRule FieldName="Quantity" Kind="DataBar"/><GridFormatRule FieldName="LineTotal" Kind="ColorScale" IsEnabled="False"/><GridFormatRule FieldName="Active" Kind="Expression" Criteria='eq(field("Active"),bool("false"))'/></GridControl.FormatRules>
+      <GridControl.CellTemplates><GridCellTemplate FieldName="Price" Suffix=" ₽"/></GridControl.CellTemplates>
       <GridControl.Editors><GridEditor FieldName="Title" Factory="Auto"/><GridEditor FieldName="Category" Factory="Lookup" ItemsSource="WorkspaceCategories" ValueField="Code" DisplayFields="Name,Area"/><GridEditor FieldName="Quantity" Factory="Auto"/><GridEditor FieldName="Price" Factory="Auto"/><GridEditor FieldName="Due" Factory="Auto"/><GridEditor FieldName="Active" Factory="Auto"/></GridControl.Editors>
     </GridControl>
     <StackPanel Grid.Row="3" Spacing="6">
       <Expander x:Name="WorkspaceOperations" Header="Запись, условия и связанные позиции" IsExpanded="False">
         <TabbedGroup x:Name="WorkspaceOperationTabs">
           <GroupTab Header="Строка"><StackPanel Spacing="6">
+            <CheckBox Content="Только чтение" IsChecked="{Binding ReadOnly}"/>
+            <WrapPanel Spacing="6"><TextBox x:Name="WorkspaceFormula" Text='mul(to_decimal(field("Quantity")),field("Price"))' Width="410" AutomationName="Формула суммы строки"/><Button Content="Применить формулу" Command="GridWorkspaceFormula"/></WrapPanel>
+            <TextBlock x:Name="WorkspaceSummary" Text="" TextTone="Secondary" TextWrapping="Wrap"/>
+            <TextBlock x:Name="WorkspaceStored" Text="" TextTone="Secondary" TextWrapping="Wrap"/>
             <WrapPanel Spacing="6"><Button Content="Добавить" Command="GridWorkspaceNewRow"/><Button Content="Изменить" Command="GridWorkspaceEditRow"/><Button Content="Удалить" Command="GridWorkspaceDeleteRow"/></WrapPanel>
             <WrapPanel Spacing="6"><TextBox x:Name="WorkspaceRowTitle" Width="260" AutomationName="Наименование записи"/><TextBox x:Name="WorkspaceRowQuantity" Width="150" AutomationName="Количество записи"/><Button Content="Записать" Command="GridWorkspaceSaveRow"/><Button Content="Отменить" Command="GridWorkspaceCancelRow"/></WrapPanel>
           </StackPanel></GroupTab>
@@ -47,6 +75,8 @@
           <GroupTab Header="Раскладка и вывод"><StackPanel Spacing="4"><WrapPanel Spacing="6"><TextBox x:Name="WorkspaceLayoutName" Width="170" Text="Заказы" AutomationName="Имя раскладки"/><Button Content="Сохранить" Command="GridWorkspaceSaveLayout"/><Button Content="Восстановить" Command="GridWorkspaceRestoreLayout"/><TextBox x:Name="WorkspacePaper" Text="A4" Width="72" AutomationName="Бумага A4, A4-L, A5, Letter"/><TextBox x:Name="WorkspaceMargin" Text="40" Width="60" AutomationName="Поля страницы, DIP"/><TextBox x:Name="WorkspacePrintRange" Text="1" Width="70" AutomationName="Страницы, например 1-4"/><CheckBox x:Name="WorkspacePrintSelected" Content="Выделенные записи"/><Button Content="Предпросмотр" Command="GridWorkspacePreview"/><Button Content="Экспорт" Command="GridWorkspaceExport"/></WrapPanel><WrapPanel Spacing="6"><TextBox x:Name="WorkspacePrinter" PlaceholderText="Имя принтера" Width="220"/><Button Content="Печать" Command="GridWorkspacePrint"/><Button Content="Отменить печать" Command="GridWorkspaceCancelPrint"/></WrapPanel><TextBlock x:Name="WorkspacePrintStatus" Text="" TextWrapping="Wrap"/><StackPanel x:Name="WorkspacePreviewHost"/></StackPanel></GroupTab>
           <GroupTab Header="Страницы"><StackPanel Spacing="4"><WrapPanel Spacing="6"><Button Content="В начало" Command="GridWorkspaceFirstPage"/><Button Content="Вперёд" Command="GridWorkspaceNextPage"/><Button Content="В конец" Command="GridWorkspaceLastPage"/><Button Content="Регион 1" Command="GridWorkspaceBranch"/><Button Content="Все регионы" Command="GridWorkspaceRootPages"/><Button Content="Повторить" Command="GridWorkspaceRetryPage"/></WrapPanel><TextBlock x:Name="WorkspaceProviderStatus" Text=""/><StackPanel x:Name="WorkspaceProviderHost"/><WrapPanel Spacing="6"><Button Content="Открыть регион 0" Command="GridWorkspaceRegionZero"/><Button Content="Открыть регион 1" Command="GridWorkspaceRegionOne"/><Button Content="Свернуть группы" Command="GridWorkspaceCollapseBranches"/></WrapPanel><StackPanel x:Name="WorkspaceBranchesHost"/></StackPanel></GroupTab>
         </TabbedGroup>
-      </Expander><TextBlock x:Name="WorkspaceSummary" Text="" TextTone="Secondary" TextWrapping="Wrap"/><TextBlock x:Name="WorkspaceStored" Text="" TextWrapping="Wrap"/><TextBlock x:Name="WorkspaceStatus" Text="F2 или Enter открывает ячейку. Escape отменяет ввод; стрелки переходят между строками и колонками." TextWrapping="Wrap"/><WrapPanel Spacing="8"><Button Content="Светлая" Command="Light"/><Button Content="Тёмная" Command="Dark"/></WrapPanel></StackPanel>
+      </Expander>
+      <TextBlock x:Name="WorkspaceStatus" Text="Щелчок открывает ячейку. Enter — сохранить, Escape — отменить." TextTone="Secondary" TextWrapping="Wrap"/>
+    </StackPanel>
   </Grid>
 </Window>

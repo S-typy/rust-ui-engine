@@ -202,7 +202,13 @@ impl GridState {
         let selector = self.selection_header(b);
         if selector.width > 0. {
             scene.fill(selector, palette.header);
-            label(scene, selector, "  ☑".into());
+            let mark = Rect::new(
+                selector.x + (selector.width - 16.) * 0.5,
+                selector.y + (selector.height - 16.) * 0.5,
+                16.,
+                16.,
+            );
+            crate::primitives::paint_icon(scene, IconSymbol::Check, mark, selector, palette.muted);
             palette.paint_cell_edges(scene, selector, selector);
         }
         for row in &self.frame.semantics.rows {
@@ -218,13 +224,22 @@ impl GridState {
                         + (self.model.record_top(row.index) - self.model.scroll_offset().1) as f32;
                     let cell = Rect::new(r.x, y, r.width, self.model.record_height(row.index));
                     palette.paint_cell_edges(scene, cell, r);
-                    label(
-                        scene,
-                        r,
-                        self.source
-                            .presentation
-                            .role_text("Indicator", if row.selected { "☑" } else { "☐" }),
-                    );
+                    if self
+                        .source
+                        .presentation
+                        .text_templates
+                        .contains_key("Indicator")
+                    {
+                        label(
+                            scene,
+                            r,
+                            self.source
+                                .presentation
+                                .role_text("Indicator", if row.selected { "☑" } else { "☐" }),
+                        );
+                    } else {
+                        views::paint_check(scene, cell, r, palette, Some(row.selected));
+                    }
                 }
             }
             for cell in &row.cells {

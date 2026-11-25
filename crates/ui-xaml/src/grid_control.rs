@@ -25,6 +25,8 @@ pub struct GridControlDefinition {
     pub criteria_disabled: bool,
     /// Open a cell editor on the first click instead of a double click.
     pub edit_on_click: bool,
+    /// Optional number formatting for integer and decimal display values.
+    pub number_culture: Option<crate::NumericCultureDefinition>,
     pub show_auto_filter_row: bool,
     pub show_row_selector: bool,
     pub parent_field: Option<String>,

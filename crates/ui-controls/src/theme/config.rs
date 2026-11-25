@@ -321,6 +321,17 @@ impl ThemeConfig {
 }
 
 impl Theme {
+    pub(crate) fn grid_alternate_row(self) -> Color {
+        let tokens = self.tokens();
+        if self
+            .configuration()
+            .is_some_and(|c| c.palette.is_some() || c.mode.is_high_contrast())
+        {
+            return tokens.canvas;
+        }
+        mix(self.chrome().card_surface, tokens.canvas, 0.25)
+    }
+
     /// Opaque rule between table cells. Explicit palettes supply their own border color.
     pub fn grid_line(self) -> Color {
         if self
@@ -329,9 +340,9 @@ impl Theme {
         {
             self.tokens().border
         } else if self.is_dark() {
-            Color::rgb(117, 126, 136)
+            Color::rgb(125, 125, 125)
         } else {
-            Color::rgb(146, 155, 165)
+            Color::rgb(150, 150, 150)
         }
     }
 }

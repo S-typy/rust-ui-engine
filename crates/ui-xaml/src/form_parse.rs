@@ -415,6 +415,22 @@ fn finite_number(document: &Document<'_>, attr: Attribute<'_, '_>) -> Result<f64
         .ok_or_else(|| at_attribute(document, attr, "number must be finite"))
 }
 
+fn numeric_culture(
+    document: &Document<'_>,
+    attr: Attribute<'_, '_>,
+) -> Result<NumericCultureDefinition, Diagnostic> {
+    match attr.value() {
+        "ru" | "ru-RU" => Ok(NumericCultureDefinition::Russian),
+        "en" | "en-US" => Ok(NumericCultureDefinition::English),
+        "ar" | "ar-SA" => Ok(NumericCultureDefinition::Arabic),
+        _ => Err(at_attribute(
+            document,
+            attr,
+            "Culture must be ru-RU, en-US or ar-SA",
+        )),
+    }
+}
+
 pub(super) fn property(
     document: &Document<'_>,
     attr: Attribute<'_, '_>,
@@ -529,6 +545,7 @@ pub(super) fn property(
                 "IsReadOnly" => grid.is_read_only = boolean(document, attr)?,
                 "IsCriteriaEnabled" => grid.criteria_disabled = !boolean(document, attr)?,
                 "Criteria" => grid.criteria = attr.value().into(),
+                "NumberCulture" => grid.number_culture = Some(numeric_culture(document, attr)?),
                 "EditOnClick" => grid.edit_on_click = boolean(document, attr)?,
                 "ShowAutoFilterRow" => grid.show_auto_filter_row = boolean(document, attr)?,
                 "ShowRowSelector" => grid.show_row_selector = boolean(document, attr)?,
@@ -828,18 +845,7 @@ pub(super) fn property(
                         })?;
                 }
                 "Culture" => {
-                    editor.culture = match attr.value() {
-                        "ru" | "ru-RU" => NumericCultureDefinition::Russian,
-                        "en" | "en-US" => NumericCultureDefinition::English,
-                        "ar" | "ar-SA" => NumericCultureDefinition::Arabic,
-                        _ => {
-                            return Err(at_attribute(
-                                document,
-                                attr,
-                                "Culture must be ru-RU, en-US or ar-SA",
-                            ));
-                        }
-                    }
+                    editor.culture = numeric_culture(document, attr)?;
                 }
                 "Text" => return Ok(false),
                 _ => return editor_property(document, attr, &mut editor.editor),
@@ -861,18 +867,7 @@ pub(super) fn property(
                 "UseGrouping" => editor.use_grouping = boolean(document, attr)?,
                 "ShowCalculator" => editor.show_calculator = boolean(document, attr)?,
                 "Culture" => {
-                    editor.culture = match attr.value() {
-                        "ru" | "ru-RU" => NumericCultureDefinition::Russian,
-                        "en" | "en-US" => NumericCultureDefinition::English,
-                        "ar" | "ar-SA" => NumericCultureDefinition::Arabic,
-                        _ => {
-                            return Err(at_attribute(
-                                document,
-                                attr,
-                                "Culture must be ru-RU, en-US or ar-SA",
-                            ));
-                        }
-                    }
+                    editor.culture = numeric_culture(document, attr)?;
                 }
                 "Text" => return Ok(false),
                 _ => return editor_property(document, attr, &mut editor.editor),

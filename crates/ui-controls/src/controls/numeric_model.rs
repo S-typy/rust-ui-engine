@@ -84,7 +84,7 @@ impl NumericEditSettings {
         self.validate_value(value).map_err(ControlError::Invalid)?;
         Ok(value.map_or(String::new(), |v| {
             format_decimal(
-                v,
+                &v.to_string(),
                 self.culture,
                 self.grouping,
                 (!self.trim_trailing_zeros).then_some(self.precision),
@@ -176,16 +176,13 @@ fn parse_display(text: &str, culture: UiCulture) -> Result<Option<DecimalValue>,
         .map(Some)
         .map_err(|e: rust_desktop_ui_data::DataError| e.to_string())
 }
-fn format_decimal(
-    value: DecimalValue,
+pub(super) fn format_decimal(
+    text: &str,
     culture: UiCulture,
     grouping: bool,
     precision: Option<u8>,
 ) -> String {
-    let text = value.to_string();
-    let (negative, body) = text
-        .strip_prefix('-')
-        .map_or((false, text.as_str()), |s| (true, s));
+    let (negative, body) = text.strip_prefix('-').map_or((false, text), |s| (true, s));
     let (integer, fraction) = body.split_once('.').unwrap_or((body, ""));
     let (decimal, group) = separators(culture);
     let mut result = String::new();

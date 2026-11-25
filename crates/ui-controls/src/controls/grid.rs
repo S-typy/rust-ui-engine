@@ -1730,7 +1730,7 @@ impl Controls {
             };
             grid.model.palette = GridPalette {
                 background: chrome.card_surface,
-                alternate_row: theme.canvas,
+                alternate_row: self.theme.grid_alternate_row(),
                 header: chrome.control_hover,
                 text: theme.text,
                 muted: theme.muted,

@@ -70,6 +70,8 @@ pub struct GridBand {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GridPresentationSettings {
     pub view: GridViewMode,
+    /// Format displayed integer and decimal digits using this culture.
+    pub number_culture: Option<crate::UiCulture>,
     /// Formatting rules in descending priority. The first matching rule wins.
     pub format_rules: Vec<GridFormatRule>,
     /// Prefix and suffix by role: Header, Indicator or Summary.
@@ -128,6 +130,16 @@ pub enum GridRowKind {
 }
 
 impl GridPresentationSettings {
+    pub(super) fn display_value(&self, value: &CellValue) -> String {
+        let raw = value.display();
+        match (self.number_culture, value) {
+            (Some(culture), CellValue::Integer(_) | CellValue::Decimal(_)) => {
+                super::super::numeric_model::format_decimal(&raw, culture, true, None)
+            }
+            _ => raw,
+        }
+    }
+
     /// A leaf header occupies the remaining tiers above its column headers.
     pub(super) fn band_span(&self, level: usize, band: &GridBand) -> usize {
         if self.band_rows.get(level).is_some_and(|children| {

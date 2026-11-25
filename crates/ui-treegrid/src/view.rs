@@ -34,11 +34,16 @@ impl Default for GridPalette {
 }
 
 impl GridPalette {
-    /// Paint the trailing and bottom rules of a logical cell, clipped to its visible area.
+    /// Paint the bottom rule and the visible trailing edge, including a frozen-column seam.
     pub fn paint_cell_edges(self, scene: &mut Scene, cell: Rect, clip: Rect) {
         line(
             scene,
-            Rect::new(cell.x + cell.width - 1., cell.y, 1., cell.height),
+            Rect::new(
+                (cell.x + cell.width).min(clip.x + clip.width) - 1.,
+                cell.y,
+                1.,
+                cell.height,
+            ),
             clip,
             self.line,
         );
@@ -310,7 +315,7 @@ impl TreeGridView {
                     column.title.clone(),
                     grid.config.font_size,
                     grid.palette.text,
-                    600,
+                    500,
                 );
             }
             frame.hits.push(GridHit {
@@ -334,7 +339,7 @@ impl TreeGridView {
                     1.0,
                     bounds.height,
                 ),
-                grid.palette.focus,
+                grid.palette.line,
             );
         }
         Ok(frame)
@@ -511,14 +516,22 @@ fn paint_row(
                     cell.height,
                 );
                 if let Some(marker_clip) = marker.intersection(clip) {
-                    text(
+                    let x = marker.x + marker.width * 0.5;
+                    let y = marker.y + marker.height * 0.5;
+                    let points = if grid.is_expanded(key) {
+                        [(x - 3.5, y - 1.75), (x, y + 1.75), (x + 3.5, y - 1.75)]
+                    } else {
+                        [(x - 1.75, y - 3.5), (x + 1.75, y), (x - 1.75, y + 3.5)]
+                    };
+                    symbol(
                         &mut frame.scene,
-                        marker,
+                        &points,
                         marker_clip,
-                        if grid.is_expanded(key) { "-" } else { "+" }.into(),
-                        grid.config.font_size,
-                        grid.palette.text,
-                        600,
+                        if selected {
+                            grid.palette.selection_text
+                        } else {
+                            grid.palette.muted
+                        },
                     );
                     frame.hits.push(GridHit {
                         bounds: marker_clip,

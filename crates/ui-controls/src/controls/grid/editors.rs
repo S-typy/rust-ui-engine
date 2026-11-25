@@ -294,12 +294,11 @@ impl SnapshotSource {
         }
     }
     pub(super) fn cell_label(&self, field: &str, value: &CellValue) -> String {
-        let raw = value.display();
         self.choice_labels
             .get(field)
             .and_then(|c| c.labels.get(&projection::value_identity(value)))
             .cloned()
-            .unwrap_or(raw)
+            .unwrap_or_else(|| self.presentation.display_value(value))
     }
 }
 impl GridChoiceEditor {

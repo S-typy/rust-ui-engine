@@ -4,13 +4,17 @@ use rust_desktop_ui_controls::*;
 use rust_desktop_ui_core::{Align, GridPlacement, GridTrack, Mutation, Scene, Size};
 use rust_desktop_ui_xaml as x;
 
-pub(super) fn mask_settings(definition: &x::MaskEditDefinition) -> Result<MaskSettings, String> {
-    let mut settings = MaskSettings::new(&definition.mask).map_err(err)?;
-    settings.culture = match definition.culture {
+pub(super) fn numeric_culture(value: x::NumericCultureDefinition) -> UiCulture {
+    match value {
         x::NumericCultureDefinition::Russian => UiCulture::Russian,
         x::NumericCultureDefinition::English => UiCulture::English,
         x::NumericCultureDefinition::Arabic => UiCulture::Arabic,
-    };
+    }
+}
+
+pub(super) fn mask_settings(definition: &x::MaskEditDefinition) -> Result<MaskSettings, String> {
+    let mut settings = MaskSettings::new(&definition.mask).map_err(err)?;
+    settings.culture = numeric_culture(definition.culture);
     settings.placeholder = definition.prompt_char;
     settings.allow_empty = definition.allow_empty;
     settings.validate().map_err(err)?;
@@ -818,11 +822,7 @@ impl MountedView {
                     precision: definition.precision,
                     trim_trailing_zeros: false,
                     allow_empty: definition.allow_empty,
-                    culture: match definition.culture {
-                        x::NumericCultureDefinition::Russian => UiCulture::Russian,
-                        x::NumericCultureDefinition::English => UiCulture::English,
-                        x::NumericCultureDefinition::Arabic => UiCulture::Arabic,
-                    },
+                    culture: numeric_culture(definition.culture),
                     grouping: definition.use_grouping,
                     calculator: definition.show_calculator,
                 };

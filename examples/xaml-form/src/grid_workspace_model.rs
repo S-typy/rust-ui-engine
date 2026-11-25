@@ -339,6 +339,10 @@ impl State {
                 .collect())
         })
         .map_err(err)?;
+        // At startup the first selected record and its group headings fit together.
+        if ui.grid_selected_key(grid) == Some(i64::MIN) {
+            ui.grid_scroll_to(grid, 0., 0.).map_err(err)?;
+        }
         state.refresh(ui)?;
         Ok(Some(state))
     }

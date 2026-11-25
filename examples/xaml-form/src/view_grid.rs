@@ -243,6 +243,7 @@ fn band(b: &rust_desktop_ui_xaml::GridBandDefinition) -> GridBand {
 }
 fn presentation(definition: &GridControlDefinition) -> GridPresentationSettings {
     GridPresentationSettings {
+        number_culture: definition.number_culture.map(super::forms::numeric_culture),
         view: match definition.view {
             GridViewDefinition::Table => GridViewMode::Table,
             GridViewDefinition::Cards => GridViewMode::Cards,

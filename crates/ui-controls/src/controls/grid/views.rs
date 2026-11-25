@@ -376,26 +376,83 @@ impl PresentationPainter<'_> {
                 }
             }
         }
-        customize::decorate_cells(self.source, frame);
+        // A template and its cell share the same clip, even in a stacked or frozen column.
+        let runs: HashMap<_, _> = frame
+            .scene
+            .texts
+            .iter()
+            .enumerate()
+            .map(|(index, run)| (clip_key(run.clip), index))
+            .collect();
+        customize::decorate_cells(self.source, frame, &runs);
         appearance::paint(self.source, frame);
         for row in &frame.semantics.rows {
             if self.source.projection.synthetic.contains_key(&row.key) {
                 continue;
             }
             for cell in &row.cells {
-                let Some(template) = self.cell_templates.get(&cell.column) else {
-                    continue;
-                };
-                // Replace only the original cell text, retaining its painter
-                // order and the row's zebra/selection/focus/grid-line geometry.
-                // Painting an opaque cell rectangle here would cover all of it.
                 let rect = cell.bounds;
-                let Some(run) = frame.scene.texts.iter_mut().find(|run| {
-                    run.clip == rect
-                        && (run.text == cell.label || options.view == GridViewMode::Cards)
-                }) else {
-                    continue;
-                };
+                let index = runs.get(&clip_key(rect)).copied();
+                let template = self.cell_templates.get(&cell.column);
+                let field = &self.source.fields[cell.column.0 as usize];
+                if options.view == GridViewMode::Table
+                    && !self.source.choice_labels.contains_key(field)
+                {
+                    use rust_desktop_ui_data::FieldType;
+                    let kind = self
+                        .source
+                        .table
+                        .schema()
+                        .field(field)
+                        .map(|schema| schema.kind);
+                    match kind {
+                        Some(FieldType::Integer | FieldType::Real | FieldType::Decimal) => {
+                            if let Some(index) = index {
+                                frame.scene.texts[index].align = TextAlign::End;
+                            }
+                        }
+                        Some(FieldType::Bool)
+                            if template.is_none()
+                                && !cell.editing
+                                && !options.merge_fields.contains(field) =>
+                        {
+                            let checked = match self.source.table.value(data_key(row.key), field) {
+                                Some(CellValue::Bool(value)) => Some(*value),
+                                Some(CellValue::Null) => None,
+                                _ => continue,
+                            };
+                            if let Some(index) = index {
+                                frame.scene.texts[index].text.clear();
+                            }
+                            // Null has no text run. Position every state using the same logical track.
+                            if let Some(column) =
+                                frame.columns.iter().find(|col| col.id == cell.column)
+                            {
+                                let y = bounds.y
+                                    + self.model.config().header_height
+                                    + (self.model.record_top(row.index)
+                                        - self.model.scroll_offset().1)
+                                        as f32;
+                                let track = self.model.track_cell(
+                                    cell.column,
+                                    column.bounds.x,
+                                    y,
+                                    column.bounds.width,
+                                    self.model.record_height(row.index),
+                                );
+                                paint_check(&mut frame.scene, track, rect, palette, checked);
+                            }
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(index) = index else { continue };
+                let run = &mut frame.scene.texts[index];
+                if options.view == GridViewMode::Table && run.text != cell.label {
+                    continue; // A merged cell already hides its repeated value.
+                }
+                let Some(template) = template else { continue };
                 let icon_space = if template.icon.is_some() { 22.0 } else { 0.0 };
                 let icon_bounds = Rect::new(
                     run.bounds.x,
@@ -505,7 +562,7 @@ impl PresentationPainter<'_> {
                 });
                 let icon = Rect::new(
                     rect.x + indent + 5.0,
-                    row_y + (self.model.config().row_height - 16.0) * 0.5,
+                    row_y + (row_rect.height - 16.0) * 0.5,
                     16.0,
                     16.0,
                 );
@@ -520,20 +577,58 @@ impl PresentationPainter<'_> {
                     rect,
                     palette.text,
                 );
-                draw_text(
-                    &mut frame.scene,
-                    Rect::new(
-                        rect.x + indent + 26.0,
-                        row_y,
-                        (rect.width - indent - 32.0).max(0.0),
-                        self.model.config().row_height,
-                    ),
-                    rect,
-                    synthetic.label.clone(),
-                    palette.text,
-                    600,
-                    14.0,
+                let area = Rect::new(
+                    rect.x + indent + 26.,
+                    row_y,
+                    (rect.width - indent - 34.).max(0.),
+                    row_rect.height,
                 );
+                if area.width >= 440.
+                    && let Some(&(end, start)) =
+                        self.source.projection.group_label_parts.get(&row.key)
+                {
+                    let trailing_width = (area.width * 0.55).min(580.);
+                    let caption = Rect::new(
+                        area.x,
+                        area.y,
+                        area.width - trailing_width - 8.,
+                        area.height,
+                    );
+                    let totals = Rect::new(
+                        area.x + area.width - trailing_width,
+                        area.y,
+                        trailing_width,
+                        area.height,
+                    );
+                    if let Some(clip) = caption.intersection(rect) {
+                        draw_text(
+                            &mut frame.scene,
+                            caption,
+                            clip,
+                            synthetic.label[..end].into(),
+                            palette.text,
+                            600,
+                            14.,
+                        );
+                    }
+                    if let Some(clip) = totals.intersection(rect) {
+                        let mut run =
+                            TextRun::new(&synthetic.label[start..], totals, palette.muted, 13.);
+                        run.clip = clip;
+                        run.align = TextAlign::End;
+                        frame.scene.text(run);
+                    }
+                } else {
+                    draw_text(
+                        &mut frame.scene,
+                        area,
+                        rect,
+                        synthetic.label.clone(),
+                        palette.text,
+                        600,
+                        14.,
+                    );
+                }
                 for (index, cell) in row.cells.iter_mut().enumerate() {
                     cell.label = if index == 0 {
                         synthetic.label.clone()
@@ -681,8 +776,8 @@ impl PresentationPainter<'_> {
                         text,
                         rect,
                         band.title.clone(),
-                        palette.text,
-                        600,
+                        palette.muted,
+                        500,
                         13.0,
                     );
                 }
@@ -734,7 +829,10 @@ impl PresentationPainter<'_> {
                 } else {
                     Rect::new(rect.x, rect.y + height - line, rect.width, line)
                 };
-                let text = options.role_text("Summary", &format!("{title}: {}", value.display()));
+                let text = options.role_text(
+                    "Summary",
+                    &format!("{title}: {}", options.display_value(value)),
+                );
                 if let Some((_, parts)) = cells.iter_mut().find(|(bounds, _)| *bounds == area) {
                     parts.push(text);
                 } else {
@@ -756,6 +854,55 @@ impl PresentationPainter<'_> {
         }
     }
 }
+pub(super) fn clip_key(r: Rect) -> [u32; 4] {
+    [
+        r.x.to_bits(),
+        r.y.to_bits(),
+        r.width.to_bits(),
+        r.height.to_bits(),
+    ]
+}
+
+/// A display indicator uses the cell's logical center, including when scrolled partly out of view.
+pub(super) fn paint_check(
+    scene: &mut Scene,
+    cell: Rect,
+    clip: Rect,
+    palette: GridPalette,
+    checked: Option<bool>,
+) {
+    let mark = Rect::new(
+        cell.x + (cell.width - 14.) * 0.5,
+        cell.y + (cell.height - 14.) * 0.5,
+        14.,
+        14.,
+    );
+    let Some(clip) = clip.intersection(cell) else {
+        return;
+    };
+    let on = checked == Some(true);
+    if on {
+        scene.rounded_fill(mark, clip, 3., palette.focus);
+    }
+    scene.rounded_stroke(
+        mark,
+        clip,
+        3.,
+        1.,
+        if on { palette.focus } else { palette.line },
+    );
+    match checked {
+        Some(true) => {
+            crate::primitives::paint_icon(scene, IconSymbol::Check, mark, clip, palette.background)
+        }
+        None => {
+            let dash = Rect::new(mark.x + 3., mark.y + 6., 8., 2.);
+            scene.rounded_fill(dash, clip, 1., palette.muted);
+        }
+        Some(false) => {}
+    }
+}
+
 pub(super) fn draw_text(
     scene: &mut Scene,
     bounds: Rect,

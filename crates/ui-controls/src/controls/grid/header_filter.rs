@@ -1,6 +1,5 @@
 //! Column-local filter popup. Layout is shared by painting and input.
 use super::*;
-use rust_desktop_ui_core::StrokeSegment;
 
 const ROW: f32 = 24.;
 
@@ -449,26 +448,7 @@ impl FilterPopup {
                     s.fill(clip, p.selection);
                 }
                 let mark = Rect::new(r.x + 7., r.y + 5., 14., 14.);
-                let checked = check != Some(false);
-                if checked {
-                    s.rounded_fill(mark, clip, 3., p.focus);
-                }
-                s.rounded_stroke(mark, clip, 3., 1., if checked { p.focus } else { p.line });
-                if checked {
-                    let points = if check == Some(true) {
-                        [(3., 7.), (6., 10.), (11., 4.)]
-                    } else {
-                        [(3., 7.), (7., 7.), (11., 7.)]
-                    };
-                    let stroke = points
-                        .windows(2)
-                        .map(|w| StrokeSegment {
-                            start: Point::new(mark.x + w[0].0, mark.y + w[0].1),
-                            end: Point::new(mark.x + w[1].0, mark.y + w[1].1),
-                        })
-                        .collect::<Vec<_>>();
-                    s.stroke_path(&stroke, clip, 1.5, p.background);
-                }
+                views::paint_check(s, mark, clip, p, check);
                 let caption = Rect::new(r.x + 26., r.y + 3., (r.width - 32.).max(0.), r.height);
                 views::draw_text(
                     s,

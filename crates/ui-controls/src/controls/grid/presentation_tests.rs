@@ -248,6 +248,25 @@ fn typed_numeric_editor_keeps_exact_integer_conflict_draft_and_uses_one_owned_ho
     assert!(ui.runtime.tree().preorder().contains(&ui.overlay));
 }
 #[test]
+fn number_culture_groups_exact_extremes_and_preserves_unformatted_defaults() {
+    let value = CellValue::Integer(i64::MIN);
+    let mut settings = GridPresentationSettings::default();
+    assert_eq!(settings.display_value(&value), i64::MIN.to_string());
+    for (culture, expected) in [
+        (crate::UiCulture::Russian, "-9 223 372 036 854 775 808"),
+        (crate::UiCulture::English, "-9,223,372,036,854,775,808"),
+        (crate::UiCulture::Arabic, "-9٬223٬372٬036٬854٬775٬808"),
+    ] {
+        settings.number_culture = Some(culture);
+        assert_eq!(settings.display_value(&value), expected);
+        assert_eq!(
+            settings.display_value(&CellValue::Null),
+            CellValue::Null.display()
+        );
+    }
+}
+
+#[test]
 fn typed_checkbox_nullable_commit_cancel_and_readonly_do_not_touch_source_early() {
     let mut field = FieldSchema::new("active", FieldType::Bool);
     field.nullable = true;

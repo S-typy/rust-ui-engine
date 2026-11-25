@@ -27,6 +27,8 @@ pub(super) struct Projection {
     pub synthetic: HashMap<RowKey, SyntheticRow>,
     pub identities: HashMap<SyntheticIdentity, RowKey>,
     pub groups: Vec<RowKey>,
+    /// UTF-8 byte offsets into the full group label: end of caption and start of totals.
+    pub group_label_parts: HashMap<RowKey, (usize, usize)>,
     pub totals: Vec<CellValue>,
     pub detail_table: Option<DataTable>,
     pub detail_revision: Option<u64>,
@@ -226,17 +228,33 @@ impl Projection {
                         })
                         .collect::<Vec<_>>()
                         .join(" · ");
-                    label.push_str(&format!(" ({})", group.row_keys.len()));
+                    let count_start = label.len();
+                    let count =
+                        options.display_value(&CellValue::Integer(group.row_keys.len() as i64));
+                    label.push_str(&format!(" ({count})"));
                     let summary_text = options
                         .summary_titles()
                         .zip(&group.aggregates)
-                        .map(|(title, v)| format!("{title}: {}", v.display()))
+                        .map(|(title, v)| format!("{title}: {}", options.display_value(v)))
                         .collect::<Vec<_>>()
                         .join(" · ");
-                    if !options.group_footer && !summary_text.is_empty() {
+                    let parts = if !options.group_footer && !summary_text.is_empty() {
+                        let includes_count = options.summaries.iter().any(|s| {
+                            s.aggregate.function
+                                == rust_desktop_ui_data::AggregateFunction::CountRows
+                        });
+                        let caption_end = if includes_count {
+                            count_start
+                        } else {
+                            label.len()
+                        };
                         label.push_str(" · ");
+                        let totals_start = label.len();
                         label.push_str(&summary_text);
-                    }
+                        (caption_end, totals_start)
+                    } else {
+                        (count_start, count_start + 1)
+                    };
                     if summary_text.len() > 16_384 {
                         return Err(error("Group footer exceeds 16 KiB"));
                     }
@@ -252,6 +270,7 @@ impl Projection {
                         SyntheticIdentity::Group(path.clone())
                     };
                     let key = allocate(identity, label)?;
+                    next.group_label_parts.insert(key, parts);
                     if options.group_footer && !summary_text.is_empty() {
                         let footer = allocate(
                             SyntheticIdentity::Footer(

@@ -4,6 +4,102 @@ use rust_desktop_ui_core::Size;
 use rust_desktop_ui_data::CellValue;
 
 #[test]
+fn workspace_table_exposes_the_data_and_switches_views_from_its_menu() {
+    use rust_desktop_ui_controls::{GridViewMode, Role};
+    use rust_desktop_ui_core::{InputEvent, Point, PointerButton, Rect, TextAlign};
+    use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent};
+    use rust_desktop_ui_treegrid::{ColumnId, RowKey};
+
+    let mut form = crate::form::Form::new_with_model(
+        crate::generated_grid_workspace::window_definition(),
+        false,
+        Some(demo::model().unwrap()),
+    )
+    .unwrap();
+    let grid = form.view.find_name("WorkspaceGrid").unwrap();
+    let size = Size::new(1360., 900.);
+    form.update(size, 1.25).unwrap();
+    let bounds = form.ui.runtime.bounds(grid).unwrap();
+    assert!(bounds.height > size.height * 0.7);
+    let first = RowKey(i64::MIN as u64);
+    let frame = form.ui.grid_frame(grid).unwrap();
+    assert!(
+        frame
+            .scene
+            .texts
+            .iter()
+            .any(|run| run.align == TextAlign::End && run.text.starts_with("Записей: 3 334"))
+    );
+    let numeric = frame.cell_bounds(first, ColumnId(4)).unwrap();
+    assert!(
+        frame
+            .scene
+            .texts
+            .iter()
+            .any(|t| t.clip == numeric && t.text == "1\u{a0}250,25 ₽" && t.align == TextAlign::End)
+    );
+    let flag = frame.cell_bounds(first, ColumnId(7)).unwrap();
+    assert!(
+        frame
+            .scene
+            .rounded_rectangles
+            .iter()
+            .any(|r| r.clip.intersection(flag) == Some(r.clip)
+                && r.bounds.width == 8.
+                && r.bounds.height == 2.),
+        "NULL has a visible dash without a text run"
+    );
+    // With less width the toolbar still leaves room to open each command menu.
+    let size = Size::new(760., 720.);
+    form.update(size, 1.).unwrap();
+    let frame = form.ui.grid_frame(grid).unwrap();
+    let pinned = frame.cell_bounds(first, ColumnId(7)).unwrap();
+    let seam = Point::new(pinned.x - 0.5, pinned.y + 6.);
+    let line = frame
+        .scene
+        .rectangles
+        .iter()
+        .rev()
+        .find(|r| r.bounds.contains(seam.x, seam.y))
+        .unwrap();
+    assert_eq!(line.color, form.ui.theme().grid_line());
+    let click = |form: &mut crate::form::Form, r: Rect| {
+        let position = Point::new(r.x + r.width / 2., r.y + r.height / 2.);
+        for event in [
+            InputEvent::PointerDown {
+                position,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            },
+            InputEvent::PointerUp {
+                position,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            },
+        ] {
+            form.event(PlatformEvent::Input(event)).unwrap();
+            form.update(size, 1.).unwrap();
+        }
+    };
+    for (label, mode) in [
+        ("Карточки", GridViewMode::Cards),
+        ("Таблица", GridViewMode::Table),
+    ] {
+        let menu = form.view.find_name("WorkspaceViewMenu").unwrap();
+        let r = form.ui.runtime.bounds(menu).unwrap();
+        click(&mut form, r);
+        let item = form
+            .ui
+            .semantics()
+            .into_iter()
+            .find(|n| n.role == Role::MenuItem && n.label == label)
+            .unwrap();
+        click(&mut form, item.bounds);
+        assert_eq!(form.ui.grid_presentation(grid).unwrap().view, mode);
+    }
+}
+
+#[test]
 fn compiled_workspace_clicks_mount_editors_in_their_cells_and_write_through() {
     use rust_desktop_ui_controls::GridRowKind;
     use rust_desktop_ui_core::{InputEvent, Key, Point, PointerButton};

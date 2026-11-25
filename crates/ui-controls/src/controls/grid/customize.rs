@@ -144,13 +144,24 @@ impl GridState {
         engine: &mut TextEngine,
     ) -> Result<bool, ControlError> {
         let options = &self.source.presentation;
-        if options.wrap_fields.is_empty() || options.view != GridViewMode::Table {
+        if options.view != GridViewMode::Table
+            || (options.wrap_fields.is_empty() && options.stacked_fields.is_empty())
+        {
             return Ok(false);
         }
         let anchor = self.model.capture_scroll_anchor(&self.source);
         let mut changed = false;
         for row in &frame.semantics.rows {
-            if self.source.projection.synthetic.contains_key(&row.key) {
+            if let Some(synthetic) = self.source.projection.synthetic.get(&row.key) {
+                if matches!(
+                    synthetic.identity,
+                    projection::SyntheticIdentity::Group(_)
+                        | projection::SyntheticIdentity::Branch(_, _)
+                        | projection::SyntheticIdentity::Footer(..)
+                ) {
+                    let height = self.model.config().row_height.min(28.);
+                    changed |= self.model.measure_row(row.index, height).map_err(error)?;
+                }
                 continue;
             }
             let mut height = self.model.config().row_height;
@@ -184,7 +195,11 @@ impl GridState {
         Ok(changed)
     }
 }
-pub(super) fn decorate_cells(s: &SnapshotSource, frame: &mut GridFrame) {
+pub(super) fn decorate_cells(
+    s: &SnapshotSource,
+    frame: &mut GridFrame,
+    runs: &HashMap<[u32; 4], usize>,
+) {
     let p = &s.presentation;
     if p.view != GridViewMode::Table || (p.wrap_fields.is_empty() && p.merge_fields.is_empty()) {
         return;
@@ -198,14 +213,13 @@ pub(super) fn decorate_cells(s: &SnapshotSource, frame: &mut GridFrame) {
         for cell in &row.cells {
             let field = &s.fields[cell.column.0 as usize];
             let r = cell.bounds;
-            let Some(run) = frame
-                .scene
-                .texts
-                .iter_mut()
-                .find(|t| t.clip == r && t.text == cell.label)
-            else {
+            let Some(&index) = runs.get(&views::clip_key(r)) else {
                 continue;
             };
+            let run = &mut frame.scene.texts[index];
+            if run.text != cell.label {
+                continue;
+            }
             if p.wrap_fields.contains(field) {
                 run.wrap = true;
             }
