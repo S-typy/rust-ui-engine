@@ -166,6 +166,101 @@ fn band(title: &str, fields: &[&str]) -> GridBand {
     }
 }
 #[test]
+fn header_drag_paints_caption_and_destination_until_drop_or_cancel() {
+    let (mut ui, id, _) = fixture();
+    let size = Size::new(600., 400.);
+    let settings = GridPresentationSettings {
+        show_group_panel: true,
+        bands: vec![band("Labels", &["category"]), band("Numbers", &["amount"])],
+        ..Default::default()
+    };
+    ui.set_grid_presentation(id, settings).unwrap();
+    ui.update(size).unwrap();
+    let b = ui.grids[&id].bounds.unwrap();
+    let header = |ui: &Controls, i| {
+        ui.grid_frame(id)
+            .unwrap()
+            .hits
+            .iter()
+            .find(|h| h.kind == rust_desktop_ui_treegrid::GridHitKind::Header(ColumnId(i)))
+            .unwrap()
+            .bounds
+    };
+    let a = header(&ui, 0);
+    let z = header(&ui, 1);
+    let start = point_in(a);
+    let end = Point::new(z.x + z.width - 10., z.y + 8.);
+    let move_to = |ui: &mut Controls, pos| {
+        ui.dispatch(InputEvent::PointerMoved { position: pos })
+            .unwrap();
+        ui.update(size).unwrap();
+    };
+    let badge = |ui: &Controls| {
+        ui.custom_scenes[&id]
+            .rounded_rectangles
+            .iter()
+            .find(|r| r.stroke_width == Some(1.5))
+            .map(|r| r.bounds)
+    };
+    ui.dispatch(pointer(start, true)).unwrap();
+    move_to(&mut ui, Point::new(start.x + 2., start.y));
+    assert!(badge(&ui).is_none());
+    move_to(&mut ui, end);
+    let r = badge(&ui).expect("floating header");
+    assert!(
+        ui.scene()
+            .texts
+            .iter()
+            .any(|t| t.text == "category" && t.clip == r)
+    );
+    let marker = ui.grids[&id].header_feedback(b).unwrap().marker.unwrap();
+    assert!(marker.contains(z.x + z.width - 1., z.y + 4.));
+    assert!(
+        ui.custom_scenes[&id]
+            .rectangles
+            .iter()
+            .any(|r| r.bounds == marker)
+    );
+    assert_eq!(ui.grid_arrangement(id).unwrap()[0].field, "category");
+    let panel = Point::new(b.x + 12., b.y + 9.);
+    move_to(&mut ui, panel);
+    assert_ne!(badge(&ui).unwrap(), r);
+    assert!(
+        ui.grids[&id]
+            .header_feedback(b)
+            .unwrap()
+            .marker
+            .unwrap()
+            .contains(b.x + 1., panel.y)
+    );
+    ui.dispatch(press(Key::Escape, false)).unwrap();
+    ui.update(size).unwrap();
+    assert!(badge(&ui).is_none());
+    assert!(ui.runtime.captured().is_none());
+    assert!(ui.grid_presentation(id).unwrap().group_fields.is_empty());
+    ui.dispatch(pointer(start, true)).unwrap();
+    move_to(&mut ui, end);
+    ui.dispatch(pointer(end, false)).unwrap();
+    ui.update(size).unwrap();
+    assert_eq!(ui.grid_arrangement(id).unwrap()[1].field, "category");
+    assert!(badge(&ui).is_none());
+    // Alt-drag uses the same overlay above the outer band rows.
+    let mut down = pointer(point_in(header(&ui, 0)), true);
+    if let InputEvent::PointerDown { modifiers, .. } = &mut down {
+        modifiers.alt = true;
+    }
+    ui.dispatch(down).unwrap();
+    let band = Point::new(header(&ui, 1).x + 10., b.y + 35.);
+    move_to(&mut ui, band);
+    assert!(badge(&ui).is_some());
+    let mark = ui.grids[&id].header_feedback(b).unwrap().marker.unwrap();
+    assert!(mark.width > mark.height && mark.y < z.y);
+    ui.cancel_pointer_interaction().unwrap();
+    ui.update(size).unwrap();
+    assert!(badge(&ui).is_none());
+}
+
+#[test]
 fn group_panel_reorders_chips_from_keyboard_and_accepts_header_drop() {
     let (mut ui, id, _) = fixture();
     ui.set_grid_presentation(

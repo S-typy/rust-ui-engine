@@ -1,7 +1,66 @@
 //! Group-panel geometry and input over the same presentation as programmatic grouping.
 use super::*;
 use rust_desktop_ui_treegrid::GridHitKind;
+pub(super) struct GroupDrag {
+    column: ColumnId,
+    from_panel: bool,
+    motion: HeaderDragMotion,
+}
+
+impl GridState {
+    pub(super) fn header_feedback(&self, bounds: Rect) -> Option<HeaderDragPreview<'_>> {
+        if self.band_drag.is_some() {
+            return self.band_feedback();
+        }
+        let mut preview = match &self.group_drag {
+            Some(drag) if drag.from_panel => {
+                let c = &self.settings.columns[drag.column.0 as usize];
+                HeaderDragPreview {
+                    title: &c.title,
+                    width: c.width,
+                    position: drag.motion.position()?,
+                    marker: None,
+                }
+            }
+            _ => self.model.header_drag_preview(&self.frame)?,
+        };
+        if let Some(drag) = &self.group_drag {
+            let s = &self.source.presentation;
+            if let Some(index) = s.group_drop_slot(bounds, preview.position) {
+                let old = s
+                    .group_fields
+                    .iter()
+                    .position(|f| f == &self.source.fields[drag.column.0 as usize]);
+                let mut slot = index;
+                if old.is_some_and(|i| i < index) {
+                    slot = (index + 1).min(s.group_fields.len());
+                }
+                let r = s.group_slot(bounds, slot);
+                preview.marker = if old == Some(index) {
+                    None
+                } else {
+                    Some(Rect::new(r.x, r.y + 2., 3., (r.height - 4.).max(0.)))
+                };
+            }
+        }
+        Some(preview)
+    }
+}
+
 impl GridPresentationSettings {
+    fn group_drop_slot(&self, bounds: Rect, position: Point) -> Option<usize> {
+        if !Rect::new(bounds.x, bounds.y, bounds.width, self.panel_height(bounds))
+            .contains(position.x, position.y)
+        {
+            return None;
+        }
+        Some(
+            (0..self.group_fields.len())
+                .find(|i| self.group_slot(bounds, *i).contains(position.x, position.y))
+                .unwrap_or(self.group_fields.len()),
+        )
+    }
+
     pub(super) fn panel_height(&self, bounds: Rect) -> f32 {
         if self.show_group_panel {
             bounds.height.min(30.0)
@@ -30,16 +89,21 @@ impl Controls {
         let Some(bounds) = grid.bounds.filter(|_| options.show_group_panel) else {
             return Ok(false);
         };
-        let area = Rect::new(
-            bounds.x,
-            bounds.y,
-            bounds.width,
-            options.panel_height(bounds),
-        );
-        let slot = |p: Point| {
-            (0..options.group_fields.len())
-                .find(|i| options.group_slot(bounds, *i).contains(p.x, p.y))
-        };
+        if let InputEvent::PointerMoved { position } = event {
+            let Some(drag) = self
+                .grids
+                .get_mut(&id)
+                .unwrap()
+                .group_drag
+                .as_mut()
+                .filter(|d| d.from_panel)
+            else {
+                return Ok(false);
+            };
+            drag.motion.update(*position);
+            self.scene_dirty = true;
+            return Ok(true);
+        }
         let mut settings = options.clone();
         match event {
             InputEvent::KeyDown {
@@ -96,23 +160,30 @@ impl Controls {
                 button: PointerButton::Primary,
                 ..
             } => {
-                if area.contains(position.x, position.y) {
-                    if let Some(i) = slot(*position) {
+                if let Some(i) = options.group_drop_slot(bounds, *position) {
+                    if i < options.group_fields.len() {
                         let column = grid
                             .source
                             .fields
                             .iter()
                             .position(|f| f == &options.group_fields[i])
                             .expect("validated group field");
-                        self.grids.get_mut(&id).unwrap().group_drag =
-                            Some((ColumnId(column as u64), true));
+                        self.grids.get_mut(&id).unwrap().group_drag = Some(GroupDrag {
+                            column: ColumnId(column as u64),
+                            from_panel: true,
+                            motion: HeaderDragMotion::new(*position),
+                        });
                         self.runtime.apply(Mutation::Focus(Some(id)))?;
                         self.runtime.apply(Mutation::CapturePointer(Some(id)))?;
                     }
                     return Ok(true);
                 }
                 if let Some(GridHitKind::Header(col)) = grid.frame.hit_test(*position) {
-                    self.grids.get_mut(&id).unwrap().group_drag = Some((col, false));
+                    self.grids.get_mut(&id).unwrap().group_drag = Some(GroupDrag {
+                        column: col,
+                        from_panel: false,
+                        motion: HeaderDragMotion::new(*position),
+                    });
                 }
                 return Ok(false);
             }
@@ -121,31 +192,23 @@ impl Controls {
                 button: PointerButton::Primary,
                 ..
             } if grid.group_drag.is_some() => {
-                let (col, from_panel) = grid.group_drag.unwrap();
-                let target = slot(*position);
-                let inside = area.contains(position.x, position.y);
+                let drag = grid.group_drag.as_ref().unwrap();
+                let (col, from_panel) = (drag.column, drag.from_panel);
+                let target = options.group_drop_slot(bounds, *position);
                 let field = grid.source.fields[col.0 as usize].clone();
                 let grid = self.grids.get_mut(&id).unwrap();
                 grid.group_drag = None;
-                if !inside && !from_panel {
+                if target.is_none() && !from_panel {
                     return Ok(false);
                 }
                 grid.cancel_pointer();
                 self.runtime.apply(Mutation::CapturePointer(None))?;
                 settings.group_fields.retain(|f| f != &field);
-                if inside {
-                    settings.group_fields.insert(
-                        target
-                            .unwrap_or(settings.group_fields.len())
-                            .min(settings.group_fields.len()),
-                        field,
-                    );
+                if let Some(i) = target {
+                    settings
+                        .group_fields
+                        .insert(i.min(settings.group_fields.len()), field);
                 }
-            }
-            InputEvent::PointerMoved { .. }
-                if grid.group_drag.is_some_and(|(_, from_panel)| from_panel) =>
-            {
-                return Ok(true);
             }
             _ => return Ok(false),
         }

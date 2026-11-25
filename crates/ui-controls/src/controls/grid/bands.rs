@@ -205,10 +205,57 @@ pub(super) type BandPolicy =
 pub(super) struct BandDrag {
     item: GridBandItem,
     start: f32,
+    motion: HeaderDragMotion,
     resize_width: Option<f32>,
 }
 
 impl GridState {
+    pub(super) fn band_feedback(&self) -> Option<HeaderDragPreview<'_>> {
+        let drag = self.band_drag.as_ref()?;
+        let position = drag.motion.position()?;
+        let settings = &self.source.presentation;
+        let bounds = self.bounds?;
+        let title = match &drag.item {
+            GridBandItem::Field(f) => &self.settings.columns.iter().find(|c| &c.field == f)?.title,
+            GridBandItem::Band(a) => {
+                &std::iter::once(&settings.bands)
+                    .chain(&settings.band_rows)
+                    .nth(a.level)?
+                    .get(a.index)?
+                    .title
+            }
+        };
+        let panel = settings.panel_height(bounds);
+        let marker = if let (Some(_), GridBandItem::Band(a)) = (drag.resize_width, &drag.item) {
+            Some(Rect::new(
+                position.x - 1.,
+                bounds.y + panel + 24. * a.level as f32,
+                2.,
+                24.,
+            ))
+        } else {
+            self.band_at(position).and_then(|(band, field, _)| {
+                if matches!(&drag.item,GridBandItem::Band(a) if *a==band) {
+                    return None;
+                }
+                let col = self
+                    .frame
+                    .columns
+                    .iter()
+                    .find(|c| self.source.fields[c.id.0 as usize] == field)?;
+                let y = bounds.y + panel + 24. * band.level as f32;
+                // Underline the destination band segment under the pointer. The
+                // modifiers on release select adjacency or nesting for band moves.
+                Some(Rect::new(col.clip.x, y + 21., col.clip.width, 3.))
+            })
+        };
+        Some(HeaderDragPreview {
+            title,
+            position,
+            width: drag.resize_width.unwrap_or(144.),
+            marker,
+        })
+    }
     fn band_at(&self, p: Point) -> Option<(GridBandAddress, String, f32)> {
         let bounds = self.bounds?;
         let settings = &self.source.presentation;
@@ -280,6 +327,7 @@ impl Controls {
                     BandDrag {
                         item: GridBandItem::Band(band),
                         start: position.x,
+                        motion: HeaderDragMotion::new(*position),
                         resize_width: modifiers.shift.then_some(width.max(1.)),
                     }
                 } else if modifiers.alt
@@ -289,6 +337,7 @@ impl Controls {
                     BandDrag {
                         item: GridBandItem::Field(grid.source.fields[c.0 as usize].clone()),
                         start: position.x,
+                        motion: HeaderDragMotion::new(*position),
                         resize_width: None,
                     }
                 } else {
@@ -298,13 +347,24 @@ impl Controls {
                 self.runtime.apply(Mutation::Focus(Some(id)))?;
                 self.runtime.apply(Mutation::CapturePointer(Some(id)))?;
             }
-            InputEvent::PointerMoved { .. } if grid.band_drag.is_some() => {}
+            InputEvent::PointerMoved { position } if grid.band_drag.is_some() => {
+                self.grids
+                    .get_mut(&id)
+                    .unwrap()
+                    .band_drag
+                    .as_mut()
+                    .unwrap()
+                    .motion
+                    .update(*position);
+                self.scene_dirty = true;
+            }
             InputEvent::PointerUp {
                 position,
                 button: PointerButton::Primary,
                 modifiers,
             } if grid.band_drag.is_some() => {
                 let target = grid.band_at(*position);
+                self.scene_dirty = true;
                 let drag = self.grids.get_mut(&id).unwrap().band_drag.take().unwrap();
                 self.runtime.apply(Mutation::CapturePointer(None))?;
                 let change = if let (GridBandItem::Band(band), Some(width)) =

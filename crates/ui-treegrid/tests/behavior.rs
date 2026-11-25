@@ -598,6 +598,62 @@ fn pointer_hits_support_expanders_cells_header_sort_resize_and_reorder() {
 }
 
 #[test]
+fn header_preview_tracks_clipped_stacked_columns_and_cancels_invalid_drops() {
+    let mut source = IndexedRows::new(20);
+    let mut grid = TreeGrid::new(columns(7)).unwrap();
+    grid.set_column_tracks([(ColumnId(2), ColumnId(1))].into(), [ColumnId(6)].into())
+        .unwrap();
+    grid.refresh(&mut source).unwrap();
+    let bounds = Rect::new(23., 31., 680., 360.);
+    let start_order = grid.display_column_order();
+    grid.paint(&source, bounds).unwrap();
+    grid.scroll_to(35., 0.).unwrap();
+    let frame = grid.paint(&source, bounds).unwrap();
+    let center = |i| {
+        let r = frame
+            .hits
+            .iter()
+            .find(|h| h.kind == GridHitKind::Header(ColumnId(i)))
+            .unwrap()
+            .bounds;
+        Point::new(r.x + r.width * 0.7, r.y + r.height * 0.5)
+    };
+    let down = center(2);
+    grid.pointer_down(&mut source, &frame, down, Default::default())
+        .unwrap();
+    grid.pointer_move(center(6)).unwrap();
+    assert!(grid.header_drag_preview(&frame).unwrap().marker.is_none());
+    let outside = Point::new(bounds.x - 10., down.y);
+    grid.pointer_up(&mut source, &frame, outside).unwrap();
+    assert_eq!(grid.display_column_order(), start_order);
+    grid.pointer_down(&mut source, &frame, down, Default::default())
+        .unwrap();
+    grid.pointer_move(center(3)).unwrap();
+    let preview_marker = grid.header_drag_preview(&frame).unwrap().marker.unwrap();
+    let active = grid.paint(&source, bounds).unwrap();
+    assert_eq!(active.hits, frame.hits);
+    assert_eq!(active.semantics, frame.semantics);
+    let r = active.scene.rounded_rectangles.last().unwrap().bounds;
+    assert!(
+        active
+            .scene
+            .texts
+            .iter()
+            .any(|t| t.clip == r && t.text == "Колонка 2")
+    );
+    assert_eq!(
+        active.scene.rectangles.last().unwrap().bounds,
+        preview_marker
+    );
+    grid.pointer_up(&mut source, &frame, center(3)).unwrap();
+    assert_eq!(
+        grid.display_column_order(),
+        [0, 3, 1, 2, 4, 5, 6].map(ColumnId)
+    );
+    assert!(grid.header_drag_preview(&frame).is_none());
+}
+
+#[test]
 fn zero_viewport_invalid_geometry_and_clamped_scroll_do_not_read_cells() {
     let mut source = IndexedRows::new(100_000);
     let mut grid = TreeGrid::new(columns(3)).unwrap();

@@ -102,6 +102,16 @@ impl ColumnTracks {
     }
 }
 impl TreeGrid {
+    pub(crate) fn header_track(&self, column: &GridColumn) -> (usize, ColumnId) {
+        match &self.tracks {
+            Some(tracks) => (
+                tracks.slots[&column.id].zone,
+                tracks.stack.get(&column.id).copied().unwrap_or(column.id),
+            ),
+            None => (usize::from(!column.pinned), column.id),
+        }
+    }
+
     /// Stack fields onto a shared horizontal track. Right-fixed fields stay at the trailing edge.
     pub fn set_column_tracks(
         &mut self,

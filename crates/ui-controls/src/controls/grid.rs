@@ -4,8 +4,9 @@ use rust_desktop_ui_data::{
     CellValue, DataChange, DataQuery, DataSource, DataTable, SortDescriptor,
 };
 use rust_desktop_ui_treegrid::{
-    ColumnId, GridColumn, GridFrame, GridKey, GridPalette, GridQuery, RowKey, SelectionModifiers,
-    SortDirection, SortOrder, TreeDataSource, TreeGrid,
+    ColumnId, GridColumn, GridFrame, GridKey, GridPalette, GridQuery, HeaderDragMotion,
+    HeaderDragPreview, RowKey, SelectionModifiers, SortDirection, SortOrder, TreeDataSource,
+    TreeGrid,
 };
 use std::{cell::RefCell, rc::Rc};
 mod appearance;
@@ -318,7 +319,7 @@ pub(super) struct GridState {
     scroll_drag: Option<GridScrollDrag>,
     band_drag: Option<bands::BandDrag>,
     band_policy: Option<bands::BandPolicy>,
-    group_drag: Option<(ColumnId, bool)>,
+    group_drag: Option<grouping::GroupDrag>,
     chooser: Option<chooser::Chooser>,
     selection_validator: Option<SelectionValidator>,
     filter_validator: Option<EditorValidator>,
@@ -1732,10 +1733,16 @@ impl Controls {
             }
             // Thumb positions must use the offset after selection reveal/clamping.
             grid.scroll_geometry(grid.presentation_bounds(bounds));
-            let mut frame = grid.model.paint(&grid.source, view_bounds).map_err(error)?;
+            let mut frame = grid
+                .model
+                .paint_content(&grid.source, view_bounds)
+                .map_err(error)?;
             if grid.measure_visible_rows(&frame, &mut self.engine)? {
                 let body = grid.scroll_geometry(grid.presentation_bounds(bounds));
-                frame = grid.model.paint(&grid.source, body).map_err(error)?;
+                frame = grid
+                    .model
+                    .paint_content(&grid.source, body)
+                    .map_err(error)?;
             }
             grid.decorate_frame(view_bounds, &mut frame);
             views::center_scene_text(&mut frame.scene, &mut self.engine)?;
@@ -1800,6 +1807,9 @@ impl Controls {
                     align: TextAlign::Start,
                     wrap: false,
                 });
+            }
+            if let Some(preview) = grid.header_feedback(bounds) {
+                preview.paint(&mut scene, bounds, grid.model.palette);
             }
             let editor = grid
                 .typed_editor
@@ -1913,6 +1923,21 @@ impl Controls {
             if self.grids[&id].session.is_some() {
                 return Ok(false);
             }
+        }
+        if matches!(
+            event,
+            InputEvent::KeyDown {
+                key: Key::Escape,
+                ..
+            }
+        ) && {
+            let g = &self.grids[&id];
+            g.model.pointer_captured() || g.group_drag.is_some() || g.band_drag.is_some()
+        } {
+            self.grids.get_mut(&id).unwrap().cancel_pointer();
+            self.runtime.apply(Mutation::CapturePointer(None))?;
+            self.scene_dirty = true;
+            return Ok(true);
         }
         if self.grid_chooser_input(id, event)? {
             return Ok(true);

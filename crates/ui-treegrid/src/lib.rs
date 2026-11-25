@@ -5,6 +5,7 @@
 //! nodes. Sorting/filtering and edits are delegated to the data source.
 
 mod data;
+mod header_drag;
 mod index;
 mod model;
 mod source;
@@ -13,6 +14,7 @@ mod tracks;
 mod view;
 
 pub use data::*;
+pub use header_drag::{HeaderDragMotion, HeaderDragPreview};
 pub use model::*;
 pub use source::*;
 pub use structure::*;

@@ -140,8 +140,7 @@ enum ColumnDrag {
     Header {
         id: ColumnId,
         extend: bool,
-        start: Point,
-        moved: bool,
+        motion: crate::HeaderDragMotion,
     },
 }
 
@@ -514,13 +513,24 @@ impl TreeGrid {
         source: &impl TreeDataSource,
         bounds: Rect,
     ) -> Result<GridFrame, GridError> {
+        let mut frame = self.paint_content(source, bounds)?;
+        frame.paint_header_feedback(self, bounds);
+        Ok(frame)
+    }
+
+    /// Materialize the base frame for a host that paints drag feedback after its own chrome.
+    pub fn paint_content(
+        &mut self,
+        source: &impl TreeDataSource,
+        bounds: Rect,
+    ) -> Result<GridFrame, GridError> {
         if !bounds.is_valid() {
             return Err(GridError::InvalidGeometry(
                 "grid bounds must be finite and nonnegative",
             ));
         }
         self.set_viewport(Size::new(bounds.width, bounds.height))?;
-        let frame = TreeGridView::paint(self, source, bounds)?;
+        let frame = TreeGridView::paint_content(self, source, bounds)?;
         let index = self.first_at_offset(self.scroll_y);
         self.viewport_anchor = Some(crate::TreeScrollAnchor {
             key: frame
@@ -561,9 +571,8 @@ impl TreeGrid {
             GridHitKind::Header(id) => {
                 self.drag = Some(ColumnDrag::Header {
                     id,
-                    start: point,
+                    motion: crate::HeaderDragMotion::new(point),
                     extend: modifiers.shift,
-                    moved: false,
                 })
             }
             GridHitKind::Expander(row) => {
@@ -586,9 +595,7 @@ impl TreeGrid {
                 let (id, width) = (*id, *width + point.x - *start_x);
                 self.resize_column(id, width)?;
             }
-            ColumnDrag::Header { start, moved, .. } => {
-                *moved |= (point.x - start.x).abs() > 4.0 || (point.y - start.y).abs() > 4.0;
-            }
+            ColumnDrag::Header { motion, .. } => motion.update(point),
         }
         Ok(true)
     }
@@ -603,23 +610,23 @@ impl TreeGrid {
         let Some(drag) = self.drag.take() else {
             return Ok(false);
         };
-        if let ColumnDrag::Header {
-            id, moved, extend, ..
-        } = drag
-        {
-            if moved {
-                let before = match frame.hit_test(point) {
-                    Some(GridHitKind::Header(column) | GridHitKind::ResizeColumn(column)) => {
-                        Some(column)
-                    }
-                    _ => None,
-                };
-                self.reorder_column(id, before)?;
+        if let ColumnDrag::Header { id, motion, extend } = drag {
+            if motion.position().is_some() {
+                if let Some(target) = self.header_drop(id, frame, point) {
+                    self.move_header_track(id, target);
+                }
             } else {
                 self.toggle_header_sort(source, id, extend)?;
             }
         }
         Ok(true)
+    }
+
+    pub(crate) fn dragged_header(&self) -> Option<(ColumnId, Point)> {
+        if let Some(ColumnDrag::Header { id, motion, .. }) = &self.drag {
+            return Some((*id, motion.position()?));
+        }
+        None
     }
 
     pub fn cancel_pointer(&mut self) {
@@ -1173,6 +1180,7 @@ impl TreeGrid {
     ) -> Result<(), GridError> {
         match key {
             GridKey::Escape => {
+                self.cancel_pointer();
                 self.cancel_edit();
                 return Ok(());
             }
@@ -1519,7 +1527,7 @@ impl TreeGrid {
         false
     }
 
-    fn index_columns(&mut self) {
+    pub(crate) fn index_columns(&mut self) {
         if let Some(tracks) = &mut self.tracks {
             tracks.rebuild(&self.columns);
         }

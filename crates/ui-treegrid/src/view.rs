@@ -104,6 +104,7 @@ pub struct GridFrameStats {
 #[derive(Debug, Clone, Default)]
 pub struct GridFrame {
     pub scene: Scene,
+    pub header_bounds: Option<Rect>,
     pub rows: Vec<VisibleRow>,
     pub columns: Vec<VisibleColumn>,
     pub hits: Vec<GridHit>,
@@ -133,6 +134,16 @@ pub struct TreeGridView;
 
 impl TreeGridView {
     pub fn paint(
+        grid: &TreeGrid,
+        source: &impl TreeDataSource,
+        bounds: Rect,
+    ) -> Result<GridFrame, GridError> {
+        let mut frame = Self::paint_content(grid, source, bounds)?;
+        frame.paint_header_feedback(grid, bounds);
+        Ok(frame)
+    }
+
+    pub(crate) fn paint_content(
         grid: &TreeGrid,
         source: &impl TreeDataSource,
         bounds: Rect,
@@ -187,6 +198,7 @@ impl TreeGridView {
         frame.stats.materialized_rows = frame.rows.len();
         // Header is emitted last and remains fixed during vertical scrolling.
         let header = Rect::new(bounds.x, bounds.y, bounds.width, header_height);
+        frame.header_bounds = Some(header);
         frame.scene.fill(header, grid.palette.header);
         for visible in &frame.columns {
             let column = &grid.columns[visible.index];
