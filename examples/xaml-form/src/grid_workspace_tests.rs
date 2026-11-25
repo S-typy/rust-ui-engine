@@ -360,3 +360,99 @@ fn schema_design_mount_and_sqlite_page_publish_share_typed_fields() {
     let cleared = grid.take_input(&mut ui).unwrap().pop().unwrap();
     assert_eq!(*cleared.query, base);
 }
+
+#[test]
+fn grouped_workspace_header_gestures_sort_real_records_and_groups() {
+    use rust_desktop_ui_core::{InputEvent, Point, PointerButton};
+    use rust_desktop_ui_treegrid::{ColumnId, GridHitKind, SortDirection};
+    let definition =
+        rust_desktop_ui_xaml::parse(include_str!("../GridWorkspaceWindow.xaml")).unwrap();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    ui.commands_mut().register("Light", "Light");
+    ui.commands_mut().register("Dark", "Dark");
+    let sources = demo::register(&mut ui).unwrap();
+    let root = ui.root();
+    let view =
+        MountedView::mount_with_context(&mut ui, root, &definition.content, demo::model().unwrap())
+            .unwrap();
+    let _state = demo::State::install(&mut ui, &view, sources)
+        .unwrap()
+        .unwrap();
+    let grid = view.find_name("WorkspaceGrid").unwrap();
+    let size = Size::new(1640., 920.);
+    ui.update(size).unwrap();
+    let click = |ui: &mut Controls, point| {
+        for event in [
+            InputEvent::PointerDown {
+                position: point,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            },
+            InputEvent::PointerUp {
+                position: point,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            },
+        ] {
+            ui.dispatch(event).unwrap();
+        }
+        ui.update(size).unwrap();
+    };
+    let records = |ui: &Controls| {
+        ui.grid_frame(grid)
+            .unwrap()
+            .semantics
+            .rows
+            .iter()
+            .filter(|r| {
+                matches!(
+                    ui.grid_row_kind(grid, r.key),
+                    Some(rust_desktop_ui_controls::GridRowKind::Record(_))
+                )
+            })
+            .filter_map(|r| {
+                r.cells
+                    .iter()
+                    .find(|c| c.column == ColumnId(0))
+                    .map(|c| c.label.clone())
+            })
+            .collect::<Vec<_>>()
+    };
+    let asc = records(&ui);
+    assert!(
+        asc.len() >= 2 && asc.windows(2).all(|v| v[0] < v[1]),
+        "{asc:?}"
+    );
+    let frame = ui.grid_frame(grid).unwrap();
+    assert_eq!(frame.semantics.sort[0].direction, SortDirection::Ascending);
+    let r = frame
+        .hits
+        .iter()
+        .find(|h| h.kind == GridHitKind::Header(ColumnId(0)))
+        .unwrap()
+        .bounds;
+    click(&mut ui, Point::new(r.x + 9., r.y + r.height / 2.));
+    let frame = ui.grid_frame(grid).unwrap();
+    assert_eq!(frame.semantics.sort[0].direction, SortDirection::Descending);
+    let desc = records(&ui);
+    assert!(
+        desc.len() >= 2 && desc.windows(2).all(|v| v[0] > v[1]),
+        "{desc:?}"
+    );
+    let group = |ui: &Controls| {
+        ui.grid_frame(grid)
+            .unwrap()
+            .semantics
+            .rows
+            .iter()
+            .find(|r| r.depth == 0)
+            .unwrap()
+            .key
+    };
+    let first = group(&ui);
+    let panel = ui.runtime.bounds(grid).unwrap();
+    click(&mut ui, Point::new(panel.x + 15., panel.y + 14.));
+    assert_ne!(group(&ui), first);
+    click(&mut ui, Point::new(panel.x + 15., panel.y + 14.));
+    assert_eq!(group(&ui), first);
+}

@@ -82,6 +82,68 @@ pub(super) fn auto_rule(field: &FieldSchema, input: &str) -> Result<Criteria, Co
     }
 }
 impl SnapshotSource {
+    fn update_facet(
+        &mut self,
+        field: &str,
+        values: Option<Vec<CellValue>>,
+    ) -> Result<(), ControlError> {
+        let schema = self
+            .table
+            .schema()
+            .field(field)
+            .ok_or_else(|| error("Unknown facet field"))?;
+        if let Some(values) = values {
+            if values.len() > self.table.limits().max_rows {
+                return Err(error("Too many facet values"));
+            }
+            for v in &values {
+                schema.validate(v).map_err(error)?;
+            }
+            self.filters.facets.insert(field.into(), values);
+        } else {
+            self.filters.facets.remove(field);
+        }
+        Ok(())
+    }
+    fn update_column_rule(&mut self, field: &str, text: &str) -> Result<(), ControlError> {
+        if text.len() > 4096 {
+            return Err(error("Column filter exceeds 4096 bytes"));
+        }
+        let schema = self
+            .table
+            .schema()
+            .field(field)
+            .ok_or_else(|| error("Unknown filter field"))?;
+        if text.trim().is_empty() {
+            self.filters.inputs.remove(field);
+            self.filters.columns.remove(field);
+        } else {
+            self.filters
+                .columns
+                .insert(field.into(), auto_rule(schema, text)?);
+            self.filters.inputs.insert(field.into(), text.into());
+        }
+        Ok(())
+    }
+    pub(super) fn facet_counts(
+        &self,
+        field: &str,
+    ) -> Result<Vec<(CellValue, usize)>, ControlError> {
+        if self.table.schema().field(field).is_none() {
+            return Err(error("Unknown facet field"));
+        }
+        let mut values: Vec<_> = self
+            .filtered_keys(Some(field))?
+            .into_iter()
+            .filter_map(|k| self.table.value(k, field))
+            .collect();
+        values.sort_by(|a, b| compare_values(a, b));
+        Ok(values
+            .chunk_by(|a, b| a == b)
+            .map(|group| (group[0].clone(), group.len()))
+            .collect())
+    }
+
     pub(super) fn filtered_keys(&self, except: Option<&str>) -> Result<Vec<i64>, ControlError> {
         let mut keys = self.data_query.row_keys(&self.table).map_err(error)?;
         if let Some((field, value)) = &self.relation {
@@ -186,32 +248,30 @@ impl Controls {
         edit(&mut src)?;
         self.install_grid_presentation(id, src, g.current_arrangement())
     }
+    pub(super) fn apply_header_filter(
+        &mut self,
+        id: WidgetId,
+        popup: &header_filter::FilterPopup,
+        clear: bool,
+    ) -> Result<(), ControlError> {
+        self.change_grid_filters(id, |s| {
+            let field = &popup.field;
+            s.update_column_rule(field, if clear { "" } else { &popup.rule })?;
+            if clear {
+                s.update_facet(field, None)?;
+            } else if let Some(values) = popup.selection() {
+                s.update_facet(field, values)?;
+            }
+            Ok(())
+        })
+    }
     pub fn set_grid_auto_filter(
         &mut self,
         id: WidgetId,
         field: &str,
         text: &str,
     ) -> Result<(), ControlError> {
-        self.change_grid_filters(id, |s| {
-            if text.len() > 4096 {
-                return Err(error("Column filter exceeds 4096 bytes"));
-            }
-            let schema = s
-                .table
-                .schema()
-                .field(field)
-                .ok_or_else(|| error("Unknown filter field"))?;
-            if text.trim().is_empty() {
-                s.filters.inputs.remove(field);
-                s.filters.columns.remove(field);
-            } else {
-                s.filters
-                    .columns
-                    .insert(field.into(), auto_rule(schema, text)?);
-                s.filters.inputs.insert(field.into(), text.into());
-            }
-            Ok(())
-        })
+        self.change_grid_filters(id, |s| s.update_column_rule(field, text))
     }
     /// None clears this facet. An empty selection matches zero rows.
     pub fn set_grid_facet(
@@ -220,25 +280,7 @@ impl Controls {
         field: &str,
         values: Option<Vec<CellValue>>,
     ) -> Result<(), ControlError> {
-        self.change_grid_filters(id, |s| {
-            let schema = s
-                .table
-                .schema()
-                .field(field)
-                .ok_or_else(|| error("Unknown facet field"))?;
-            if let Some(values) = values {
-                if values.len() > s.table.limits().max_rows {
-                    return Err(error("Too many facet values"));
-                }
-                for v in &values {
-                    schema.validate(v).map_err(error)?;
-                }
-                s.filters.facets.insert(field.into(), values);
-            } else {
-                s.filters.facets.remove(field);
-            }
-            Ok(())
-        })
+        self.change_grid_filters(id, |s| s.update_facet(field, values))
     }
     pub fn grid_facet_values(
         &self,
@@ -250,17 +292,7 @@ impl Controls {
             .get(&id)
             .ok_or_else(|| error("Unknown grid"))?
             .source;
-        if s.table.schema().field(field).is_none() {
-            return Err(error("Unknown facet field"));
-        }
-        let mut vals: Vec<_> = s
-            .filtered_keys(Some(field))?
-            .into_iter()
-            .map(|k| s.table.value(k, field).unwrap().clone())
-            .collect();
-        vals.sort_by(compare_values);
-        vals.dedup();
-        Ok(vals)
+        Ok(s.facet_counts(field)?.into_iter().map(|(v, _)| v).collect())
     }
     pub fn set_grid_sort_priority(
         &mut self,

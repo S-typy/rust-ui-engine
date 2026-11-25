@@ -127,6 +127,16 @@ pub(crate) fn register(ui: &mut Controls) -> Result<Sources, String> {
         )))
     };
     let master = source(TableSchema::new(fields).map_err(err)?, records)?;
+    master
+        .borrow_mut()
+        .set_query(rust_desktop_ui_data::DataQuery {
+            sort: vec![rust_desktop_ui_data::SortDescriptor {
+                field: "Code".into(),
+                direction: rust_desktop_ui_data::SortDirection::Ascending,
+            }],
+            ..Default::default()
+        })
+        .map_err(err)?;
     let detail = source(
         TableSchema::new(vec![
             FieldSchema::new("OwnerId", FieldType::Integer),

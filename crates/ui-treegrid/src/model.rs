@@ -1288,7 +1288,8 @@ impl TreeGrid {
         self.toggle_header_sort(source, column, false)
     }
 
-    fn toggle_header_sort(
+    /// Toggle a header and optionally retain the order of the other sort columns.
+    pub fn toggle_header_sort(
         &mut self,
         source: &mut impl TreeDataSource,
         column: ColumnId,

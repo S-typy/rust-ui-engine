@@ -99,6 +99,7 @@ pub struct GridSemanticRow {
 /// ColumnId values its own namespace and publishes only materialized rows.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GridSemantics {
+    pub sort: Vec<crate::SortOrder>,
     pub row_count: usize,
     pub column_count: usize,
     pub rows: Vec<GridSemanticRow>,
@@ -121,6 +122,8 @@ pub struct GridFrame {
     pub rows: Vec<VisibleRow>,
     pub columns: Vec<VisibleColumn>,
     pub hits: Vec<GridHit>,
+    /// Visible filter buttons, excluding the resize grip and clipped column lanes.
+    pub header_filters: Vec<(ColumnId, Rect)>,
     pub semantics: GridSemantics,
     pub stats: GridFrameStats,
 }
@@ -170,6 +173,7 @@ impl TreeGridView {
         frame.semantics.row_count = grid.row_count();
         frame.semantics.column_count = grid.columns.len();
         frame.semantics.focused = grid.focused;
+        frame.semantics.sort.clone_from(&grid.query().sort);
         if bounds.width == 0.0 || bounds.height == 0.0 {
             return Ok(frame);
         }
@@ -230,33 +234,85 @@ impl TreeGridView {
                 continue;
             };
             frame.scene.fill(clip, grid.palette.header);
-            let suffix = grid
-                .query()
-                .sort
-                .iter()
-                .enumerate()
-                .find(|(_, sort)| sort.column == column.id)
-                .map_or_else(String::new, |(index, sort)| {
-                    let arrow = if sort.direction == SortDirection::Ascending {
-                        "↑"
-                    } else {
-                        "↓"
-                    };
-                    if grid.query().sort.len() > 1 {
-                        format!(" {}{arrow}", index + 1)
-                    } else {
-                        format!(" {arrow}")
-                    }
-                });
-            text(
-                &mut frame.scene,
-                inset(cell, 8.0),
-                clip,
-                format!("{}{suffix}", column.title),
-                grid.config.font_size,
-                grid.palette.text,
-                600,
+            let mut trailing = cell.x + cell.width - 5.;
+            let mid = cell.y + cell.height / 2.;
+            if let Some(index) = grid.query().sort.iter().position(|s| s.column == column.id) {
+                let direction = grid.query().sort[index].direction;
+                let sign = if direction == SortDirection::Ascending {
+                    1.
+                } else {
+                    -1.
+                };
+                let x = trailing - 8.;
+                symbol(
+                    &mut frame.scene,
+                    &[
+                        (x - 4., mid + 2. * sign),
+                        (x, mid - 2. * sign),
+                        (x + 4., mid + 2. * sign),
+                    ],
+                    clip,
+                    grid.palette.text,
+                );
+                trailing -= 16.;
+                if grid.query().sort.len() > 1 {
+                    let rank = (index + 1).to_string();
+                    let w = 7. * rank.len() as f32 + 2.;
+                    trailing -= w;
+                    text(
+                        &mut frame.scene,
+                        Rect::new(trailing, cell.y, w, cell.height),
+                        clip,
+                        rank,
+                        11.,
+                        grid.palette.muted,
+                        500,
+                    );
+                }
+            }
+            if let Some(active) = source.header_filter(column.id)
+                && trailing - cell.x >= 38.
+            {
+                trailing -= 22.;
+                let button = Rect::new(trailing, cell.y, 22., cell.height);
+                if let Some(hit) = button.intersection(clip) {
+                    let x = trailing + 11.;
+                    symbol(
+                        &mut frame.scene,
+                        &[
+                            (x - 5.5, mid - 4.5),
+                            (x + 5.5, mid - 4.5),
+                            (x + 1., mid + 0.5),
+                            (x + 1., mid + 5.),
+                            (x - 1.5, mid + 3.5),
+                            (x - 1.5, mid + 0.5),
+                            (x - 5.5, mid - 4.5),
+                        ],
+                        hit,
+                        if active {
+                            grid.palette.focus
+                        } else {
+                            grid.palette.muted
+                        },
+                    );
+                    frame.header_filters.push((column.id, hit));
+                }
+            }
+            let title = inset(
+                Rect::new(cell.x, cell.y, (trailing - cell.x).max(0.), cell.height),
+                7.,
             );
+            if let Some(title_clip) = title.intersection(clip) {
+                text(
+                    &mut frame.scene,
+                    title,
+                    title_clip,
+                    column.title.clone(),
+                    grid.config.font_size,
+                    grid.palette.text,
+                    600,
+                );
+            }
             frame.hits.push(GridHit {
                 bounds: clip,
                 kind: GridHitKind::Header(column.id),
@@ -546,6 +602,17 @@ fn line(scene: &mut Scene, bounds: Rect, clip: Rect, color: Color) {
     if let Some(bounds) = bounds.intersection(clip) {
         scene.fill(bounds, color);
     }
+}
+
+fn symbol(scene: &mut Scene, vertices: &[(f32, f32)], clip: Rect, color: Color) {
+    let segments: Vec<_> = vertices
+        .windows(2)
+        .map(|w| rust_desktop_ui_core::StrokeSegment {
+            start: Point::new(w[0].0, w[0].1),
+            end: Point::new(w[1].0, w[1].1),
+        })
+        .collect();
+    scene.stroke_path(&segments, clip, 1.4, color);
 }
 
 fn bottom_rule(scene: &mut Scene, rect: Rect, clip: Rect, color: Color) {

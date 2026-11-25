@@ -22,6 +22,7 @@ pub use appearance::{GridFormatKind, GridFormatRule};
 pub use output::{GridOutput, GridPrintOptions};
 pub use pages::GridPageView;
 mod filtering;
+mod header_filter;
 mod records;
 mod relations;
 mod transfer;
@@ -222,6 +223,13 @@ impl SnapshotSource {
 }
 
 impl TreeDataSource for SnapshotSource {
+    fn header_filter(&self, column: ColumnId) -> Option<bool> {
+        let field = self.fields.get(column.0 as usize)?;
+        (self.page_query.is_none() && self.presentation.view == GridViewMode::Table).then(|| {
+            self.filters.facets.contains_key(field) || self.filters.columns.contains_key(field)
+        })
+    }
+
     fn child_count(&self, parent: Option<RowKey>) -> Option<usize> {
         if let (Some(row), Some(loaded)) = (parent, &self.lazy_loaded)
             && self.projection.children.get(&row).is_none_or(Vec::is_empty)
@@ -1181,6 +1189,28 @@ impl Controls {
         query.filter = filter.to_owned();
         self.apply_grid_query(id, query)
     }
+    /// Activate a visible column header using its current sort direction.
+    pub fn toggle_grid_header_sort(
+        &mut self,
+        id: WidgetId,
+        column: ColumnId,
+        extend: bool,
+    ) -> Result<(), ControlError> {
+        if !self.effective_enabled(id) || self.grid_editor(id).is_some() {
+            return Err(error("Grid header is unavailable"));
+        }
+        self.sync_grids()?;
+        let grid = self
+            .grids
+            .get_mut(&id)
+            .ok_or_else(|| error("Unknown grid"))?;
+        grid.model
+            .toggle_header_sort(&mut grid.source, column, extend)
+            .map_err(error)?;
+        grid.restore_selection()?;
+        self.scene_dirty = true;
+        Ok(())
+    }
     /// Sort projected fields with the same typed ordering used by header gestures.
     pub fn set_grid_sort(
         &mut self,
@@ -1819,6 +1849,13 @@ impl Controls {
                     scene.fill(edge, grid.model.palette.line);
                 }
             }
+            if let Some(visible) = self
+                .runtime
+                .clip(id)
+                .and_then(|clip| bounds.intersection(clip))
+            {
+                grid.paint_filter_panel(visible, &mut scene);
+            }
             grid.paint_chooser(bounds, &mut scene);
             if let Some(preview) = grid.header_feedback(bounds) {
                 preview.paint(&mut scene, bounds, grid.model.palette);
@@ -1953,6 +1990,9 @@ impl Controls {
         }
         if self.grid_chooser_input(id, event)? {
             return Ok(true);
+        }
+        if self.grids[&id].workflow.panel.is_some() {
+            return self.grid_workflow_input(id, event);
         }
         if self.grid_custom_input(id, event)? || self.grid_workflow_input(id, event)? {
             return Ok(true);

@@ -571,14 +571,50 @@ impl PresentationPainter<'_> {
                     .iter()
                     .find(|c| &c.field == field)
                     .map_or(field.as_str(), |c| c.title.as_str());
+                let face = Rect::new(
+                    chip.x + 3.,
+                    chip.y + 3.,
+                    (chip.width - 6.).max(0.),
+                    (chip.height - 6.).max(0.),
+                );
+                scene.rounded_fill(face, chip, 5., palette.background);
+                scene.rounded_stroke(face, chip, 5., 1., palette.line);
+                let caption = Rect::new(
+                    face.x + 6.,
+                    face.y + 2.,
+                    (face.width - 28.).max(0.),
+                    (face.height - 4.).max(0.),
+                );
                 draw_text(
                     scene,
-                    chip,
-                    chip,
-                    format!("  {}  ›", label),
+                    caption,
+                    caption,
+                    label.to_owned(),
                     palette.text,
-                    600,
-                    13.0,
+                    500,
+                    13.,
+                );
+                let x = face.x + face.width - 12.;
+                let y = face.y + face.height * 0.5;
+                let sign = if self.source.group_descending(field) {
+                    -1.
+                } else {
+                    1.
+                };
+                scene.stroke_path(
+                    &[
+                        rust_desktop_ui_core::StrokeSegment {
+                            start: Point::new(x - 4., y + 2. * sign),
+                            end: Point::new(x, y - 2. * sign),
+                        },
+                        rust_desktop_ui_core::StrokeSegment {
+                            start: Point::new(x, y - 2. * sign),
+                            end: Point::new(x + 4., y + 2. * sign),
+                        },
+                    ],
+                    face,
+                    1.4,
+                    palette.text,
                 );
             }
         }

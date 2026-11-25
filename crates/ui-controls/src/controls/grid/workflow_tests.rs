@@ -58,7 +58,7 @@ fn header_priorities_filters_facets_and_find_are_live() {
             .scene
             .texts
             .iter()
-            .any(|t| t.text.contains("2↑"))
+            .any(|t| t.text == "2")
     );
     ui.set_grid_sort_priority(id, "category", vec![CellValue::Text("B".into())])
         .unwrap();
@@ -572,4 +572,112 @@ fn deleted_master_prevents_saved_detail_from_writing_into_another_order() {
         detail.borrow().table().value(1, "amount"),
         Some(&CellValue::Integer(1))
     );
+}
+
+#[test]
+fn column_filter_popup_shares_geometry_with_input_and_keeps_sort_and_other_filters() {
+    let (mut ui, id, _) = fixture();
+    let size = Size::new(640., 400.);
+    ui.set_grid_auto_filter(id, "amount", "2..3").unwrap();
+    ui.update(size).unwrap();
+    let button = |ui: &Controls| {
+        ui.grid_frame(id)
+            .unwrap()
+            .header_filters
+            .iter()
+            .find(|(c, _)| c.0 == 0)
+            .unwrap()
+            .1
+    };
+    let click_label = |ui: &mut Controls, label: &str| {
+        let r = ui
+            .scene()
+            .texts
+            .iter()
+            .find(|t| t.text == label)
+            .unwrap_or_else(|| panic!("missing {label}"))
+            .bounds;
+        click(ui, Point::new(r.x + 2., r.y + 5.), Default::default());
+        ui.update(size).unwrap();
+    };
+    let location = center(button(&ui));
+    click(&mut ui, location, Default::default());
+    ui.update(size).unwrap();
+    let tabs = ui
+        .scene()
+        .texts
+        .iter()
+        .find(|t| t.text == "Правила")
+        .unwrap()
+        .bounds;
+    assert!(tabs.y >= button(&ui).y + button(&ui).height);
+    assert!(ui.scene().texts.iter().any(|t| t.text == "A  (2)"));
+    click_label(&mut ui, "Поиск значений…");
+    ui.text_input("нет").unwrap();
+    ui.update(size).unwrap();
+    assert!(ui.scene().texts.iter().any(|t| t.text == "Нет совпадений"));
+    for _ in 0..3 {
+        key(&mut ui, Key::Backspace, Default::default());
+    }
+    ui.text_input("a").unwrap();
+    ui.update(size).unwrap();
+    click_label(&mut ui, "(Все найденные)  (2)");
+    click_label(&mut ui, "Применить");
+    assert!(ui.grids[&id].source.keys.is_empty());
+    assert!(ui.grids[&id].model.query().sort.is_empty());
+    let location = center(button(&ui));
+    click(&mut ui, location, Default::default());
+    ui.update(size).unwrap();
+    click_label(&mut ui, "Сбросить");
+    assert_eq!(ui.grids[&id].source.keys.len(), 2);
+    let location = center(button(&ui));
+    click(&mut ui, location, Default::default());
+    ui.update(size).unwrap();
+    click_label(&mut ui, "Правила");
+    ui.text_input("B").unwrap();
+    click_label(&mut ui, "Применить");
+    assert!(ui.grids[&id].source.keys.is_empty());
+    assert_eq!(ui.grids[&id].source.filters.inputs["category"], "B");
+}
+
+#[test]
+fn keyboard_header_actions_apply_typed_rules_and_cancel_invalid_drafts() {
+    let (mut ui, id, _) = fixture();
+    let size = Size::new(640., 400.);
+    ui.grid_focus_cell(id, 0, Some("amount")).unwrap();
+    ui.runtime.apply(Mutation::Focus(Some(id))).unwrap();
+    let alt = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    key(&mut ui, Key::ArrowUp, alt);
+    ui.update(size).unwrap();
+    assert_eq!(
+        ui.grid_frame(id).unwrap().semantics.sort[0],
+        SortOrder {
+            column: ColumnId(1),
+            direction: SortDirection::Ascending
+        }
+    );
+    key(&mut ui, Key::ArrowDown, alt);
+    key(&mut ui, Key::Tab, Default::default());
+    ui.text_input(">=3").unwrap();
+    key(&mut ui, Key::Enter, Default::default());
+    assert_eq!(ui.grids[&id].source.keys, [i64::MAX, i64::MIN]);
+    ui.grid_focus_cell(id, i64::MAX, Some("amount")).unwrap();
+    key(&mut ui, Key::ArrowDown, alt);
+    key(
+        &mut ui,
+        Key::Character("a".into()),
+        Modifiers {
+            control: true,
+            ..Default::default()
+        },
+    );
+    ui.text_input("bad").unwrap();
+    key(&mut ui, Key::Enter, Default::default());
+    assert!(ui.grids[&id].workflow.panel.is_some());
+    assert_eq!(ui.grids[&id].source.filters.inputs["amount"], ">=3");
+    key(&mut ui, Key::Escape, Default::default());
+    assert!(ui.grids[&id].workflow.panel.is_none());
 }

@@ -9,7 +9,7 @@
       <WrapPanel Spacing="8"><TextBox x:Name="WorkspaceFormula" Text='mul(to_decimal(field("Quantity")),field("Price"))' Width="410" AutomationName="Формула суммы строки"/><Button Content="Применить формулу" Command="GridWorkspaceFormula"/></WrapPanel>
       <TextBox x:Name="WorkspaceFilter" Text="{Binding Filter}" PlaceholderText="Фильтр по данным" Width="360"/>
     </StackPanel>
-    <GridControl ShowAutoFilterRow="True" ShowRowSelector="True" Criteria="{Binding Criteria}" IsCriteriaEnabled="{Binding RuleEnabled}" x:Name="WorkspaceGrid" Grid.Row="2" DataSource="WorkspaceRecords" GroupFields="Category,Active" GroupMode="Hierarchy" ShowGroupPanel="True" StackedFields="Price=Quantity" RightPinnedFields="Active" WrapFields="Title" MergeFields="Category"
+    <GridControl ShowAutoFilterRow="False" ShowRowSelector="True" Criteria="{Binding Criteria}" IsCriteriaEnabled="{Binding RuleEnabled}" x:Name="WorkspaceGrid" Grid.Row="2" DataSource="WorkspaceRecords" GroupFields="Category,Active" GroupMode="Hierarchy" ShowGroupPanel="True" StackedFields="Price=Quantity" RightPinnedFields="Active" WrapFields="Title" MergeFields="Category"
                  SelectedValue="{Binding SelectedKey}" FilterText="{Binding Filter}" IsReadOnly="{Binding ReadOnly}" AutomationName="Таблица рабочих записей">
       <GridControl.Columns>
         <GridColumn FieldName="Code" Header="Код" Width="180" IsPinned="True" IsReadOnly="True"/>
@@ -19,7 +19,7 @@
         <GridColumn FieldName="Price" Header="Цена" Width="150"/>
         <GridColumn FieldName="LineTotal" Header="Сумма строки" Width="210" Expression='mul(to_decimal(field("Quantity")),field("Price"))'/>
         <GridColumn FieldName="Due" Header="Дата" Width="145"/>
-        <GridColumn FieldName="Active" Header="Согласовано" Width="115"/>
+        <GridColumn FieldName="Active" Header="Согласовано" Width="160"/>
       </GridControl.Columns>
       <GridControl.Summaries><GridSummary Function="CountRows" Title="Записей"/><GridSummary Function="Sum" FieldName="LineTotal" Title="Сумма" DisplayColumn="LineTotal"/></GridControl.Summaries>
       <GridControl.Bands><GridBand Header="Документ" Fields="Code,Category,Title"/><GridBand Header="Продажи"><GridBand Header="Показатели" Fields="Quantity,Price"/><GridBand Header="Результат" Fields="LineTotal"/></GridBand><GridBand Header="Состояние" Fields="Due,Active"/></GridControl.Bands>

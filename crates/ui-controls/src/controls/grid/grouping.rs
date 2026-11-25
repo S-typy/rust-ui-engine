@@ -47,6 +47,18 @@ impl GridState {
     }
 }
 
+impl SnapshotSource {
+    pub(super) fn group_descending(&self, field: &str) -> bool {
+        if self.presentation.group_sort_summary.is_none()
+            && let Some(order) = self.data_query.sort.iter().find(|o| o.field == field)
+        {
+            order.direction == rust_desktop_ui_data::SortDirection::Descending
+        } else {
+            self.presentation.group_descending
+        }
+    }
+}
+
 impl GridPresentationSettings {
     fn group_drop_slot(&self, bounds: Rect, position: Point) -> Option<usize> {
         if !Rect::new(bounds.x, bounds.y, bounds.width, self.panel_height(bounds))
@@ -196,6 +208,13 @@ impl Controls {
                 let (col, from_panel) = (drag.column, drag.from_panel);
                 let target = options.group_drop_slot(bounds, *position);
                 let field = grid.source.fields[col.0 as usize].clone();
+                let mut motion = drag.motion;
+                motion.update(*position);
+                let click = from_panel
+                    && motion.position().is_none()
+                    && target.and_then(|i| settings.group_fields.get(i)) == Some(&field);
+                let descending = grid.source.group_descending(&field);
+                let horizontal = grid.model.scroll_offset().0;
                 let grid = self.grids.get_mut(&id).unwrap();
                 grid.group_drag = None;
                 if target.is_none() && !from_panel {
@@ -203,6 +222,25 @@ impl Controls {
                 }
                 grid.cancel_pointer();
                 self.runtime.apply(Mutation::CapturePointer(None))?;
+                if click {
+                    if settings.group_sort_summary.is_some() {
+                        settings.group_descending = !descending;
+                        self.set_grid_presentation(id, settings)?;
+                    } else {
+                        use rust_desktop_ui_data::SortDirection::{Ascending, Descending};
+                        let mut sort = grid.source.data_query.sort.clone();
+                        let direction = if descending { Ascending } else { Descending };
+                        if let Some(order) = sort.iter_mut().find(|s| s.field == field) {
+                            order.direction = direction;
+                        } else {
+                            sort.push(SortDescriptor { field, direction });
+                        }
+                        self.set_grid_sort(id, sort)?;
+                    }
+                    self.grid_scroll_to(id, horizontal, 0.)?;
+                    self.grids.get_mut(&id).unwrap().reveal_selected = false;
+                    return Ok(true);
+                }
                 settings.group_fields.retain(|f| f != &field);
                 if let Some(i) = target {
                     settings

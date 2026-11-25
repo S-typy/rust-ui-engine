@@ -98,6 +98,12 @@ pub trait TreeDataSource {
     fn position(&self, row: RowKey) -> Option<usize>;
     fn cell(&self, row: RowKey, column: ColumnId) -> String;
 
+    /// A filter button is available when the host supports column filters.
+    /// The flag indicates an applied column filter.
+    fn header_filter(&self, _column: ColumnId) -> Option<bool> {
+        None
+    }
+
     /// Changes whenever hierarchy or displayed data changes. Sources returning
     /// the default zero require an explicit host refresh after external writes.
     fn revision(&self) -> u64 {

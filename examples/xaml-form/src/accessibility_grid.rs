@@ -197,9 +197,26 @@ impl GridAccessibility {
                 ui.grid_presentation(widget)?
                     .role_text("Header", &settings.title),
             );
+            if let Some(sort) = frame
+                .semantics
+                .sort
+                .iter()
+                .find(|sort| sort.column == column.id)
+            {
+                header.set_sort_direction(match sort.direction {
+                    rust_desktop_ui_treegrid::SortDirection::Ascending => {
+                        accesskit::SortDirection::Ascending
+                    }
+                    rust_desktop_ui_treegrid::SortDirection::Descending => {
+                        accesskit::SortDirection::Descending
+                    }
+                });
+            }
             header.set_column_index(order[&column.id]);
             header.set_read_only();
-            if !enabled {
+            if enabled {
+                header.add_action(Action::Click);
+            } else {
                 header.set_disabled();
             }
             if let Some(hit) = frame
@@ -470,6 +487,19 @@ impl GridAccessibility {
             return Ok(false);
         };
         if !ui.is_enabled(key.widget) || ui.runtime.bounds(key.widget).is_none() {
+            return Ok(true);
+        }
+        if let Part::Header(column) = key.part {
+            if request.action == Action::Click
+                && ui.grid_frame(key.widget).is_some_and(|frame| {
+                    frame
+                        .hits
+                        .iter()
+                        .any(|hit| hit.kind == GridHitKind::Header(column))
+                })
+            {
+                ignore_invalid(ui.toggle_grid_header_sort(key.widget, column, false))?;
+            }
             return Ok(true);
         }
         let (row, column) = match key.part {

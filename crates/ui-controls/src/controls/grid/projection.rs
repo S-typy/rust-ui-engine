@@ -164,8 +164,26 @@ impl Projection {
                     result
                         .sort_groups_by_summary(index, options.group_descending)
                         .map_err(error)?;
-                } else if options.group_descending {
-                    result.groups.reverse();
+                } else if options.group_fields[..depth]
+                    .iter()
+                    .any(|field| source.group_descending(field))
+                {
+                    let descending: Vec<_> = options.group_fields[..depth]
+                        .iter()
+                        .map(|f| source.group_descending(f))
+                        .collect();
+                    result.groups.sort_by(|a, b| {
+                        a.key
+                            .iter()
+                            .zip(&b.key)
+                            .zip(&descending)
+                            .map(|((left, right), desc)| {
+                                let cmp = rust_desktop_ui_data::compare_values(left, right);
+                                if *desc { cmp.reverse() } else { cmp }
+                            })
+                            .find(|cmp| !cmp.is_eq())
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    });
                 }
                 if depth == first {
                     next.totals = result.aggregates;

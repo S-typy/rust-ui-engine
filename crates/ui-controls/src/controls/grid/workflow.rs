@@ -1,19 +1,12 @@
 //! Input and presentation for column filters, find, cell ranges and record drops.
+use super::header_filter::{Action, FilterPopup};
 use super::*;
 use rust_desktop_ui_treegrid::GridHitKind;
 use std::time::{Duration, Instant};
 
 pub(super) enum Panel {
-    Text {
-        target: TextTarget,
-        draft: String,
-    },
-    Facet {
-        field: String,
-        values: Vec<CellValue>,
-        selected: Vec<CellValue>,
-        cursor: usize,
-    },
+    Text { target: TextTarget, draft: String },
+    Facet(FilterPopup),
 }
 pub(super) enum TextTarget {
     Find,
@@ -173,6 +166,30 @@ impl GridState {
                 }
             }
         }
+    }
+    fn filter_anchor(&self, b: Rect, field: &str) -> Rect {
+        let target = self
+            .source
+            .fields
+            .iter()
+            .position(|f| f == field)
+            .map(|i| ColumnId(i as u64));
+        self.frame
+            .header_filters
+            .iter()
+            .find(|(id, _)| Some(*id) == target)
+            .map(|(_, r)| *r)
+            .or_else(|| {
+                self.frame
+                    .hits
+                    .iter()
+                    .find(|h| matches!(h.kind,GridHitKind::Header(c) if Some(c)==target))
+                    .map(|h| h.bounds)
+            })
+            .unwrap_or(Rect::new(b.x, b.y, b.width.min(20.), 0.))
+    }
+    pub(super) fn paint_filter_panel(&self, b: Rect, scene: &mut Scene) {
+        let palette = self.model.palette;
         let Some(panel) = &self.workflow.panel else {
             return;
         };
@@ -186,51 +203,21 @@ impl GridState {
                     TextTarget::Column(f) => f,
                     TextTarget::Criteria => "Условие",
                 };
-                label(scene, header, format!("  {field}: {draft} ▏"));
-            }
-            Panel::Facet {
-                values,
-                selected,
-                cursor,
-                ..
-            } => {
-                scene.fill(area, palette.background);
-                scene.fill(header, palette.header);
-                label(
+                views::draw_text(
                     scene,
                     header,
-                    "  Значения   ·   Enter — применить   ·   Delete — сбросить".into(),
+                    header,
+                    format!("  {field}: {draft} ▏"),
+                    palette.text,
+                    400,
+                    13.,
                 );
-                let page = facet_page(area);
-                let start = cursor / page * page;
-                for (index, v) in values.iter().enumerate().skip(start).take(page) {
-                    let r = Rect::new(
-                        area.x,
-                        area.y + 30. + (index - start) as f32 * 26.,
-                        area.width,
-                        26.,
-                    );
-                    if let Some(r) = r.intersection(area) {
-                        if index == *cursor {
-                            scene.fill(r, palette.selection);
-                        }
-                        let mark = if selected.contains(v) { "☑" } else { "☐" };
-                        let text = if *v == CellValue::Null {
-                            "(NULL)".into()
-                        } else if v == &CellValue::Text(String::new()) {
-                            "(пустая строка)".into()
-                        } else {
-                            v.display()
-                        };
-                        label(scene, r, format!("  {mark}  {text}"));
-                    }
-                }
+            }
+            Panel::Facet(popup) => {
+                popup.paint(scene, b, self.filter_anchor(b, &popup.field), palette)
             }
         }
     }
-}
-fn facet_page(r: Rect) -> usize {
-    (((r.height - 30.).max(0.) / 26.) as usize).max(1)
 }
 impl Controls {
     pub fn set_grid_workflow_rows(
@@ -393,6 +380,18 @@ impl Controls {
             true
         }
     }
+    fn open_header_filter(&mut self, id: WidgetId, column: ColumnId) -> Result<bool, ControlError> {
+        let grid = &self.grids[&id];
+        if grid.source.header_filter(column).is_none() {
+            return Ok(false);
+        }
+        let field = grid.source.fields[column.0 as usize].clone();
+        let popup = FilterPopup::new(&grid.source, field)?;
+        self.grids.get_mut(&id).unwrap().workflow.panel = Some(Panel::Facet(popup));
+        self.runtime.apply(Mutation::Focus(Some(id)))?;
+        self.scene_dirty = true;
+        Ok(true)
+    }
     pub fn open_grid_find(&mut self, id: WidgetId) -> Result<(), ControlError> {
         self.open_grid_text_panel(id, TextTarget::Find)
     }
@@ -434,10 +433,12 @@ impl Controls {
             return Ok(false);
         }
         if let Some(panel) = &mut g.workflow.panel {
-            if let Panel::Text { draft, .. } = panel
-                && draft.len() + text.len() <= 4096
-            {
-                draft.push_str(text);
+            match panel {
+                Panel::Text { draft, .. } if draft.len() + text.len() <= 4096 => {
+                    draft.push_str(text)
+                }
+                Panel::Facet(popup) => popup.text(text),
+                _ => {}
             }
             self.scene_dirty = true;
             return Ok(true);
@@ -520,7 +521,12 @@ impl Controls {
         let g = &self.grids[&id];
         let Some(b) = g.bounds else { return Ok(false) };
         if g.workflow.panel.is_some() {
-            return self.grid_panel_input(id, event, b);
+            let visible = self.runtime.clip(id).and_then(|clip| b.intersection(clip));
+            if let Some(visible) = visible {
+                return self.grid_panel_input(id, event, visible);
+            }
+            self.grids.get_mut(&id).unwrap().workflow.panel = None;
+            return Ok(false);
         }
         if let InputEvent::KeyDown { key, modifiers, .. } = event {
             match key {
@@ -534,6 +540,17 @@ impl Controls {
                         },
                     )?;
                     return Ok(true);
+                }
+                Key::ArrowUp if modifiers.alt && !modifiers.control => {
+                    if let Some(col) = g.model.focused_column() {
+                        self.toggle_grid_header_sort(id, col, modifiers.shift)?;
+                        return Ok(true);
+                    }
+                }
+                Key::ArrowDown if modifiers.alt && !modifiers.control => {
+                    if let Some(col) = g.model.focused_column() {
+                        return self.open_header_filter(id, col);
+                    }
                 }
                 Key::F3 => {
                     self.find_grid_match(id, !modifiers.shift, false)?;
@@ -595,26 +612,17 @@ impl Controls {
             if *button == PointerButton::Secondary
                 && let Some(GridHitKind::Header(col)) = g.frame.hit_test(*p)
             {
-                let field = g.source.fields[col.0 as usize].clone();
-                let vals = self.grid_facet_values(id, &field)?;
-                let selected = g
-                    .source
-                    .filters
-                    .facets
-                    .get(&field)
-                    .cloned()
-                    .unwrap_or_else(|| vals.clone());
-                self.grids.get_mut(&id).unwrap().workflow.panel = Some(Panel::Facet {
-                    field,
-                    values: vals,
-                    selected,
-                    cursor: 0,
-                });
-                self.runtime.apply(Mutation::Focus(Some(id)))?;
-                self.scene_dirty = true;
-                return Ok(true);
+                return self.open_header_filter(id, col);
             }
             if *button == PointerButton::Primary {
+                if let Some((col, _)) = g
+                    .frame
+                    .header_filters
+                    .iter()
+                    .find(|(_, r)| r.contains(p.x, p.y))
+                {
+                    return self.open_header_filter(id, *col);
+                }
                 let filter_field = g
                     .filter_cells(b)
                     .find(|(_, _, r)| r.contains(p.x, p.y))
@@ -623,7 +631,10 @@ impl Controls {
                     self.open_grid_text_panel(id, TextTarget::Column(field))?;
                     return Ok(true);
                 }
-                if g.selector_width(b) > 0. && p.x < b.x + g.selector_width(b) {
+                if g.selector_width(b) > 0.
+                    && p.x < b.x + g.selector_width(b)
+                    && p.y >= g.selection_header(b).y
+                {
                     if g.selection_header(b).contains(p.x, p.y) {
                         self.select_all_grid_records(id)?;
                     } else if let Some(row) = g.frame.semantics.rows.iter().find(|r| {
@@ -763,89 +774,42 @@ impl Controls {
         b: Rect,
     ) -> Result<bool, ControlError> {
         let g = self.grids.get_mut(&id).unwrap();
-        let area = g.panel_area(b);
-        let mut apply = false;
-        let mut clear = false;
-        match (g.workflow.panel.as_mut().unwrap(), event) {
-            (
-                _,
+        let action = match g.workflow.panel.as_ref().unwrap() {
+            Panel::Facet(popup) => {
+                let anchor = g.filter_anchor(b, &popup.field);
+                let Some(Panel::Facet(popup)) = &mut g.workflow.panel else {
+                    unreachable!()
+                };
+                popup.input(event, b, anchor)
+            }
+            Panel::Text { .. } => match event {
                 InputEvent::KeyDown {
                     key: Key::Escape, ..
-                },
-            ) => {
-                g.workflow.panel = None;
-            }
-            (
-                _,
+                }
+                | InputEvent::PointerDown { .. }
+                | InputEvent::WindowFocused(false) => Action::Close,
                 InputEvent::KeyDown {
                     key: Key::Enter, ..
-                },
-            ) => apply = true,
-            (
-                Panel::Text { draft, .. },
+                } => Action::Apply,
                 InputEvent::KeyDown {
                     key: Key::Backspace,
                     ..
-                },
-            ) => {
-                draft.pop();
-            }
-            (
-                Panel::Facet { .. },
-                InputEvent::KeyDown {
-                    key: Key::Delete, ..
-                },
-            ) => {
-                clear = true;
-                apply = true;
-            }
-            (
-                Panel::Facet {
-                    values,
-                    selected,
-                    cursor,
-                    ..
-                },
-                e,
-            ) => {
-                let mut toggle = false;
-                match e {
-                    InputEvent::KeyDown { key, .. } => match key {
-                        Key::ArrowUp => *cursor = cursor.saturating_sub(1),
-                        Key::ArrowDown => {
-                            *cursor = (*cursor + 1).min(values.len().saturating_sub(1))
-                        }
-                        Key::Space => toggle = true,
-                        _ => {}
-                    },
-                    InputEvent::PointerDown { position: p, .. } if area.contains(p.x, p.y) => {
-                        if p.y < area.y + 30. {
-                            apply = true;
-                        } else {
-                            let page = facet_page(area);
-                            *cursor = *cursor / page * page + ((p.y - area.y - 30.) / 26.) as usize;
-                            toggle = true;
-                        }
+                } => {
+                    if let Some(Panel::Text { draft, .. }) = &mut g.workflow.panel {
+                        draft.pop();
                     }
-                    InputEvent::PointerDown { .. } => {
-                        g.workflow.panel = None;
-                        self.scene_dirty = true;
-                        return Ok(true);
-                    }
-                    _ => {}
+                    Action::Stay
                 }
-                if toggle && let Some(v) = values.get(*cursor) {
-                    if let Some(i) = selected.iter().position(|s| s == v) {
-                        selected.remove(i);
-                    } else {
-                        selected.push(v.clone());
-                    }
-                }
-            }
-            (_, InputEvent::PointerDown { .. }) => g.workflow.panel = None,
-            _ => {}
+                _ => Action::Stay,
+            },
+        };
+        let clear = matches!(action, Action::Clear);
+        if matches!(action, Action::Close) {
+            g.workflow.panel = None;
         }
-        if apply && let Some(panel) = g.workflow.panel.take() {
+        if matches!(action, Action::Clear | Action::Apply)
+            && let Some(mut panel) = g.workflow.panel.take()
+        {
             let result = match &panel {
                 Panel::Text {
                     target: TextTarget::Find,
@@ -861,13 +825,15 @@ impl Controls {
                     target: TextTarget::Criteria,
                     draft,
                 } => self.set_grid_criteria(id, draft),
-                Panel::Facet {
-                    field, selected, ..
-                } => self.set_grid_facet(id, field, (!clear).then(|| selected.clone())),
+                Panel::Facet(popup) => self.apply_header_filter(id, popup, clear),
             };
             if let Err(err) = result {
                 let g = self.grids.get_mut(&id).unwrap();
-                g.error = Some(err.to_string());
+                if let Panel::Facet(popup) = &mut panel {
+                    popup.error = Some(err.to_string());
+                } else {
+                    g.error = Some(err.to_string());
+                }
                 g.workflow.panel = Some(panel);
             }
         }
