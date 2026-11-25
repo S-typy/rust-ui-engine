@@ -62,22 +62,22 @@ impl GridState {
         let h = self.filter_height(b);
         Rect::new(body.x, body.y - h, body.width, h)
     }
-    fn filter_cells(&self, b: Rect) -> impl Iterator<Item = (ColumnId, Rect)> + '_ {
+    fn filter_cells(&self, b: Rect) -> impl Iterator<Item = (ColumnId, Rect, Rect)> + '_ {
         let strip = self.filter_strip(b);
-        let body = self.presentation_bounds(b);
-        let scale = strip.height / self.model.config().header_height.max(1.);
-        self.frame.hits.iter().filter_map(move |hit| {
-            let GridHitKind::Header(id) = hit.kind else {
-                return None;
-            };
-            let h = hit.bounds;
-            let cell = Rect::new(
-                h.x,
-                strip.y + (h.y - body.y) * scale,
-                h.width,
-                h.height * scale,
+        self.frame.columns.iter().filter_map(move |column| {
+            let cell = self.model.track_cell(
+                column.id,
+                column.bounds.x,
+                strip.y,
+                column.bounds.width,
+                strip.height,
             );
-            Some((id, cell.intersection(strip)?))
+            let lane = Rect::new(column.clip.x, strip.y, column.clip.width, strip.height);
+            Some((
+                column.id,
+                cell,
+                cell.intersection(lane)?.intersection(strip)?,
+            ))
         })
     }
     fn panel_area(&self, b: Rect) -> Rect {
@@ -109,7 +109,7 @@ impl GridState {
         let strip = self.filter_strip(b);
         if strip.height > 0. {
             scene.fill(strip, palette.header);
-            for (id, r) in self.filter_cells(b) {
+            for (id, cell, r) in self.filter_cells(b) {
                 let field = &self.source.fields[id.0 as usize];
                 let val = self
                     .source
@@ -119,21 +119,28 @@ impl GridState {
                     .map(String::as_str)
                     .unwrap_or("Фильтр…");
                 label(scene, r, format!("  {val}"));
+                palette.paint_cell_edges(scene, cell, r);
             }
         }
-        if self.selector_width(b) > 0. {
-            let r = self.selection_header(b);
-            scene.fill(r, palette.header);
-            label(scene, r, "  ☑".into());
+        let selector = self.selection_header(b);
+        if selector.width > 0. {
+            scene.fill(selector, palette.header);
+            label(scene, selector, "  ☑".into());
+            palette.paint_cell_edges(scene, selector, selector);
         }
         for row in &self.frame.semantics.rows {
             if self.source.projection.synthetic.contains_key(&row.key) {
                 continue;
             }
-            if self.selector_width(b) > 0. {
-                let r = Rect::new(b.x, row.bounds.y, self.selector_width(b), row.bounds.height);
+            if selector.width > 0. {
+                let r = Rect::new(selector.x, row.bounds.y, selector.width, row.bounds.height);
                 if let Some(r) = r.intersection(b) {
                     scene.fill(r, palette.header);
+                    let y = selector.y
+                        + selector.height
+                        + (self.model.record_top(row.index) - self.model.scroll_offset().1) as f32;
+                    let cell = Rect::new(r.x, y, r.width, self.model.record_height(row.index));
+                    palette.paint_cell_edges(scene, cell, r);
                     label(
                         scene,
                         r,
@@ -609,8 +616,8 @@ impl Controls {
             if *button == PointerButton::Primary {
                 let filter_field = g
                     .filter_cells(b)
-                    .find(|(_, r)| r.contains(p.x, p.y))
-                    .map(|(id, _)| g.source.fields[id.0 as usize].clone());
+                    .find(|(_, _, r)| r.contains(p.x, p.y))
+                    .map(|(id, _, _)| g.source.fields[id.0 as usize].clone());
                 if let Some(field) = filter_field {
                     self.open_grid_text_panel(id, TextTarget::Column(field))?;
                     return Ok(true);

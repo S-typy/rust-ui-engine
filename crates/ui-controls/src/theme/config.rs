@@ -320,6 +320,22 @@ impl ThemeConfig {
     }
 }
 
+impl Theme {
+    /// Opaque rule between table cells. Explicit palettes supply their own border color.
+    pub fn grid_line(self) -> Color {
+        if self
+            .configuration()
+            .is_some_and(|c| c.palette.is_some() || c.mode.is_high_contrast())
+        {
+            self.tokens().border
+        } else if self.is_dark() {
+            Color::rgb(117, 126, 136)
+        } else {
+            Color::rgb(146, 155, 165)
+        }
+    }
+}
+
 fn color(rgb: [u8; 3]) -> Color {
     Color::rgb(rgb[0], rgb[1], rgb[2])
 }
@@ -388,6 +404,43 @@ pub(super) fn contrast(a: Color, b: Color) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn grid_rules_remain_distinct_on_rows_headers_and_selection() {
+        for theme in [
+            Theme::FluentLight,
+            Theme::FluentDark,
+            Theme::Light,
+            Theme::Dark,
+            Theme::Compact,
+        ] {
+            let tokens = theme.tokens();
+            let line = theme.grid_line();
+            for surface in [
+                theme.chrome().card_surface,
+                tokens.canvas,
+                theme.chrome().control_hover,
+                tokens.selected,
+            ] {
+                assert!(
+                    contrast(line, surface) >= 2.,
+                    "insufficient grid contrast in {theme:?}"
+                );
+            }
+        }
+        for theme in [Theme::HighContrastLight, Theme::HighContrastDark] {
+            assert_eq!(theme.grid_line(), theme.tokens().border);
+        }
+        let config = ThemeConfig::new(ThemeMode::Light);
+        let palette = ThemePalette {
+            border: [60, 80, 100],
+            ..config.palette()
+        };
+        assert_eq!(
+            Theme::Configured(config.with_palette(palette).unwrap()).grid_line(),
+            Color::rgb(60, 80, 100)
+        );
+    }
     use crate::{
         ButtonChrome, ButtonStyle, ButtonVisualState, EditBoxStyle, EditBoxVisualState, IconSymbol,
     };

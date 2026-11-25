@@ -1703,7 +1703,7 @@ impl Controls {
                 header: chrome.control_hover,
                 text: theme.text,
                 muted: theme.muted,
-                line: chrome.divider,
+                line: self.theme.grid_line(),
                 selection: theme.selected,
                 selection_text: theme.text,
                 focus: theme.focus,

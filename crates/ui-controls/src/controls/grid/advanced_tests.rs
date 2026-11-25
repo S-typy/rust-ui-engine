@@ -1,6 +1,114 @@
 use super::*;
 
 #[test]
+fn table_rules_follow_stacked_fields_through_bands_headers_filters_and_selection() {
+    let (mut ui, id, _) = fixture();
+    ui.set_grid_presentation(
+        id,
+        GridPresentationSettings {
+            bands: vec![band("Fields", &["category", "amount"])],
+            stacked_fields: vec![("amount".into(), "category".into())],
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ui.set_grid_workflow_rows(id, true, true).unwrap();
+    ui.set_grid_selected_key(id, Some(0)).unwrap();
+    for theme in [
+        Theme::FluentLight,
+        Theme::FluentDark,
+        Theme::HighContrastDark,
+    ] {
+        ui.set_theme(theme).unwrap();
+        ui.update(Size::new(600., 400.)).unwrap();
+        let grid = &ui.grids[&id];
+        let frame = &grid.frame;
+        let row = frame
+            .semantics
+            .rows
+            .iter()
+            .find(|r| r.key == row_key(0))
+            .unwrap();
+        let cell = row
+            .cells
+            .iter()
+            .find(|c| c.column == ColumnId(1))
+            .unwrap()
+            .bounds;
+        let header = frame.header_bounds.unwrap();
+        let x = cell.x + cell.width - 8.;
+        let at = |x, y| {
+            ui.scene()
+                .rectangles
+                .iter()
+                .rev()
+                .find(|r| r.bounds.contains(x, y))
+                .unwrap()
+                .color
+        };
+        assert_eq!(at(x, cell.y - 0.5), theme.tokens().focus);
+        assert_eq!(at(x, cell.y + cell.height - 0.5), theme.grid_line());
+        assert_eq!(
+            at(cell.x + cell.width - 0.5, cell.y + 4.),
+            theme.grid_line()
+        );
+        assert_eq!(at(x, cell.y + 3.), theme.tokens().selected);
+        let filter_height = grid.filter_height(grid.bounds.unwrap());
+        for y in [
+            header.y - filter_height,      // band
+            header.y - filter_height / 2., // first filter
+            header.y,                      // second filter
+            header.y + header.height / 2., // first header
+            header.y + header.height,      // second header
+        ] {
+            assert_eq!(at(x, y - 0.5), theme.grid_line(), "rule at {y}");
+        }
+        let first = &frame.semantics.rows[0];
+        assert_eq!(
+            at(x, first.bounds.y + first.bounds.height / 2. - 0.5),
+            theme.grid_line()
+        );
+        assert_eq!(at(header.x - 0.5, cell.y + 3.), theme.grid_line());
+    }
+}
+
+#[test]
+fn merging_hides_only_edges_between_touching_equal_values() {
+    let (mut ui, id, _) = fixture();
+    let mut options = GridPresentationSettings {
+        merge_fields: vec!["category".into()],
+        ..Default::default()
+    };
+    for stacked in [false, true] {
+        if stacked {
+            options.stacked_fields = vec![("amount".into(), "category".into())];
+        }
+        ui.set_grid_presentation(id, options.clone()).unwrap();
+        ui.update(Size::new(600., 400.)).unwrap();
+        let frame = ui.grid_frame(id).unwrap();
+        let cell = frame.cell_bounds(row_key(i64::MAX), ColumnId(0)).unwrap();
+        let color_at = |x, y| {
+            frame
+                .scene
+                .rectangles
+                .iter()
+                .rev()
+                .find(|r| r.bounds.contains(x, y))
+                .unwrap()
+                .color
+        };
+        let seam_y = cell.y - 0.5;
+        let rule = Theme::FluentLight.grid_line();
+        assert_eq!(color_at(cell.x + cell.width - 0.5, seam_y), rule);
+        assert_eq!(color_at(cell.x + 8., seam_y) == rule, stacked);
+        assert_eq!(
+            frame.scene.texts.iter().filter(|t| t.text == "A").count(),
+            if stacked { 2 } else { 1 }
+        );
+    }
+}
+
+#[test]
 fn hierarchy_uses_prefixes_preserves_collapsed_branches_and_sorts_subtotals() {
     let (mut ui, id, source) = fixture();
     let mut settings = grouped();

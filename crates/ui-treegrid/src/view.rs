@@ -24,12 +24,30 @@ impl Default for GridPalette {
             header: Color::rgb(226, 233, 242),
             text: Color::rgb(28, 35, 46),
             muted: Color::rgb(100, 111, 127),
-            line: Color::rgb(211, 220, 232),
+            line: Color::rgb(146, 155, 165),
             selection: Color::rgb(208, 227, 250),
             selection_text: Color::rgb(20, 49, 85),
             focus: Color::rgb(45, 106, 190),
             error: Color::rgb(190, 45, 45),
         }
+    }
+}
+
+impl GridPalette {
+    /// Paint the trailing and bottom rules of a logical cell, clipped to its visible area.
+    pub fn paint_cell_edges(self, scene: &mut Scene, cell: Rect, clip: Rect) {
+        line(
+            scene,
+            Rect::new(cell.x + cell.width - 1., cell.y, 1., cell.height),
+            clip,
+            self.line,
+        );
+        line(
+            scene,
+            Rect::new(cell.x, cell.y + cell.height - 1., cell.width, 1.),
+            clip,
+            self.line,
+        );
     }
 }
 
@@ -254,12 +272,7 @@ impl TreeGridView {
                     kind: GridHitKind::ResizeColumn(column.id),
                 });
             }
-            line(
-                &mut frame.scene,
-                Rect::new(cell.x + cell.width - 1.0, cell.y, 1.0, cell.height),
-                clip,
-                grid.palette.line,
-            );
+            grid.palette.paint_cell_edges(&mut frame.scene, cell, clip);
         }
         if grid.pinned_width > 0.0 && grid.pinned_width < f64::from(bounds.width) {
             frame.scene.fill(
@@ -475,12 +488,7 @@ fn paint_row(
             },
             400,
         );
-        line(
-            &mut frame.scene,
-            Rect::new(cell.x + cell.width - 1.0, cell.y, 1.0, cell.height),
-            clip,
-            grid.palette.line,
-        );
+        grid.palette.paint_cell_edges(&mut frame.scene, cell, clip);
         if grid.focused == Some(key) && grid.focused_column == Some(column.id) {
             let color = if editor.is_some_and(|edit| edit.error.is_some()) {
                 grid.palette.error
@@ -498,12 +506,6 @@ fn paint_row(
             validation_error: editor.and_then(|edit| edit.error.clone()),
         });
     }
-    line(
-        &mut frame.scene,
-        Rect::new(bounds.x, bounds.y + bounds.height - 1.0, bounds.width, 1.0),
-        body,
-        grid.palette.line,
-    );
     frame.semantics.rows.push(semantics);
 }
 

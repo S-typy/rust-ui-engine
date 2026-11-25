@@ -810,7 +810,7 @@ impl Gallery {
             header: t.hover,
             text: t.text,
             muted: t.muted,
-            line: t.border,
+            line: theme.grid_line(),
             selection: t.selected,
             selection_text: t.text,
             focus: t.focus,

@@ -190,7 +190,8 @@ impl TreeGrid {
                 .then_some(self.scroll_x)
         }
     }
-    pub(crate) fn track_cell(&self, id: ColumnId, x: f32, y: f32, width: f32, height: f32) -> Rect {
+    /// Map a column track to its field's logical cell within a row, including stacked fields.
+    pub fn track_cell(&self, id: ColumnId, x: f32, y: f32, width: f32, height: f32) -> Rect {
         if let Some(s) = self.tracks.as_ref().and_then(|t| t.slots.get(&id)) {
             let h = height / s.rows as f32;
             Rect::new(x, y + s.row as f32 * h, width, h)

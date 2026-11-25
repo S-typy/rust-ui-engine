@@ -211,9 +211,15 @@ pub(super) fn decorate_cells(s: &SnapshotSource, frame: &mut GridFrame) {
             }
             if p.merge_fields.contains(field) {
                 let typed = s.table.value(data_key(row.key), field);
-                let repeat = previous.insert(cell.column, (row.index, typed, row.selected));
-                if repeat.is_some_and(|(i, val, selected)| {
-                    i + 1 == row.index && val == typed && selected == row.selected
+                let repeat = previous.insert(
+                    cell.column,
+                    (row.index, r.y + r.height, typed, row.selected),
+                );
+                if repeat.is_some_and(|(i, bottom, val, selected)| {
+                    i + 1 == row.index
+                        && (r.y - bottom).abs() < 0.01
+                        && val == typed
+                        && selected == row.selected
                 }) && !cell.editing
                 {
                     run.text.clear();

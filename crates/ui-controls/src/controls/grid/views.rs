@@ -431,16 +431,29 @@ impl PresentationPainter<'_> {
             }
         }
         for row in &mut frame.semantics.rows {
-            if let Some(synthetic) = self.source.projection.synthetic.get(&row.key)
-                && matches!(
-                    synthetic.identity,
-                    projection::SyntheticIdentity::Footer(..)
-                )
-            {
+            let Some(synthetic) = self.source.projection.synthetic.get(&row.key) else {
+                continue;
+            };
+            let row_y = bounds.y
+                + self.model.config().header_height
+                + (self.model.record_top(row.index) - self.model.scroll_offset().1) as f32;
+            let row_rect = Rect::new(
+                bounds.x,
+                row_y,
+                bounds.width,
+                self.model.record_height(row.index),
+            );
+            if matches!(
+                synthetic.identity,
+                projection::SyntheticIdentity::Footer(..)
+            ) {
                 let Some(rect) = row.bounds.intersection(bounds) else {
                     continue;
                 };
                 frame.scene.fill(rect, palette.header);
+                if options.view == GridViewMode::Table {
+                    palette.paint_cell_edges(&mut frame.scene, row_rect, rect);
+                }
                 let area = Rect::new(rect.x + 6., rect.y, (rect.width - 12.).max(0.), rect.height);
                 draw_text(
                     &mut frame.scene,
@@ -461,18 +474,19 @@ impl PresentationPainter<'_> {
                 }
                 continue;
             }
-            if let Some(synthetic) = self.source.projection.synthetic.get(&row.key)
-                && matches!(
-                    synthetic.identity,
-                    projection::SyntheticIdentity::Group(_)
-                        | projection::SyntheticIdentity::Branch(_, _)
-                )
-            {
+            if matches!(
+                synthetic.identity,
+                projection::SyntheticIdentity::Group(_)
+                    | projection::SyntheticIdentity::Branch(_, _)
+            ) {
                 let rect = row
                     .bounds
                     .intersection(bounds)
                     .unwrap_or(Rect::new(0.0, 0.0, 0.0, 0.0));
                 frame.scene.fill(rect, palette.header);
+                if options.view == GridViewMode::Table {
+                    palette.paint_cell_edges(&mut frame.scene, row_rect, rect);
+                }
                 // This full-width header replaces the base row's disclosure
                 // geometry, including when its original tree column is hidden.
                 frame
@@ -489,9 +503,6 @@ impl PresentationPainter<'_> {
                     bounds: disclosure,
                     kind: GridHitKind::Expander(row.key),
                 });
-                let row_y = bounds.y
-                    + self.model.config().header_height
-                    + (self.model.record_top(row.index) - self.model.scroll_offset().1) as f32;
                 let icon = Rect::new(
                     rect.x + indent + 5.0,
                     row_y + (self.model.config().row_height - 16.0) * 0.5,
@@ -589,7 +600,7 @@ impl PresentationPainter<'_> {
                     })
                     .collect();
                 columns.sort_by(|a, b| a.clip.x.total_cmp(&b.clip.x));
-                let mut fragments: Vec<(Rect, (bool, bool))> = Vec::new();
+                let mut fragments: Vec<(Rect, (bool, bool), f32)> = Vec::new();
                 for column in columns {
                     let Some(visible) = column.bounds.intersection(column.clip) else {
                         continue;
@@ -609,17 +620,21 @@ impl PresentationPainter<'_> {
                             .right_pinned_fields
                             .contains(&self.source.fields[column.id.0 as usize]),
                     );
-                    if let Some((last, pinned)) = fragments.last_mut()
+                    let field_end = column.bounds.x + column.bounds.width;
+                    if let Some((last, pinned, end)) = fragments.last_mut()
                         && *pinned == zone
                         && rect.x <= last.x + last.width + 0.5
                     {
                         last.width = last.width.max(rect.x + rect.width - last.x);
+                        *end = end.max(field_end);
                     } else {
-                        fragments.push((rect, zone));
+                        fragments.push((rect, zone, field_end));
                     }
                 }
-                for (rect, _) in fragments {
+                for (rect, _, end) in fragments {
                     scene.fill(rect, palette.header);
+                    let band_cell = Rect::new(rect.x, rect.y, end - rect.x, 24.);
+                    palette.paint_cell_edges(scene, band_cell, rect);
                     let text = Rect::new(
                         rect.x + 6.0,
                         rect.y,
