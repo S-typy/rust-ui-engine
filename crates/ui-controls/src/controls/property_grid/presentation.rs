@@ -144,6 +144,7 @@ pub(in crate::controls) enum InspectorPart {
     },
     Viewport,
     Value(ValueMark),
+    BooleanCell,
     ReadOnlyText {
         host: WidgetId,
     },
@@ -476,7 +477,10 @@ impl Controls {
         let chrome = self.theme.chrome();
         let line = chrome.divider;
         match part {
-            InspectorPart::Value(_) | InspectorPart::Name | InspectorPart::ReadOnlyText { .. } => {
+            InspectorPart::Value(_)
+            | InspectorPart::BooleanCell
+            | InspectorPart::Name
+            | InspectorPart::ReadOnlyText { .. } => {
                 return Ok(false);
             }
             InspectorPart::Viewport => {

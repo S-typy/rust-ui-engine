@@ -39,6 +39,11 @@ pub trait PropertyCellEditor {
     fn update(&mut self, _ui: &mut Controls) -> Result<(), ControlError> {
         Ok(())
     }
+    /// Consume the last explicitly accepted popup value. The inspector validates and
+    /// posts it for a single object while multi-object sessions retain their draft.
+    fn take_popup_acceptance(&mut self, _ui: &mut Controls) -> Option<CellValue> {
+        None
+    }
     /// Keep the real editor visible in a uniform row before entering edit mode.
     fn inline(&self) -> bool {
         false
@@ -133,6 +138,7 @@ struct Property {
     name_label: WidgetId,
     owner: WidgetId,
     editor: WidgetId,
+    inplace_text: bool,
     active: bool,
     value_label: Option<WidgetId>,
     measure_value_width: bool,
@@ -666,6 +672,21 @@ impl PropertyGrid {
                     },
                 )?;
                 ui.set_button_chrome(edit, ButtonChrome::Flat)?;
+                let inplace_text = objects.len() == 1
+                    && descriptor.preview == PropertyPreview::Auto
+                    && descriptor.choices.is_empty()
+                    && (family.is_none()
+                        && matches!(
+                            recipe,
+                            DataFormEditorFactory::Text(_) | DataFormEditorFactory::Numeric(_)
+                        )
+                        || matches!(
+                            descriptor.metadata.editor.as_str(),
+                            "NumericText" | "MaskedText" | "ButtonText" | "Password"
+                        ));
+                if inplace_text {
+                    style_inplace_text(ui, owner, editor, edit)?;
+                }
                 let apply = action_icon(
                     ui,
                     row,
@@ -709,6 +730,7 @@ impl PropertyGrid {
                     name_label,
                     owner,
                     editor,
+                    inplace_text,
                     active: false,
                     value_label: None,
                     measure_value_width: false,
@@ -874,6 +896,7 @@ impl PropertyGrid {
                     Some(InspectorPart::ReadOnlyText { host: p.host });
             }
         }
+        p.inplace_text = false;
         p.value_label = slot.map(|(id, _)| id);
         ui.edit_props(p.edit, |n| {
             n.style.kind = LayoutKind::Grid;
@@ -1014,7 +1037,8 @@ impl PropertyGrid {
                 .is_some_and(|node| node.props.focusable)
         {
             match ui.runtime.apply(Mutation::Focus(Some(p.editor))) {
-                Ok(()) | Err(RuntimeError::IneligibleFocus(_)) => {}
+                Ok(()) => self.last_focus = Some(p.editor),
+                Err(RuntimeError::IneligibleFocus(_)) => {}
                 Err(error) => return Err(error.into()),
             }
         }
@@ -1183,6 +1207,46 @@ impl PropertyGrid {
         self.error = Some(message.clone());
         Ok(PropertyCommit::Rejected(message))
     }
+    fn leave_text_cell(
+        &mut self,
+        ui: &mut Controls,
+        previous: Option<WidgetId>,
+        next: Option<WidgetId>,
+    ) -> Result<bool, ControlError> {
+        let Some(previous) = previous else {
+            return Ok(false);
+        };
+        let Some(index) = self.properties.iter().position(|p| {
+            p.active
+                && p.inplace_text
+                && ui.flyout_descendant(previous, p.host)
+                && !next.is_some_and(|id| ui.flyout_descendant(id, p.host))
+        }) else {
+            return Ok(false);
+        };
+        let p = &self.properties[index];
+        if ui
+            .document(p.editor)
+            .is_some_and(|d| d.composition().is_some())
+            || ui.password_composition_active(p.editor) == Some(true)
+        {
+            return Ok(false);
+        }
+        let name = p.schema.name.clone();
+        if read(ui, p).is_ok_and(|v| Some(&v) == p.baseline.first()) {
+            self.cancel(ui, &name)?;
+        } else if matches!(
+            self.commit(ui, &name)?,
+            PropertyCommit::Pending | PropertyCommit::Rejected(_)
+        ) {
+            // A failed post keeps its draft for the next visit. Repainting or
+            // changing focus again must not retry a rejected write.
+            let p = &mut self.properties[index];
+            p.active = false;
+            present(ui, p)?;
+        }
+        Ok(true)
+    }
     /// Refresh from the current source snapshot only; no adapter I/O. Dirty
     /// properties keep their baseline and draft and report conflicts. Refresh
     /// applies per property, not as an all-property UI transaction: if a later
@@ -1245,9 +1309,24 @@ impl PropertyGrid {
     /// Consumes only this inspector's action buttons; other activations remain.
     pub fn update(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
         self.check(ui)?;
-        for p in &mut self.properties {
+        let focus = ui.runtime.focused();
+        let mut posted = !ui.popup_open()
+            && ui.window_focused
+            && self.leave_text_cell(ui, self.last_focus, focus)?;
+        for i in 0..self.properties.len() {
+            let p = &mut self.properties[i];
             if let Some(editor) = &mut p.specialized {
                 editor.update(ui)?;
+                if let Some(value) = editor.take_popup_acceptance(ui)
+                    && self.objects.len() == 1
+                    && p.active
+                    && !p.descriptor.metadata.read_only
+                    && read(ui, p).is_ok_and(|draft| draft == value)
+                {
+                    let name = p.schema.name.clone();
+                    self.commit(ui, &name)?;
+                    posted = true;
+                }
             }
         }
         if let Some(focus) = ui.runtime.focused()
@@ -1264,16 +1343,36 @@ impl PropertyGrid {
         }
         let mut view_mode = self.flat;
         let mut actions = Vec::new();
+        #[derive(Clone, Copy)]
+        enum RowAction {
+            Edit,
+            Apply,
+            Reset,
+            Toggle,
+        }
+        let controls = &ui.controls;
         ui.activated.retain(|id| {
             if *id == self.categorized || *id == self.sorted {
                 view_mode = *id == self.sorted;
                 return false;
             }
             if let Some((i, action)) = self.properties.iter().enumerate().find_map(|(i, p)| {
-                [(p.edit, 0), (p.apply, 1), (p.reset, 2)]
-                    .iter()
-                    .find(|(button, _)| button == id)
-                    .map(|(_, a)| (i, *a))
+                if *id == p.owner
+                    && matches!(
+                        controls.get(id)?.inspector_part,
+                        Some(InspectorPart::BooleanCell)
+                    )
+                {
+                    return Some((i, RowAction::Toggle));
+                }
+                [
+                    (p.edit, RowAction::Edit),
+                    (p.apply, RowAction::Apply),
+                    (p.reset, RowAction::Reset),
+                ]
+                .iter()
+                .find(|(button, _)| button == id)
+                .map(|(_, a)| (i, *a))
             }) {
                 actions.push((i, action));
                 false
@@ -1298,12 +1397,16 @@ impl PropertyGrid {
         for (i, action) in actions {
             let name = self.properties[i].schema.name.clone();
             let result = match action {
-                0 if self.properties[i].descriptor.metadata.read_only => {
+                RowAction::Edit if self.properties[i].descriptor.metadata.read_only => {
                     self.select(ui, Some(i)).map(|_| ())
                 }
-                0 => self.begin_edit(ui, &name).map(|_| ()),
-                1 => self.commit(ui, &name).map(|_| ()),
-                _ => self.reset(ui, &name).map(|_| ()),
+                RowAction::Edit => self.begin_edit(ui, &name).map(|_| ()),
+                RowAction::Apply => self.commit(ui, &name).map(|_| ()),
+                RowAction::Toggle => {
+                    self.activate(ui, i)?;
+                    self.commit(ui, &name).map(|_| ())
+                }
+                RowAction::Reset => self.reset(ui, &name).map(|_| ()),
             };
             if let Err(e) = result {
                 let _ = self.reject(ui, &e.to_string())?;
@@ -1319,9 +1422,61 @@ impl PropertyGrid {
         let selection_changed = self.sync_selection(ui)?;
         self.last_focus = ui.runtime.focused();
         self.update_scroll_extent(ui)?;
-        Ok(changed || selection_changed)
+        Ok(changed || selection_changed || posted)
     }
-    /// Optional pre-dispatch Escape route: composition first, then this draft.
+    fn focused_text_cell(&self, ui: &Controls) -> Option<&Property> {
+        let focus = ui.runtime.focused()?;
+        if !ui.window_focused
+            || ui.popup_open()
+            || ui.runtime.drag_session().is_some()
+            || !ui.is_enabled(focus)
+        {
+            return None;
+        }
+        self.properties.iter().find(|p| {
+            p.edit == focus && p.inplace_text && !p.active && !p.descriptor.metadata.read_only
+        })
+    }
+
+    /// Stable target for native text services while a value's display cell has
+    /// focus. For password targets the host must apply its protected-input policy
+    /// before logging keys or offering the OS a composition context.
+    pub fn pending_text_editor(&self, ui: &Controls) -> Option<WidgetId> {
+        self.focused_text_cell(ui).map(|p| p.editor)
+    }
+
+    /// Open a focused display cell for printable text or IME composition and
+    /// select its contents. The host still delivers the original input once.
+    pub fn prepare_text_input(
+        &mut self,
+        ui: &mut Controls,
+        text: &str,
+    ) -> Result<bool, ControlError> {
+        if text.is_empty()
+            || text.chars().any(char::is_control)
+            || ui.suppressed_key_text.as_deref() == Some(text)
+        {
+            return Ok(false);
+        }
+        let Some(p) = self.focused_text_cell(ui) else {
+            return Ok(false);
+        };
+        let name = p.schema.name.clone();
+        let editor = p.editor;
+        let null = p.null.filter(|id| ui.checked(*id) == Some(true));
+        self.begin_edit(ui, &name)?;
+        if let Some(null) = null {
+            ui.set_checked(null, false)?;
+            let i = self.index(&name)?;
+            present(ui, &mut self.properties[i])?;
+            ui.runtime.apply(Mutation::Focus(Some(editor)))?;
+            self.last_focus = Some(editor);
+        }
+        select_cell_text(ui, editor)?;
+        Ok(true)
+    }
+
+    /// Route input before Controls dispatch so an opening click reaches the editor itself.
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
         if let InputEvent::PointerDown {
             position,
@@ -1329,22 +1484,34 @@ impl PropertyGrid {
             ..
         } = event
             && !ui.popup_open()
-            && let Some(target) = ui.runtime.hit_test(*position)
-            && let Some(index) = self
-                .properties
-                .iter()
-                .position(|p| ui.flyout_descendant(target, p.row))
         {
-            let p = &self.properties[index];
-            if !p.active
-                && p.editing
-                && !p.descriptor.metadata.read_only
-                && p.specialized.as_ref().is_some_and(|e| e.inline())
-                && ui.flyout_descendant(target, p.owner)
+            let target = ui.runtime.hit_test(*position);
+            let focus = ui.runtime.focused();
+            self.leave_text_cell(ui, focus, target)?;
+            if let Some(target) = target
+                && let Some(index) = self
+                    .properties
+                    .iter()
+                    .position(|p| ui.flyout_descendant(target, p.row))
             {
-                self.activate(ui, index)?;
-            } else {
-                self.select(ui, Some(index))?;
+                let p = &self.properties[index];
+                if !p.active
+                    && p.inplace_text
+                    && !p.descriptor.metadata.read_only
+                    && target == p.edit
+                {
+                    let name = p.schema.name.clone();
+                    self.begin_edit(ui, &name)?;
+                } else if !p.active
+                    && p.editing
+                    && !p.descriptor.metadata.read_only
+                    && p.specialized.as_ref().is_some_and(|e| e.inline())
+                    && ui.flyout_descendant(target, p.owner)
+                {
+                    self.activate(ui, index)?;
+                } else {
+                    self.select(ui, Some(index))?;
+                }
             }
         }
         let InputEvent::KeyDown {
@@ -1355,15 +1522,28 @@ impl PropertyGrid {
         else {
             return Ok(false);
         };
-        if !matches!(key, Key::Escape | Key::Enter)
-            || *modifiers != Modifiers::default()
-            || ui.popup_open()
-        {
+        if *modifiers != Modifiers::default() || ui.popup_open() {
             return Ok(false);
         }
         let Some(id) = ui.runtime.focused() else {
             return Ok(false);
         };
+        if matches!(key, Key::F2 | Key::Enter)
+            && let Some(p) = self.properties.iter().find(|p| {
+                p.edit == id && p.inplace_text && !p.active && !p.descriptor.metadata.read_only
+            })
+        {
+            let name = p.schema.name.clone();
+            let editor = p.editor;
+            self.begin_edit(ui, &name)?;
+            if ui.runtime.focused() == Some(editor) {
+                select_cell_text(ui, editor)?;
+            }
+            return Ok(true);
+        }
+        if !matches!(key, Key::Escape | Key::Enter) {
+            return Ok(false);
+        }
         let Some(p) = self
             .properties
             .iter()
@@ -1371,6 +1551,15 @@ impl PropertyGrid {
         else {
             return Ok(false);
         };
+        if *key == Key::Escape
+            && ui
+                .captured_slider_drag()
+                .is_some_and(|owner| ui.flyout_descendant(owner, p.host))
+        {
+            // The slider first restores the draft at pointer-down. A later
+            // Escape in this cell can then cancel the property transaction.
+            return Ok(false);
+        }
         if *key == Key::Enter
             && (p.descriptor.metadata.editor == "Memo"
                 || id != p.editor
@@ -1400,6 +1589,59 @@ impl PropertyGrid {
         Ok(true)
     }
 }
+fn style_inplace_text(
+    ui: &mut Controls,
+    owner: WidgetId,
+    editor: WidgetId,
+    display: WidgetId,
+) -> Result<(), ControlError> {
+    let padding = Edges {
+        left: 8.,
+        right: 8.,
+        top: 3.,
+        bottom: 3.,
+    };
+    ui.set_button_style(
+        display,
+        ButtonStyle {
+            padding: Some(padding),
+            corner_radius: Some(0.),
+            ..Default::default()
+        },
+    )?;
+    let style = EditBoxStyle {
+        padding: Some(padding),
+        corner_radius: Some(0.),
+        border_width: Some(0.),
+        ..Default::default()
+    };
+    if ui.is_password_box(editor) {
+        // Native accessibility clients must already protect keyboard echo when
+        // the first character activates the as-yet passive value.
+        ui.set_role(display, Role::PasswordBox);
+        ui.set_password_style(editor, style)?;
+    } else {
+        ui.set_edit_box_style(editor, style)?;
+    }
+    // The inspector owns the line height, including composite spin/button editors.
+    ui.rich.automatic_heights.remove(&owner);
+    ui.edit_props(owner, |n| {
+        n.style.height = Length::Px(28.);
+        n.style.vertical_alignment = Some(Align::Center);
+    })
+}
+fn select_cell_text(ui: &mut Controls, editor: WidgetId) -> Result<(), ControlError> {
+    if let Some(doc) = ui.document(editor) {
+        let length = doc.text().len();
+        ui.set_editor_selection(editor, 0, length)?;
+    } else {
+        ui.select_password_contents(editor)?;
+    }
+    // The platform queries the candidate-window caret immediately after the
+    // input event, before the next paint. Publish the new editor geometry now.
+    ui.update(ui.viewport)?;
+    Ok(())
+}
 fn button_style(width: f32) -> LayoutStyle {
     LayoutStyle {
         width: Length::Px(width),
@@ -1424,5 +1666,132 @@ fn bounded_error(message: &str) -> String {
         "Property change was rejected".into()
     } else {
         result
+    }
+}
+
+#[cfg(test)]
+mod inplace_text_tests {
+    use super::*;
+    use rust_desktop_ui_data::{CollectionAdapter, DataRow, DataSource, DataTable, FieldType};
+    use std::{cell::RefCell, rc::Rc};
+
+    fn dispatch(ui: &mut Controls, grid: &mut PropertyGrid, event: InputEvent) {
+        if !grid.input(ui, &event).unwrap() {
+            ui.dispatch(event).unwrap();
+        }
+        grid.update(ui).unwrap();
+    }
+
+    #[test]
+    fn pointer_caret_focus_post_cancel_and_rejected_draft_use_the_same_value_cell() {
+        let value = |s: &str| CellValue::Text(s.into());
+        let table = DataTable::new(
+            TableSchema::new(vec![
+                FieldSchema::new("title", FieldType::Text),
+                FieldSchema::new("code", FieldType::Text),
+            ])
+            .unwrap(),
+            vec![DataRow::new(1, vec![value("Atlas"), value("12")])],
+        )
+        .unwrap();
+        let source = Rc::new(RefCell::new(
+            DataSource::new(CollectionAdapter::new(table)).unwrap(),
+        ));
+        let mut code = PropertyDescriptor::new("code");
+        code.metadata.editor = "NumericText".into();
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let root = ui.root();
+        let mut grid = PropertyGrid::mount(
+            &mut ui,
+            root,
+            source.clone(),
+            &[1],
+            PropertyGridSettings {
+                properties: vec![PropertyDescriptor::new("title"), code],
+                ..Default::default()
+            },
+            &DataFormFactories::default(),
+            LayoutStyle {
+                width: Length::Px(540.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let size = Size::new(600., 360.);
+        ui.update(size).unwrap();
+        let title = &grid.properties[0];
+        let (before, name, row) = (
+            ui.runtime.bounds(title.edit).unwrap(),
+            ui.runtime.bounds(title.name_label).unwrap(),
+            ui.runtime.bounds(title.row).unwrap(),
+        );
+        let position = Point {
+            x: before.x + 2.,
+            y: before.y + before.height * 0.5,
+        };
+        let button = rust_desktop_ui_core::PointerButton::Primary;
+        dispatch(
+            &mut ui,
+            &mut grid,
+            InputEvent::PointerDown {
+                position,
+                button,
+                modifiers: Modifiers::default(),
+            },
+        );
+        dispatch(
+            &mut ui,
+            &mut grid,
+            InputEvent::PointerUp {
+                position,
+                button,
+                modifiers: Modifiers::default(),
+            },
+        );
+        let title = &grid.properties[0];
+        assert_eq!(ui.runtime.focused(), Some(title.editor));
+        assert_eq!(ui.runtime.bounds(title.editor), Some(before));
+        assert_eq!(ui.runtime.bounds(title.name_label), Some(name));
+        assert_eq!(ui.runtime.bounds(title.row), Some(row));
+        assert!(ui.runtime.tree().node(title.apply).unwrap().props.collapsed);
+        ui.text_input("A").unwrap();
+        assert_eq!(grid.draft(&ui, "title").unwrap(), Some(value("AAtlas")));
+        assert_eq!(source.borrow().value(1, "title"), Some(&value("Atlas")));
+        let code_button = grid.properties[1].edit;
+        ui.runtime
+            .apply(Mutation::Focus(Some(code_button)))
+            .unwrap();
+        grid.update(&mut ui).unwrap();
+        assert_eq!(source.borrow().value(1, "title"), Some(&value("AAtlas")));
+        assert_eq!(grid.take_changes().len(), 1);
+
+        let key = |key| InputEvent::KeyDown {
+            key,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+        dispatch(&mut ui, &mut grid, key(Key::F2));
+        let editor = grid.properties[1].editor;
+        assert_eq!(ui.runtime.focused(), Some(editor));
+        ui.set_text(editor, "invalid").unwrap();
+        ui.runtime
+            .apply(Mutation::Focus(Some(grid.search)))
+            .unwrap();
+        grid.update(&mut ui).unwrap();
+        assert!(grid.error().is_some());
+        assert_eq!(source.borrow().value(1, "code"), Some(&value("12")));
+        ui.runtime
+            .apply(Mutation::Focus(Some(code_button)))
+            .unwrap();
+        dispatch(&mut ui, &mut grid, key(Key::F2));
+        assert_eq!(ui.document(editor).unwrap().text(), "invalid");
+        dispatch(&mut ui, &mut grid, key(Key::Escape));
+        assert_eq!(ui.document(editor).unwrap().text(), "12");
+        assert_eq!(ui.runtime.focused(), Some(code_button));
+        dispatch(&mut ui, &mut grid, key(Key::Enter));
+        ui.set_text(editor, "23").unwrap();
+        dispatch(&mut ui, &mut grid, key(Key::Enter));
+        assert_eq!(source.borrow().value(1, "code"), Some(&value("23")));
+        assert_eq!(grid.take_changes().len(), 1);
     }
 }

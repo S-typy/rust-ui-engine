@@ -537,6 +537,108 @@ mod tests {
     }
 
     #[test]
+    fn property_grid_escape_cancels_captured_range_drag_before_property_draft() {
+        use rust_desktop_ui_data::{CollectionAdapter, DataRow, DataSource, DataTable};
+        use std::{cell::RefCell, rc::Rc};
+
+        let viewport = Size::new(760., 350.);
+        let initial = CellValue::Text("10..70".into());
+        let table = DataTable::new(
+            TableSchema::new(vec![FieldSchema::new("range", FieldType::Text)]).unwrap(),
+            vec![DataRow::new(1, vec![initial.clone()])],
+        )
+        .unwrap();
+        let source = Rc::new(RefCell::new(
+            DataSource::new(CollectionAdapter::new(table)).unwrap(),
+        ));
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let root = ui.root();
+        let mut descriptor = PropertyDescriptor::new("range");
+        descriptor.metadata.editor = "RangeSlider".into();
+        let mut grid = PropertyGrid::mount(
+            &mut ui,
+            root,
+            source.clone(),
+            &[1],
+            PropertyGridSettings {
+                properties: vec![descriptor],
+                ..Default::default()
+            },
+            &DataFormFactories::default(),
+            LayoutStyle {
+                width: Length::Px(720.),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        ui.update(viewport).unwrap();
+        let slider = grid.property("range").unwrap();
+        let lower = ui.range_slider_thumbs(slider).unwrap().0;
+        let locate = |ui: &Controls, ratio: f32| {
+            let track = ui.runtime.bounds(slider).unwrap();
+            let diameter = ui.runtime.bounds(lower).unwrap().width;
+            Point::new(
+                track.x + diameter * 0.5 + (track.width - diameter) * ratio,
+                track.y + track.height * 0.5,
+            )
+        };
+        let route = |grid: &mut PropertyGrid, ui: &mut Controls, event: InputEvent| {
+            let consumed = grid.input(ui, &event).unwrap();
+            if !consumed {
+                ui.dispatch(event).unwrap();
+            }
+            grid.update(ui).unwrap();
+            ui.update(viewport).unwrap();
+            consumed
+        };
+        let down = |position| InputEvent::PointerDown {
+            position,
+            button: rust_desktop_ui_core::PointerButton::Primary,
+            modifiers: Modifiers::default(),
+        };
+        let escape = InputEvent::KeyDown {
+            key: Key::Escape,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        };
+        let initial_point = locate(&ui, 0.4);
+        route(&mut grid, &mut ui, down(initial_point));
+        assert_eq!(ui.runtime.captured(), Some(slider));
+        let ten_units = locate(&ui, 0.1).x - locate(&ui, 0.).x;
+        let release = Point::new(initial_point.x + ten_units, initial_point.y);
+        route(
+            &mut grid,
+            &mut ui,
+            InputEvent::PointerUp {
+                position: release,
+                button: rust_desktop_ui_core::PointerButton::Primary,
+                modifiers: Modifiers::default(),
+            },
+        );
+        assert_eq!(ui.runtime.captured(), None);
+        let prepared = CellValue::Text("20..80".into());
+        assert_eq!(grid.draft(&ui, "range").unwrap().as_ref(), Some(&prepared));
+
+        let next = locate(&ui, 0.5);
+        route(&mut grid, &mut ui, down(next));
+        route(
+            &mut grid,
+            &mut ui,
+            InputEvent::PointerMoved {
+                position: Point::new(next.x + ten_units, next.y),
+            },
+        );
+        assert_eq!(ui.range_slider_values(slider), Some((30., 90.)));
+        assert!(!route(&mut grid, &mut ui, escape.clone()));
+        assert_eq!(ui.runtime.captured(), None);
+        assert_eq!(grid.draft(&ui, "range").unwrap().as_ref(), Some(&prepared));
+        assert!(route(&mut grid, &mut ui, escape));
+        assert_eq!(grid.draft(&ui, "range").unwrap().as_ref(), Some(&initial));
+        assert_eq!(source.borrow().value(1, "range"), Some(&initial));
+        assert!(grid.take_changes().is_empty());
+    }
+
+    #[test]
     fn barcode_shows_real_encoded_geometry_and_never_shows_a_stale_symbol_for_an_invalid_draft() {
         let mut ui = Controls::new(Theme::FluentLight).unwrap();
         let mut editor = mount_editor(

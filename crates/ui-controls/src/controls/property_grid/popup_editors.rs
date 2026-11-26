@@ -103,6 +103,19 @@ pub(super) fn mount(
             } else {
                 ui.color_edit(host, name, solid(initial.as_ref()), settings, row_style())?
             };
+            ui.set_button_chrome(parts.button, ButtonChrome::Flat)?;
+            ui.set_edit_box_style(
+                parts.editor,
+                EditBoxStyle {
+                    normal: crate::EditBoxAppearance {
+                        background: Some(Srgba8::TRANSPARENT.into()),
+                        ..Default::default()
+                    },
+                    corner_radius: Some(0.),
+                    border_width: Some(0.),
+                    ..Default::default()
+                },
+            )?;
             if brush {
                 ui.stretch_brush_preview(parts)?;
             }
@@ -223,6 +236,19 @@ struct PaintEditor {
     original: RefCell<(CellValue, Option<BrushValue>)>,
 }
 
+impl PaintEditor {
+    fn property_value(&self, value: Option<&BrushValue>) -> CellValue {
+        let original = self.original.borrow();
+        if original.1.as_ref() == value {
+            original.0.clone()
+        } else {
+            value
+                .map(encode_brush)
+                .map_or(CellValue::Null, CellValue::Text)
+        }
+    }
+}
+
 impl InspectorEditor for PaintEditor {
     fn owner(&self) -> WidgetId {
         self.parts.container
@@ -262,15 +288,11 @@ impl InspectorEditor for PaintEditor {
                     .text(),
             )?
         };
-        let original = self.original.borrow();
-        Ok(if original.1 == value {
-            original.0.clone()
-        } else {
-            value
-                .as_ref()
-                .map(encode_brush)
-                .map_or(CellValue::Null, CellValue::Text)
-        })
+        Ok(self.property_value(value.as_ref()))
+    }
+    fn take_popup_acceptance(&mut self, ui: &mut Controls) -> Option<CellValue> {
+        let entry = ui.color_editors.entries.get_mut(&self.parts.container)?;
+        std::mem::take(&mut entry.popup_accepted).then(|| self.property_value(entry.value.as_ref()))
     }
     fn set_active(&self, ui: &mut Controls, active: bool) -> Result<(), ControlError> {
         if !active && ui.color_popup_is_open(self.owner()) {

@@ -122,9 +122,14 @@ struct RangeState {
 #[derive(Clone, Copy)]
 struct SliderDrag {
     owner: WidgetId,
-    upper: bool,
+    part: SliderDragPart,
     lower_value: f64,
     upper_value: f64,
+}
+#[derive(Clone, Copy)]
+enum SliderDragPart {
+    Thumb { upper: bool },
+    Interval { anchor: f64 },
 }
 #[derive(Default)]
 pub(super) struct Sliders {
@@ -586,6 +591,10 @@ impl Controls {
         }
         Ok(())
     }
+    pub(super) fn captured_slider_drag(&self) -> Option<WidgetId> {
+        let owner = self.sliders.drag?.owner;
+        (self.runtime.captured() == Some(owner)).then_some(owner)
+    }
     fn slider_point_value(&self, owner: WidgetId, point: Point) -> Option<f64> {
         if !point.is_finite() {
             return None;
@@ -616,6 +625,50 @@ impl Controls {
         self.runtime.apply(Mutation::Focus(Some(id)))?;
         Ok(())
     }
+    fn move_slider_drag(&mut self, drag: SliderDrag, value: f64) -> Result<(), ControlError> {
+        match drag.part {
+            SliderDragPart::Thumb { upper } => {
+                let upper = self.set_thumb_value(drag.owner, upper, value, true)?;
+                self.sliders.drag.as_mut().unwrap().part = SliderDragPart::Thumb { upper };
+                self.focus_slider_thumb(drag.owner, upper)?;
+            }
+            SliderDragPart::Interval { anchor } => {
+                let state = self.sliders.items.get_mut(&drag.owner).unwrap();
+                let settings = state.settings;
+                let range = state.range.as_mut().unwrap();
+                let min_shift = settings.minimum - drag.lower_value;
+                let max_shift = settings.maximum - drag.upper_value;
+                let shift = value - anchor;
+                let step = interaction_step(settings);
+                let steps = shift / step;
+                // Snap the translation from the grabbed pair. Programmatic
+                // endpoints can be off-grid and need to retain their distance.
+                let shift = if shift > min_shift && shift < max_shift && steps.is_finite() {
+                    steps.round() * step
+                } else {
+                    shift
+                };
+                let width = drag.upper_value - drag.lower_value;
+                (state.settings.value, range.upper) = if shift == 0.0 {
+                    (drag.lower_value, drag.upper_value)
+                } else if shift <= min_shift {
+                    (
+                        settings.minimum,
+                        (settings.minimum + width).min(settings.maximum),
+                    )
+                } else if shift >= max_shift {
+                    (
+                        (settings.maximum - width).max(settings.minimum),
+                        settings.maximum,
+                    )
+                } else {
+                    (drag.lower_value + shift, drag.upper_value + shift)
+                };
+                self.scene_dirty = true;
+            }
+        }
+        Ok(())
+    }
     pub(super) fn slider_before_input(&mut self, event: &InputEvent) -> Result<bool, ControlError> {
         if let Some(drag) = self.sliders.drag {
             if matches!(
@@ -637,19 +690,21 @@ impl Controls {
             }
             if let InputEvent::PointerMoved { position } = event {
                 if let Some(value) = self.slider_point_value(drag.owner, *position) {
-                    let upper = self.set_thumb_value(drag.owner, drag.upper, value, true)?;
-                    self.sliders.drag.as_mut().unwrap().upper = upper;
-                    self.focus_slider_thumb(drag.owner, upper)?;
+                    self.move_slider_drag(drag, value)?;
                 }
                 return Ok(true);
             }
-            if matches!(
-                event,
-                InputEvent::PointerUp {
-                    button: PointerButton::Primary,
-                    ..
+            if let InputEvent::PointerUp {
+                button: PointerButton::Primary,
+                position,
+                ..
+            } = event
+            {
+                if matches!(drag.part, SliderDragPart::Interval { .. })
+                    && let Some(value) = self.slider_point_value(drag.owner, *position)
+                {
+                    self.move_slider_drag(drag, value)?;
                 }
-            ) {
                 self.sliders.drag = None;
                 self.runtime.apply(Mutation::CapturePointer(None))?;
                 self.scene_dirty = true;
@@ -680,16 +735,38 @@ impl Controls {
                     .range
                     .is_some_and(|r| (value - r.upper).abs() < (value - state.settings.value).abs())
             });
-            self.sliders.drag = Some(SliderDrag {
+            let bounds = self.runtime.bounds(owner).unwrap();
+            let track_distance = match state.settings.axis {
+                Axis::Horizontal => position.y - (bounds.y + bounds.height * 0.5),
+                Axis::Vertical => position.x - (bounds.x + bounds.width * 0.5),
+            };
+            let grabs_interval = thumb.is_none()
+                && track_distance.abs() <= thumb_size(self.theme) * 0.25
+                && state
+                    .range
+                    .is_some_and(|range| value > state.settings.value && value < range.upper);
+            let part = if grabs_interval {
+                SliderDragPart::Interval { anchor: value }
+            } else {
+                SliderDragPart::Thumb { upper }
+            };
+            let drag = SliderDrag {
                 owner,
-                upper,
+                part,
                 lower_value: state.settings.value,
                 upper_value: state.range.map_or(state.settings.value, |r| r.upper),
-            });
+            };
+            self.sliders.drag = Some(drag);
             self.runtime.apply(Mutation::CapturePointer(Some(owner)))?;
-            let upper = self.set_thumb_value(owner, upper, value, true)?;
-            self.sliders.drag.as_mut().unwrap().upper = upper;
-            self.focus_slider_thumb(owner, upper)?;
+            if grabs_interval {
+                let focused = self.runtime.focused().and_then(|id| self.slider_owner(id));
+                if !matches!(focused, Some((id, Some(_))) if id == owner) {
+                    self.focus_slider_thumb(owner, upper)?;
+                }
+                self.scene_dirty = true;
+            } else {
+                self.move_slider_drag(drag, value)?;
+            }
             return Ok(true);
         }
         if let InputEvent::KeyDown { key, modifiers, .. } = event {
@@ -828,10 +905,13 @@ impl Controls {
             thumb_rect(bounds, state.settings, state.settings.value, size)
         };
         let focused = self.runtime.focused() == Some(id);
-        let pressed = self
-            .sliders
-            .drag
-            .is_some_and(|d| d.owner == owner && thumb == Some(d.upper));
+        let pressed = self.sliders.drag.is_some_and(|d| {
+            d.owner == owner
+                && match d.part {
+                    SliderDragPart::Thumb { upper } => thumb == Some(upper),
+                    SliderDragPart::Interval { .. } => true,
+                }
+        });
         let stroke = if focused || pressed {
             tokens.focus
         } else {
@@ -1096,6 +1176,116 @@ mod tests {
         assert_eq!(ui.range_slider_values(id), Some((25.0, 75.0)));
         assert_eq!(ui.range_slider_thumbs(id), Some((lower, upper)));
         assert!(ui.runtime.captured().is_none());
+    }
+    #[test]
+    fn range_band_drag_preserves_width_focus_and_step_on_each_axis() {
+        for (axis, reversed) in [
+            (Axis::Horizontal, false),
+            (Axis::Horizontal, true),
+            (Axis::Vertical, false),
+            (Axis::Vertical, true),
+        ] {
+            let mut ui = Controls::new(Theme::FluentLight).unwrap();
+            let id = ui
+                .range_slider(
+                    ui.root(),
+                    RangeSliderSettings {
+                        axis,
+                        reversed,
+                        lower: 12.,
+                        upper: 47.,
+                        step: 5.,
+                        snap_to_ticks: true,
+                        tick_frequency: Some(10.),
+                        ..Default::default()
+                    },
+                    LayoutStyle {
+                        width: Length::Px(if axis == Axis::Horizontal { 220. } else { 36. }),
+                        height: Length::Px(if axis == Axis::Horizontal { 36. } else { 220. }),
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            ui.update(Size::new(300., 300.)).unwrap();
+            let (_, upper) = ui.range_slider_thumbs(id).unwrap();
+            ui.perform_action(upper, SemanticAction::Focus, None)
+                .unwrap();
+            let bounds = ui.runtime.bounds(id).unwrap();
+            let point = |value: f32| {
+                let offset = if reversed { 100. - value } else { value } * 2.;
+                match axis {
+                    Axis::Horizontal => Point::new(bounds.x + 10. + offset, bounds.y + 18.),
+                    Axis::Vertical => Point::new(bounds.x + 18., bounds.y + 210. - offset),
+                }
+            };
+            let down = InputEvent::PointerDown {
+                position: point(30.),
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            };
+            ui.dispatch(down.clone()).unwrap();
+            assert_eq!(ui.range_slider_values(id), Some((12., 47.)));
+            assert_eq!(ui.runtime.captured(), Some(id));
+            assert_eq!(ui.runtime.focused(), Some(upper));
+            for (pointer, endpoints) in [
+                (47., (32., 67.)),
+                (110., (65., 100.)),
+                (-10., (0., 35.)),
+                (30., (12., 47.)),
+                // From 30, a shift of -11 snaps to -10. A shift of -13
+                // crosses the available -12 and lands exactly on the edge.
+                (19., (2., 37.)),
+                (17., (0., 35.)),
+            ] {
+                ui.dispatch(InputEvent::PointerMoved {
+                    position: point(pointer),
+                })
+                .unwrap();
+                assert_eq!(ui.range_slider_values(id), Some(endpoints));
+            }
+            key(&mut ui, Key::Escape);
+            assert_eq!(ui.range_slider_values(id), Some((12., 47.)));
+            assert_eq!(ui.runtime.captured(), None);
+            ui.dispatch(down).unwrap();
+            ui.dispatch(InputEvent::PointerUp {
+                position: point(50.),
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            })
+            .unwrap();
+            assert_eq!(ui.range_slider_values(id), Some((32., 67.)));
+            assert_eq!(ui.runtime.captured(), None);
+        }
+    }
+    #[test]
+    fn grabbing_outside_the_range_band_still_positions_the_nearest_thumb() {
+        let mut ui = Controls::new(Theme::FluentLight).unwrap();
+        let id = ui
+            .range_slider(
+                ui.root(),
+                RangeSliderSettings::default(),
+                LayoutStyle {
+                    width: Length::Px(220.),
+                    height: Length::Px(36.),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        ui.update(Size::new(300., 300.)).unwrap();
+        let bounds = ui.runtime.bounds(id).unwrap();
+        // Outside the selected interval, then above its painted band.
+        for (x, y, values) in [(190., 18., (25., 90.)), (90., 4., (40., 75.))] {
+            let point = Point::new(bounds.x + x, bounds.y + y);
+            ui.dispatch(InputEvent::PointerDown {
+                position: point,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            })
+            .unwrap();
+            assert_eq!(ui.range_slider_values(id), Some(values));
+            ui.cancel_pointer_interaction().unwrap();
+            assert_eq!(ui.range_slider_values(id), Some((25., 75.)));
+        }
     }
     #[test]
     fn tick_paint_is_bounded_and_semantics_expose_two_independent_values() {

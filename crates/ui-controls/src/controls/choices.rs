@@ -420,19 +420,32 @@ impl Controls {
         bounds: Rect,
         clip: Rect,
     ) -> Result<bool, ControlError> {
-        let Some(choice) = self.choices.checks.get(&id).copied() else {
+        let in_value_cell = matches!(
+            self.controls.get(&id).and_then(|c| c.inspector_part),
+            Some(property_grid::InspectorPart::BooleanCell)
+        );
+        let Some(presentation) = self
+            .choices
+            .checks
+            .get(&id)
+            .map(|c| c.presentation)
+            .or_else(|| in_value_cell.then_some(CheckPresentation::CheckBox))
+        else {
             return Ok(false);
         };
         let state = self.check_state(id).unwrap_or_default();
-        if choice.presentation != CheckPresentation::Switch && state != CheckState::Indeterminate {
+        if !in_value_cell
+            && presentation != CheckPresentation::Switch
+            && state != CheckState::Indeterminate
+        {
             return Ok(false);
         }
         let Some(clip) = clip.intersection(bounds) else {
             return Ok(true);
         };
-        let switch = choice.presentation == CheckPresentation::Switch;
+        let switch = presentation == CheckPresentation::Switch;
         let active = state != CheckState::Unchecked;
-        let toggle = choice.presentation == CheckPresentation::Toggle;
+        let toggle = presentation == CheckPresentation::Toggle;
         let mut visual = self.button_visual_state(id).unwrap_or_default();
         visual.checked = active;
         let control = &self.controls[&id];
@@ -443,16 +456,32 @@ impl Controls {
         } else {
             control.button_style.resolve(self.theme, visual, true)
         };
-        let content = Rect::new(
-            bounds.x + style.padding.left.min(bounds.width),
-            bounds.y + style.padding.top.min(bounds.height),
-            (bounds.width - style.padding.horizontal()).max(0.0),
-            (bounds.height - style.padding.vertical()).max(0.0),
-        );
+        let content = if in_value_cell {
+            let inset = 6.0_f32.min(bounds.width / 2.0);
+            Rect::new(
+                bounds.x + inset,
+                bounds.y,
+                bounds.width - 2.0 * inset,
+                bounds.height,
+            )
+        } else {
+            Rect::new(
+                bounds.x + style.padding.left.min(bounds.width),
+                bounds.y + style.padding.top.min(bounds.height),
+                (bounds.width - style.padding.horizontal()).max(0.0),
+                (bounds.height - style.padding.vertical()).max(0.0),
+            )
+        };
         let height = if switch { 20.0_f32 } else { 18.0 }.min(content.height);
         let width = (if switch { 38.0_f32 } else { 18.0 }).min(content.width);
         let indicator = Rect::new(
-            content.x,
+            if in_value_cell && switch {
+                content.x + content.width - width
+            } else if in_value_cell {
+                content.x + (content.width - width) / 2.0
+            } else {
+                content.x
+            },
             content.y + (content.height - height) / 2.0,
             width,
             height,
@@ -516,7 +545,11 @@ impl Controls {
                 );
             }
             text_bounds = Rect::new(
-                indicator.x + width + 8.0,
+                if in_value_cell {
+                    content.x
+                } else {
+                    indicator.x + width + 8.0
+                },
                 content.y,
                 (content.width - width - 8.0).max(0.0),
                 content.height,
@@ -540,7 +573,9 @@ impl Controls {
                     style.foreground
                 },
             );
-        } else if !toggle {
+        } else if !toggle && state == CheckState::Checked {
+            paint_checkmark(&mut self.scene, indicator, clip, style.checkmark);
+        } else if !toggle && state == CheckState::Indeterminate {
             editor_fill(
                 &mut self.scene,
                 Rect::new(
@@ -554,7 +589,7 @@ impl Controls {
                 style.checkmark,
             );
         }
-        if self.button_content(id).is_some() {
+        if self.button_content(id).is_some() || (in_value_cell && !switch) {
             return Ok(true);
         }
         let Some(text_clip) = text_bounds.intersection(clip) else {
@@ -564,7 +599,16 @@ impl Controls {
             sensitive: false,
             bounds: text_bounds,
             clip: text_clip,
-            text: self.controls[&id].display_label(&self.commands).to_owned(),
+            text: if in_value_cell {
+                match state {
+                    CheckState::Checked => "Да",
+                    CheckState::Unchecked => "Нет",
+                    CheckState::Indeterminate => "Не задано",
+                }
+            } else {
+                self.controls[&id].display_label(&self.commands)
+            }
+            .to_owned(),
             font_size: style.font_size,
             color: style.foreground,
             weight: 400,

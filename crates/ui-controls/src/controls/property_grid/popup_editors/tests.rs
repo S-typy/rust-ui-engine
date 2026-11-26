@@ -223,6 +223,134 @@ fn palettes_apply_and_discard_without_normalizing_unedited_source_colors() {
     }
 }
 
+fn paint_property(kind: &str, objects: &[i64]) -> (Controls, PropertyGrid, DataSourceHandle) {
+    use rust_desktop_ui_data::{CollectionAdapter, DataRow, DataSource, DataTable};
+    use std::rc::Rc;
+    let schema = TableSchema::new(vec![FieldSchema::new("paint", FieldType::Text)]).unwrap();
+    let rows = objects
+        .iter()
+        .map(|&id| DataRow::new(id, vec![CellValue::Text("#abcDEF".into())]))
+        .collect();
+    let table = DataTable::new(schema, rows).unwrap();
+    let source = Rc::new(RefCell::new(
+        DataSource::new(CollectionAdapter::new(table)).unwrap(),
+    ));
+    let mut descriptor = PropertyDescriptor::new("paint");
+    descriptor.metadata.editor = kind.into();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let grid = PropertyGrid::mount(
+        &mut ui,
+        root,
+        source.clone(),
+        objects,
+        PropertyGridSettings {
+            properties: vec![descriptor],
+            ..Default::default()
+        },
+        &DataFormFactories::default(),
+        LayoutStyle {
+            width: Length::Percent(1.),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    ui.update(Size::new(900., 800.)).unwrap();
+    (ui, grid, source)
+}
+
+#[test]
+fn accepting_a_single_paint_popup_posts_once_and_dismissal_preserves_the_source() {
+    for (kind, choice) in [
+        ("Color", "#123456"),
+        ("Brush", "linear(45;0=#000000;1=#FFFFFF)"),
+    ] {
+        let (mut ui, mut grid, source) = paint_property(kind, &[1]);
+        let owner = grid.property("paint").unwrap();
+        let original = CellValue::Text("#abcDEF".into());
+        let brush = parse_brush(choice, kind == "Brush").unwrap();
+        let expected = CellValue::Text(encode_brush(&brush));
+        grid.begin_edit(&mut ui, "paint").unwrap();
+        ui.open_color_popup(owner).unwrap();
+        assert_eq!(
+            ui.apply_color_popup(owner).unwrap(),
+            CommitOutcome::Unchanged
+        );
+        grid.update(&mut ui).unwrap();
+        assert_eq!(source.borrow().value(1, "paint"), Some(&original));
+        assert!(grid.take_changes().is_empty());
+        grid.begin_edit(&mut ui, "paint").unwrap();
+        for close_outside in [false, true] {
+            ui.open_color_popup(owner).unwrap();
+            ui.set_brush_draft(owner, Some(brush.clone())).unwrap();
+            let popup = ui.color_popup(owner).unwrap().clone();
+            if close_outside {
+                ui.close_flyout(popup.flyout).unwrap();
+                ui.update(Size::new(900., 800.)).unwrap();
+            } else {
+                click(&mut ui, popup.cancel);
+            }
+            grid.update(&mut ui).unwrap();
+            assert!(!ui.color_popup_is_open(owner));
+            assert_eq!(source.borrow().value(1, "paint"), Some(&original));
+            assert!(grid.take_changes().is_empty());
+        }
+        ui.open_color_popup(owner).unwrap();
+        ui.set_brush_draft(owner, Some(brush)).unwrap();
+        let apply = ui.color_popup(owner).unwrap().apply;
+        click(&mut ui, apply);
+        grid.update(&mut ui).unwrap();
+        assert_eq!(source.borrow().value(1, "paint"), Some(&expected));
+        let changes = grid.take_changes();
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].value, expected);
+        grid.update(&mut ui).unwrap();
+        assert!(grid.take_changes().is_empty());
+    }
+}
+
+#[test]
+fn paint_popup_keeps_bulk_and_typed_drafts_explicit_and_reports_writer_conflicts() {
+    let original = CellValue::Text("#abcDEF".into());
+    let changed = CellValue::Text("#FF654321".into());
+    let (mut ui, mut grid, source) = paint_property("Color", &[1, 2]);
+    let owner = grid.property("paint").unwrap();
+    grid.begin_edit(&mut ui, "paint").unwrap();
+    ui.open_color_popup(owner).unwrap();
+    ui.set_color_draft(owner, "#654321".parse().unwrap())
+        .unwrap();
+    ui.apply_color_popup(owner).unwrap();
+    grid.update(&mut ui).unwrap();
+    assert_eq!(source.borrow().value(1, "paint"), Some(&original));
+    assert_eq!(source.borrow().value(2, "paint"), Some(&original));
+    assert_eq!(
+        grid.commit(&mut ui, "paint").unwrap(),
+        PropertyCommit::Saved
+    );
+    assert_eq!(source.borrow().value(2, "paint"), Some(&changed));
+
+    let (mut ui, mut grid, source) = paint_property("Color", &[1]);
+    let owner = grid.property("paint").unwrap();
+    let editor = grid.property_editor("paint").unwrap();
+    grid.begin_edit(&mut ui, "paint").unwrap();
+    ui.set_text(editor, "#654321").unwrap();
+    grid.update(&mut ui).unwrap();
+    assert_eq!(source.borrow().value(1, "paint"), Some(&original));
+    assert_eq!(grid.draft(&ui, "paint").unwrap(), Some(changed.clone()));
+    ui.open_color_popup(owner).unwrap();
+    let external = CellValue::Text("#112233".into());
+    source
+        .borrow_mut()
+        .set_cell(1, "paint", external.clone())
+        .unwrap();
+    ui.apply_color_popup(owner).unwrap();
+    grid.update(&mut ui).unwrap();
+    assert_eq!(source.borrow().value(1, "paint"), Some(&external));
+    assert_eq!(grid.draft(&ui, "paint").unwrap(), Some(changed));
+    assert!(grid.error().is_some());
+    assert!(grid.take_changes().is_empty());
+}
+
 #[test]
 fn calculator_uses_exact_decimal_and_font_picker_writes_family() {
     let source = CellValue::Decimal("0.1".parse().unwrap());

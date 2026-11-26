@@ -186,6 +186,11 @@ impl Controls {
     pub fn password_composition_active(&self, id: WidgetId) -> Option<bool> {
         Some(self.password_state(id)?.document.composition().is_some())
     }
+    pub(super) fn select_password_contents(&mut self, id: WidgetId) -> Result<(), ControlError> {
+        self.password_state_mut(id)?.document.select_all();
+        self.scene_dirty = true;
+        Ok(())
+    }
     pub fn set_password_style(
         &mut self,
         id: WidgetId,

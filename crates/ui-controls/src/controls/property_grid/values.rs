@@ -290,14 +290,28 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
         ui.set_automation_name(p.edit, format!("{label}: {preview}"))?;
         ui.set_label(p.edit, preview)?;
     }
-    let inline = p.specialized.as_ref().is_some_and(|e| e.inline())
-        && matches!(aggregate(&p.baseline), PropertyValue::Uniform(ref value) if *value != CellValue::Null);
+    let direct_boolean = p.baseline.len() == 1
+        && writable
+        && p.specialized.is_none()
+        && matches!(p.recipe, DataFormEditorFactory::CheckBox)
+        && ui.button_content(p.edit).is_none();
+    if p.specialized.is_none() && matches!(p.recipe, DataFormEditorFactory::CheckBox) {
+        ui.controls.get_mut(&p.owner).unwrap().inspector_part =
+            direct_boolean.then_some(InspectorPart::BooleanCell);
+    }
+    let inline = direct_boolean
+        || (p.specialized.as_ref().is_some_and(|e| e.inline())
+            && matches!(aggregate(&p.baseline), PropertyValue::Uniform(ref value) if *value != CellValue::Null));
     if let Some(editor) = &p.specialized {
         editor.set_active(ui, p.active)?;
     }
     show(ui, p.owner, p.active || inline)?;
     show(ui, p.edit, !p.active && !inline)?;
-    show(ui, p.apply, p.active && writable)?;
+    show(
+        ui,
+        p.apply,
+        p.active && writable && !direct_boolean && !p.inplace_text,
+    )?;
     if let Some(unit) = p.currency {
         show(ui, unit, p.active)?;
     }

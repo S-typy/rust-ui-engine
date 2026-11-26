@@ -1,10 +1,136 @@
 use crate::{form::Form, generated_property_catalog};
 use rust_desktop_ui_controls::{PropertyCommit, PropertyValue};
-use rust_desktop_ui_core::Size;
+use rust_desktop_ui_core::{InputEvent, Key, Modifiers, Point, PointerButton, Size};
 use rust_desktop_ui_data::CellValue;
-use rust_desktop_ui_platform_winit::DesktopApp;
+use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent};
 
 mod custom;
+
+fn pointer_down(form: &mut Form, position: Point) {
+    form.event(PlatformEvent::Input(InputEvent::PointerDown {
+        position,
+        button: PointerButton::Primary,
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+}
+
+fn pointer_up(form: &mut Form, position: Point) {
+    form.event(PlatformEvent::Input(InputEvent::PointerUp {
+        position,
+        button: PointerButton::Primary,
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+}
+
+fn click(form: &mut Form, position: Point) {
+    pointer_down(form, position);
+    pointer_up(form, position);
+}
+
+fn press_key(form: &mut Form, key: Key) {
+    form.event(PlatformEvent::Input(InputEvent::KeyDown {
+        key: key.clone(),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    }))
+    .unwrap();
+    form.event(PlatformEvent::Input(InputEvent::KeyUp {
+        key,
+        modifiers: Modifiers::default(),
+    }))
+    .unwrap();
+}
+
+#[test]
+fn catalog_first_press_places_caret_and_posts_text_or_check_to_object() {
+    let mut form = Form::new(generated_property_catalog::window_definition(), false).unwrap();
+    let size = Size::new(760., 650.);
+    form.event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+        .unwrap();
+    form.update(size, 1.25).unwrap();
+    form.update(size, 1.25).unwrap();
+    let source = form.ui.data_source("EditorCatalogData").unwrap();
+    let owner = form.view.names["EditorCatalog"];
+    let grid = &form.view.property_grids[&owner];
+    let title = grid.property_editor("title").unwrap();
+    let preview = grid.property_actions("title").unwrap().0;
+    let search = grid.toolbar_parts().0;
+    let checkbox = grid.property_editor("approved").unwrap();
+    let check_row = grid.property_row("approved").unwrap();
+    let viewport = grid.row_viewport().unwrap();
+    let CellValue::Text(original) = source.borrow().value(1, "title").unwrap().clone() else {
+        panic!("expected a text property");
+    };
+    let bounds = form.ui.runtime.bounds(preview).unwrap();
+    let inside_title = Point::new(bounds.x + 28., bounds.y + bounds.height / 2.);
+    pointer_down(&mut form, inside_title);
+    assert_eq!(form.ui.runtime.focused(), Some(title));
+    let caret = form.ui.document(title).unwrap().selection();
+    assert!(caret.is_empty() && caret.focus > 0 && caret.focus < original.len());
+    pointer_up(&mut form, inside_title);
+    form.event(PlatformEvent::Text("★".into())).unwrap();
+    let mut edited = original.clone();
+    edited.insert(caret.focus, '★');
+    assert_eq!(form.ui.document(title).unwrap().text(), edited);
+    assert_eq!(
+        source.borrow().value(1, "title"),
+        Some(&CellValue::Text(original))
+    );
+    press_key(&mut form, Key::Enter);
+    assert_eq!(
+        source.borrow().value(1, "title"),
+        Some(&CellValue::Text(edited.clone()))
+    );
+
+    form.update(size, 1.25).unwrap();
+    click(&mut form, inside_title);
+    form.event(PlatformEvent::Text("?".into())).unwrap();
+    assert_ne!(form.ui.document(title).unwrap().text(), edited);
+    press_key(&mut form, Key::Escape);
+    assert_eq!(
+        source.borrow().value(1, "title"),
+        Some(&CellValue::Text(edited.clone()))
+    );
+
+    form.update(size, 1.25).unwrap();
+    click(&mut form, inside_title);
+    form.event(PlatformEvent::Text("!".into())).unwrap();
+    let draft = form.ui.document(title).unwrap().text().to_owned();
+    assert_ne!(draft, edited);
+    let search_bounds = form.ui.runtime.bounds(search).unwrap();
+    click(
+        &mut form,
+        Point::new(
+            search_bounds.x + 16.,
+            search_bounds.y + search_bounds.height / 2.,
+        ),
+    );
+    assert_eq!(
+        source.borrow().value(1, "title"),
+        Some(&CellValue::Text(draft))
+    );
+
+    let row_y = form.ui.runtime.bounds(check_row).unwrap().y;
+    let viewport_y = form.ui.runtime.bounds(viewport).unwrap().y;
+    form.ui
+        .scroll_to(viewport, row_y - viewport_y - 30.)
+        .unwrap();
+    form.update(size, 1.25).unwrap();
+    let bounds = form.ui.runtime.bounds(checkbox).unwrap();
+    let inside_checkbox = Point::new(bounds.x + bounds.width / 2., bounds.y + bounds.height / 2.);
+    assert_eq!(form.ui.runtime.hit_test(inside_checkbox), Some(checkbox));
+    assert_eq!(
+        source.borrow().value(1, "approved"),
+        Some(&CellValue::Bool(false))
+    );
+    click(&mut form, inside_checkbox);
+    assert_eq!(
+        source.borrow().value(1, "approved"),
+        Some(&CellValue::Bool(true))
+    );
+}
 
 #[test]
 fn catalog_editors_roundtrip_all_source_values_and_rollback_invalid_updates() {
@@ -105,8 +231,6 @@ fn catalog_editors_roundtrip_all_source_values_and_rollback_invalid_updates() {
 #[test]
 #[ignore = "requires a hardware GPU adapter"]
 fn render_property_editor_catalog() {
-    use rust_desktop_ui_core::{InputEvent, Modifiers, Point, PointerButton};
-    use rust_desktop_ui_platform_winit::PlatformEvent;
     use rust_desktop_ui_xaml::Theme;
     let out = std::env::var_os("PROPERTY_GRID_FRAME_DIR").map(std::path::PathBuf::from);
     let mut gpu =
@@ -114,6 +238,7 @@ fn render_property_editor_catalog() {
     eprintln!("GPU {:?}", gpu.adapter_info());
     for (name, top, theme, width, scale) in [
         ("inputs", "title", Theme::Light, 760., 1.25),
+        ("inplace-text", "title", Theme::Light, 760., 1.25),
         ("ranges", "opacity", Theme::Light, 760., 1.25),
         ("ranges-dark", "opacity", Theme::Dark, 760., 1.25),
         ("palette", "accent", Theme::Light, 760., 1.25),
@@ -142,6 +267,19 @@ fn render_property_editor_catalog() {
             .scroll_to(viewport, (distance - inset).max(0.))
             .unwrap();
         form.update(size, scale).unwrap();
+        if name == "inplace-text" {
+            form.event(PlatformEvent::Input(InputEvent::WindowFocused(true)))
+                .unwrap();
+            let grid = &form.view.property_grids[&owner];
+            let preview = grid.property_actions(top).unwrap().0;
+            let editor = grid.property_editor(top).unwrap();
+            let rect = form.ui.runtime.bounds(preview).unwrap();
+            let position = Point::new(rect.x + 28., rect.y + rect.height / 2.);
+            click(&mut form, position);
+            form.update(size, scale).unwrap();
+            assert_eq!(form.ui.runtime.focused(), Some(editor));
+            assert!(form.ui.caret_bounds().is_some());
+        }
         if matches!(
             name,
             "palette" | "brush" | "date-picker" | "image" | "calculator"
@@ -157,22 +295,7 @@ fn render_property_editor_catalog() {
                 _ => {
                     let b = form.ui.runtime.bounds(edit).unwrap();
                     let position = Point::new(b.x + b.width / 2., b.y + b.height / 2.);
-                    let button = PointerButton::Primary;
-                    let modifiers = Modifiers::default();
-                    for e in [
-                        InputEvent::PointerDown {
-                            position,
-                            button,
-                            modifiers,
-                        },
-                        InputEvent::PointerUp {
-                            position,
-                            button,
-                            modifiers,
-                        },
-                    ] {
-                        form.event(PlatformEvent::Input(e)).unwrap();
-                    }
+                    click(&mut form, position);
                 }
             }
             form.update(size, scale).unwrap();

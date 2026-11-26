@@ -180,6 +180,23 @@ impl MountedView {
         }
         Ok(false)
     }
+    pub(crate) fn pending_property_text_editor(&self, ui: &Controls) -> Option<WidgetId> {
+        self.property_grids
+            .values()
+            .find_map(|grid| grid.pending_text_editor(ui))
+    }
+    pub(crate) fn prepare_property_text(
+        &mut self,
+        ui: &mut Controls,
+        text: &str,
+    ) -> Result<(), String> {
+        for grid in self.property_grids.values_mut() {
+            if grid.prepare_text_input(ui, text).map_err(err)? {
+                break;
+            }
+        }
+        Ok(())
+    }
     pub(super) fn sync_property_grids(&mut self, ui: &mut Controls) -> bool {
         self.property_grids
             .retain(|id, _| ui.runtime.tree().contains(*id));
@@ -218,6 +235,84 @@ mod tests {
             .unwrap(),
         ))
     }
+    #[test]
+    fn committed_text_and_ime_activate_the_focused_property_once_and_protect_passwords() {
+        use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent};
+        let mut form = crate::form::Form::new(
+            crate::generated_property_catalog::window_definition(),
+            false,
+        )
+        .unwrap();
+        form.ui.update(Size::new(760., 730.)).unwrap();
+        let grid_id = form.view.names["EditorCatalog"];
+        let grid = &form.view.property_grids[&grid_id];
+        let display = grid.property_actions("title").unwrap().0;
+        let editor = grid.property_editor("title").unwrap();
+        let password_button = grid.property_actions("password").unwrap().0;
+        let password = grid.property_editor("password").unwrap();
+        form.ui
+            .runtime
+            .apply(Mutation::Focus(Some(display)))
+            .unwrap();
+        assert_eq!(form.ime_target(), Some(editor));
+        assert!(form.ime_cursor().is_some());
+        let key = |key| {
+            PlatformEvent::Input(InputEvent::KeyDown {
+                key,
+                modifiers: Default::default(),
+                repeat: false,
+            })
+        };
+        form.event(key(Key::Character("f".into()))).unwrap();
+        assert_eq!(form.ui.runtime.focused(), Some(display));
+        form.event(PlatformEvent::Text("ф".into())).unwrap();
+        assert_eq!(form.ui.document(editor).unwrap().text(), "ф");
+        form.event(key(Key::Escape)).unwrap();
+        assert_eq!(form.ui.runtime.focused(), Some(display));
+        form.event(PlatformEvent::ImePreedit("に".into(), None))
+            .unwrap();
+        assert_eq!(form.ime_target(), Some(editor));
+        assert!(form.ime_cursor().is_some());
+        assert_eq!(form.ime_composition_active(), Some(true));
+        form.event(PlatformEvent::ImeCommit("日本".into())).unwrap();
+        assert_eq!(form.ui.document(editor).unwrap().text(), "日本");
+        form.event(key(Key::Enter)).unwrap();
+        assert_eq!(
+            form.view.property_grids[&grid_id].accepted("title"),
+            Some(PropertyValue::Uniform(CellValue::Text("日本".into())))
+        );
+
+        form.ui
+            .runtime
+            .apply(Mutation::Focus(Some(password_button)))
+            .unwrap();
+        assert_eq!(form.ime_target(), Some(password));
+        assert!(form.ime_is_password());
+        assert!(
+            form.ui
+                .semantics()
+                .iter()
+                .any(|node| node.id == password_button
+                    && node.role == rust_desktop_ui_controls::Role::PasswordBox)
+        );
+        form.event(PlatformEvent::Text("secret-fragment".into()))
+            .unwrap();
+        assert!(form.ime_is_password());
+        assert_eq!(
+            form.ui.password_value(password).unwrap().expose_secret(),
+            "secret-fragment"
+        );
+        form.ui.update(Size::new(760., 730.)).unwrap();
+        assert!(
+            form.ui
+                .scene()
+                .texts
+                .iter()
+                .all(|run| !run.text.contains("secret-fragment"))
+        );
+        form.event(key(Key::Escape)).unwrap();
+    }
+
     #[test]
     fn compiled_inspector_mixed_exact_values_and_keyboard_cancel_retain_ids() {
         let window=rust_desktop_ui_xaml::parse(r#"<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"><PropertyGrid x:Name="Inspector" DataSource="Objects" ObjectKeys="1,2"><PropertyGrid.Properties><Property FieldName="count" Category="Layout" Group="Dimensions" DefaultValue="9223372036854775807"/></PropertyGrid.Properties></PropertyGrid></Window>"#).unwrap();

@@ -22,8 +22,10 @@ vertical slider has its minimum at the bottom.
 
 Arrow keys along the axis change the value by one grid interval. Ctrl multiplies that
 step by ten; PageUp/PageDown apply ten steps. Home/End request the minimum and
-maximum. Pointer input captures the gesture; clicking a range track chooses the
-nearest thumb. Escape, focus loss, native capture cancellation or disabling the
+maximum. Drag a thumb to move one endpoint. Drag the highlighted track between
+the thumbs to move the whole interval in steps while preserving its width.
+At the edge, the interval stops at the minimum or maximum. Clicking the track
+outside the interval moves the nearest thumb. Escape, focus loss, native capture cancellation or disabling the
 control restores both values from the start of the active pointer gesture.
 Release accepts the current values. Programmatic configuration ends a gesture
 and applies the requested configuration.

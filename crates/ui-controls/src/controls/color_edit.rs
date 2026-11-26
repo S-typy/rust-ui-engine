@@ -36,6 +36,7 @@ pub(super) struct Entry {
     pub draft: Draft,
     pub popup: Option<ColorPopup>,
     pub pending: bool,
+    pub popup_accepted: bool,
     pub validator: Rc<RefCell<Option<BrushValidator>>>,
     pub recent: Vec<Srgba8>,
     pub error: Option<String>,
@@ -155,6 +156,7 @@ impl Controls {
                     draft: Draft::new(value.clone()),
                     popup: None,
                     pending: false,
+                    popup_accepted: false,
                     validator: Rc::new(RefCell::new(None)),
                     recent: Vec::new(),
                     error: None,
@@ -291,6 +293,7 @@ impl Controls {
         self.write_color_inline(id, &text)?;
         let entry = self.color_editors.entries.get_mut(&id).unwrap();
         entry.value = value.clone();
+        entry.popup_accepted = false;
         entry.draft.reset(value);
         entry.bitmap = bitmap;
         entry.error = None;
@@ -503,6 +506,7 @@ impl Controls {
         changed: bool,
     ) {
         let entry = self.color_editors.entries.get_mut(&owner).unwrap();
+        entry.popup_accepted = false;
         entry.value = value.clone();
         entry.bitmap = bitmap;
         entry.error = None;

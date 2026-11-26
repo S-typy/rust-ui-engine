@@ -305,6 +305,11 @@ impl Controls {
         self.write_color_inline(id, &text)?;
         self.publish_brush(id, value, image, changed);
         self.cancel_color_popup(id)?;
+        self.color_editors
+            .entries
+            .get_mut(&id)
+            .unwrap()
+            .popup_accepted = true;
         Ok(if changed {
             CommitOutcome::Committed
         } else {

@@ -1009,7 +1009,7 @@ impl DesktopApp for Form {
         {
             println!(
                 "edit-input={} focused={}",
-                if self.ui.password_input_focused() {
+                if self.ime_is_password() {
                     "[PROTECTED]".to_owned()
                 } else {
                     format!("{event:?}")
@@ -1056,14 +1056,19 @@ impl DesktopApp for Form {
                         .as_ref()
                         .is_some_and(|mounted| mounted.ribbon.key_tips_visible())
                 {
+                    self.view.prepare_property_text(&mut self.ui, &text)?;
                     self.ui.text_input(&text).map_err(err)?;
                 }
             }
             PlatformEvent::Paste(text) => self.ui.paste_input(&text).map_err(err)?,
             PlatformEvent::ImePreedit(text, cursor) => {
+                self.view.prepare_property_text(&mut self.ui, &text)?;
                 self.ui.ime_preedit(&text, cursor).map_err(err)?
             }
-            PlatformEvent::ImeCommit(text) => self.ui.ime_commit(&text).map_err(err)?,
+            PlatformEvent::ImeCommit(text) => {
+                self.view.prepare_property_text(&mut self.ui, &text)?;
+                self.ui.ime_commit(&text).map_err(err)?
+            }
             PlatformEvent::ImeCancel => self.ui.cancel_preedit(),
             PlatformEvent::Tick => {
                 let now = Instant::now();
@@ -1126,20 +1131,42 @@ impl DesktopApp for Form {
         Ok(EventResponse { redraw, clipboard })
     }
     fn ime_cursor(&self) -> Option<Rect> {
+        if self.view.pending_property_text_editor(&self.ui).is_some() {
+            let cell = self.ui.runtime.focused()?;
+            let bounds = self
+                .ui
+                .runtime
+                .bounds(cell)?
+                .intersection(self.ui.runtime.clip(cell)?)?;
+            return Some(Rect::new(
+                bounds.x + 8.0_f32.min(bounds.width),
+                bounds.y,
+                1.,
+                bounds.height,
+            ));
+        }
         self.ime_target().and_then(|_| self.ui.caret_bounds())
     }
     fn ime_is_password(&self) -> bool {
         self.ui.password_input_focused()
+            || self
+                .view
+                .pending_property_text_editor(&self.ui)
+                .is_some_and(|id| self.ui.is_password_box(id))
     }
     fn ime_target(&self) -> Option<WidgetId> {
-        self.ui.runtime.focused().filter(|id| {
-            self.ui.is_text_editable(*id)
-                || (self.ui.is_enabled(*id)
-                    && self
-                        .ui
-                        .password_settings(*id)
-                        .is_some_and(|settings| !settings.is_read_only))
-        })
+        self.ui
+            .runtime
+            .focused()
+            .filter(|id| {
+                self.ui.is_text_editable(*id)
+                    || (self.ui.is_enabled(*id)
+                        && self
+                            .ui
+                            .password_settings(*id)
+                            .is_some_and(|settings| !settings.is_read_only))
+            })
+            .or_else(|| self.view.pending_property_text_editor(&self.ui))
     }
     fn ime_composition_active(&self) -> Option<bool> {
         self.ime_target().and_then(|id| {

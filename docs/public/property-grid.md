@@ -25,11 +25,11 @@ inspector.update(ui)?;
 # Ok(()) }
 ```
 
-Call `update` after dispatch and before `Controls::drain_activated`. It consumes
-only this inspector's Edit, Apply and Reset actions. Other activations remain
-available to the application. `input` is an optional pre-dispatch Escape route:
-composition is cancelled first; the next Escape restores the property's accepted
-value. Existing expanders and editors provide Tab/ShiftTab, Space/Enter, editor
+Call `input` before pointer and key dispatch. An opening click can then place
+the caret in the value or press a button inside the cell. Call `update` after
+dispatch and before `Controls::drain_activated` to handle row actions and
+focus changes. Escape cancels an ongoing composition first. A second Escape
+restores the accepted value. Expanders and editors provide Tab/ShiftTab, Space/Enter, editor
 navigation and clipboard behavior. Collapsing a group retains editor IDs,
 selection, draft and history. The wrapper's `group` accessor exposes the retained
 expander for programmatic expansion.
@@ -37,11 +37,22 @@ expander for programmatic expansion.
 ## Browsing and editing
 
 The inspector opens as a two-column list of property names and accepted values.
-Click an editable value or activate its button with the keyboard to open the
-inline editor. Apply or Enter in a text field submits the draft. Escape cancels
-editing. The reset icon restores the declared default. Its tooltip and accessible
-name identify the property. Only one editor is shown at a time. A prepared draft
-in another row is retained and can be reopened.
+For one selected object, click a standard single-line value to place the caret
+at that position. F2 or Enter opens the focused value from the keyboard.
+The name, divider and row height stay in place. Enter or leaving the value cell
+submits a changed draft. Escape restores the previous value. A rejected draft
+can be reopened for correction. This applies to plain text, numeric input,
+masked text, password and text with a button using the standard value display.
+
+Typing into the focused display cell selects the existing value and replaces it
+with the committed input. Hosts can call `prepare_text_input` before
+delivering text or an IME preedit and use `pending_text_editor` to identify
+the target and its password policy before the editor receives focus.
+
+A standard Boolean cell for one object contains its check box or switch
+throughout the interaction. Clicking it or pressing Space posts the new state
+in one source transaction. For several selected objects, Apply confirms the
+value for the entire selection. The reset icon restores the declared default.
 
 Set `Scrollable="True"` in a height-constrained container to keep the toolbar visible
 while the rows scroll. The default intrinsic layout can be hosted inside a form.
@@ -144,8 +155,8 @@ width in logical pixels. Long property names wrap as the window narrows.
 
 | Preview | Source value | Appearance |
 | --- | --- | --- |
-| Auto | Boolean, nullable Boolean | Check mark and caption. Multiple differing values and NULL have distinct captions. |
-| Switch | Boolean | A switch with a state caption. Activation opens the switch editor. |
+| Auto | Boolean, nullable Boolean | Centered check box for an editable single object. A nullable field supports an indeterminate state. Multiple differing values have their own caption. |
+| Switch | Boolean | A switch at the end of the editable single-object cell with its state on the left. |
 | Color | Text | A swatch beside a value in `#RRGGBB` or `#AARRGGBB` format. Editing uses the text field. Other text remains visible verbatim. |
 | Progress | Integer | A bar and a percentage for 0 through 100 inclusive. Other integers retain their ordinary numeric display. Use `IsReadOnly="True"` for a progress indicator. |
 
@@ -162,8 +173,12 @@ Use `--property-publication` to inspect one publication or `--properties` for tw
 ## Cell editors
 
 Set `Editor` on a property to choose the control that prepares its typed value.
-The row's checkmark applies the draft to all selected objects in one source transaction.
+Rows with explicit confirmation use the checkmark to apply the draft to all selected objects in one source transaction.
 Escape restores the accepted value. A popup first handles its own selection or cancellation.
+For one object, accepting a color or brush in the palette writes the accepted
+value once. Dismissing the palette discards the pending selection. Typing a
+color directly into its text field and editing several objects still use the
+row's explicit confirmation.
 
 | Editor | Source and interaction |
 | --- | --- |
@@ -175,7 +190,7 @@ Escape restores the accepted value. A popup first handles its own selection or c
 | Calculator, Spin | Decimal calculator popup and numeric stepper. Spin accepts an integer or decimal source. Set `CurrencySymbol="₽"` for a grouped amount with a suffix. The symbol stays outside the input and the source stores the exact number. |
 | Color, Brush | The palette supports color channels and transparency. A brush can also contain an angle and ordered gradient stops. Accepted text keeps its original spelling until edited. |
 | Image | Displays a thumbnail of an encoded binary image. The popup supports working-image edits. The sample handles open/save requests with the platform file dialog. |
-| Slider, ZoomSlider, RangeSlider, ProgressBar | Numeric slider, zoom with step buttons, two independently adjustable bounds in a text value such as `20..75`, and read-only progress. Use `Minimum`, `Maximum` and `Step` on supported numeric controls. |
+| Slider, ZoomSlider, RangeSlider, ProgressBar | Numeric slider, zoom with step buttons, two bounds in a text value such as `20..75`, and read-only progress. Drag either thumb to change one bound or drag the selected track between the thumbs to move both together. Escape restores the pair at the start of the gesture. Use `Minimum`, `Maximum` and `Step` on supported numeric controls. |
 | CheckBox, Switch preview | Boolean state with a checkbox or `Preview="Switch"`. Nullable fields can represent an unset value. |
 | Rating, Barcode, Hyperlink | Editable star rating, Code 128 B bars from printable ASCII or integer input, and an HTTP(S) navigation request. Optional `UriFormat` substitutes the percent-encoded caption for `{0}`. The host chooses how to open the address. |
 | Flags, TokenList | Independent bits of an integer, or an ordered JSON array of selected string keys. Flags preserve bits outside the declared choices. |

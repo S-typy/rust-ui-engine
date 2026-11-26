@@ -187,6 +187,50 @@ struct Rejecting {
     table: DataTable,
     calls: Rc<RefCell<usize>>,
 }
+#[test]
+fn a_rejected_inline_switch_keeps_the_source_and_can_cancel_its_draft() {
+    let calls = Rc::new(RefCell::new(0));
+    let source = Rc::new(RefCell::new(
+        DataSource::new(Rejecting {
+            table: table(),
+            calls: calls.clone(),
+        })
+        .unwrap(),
+    ));
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let mut settings = settings();
+    settings.properties[2].preview = PropertyPreview::Switch;
+    let mut grid = PropertyGrid::mount(
+        &mut ui,
+        root,
+        source.clone(),
+        &[2],
+        settings,
+        &DataFormFactories::default(),
+        LayoutStyle::default(),
+    )
+    .unwrap();
+    let switch = grid.property("enabled").unwrap();
+    ui.update(Size::new(720., 480.)).unwrap();
+    assert!(ui.runtime.bounds(switch).is_some());
+    ui.perform_action(switch, SemanticAction::Toggle, None)
+        .unwrap();
+    assert!(grid.update(&mut ui).unwrap());
+    assert_eq!(*calls.borrow(), 1);
+    assert_eq!(
+        source.borrow().value(2, "enabled"),
+        Some(&CellValue::Bool(false))
+    );
+    assert!(grid.error().is_some());
+    assert!(grid.take_changes().is_empty());
+    assert_eq!(
+        grid.draft(&ui, "enabled").unwrap(),
+        Some(CellValue::Bool(true))
+    );
+    grid.cancel(&mut ui, "enabled").unwrap();
+    assert_eq!(ui.check_state(switch), Some(CheckState::Unchecked));
+}
 impl DataAdapter for Rejecting {
     fn load(&mut self) -> Result<DataTable, DataError> {
         Ok(self.table.clone())
