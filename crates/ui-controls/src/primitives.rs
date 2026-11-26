@@ -22,6 +22,8 @@ pub enum IconSymbol {
     Lock,
     Eye,
     Backspace,
+    GroupedList,
+    FlatList,
 }
 
 /// Standalone icon colors. Unspecified values follow the current theme.
@@ -263,6 +265,30 @@ impl IconSymbol {
                     ]
                 }
             }
+            Self::GroupedList => {
+                const {
+                    &[
+                        segment(2., 3., 7., 3.),
+                        segment(4., 6., 4., 13.),
+                        segment(4., 8., 7., 8.),
+                        segment(9., 8., 14., 8.),
+                        segment(4., 13., 7., 13.),
+                        segment(9., 13., 14., 13.),
+                    ]
+                }
+            }
+            Self::FlatList => {
+                const {
+                    &[
+                        segment(2., 3., 3., 3.),
+                        segment(6., 3., 14., 3.),
+                        segment(2., 8., 3., 8.),
+                        segment(6., 8., 14., 8.),
+                        segment(2., 13., 3., 13.),
+                        segment(6., 13., 14., 13.),
+                    ]
+                }
+            }
             Self::Backspace => {
                 const {
                     &[
@@ -405,6 +431,8 @@ pub(crate) fn paint_icon_themed(
         | IconSymbol::ChevronRight
         | IconSymbol::Lock
         | IconSymbol::Eye
+        | IconSymbol::GroupedList
+        | IconSymbol::FlatList
         | IconSymbol::Backspace => (foreground, geometry.len(), foreground),
     };
     let scale = size / 16.0;

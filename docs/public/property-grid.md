@@ -136,6 +136,29 @@ Static group paths, finite text choices and display templates are supported.
 Editable collection children and interactive controls inside display templates
 are outside this profile.
 
+## Value previews and selected property
+
+Use `LabelWidth="44%"` to reserve a proportion of each ordinary row for its name.
+Percentages must be greater than zero and less than 100. A number sets a fixed
+width in logical pixels. Long property names wrap as the window narrows.
+
+| Preview | Source value | Appearance |
+| --- | --- | --- |
+| Auto | Boolean, nullable Boolean | Check mark and caption. Multiple differing values and NULL have distinct captions. |
+| Switch | Boolean | A switch with a state caption. Activation opens the switch editor. |
+| Color | Text | A swatch beside a value in `#RRGGBB` or `#AARRGGBB` format. Editing uses the text field. Other text remains visible verbatim. |
+| Progress | Integer | A bar and a percentage for 0 through 100 inclusive. Other integers retain their ordinary numeric display. Use `IsReadOnly="True"` for a progress indicator. |
+
+An explicit preview requires a compatible field and is exclusive with `Choices`
+and `Property.DisplayTemplate`. A plain choice row has a disclosure arrow.
+The preview reads the accepted source value after Apply, Cancel and refresh.
+
+Give a property a `Description` to enable a panel below the rows. It shows the
+selected property name and its description as keyboard focus or pointer selection
+moves. A read-only property with a description can be selected for inspection.
+Run `cargo run -p xaml-form -- --property-editors` for an example with one
+publication, or use `--properties` to inspect two documents together.
+
 ## Bounds and verification
 
 The profile supports 1–64 objects, 1–128 properties, at most eight nested group

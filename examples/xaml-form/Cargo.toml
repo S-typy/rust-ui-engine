@@ -19,5 +19,9 @@ rust-desktop-ui-treegrid = { path = "../../crates/ui-treegrid", version = "0.1.0
 rust-desktop-ui-platform-winit = { path = "../../crates/ui-platform-winit", version = "0.1.0" }
 rust-desktop-ui-xaml = { path = "../../crates/ui-xaml", version = "0.1.0" }
 
+[dev-dependencies]
+pollster.workspace = true
+rust-desktop-ui-render-wgpu = { path = "../../crates/ui-render-wgpu", version = "0.1.0" }
+
 [build-dependencies]
 rust-desktop-ui-xaml = { path = "../../crates/ui-xaml", version = "0.1.0" }

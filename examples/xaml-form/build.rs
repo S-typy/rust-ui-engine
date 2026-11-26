@@ -27,6 +27,7 @@ fn main() {
         ("TileWindow.xaml", "tile_window.rs"),
         ("GalleryWindow.xaml", "gallery_window.rs"),
         ("PropertyWindow.xaml", "property_window.rs"),
+        ("PropertyEditorsWindow.xaml", "property_editors_window.rs"),
         ("FontWindow.xaml", "font_window.rs"),
         ("BadgeWindow.xaml", "badge_window.rs"),
         ("BreadcrumbWindow.xaml", "breadcrumb_window.rs"),

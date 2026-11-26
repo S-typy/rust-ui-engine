@@ -149,20 +149,21 @@ impl MountedView {
                 && !element.common.bindings.contains_key("Height")
                 && !matches!(&element.kind, ElementKind::GroupBox(group) if group.is_collapsible)
                 && element.common.vertical_alignment == rust_desktop_ui_xaml::Alignment::Stretch
-                && matches!(
-                    element.kind,
-                    ElementKind::Grid(_)
-                        | ElementKind::Overlay(_)
-                        | ElementKind::SplitContainer(_)
-                        | ElementKind::GridControl(_)
-                        | ElementKind::Border(_)
-                        | ElementKind::GroupBox(_)
-                        | ElementKind::TabbedGroup(_)
-                        | ElementKind::NavigationPane(_)
-                        | ElementKind::Wizard(_)
-                        | ElementKind::ScrollViewer(_)
-                        | ElementKind::DockPanel(_)
-                )
+                && (matches!(&element.kind, ElementKind::PropertyGrid(grid) if grid.scrollable)
+                    || matches!(
+                        element.kind,
+                        ElementKind::Grid(_)
+                            | ElementKind::Overlay(_)
+                            | ElementKind::SplitContainer(_)
+                            | ElementKind::GridControl(_)
+                            | ElementKind::Border(_)
+                            | ElementKind::GroupBox(_)
+                            | ElementKind::TabbedGroup(_)
+                            | ElementKind::NavigationPane(_)
+                            | ElementKind::Wizard(_)
+                            | ElementKind::ScrollViewer(_)
+                            | ElementKind::DockPanel(_)
+                    ))
             {
                 let mut style = ui.runtime.tree().node(content).unwrap().props.style.clone();
                 style.height = Length::Percent(1.0);

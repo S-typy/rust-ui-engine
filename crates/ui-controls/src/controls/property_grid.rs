@@ -11,7 +11,7 @@ use values::*;
 #[path = "property_grid/presentation.rs"]
 mod presentation;
 pub(super) use presentation::InspectorPart;
-use presentation::{action_icon, show, vertical_stack};
+use presentation::{ValueMark, action_icon, show, vertical_stack};
 
 struct Property {
     descriptor: PropertyDescriptor,
@@ -19,6 +19,7 @@ struct Property {
     recipe: DataFormEditorFactory,
     row: WidgetId,
     host: WidgetId,
+    name_label: WidgetId,
     owner: WidgetId,
     editor: WidgetId,
     active: bool,
@@ -56,6 +57,9 @@ pub struct PropertyGrid {
     flat: bool,
     saved_expansion: Vec<(WidgetId, bool)>,
     grouped_order: Vec<(WidgetId, WidgetId)>,
+    details: Option<(WidgetId, WidgetId)>,
+    selection: Option<usize>,
+    last_focus: Option<WidgetId>,
     error: Option<String>,
     changes: Vec<PropertyChanged>,
 }
@@ -99,6 +103,21 @@ impl PropertyGrid {
                 .field(&descriptor.metadata.field)
                 .ok_or_else(|| invalid("Unknown property field"))?
                 .clone();
+            use rust_desktop_ui_data::FieldType;
+            let compatible = match descriptor.preview {
+                PropertyPreview::Auto => true,
+                PropertyPreview::Switch => field.kind == FieldType::Bool,
+                PropertyPreview::Color => field.kind == FieldType::Text,
+                PropertyPreview::Progress => field.kind == FieldType::Integer,
+            };
+            if !compatible
+                || descriptor.preview != PropertyPreview::Auto && !descriptor.choices.is_empty()
+            {
+                return Err(invalid(format!(
+                    "Incompatible preview for property '{}'",
+                    field.name
+                )));
+            }
             descriptor.metadata.read_only |= settings.read_only || field.read_only;
             let recipe = factories.resolve(&descriptor.metadata.editor, &field)?;
             if let DataFormEditorFactory::Text(s) = &recipe {
@@ -167,10 +186,17 @@ impl PropertyGrid {
             definitions.push((descriptor, field, recipe, baseline, seed));
         }
         drop(data);
+        let descriptions = settings
+            .properties
+            .iter()
+            .any(|p| !p.description.is_empty());
         if settings.scrollable {
             style.kind = LayoutKind::Grid;
             style.grid_columns = vec![GridTrack::Fr(1.)];
             style.grid_rows = vec![GridTrack::Auto, GridTrack::Fr(1.), GridTrack::Auto];
+            if descriptions {
+                style.grid_rows.push(GridTrack::Auto);
+            }
         } else {
             style.kind = LayoutKind::Stack(Axis::Vertical);
         }
@@ -251,22 +277,24 @@ impl PropertyGrid {
                         groups.push((prefix, group));
                     }
                 }
-                let split = if descriptor.full_width {
-                    0.
+                let column = if descriptor.full_width {
+                    GridTrack::Px(0.)
                 } else {
-                    settings.label_width
+                    settings
+                        .label_fraction
+                        .map_or(GridTrack::Px(settings.label_width), GridTrack::Percent)
                 };
                 let row = ui.transparent_panel(
                     host,
                     LayoutStyle {
                         kind: LayoutKind::Grid,
                         grid_columns: vec![
-                            GridTrack::Px(split),
+                            column,
                             GridTrack::Fr(1.0),
                             GridTrack::Auto,
                             GridTrack::Auto,
                         ],
-                        min_size: Size::new(0., 32.),
+                        min_size: Size::new(0., 26.),
                         padding: Edges {
                             bottom: 1.,
                             ..Default::default()
@@ -275,10 +303,6 @@ impl PropertyGrid {
                         ..Default::default()
                     },
                 )?;
-                ui.controls.get_mut(&row).unwrap().inspector_part = Some(InspectorPart::Row {
-                    split,
-                    alternate: properties.len() % 2 != 0,
-                });
                 let label = descriptor
                     .metadata
                     .label
@@ -297,6 +321,9 @@ impl PropertyGrid {
                         ..Default::default()
                     },
                 )?;
+                ui.controls.get_mut(&name_label).unwrap().inspector_part =
+                    Some(InspectorPart::Name);
+                ui.set_text_auto_height(name_label, true)?;
                 if descriptor.full_width {
                     show(ui, name_label, false)?;
                 }
@@ -319,6 +346,10 @@ impl PropertyGrid {
                         ..Default::default()
                     },
                 )?;
+                ui.controls.get_mut(&row).unwrap().inspector_part = Some(InspectorPart::Row {
+                    value_host: (!descriptor.full_width).then_some(host),
+                    alternate: properties.len() % 2 != 0,
+                });
                 let state = aggregate(&baseline);
                 let value = match &state {
                     PropertyValue::Uniform(v) => v,
@@ -350,8 +381,15 @@ impl PropertyGrid {
                     }
                     (parts.container, parts.editor)
                 };
+                if descriptor.preview == PropertyPreview::Switch {
+                    ui.set_check_presentation(owner, CheckPresentation::Switch)?;
+                }
                 ui.edit_props(owner, |p| {
                     p.style.flex_grow = 1.0;
+                    if owner == editor {
+                        p.style.height = Length::Px(28.);
+                        p.style.vertical_alignment = Some(Align::Center);
+                    }
                 })?;
                 ui.set_automation_name(editor, label)?;
                 let null = if schema.nullable && !matches!(recipe, DataFormEditorFactory::CheckBox)
@@ -365,6 +403,7 @@ impl PropertyGrid {
                         LayoutStyle {
                             min_size: Size::new(84.0, 0.0),
                             flex_shrink: 0.0,
+                            height: Length::Px(28.),
                             ..button_style(84.0)
                         },
                     )?;
@@ -378,11 +417,12 @@ impl PropertyGrid {
                     "",
                     None,
                     LayoutStyle {
+                        height: Length::Px(28.),
+                        vertical_alignment: Some(Align::Center),
                         flex_grow: 1.,
                         ..Default::default()
                     },
                 )?;
-                ui.controls.get_mut(&edit).unwrap().inspector_part = Some(InspectorPart::Value);
                 ui.set_button_chrome(edit, ButtonChrome::Flat)?;
                 let apply = action_icon(
                     ui,
@@ -413,6 +453,7 @@ impl PropertyGrid {
                     recipe,
                     row,
                     host,
+                    name_label,
                     owner,
                     editor,
                     active: false,
@@ -450,6 +491,44 @@ impl PropertyGrid {
             ui.set_automation_name(summary, "Результат изменения свойств")?;
             ui.set_text_auto_height(summary, true)?;
             show(ui, summary, false)?;
+            let details = if descriptions {
+                let panel = ui.transparent_panel(
+                    container,
+                    LayoutStyle {
+                        padding: Edges::all(6.),
+                        min_size: Size::new(0., 52.),
+                        ..vertical_stack()
+                    },
+                )?;
+                let title = ui.label(
+                    panel,
+                    "",
+                    LayoutStyle {
+                        height: Length::Px(20.),
+                        ..Default::default()
+                    },
+                )?;
+                ui.set_text_style(
+                    title,
+                    TextStyle {
+                        font_weight: Some(600),
+                        wrap: false,
+                        ..Default::default()
+                    },
+                )?;
+                let hint = ui.label(panel, "", LayoutStyle::default())?;
+                ui.set_text_style(
+                    hint,
+                    TextStyle {
+                        tone: TextTone::Secondary,
+                        ..Default::default()
+                    },
+                )?;
+                ui.set_text_auto_height(hint, true)?;
+                Some((title, hint))
+            } else {
+                None
+            };
             let mut parents = Vec::new();
             let mut stack = ui
                 .runtime
@@ -461,7 +540,7 @@ impl PropertyGrid {
                 parents.push((id, ui.runtime.tree().parent(id).unwrap()));
                 stack.extend_from_slice(ui.runtime.tree().children(id).unwrap_or(&[]));
             }
-            Ok(Self {
+            let mut inspector = Self {
                 container,
                 summary,
                 search,
@@ -480,9 +559,15 @@ impl PropertyGrid {
                 properties,
                 groups,
                 parents,
+                details,
+                selection: None,
+                last_focus: None,
                 error: None,
                 changes: Vec::new(),
-            })
+            };
+            inspector.restripe(ui);
+            inspector.sync_selection(ui)?;
+            Ok(inspector)
         })();
         if result.is_err() {
             let _ = ui.remove(container);
@@ -500,6 +585,11 @@ impl PropertyGrid {
     ) -> Result<(), ControlError> {
         let i = self.index(field)?;
         let p = &mut self.properties[i];
+        if p.descriptor.preview != PropertyPreview::Auto {
+            return Err(invalid(
+                "A display template requires the Auto property preview",
+            ));
+        }
         let root = ui
             .button_content(p.edit)
             .ok_or_else(|| invalid("Property has no display template"))?;
@@ -529,7 +619,7 @@ impl PropertyGrid {
             n.style.grid_columns = vec![GridTrack::Fr(1.)];
             n.style.grid_rows = vec![GridTrack::Fr(1.)];
             n.style.height = Length::Auto;
-            n.style.min_size.height = 32.;
+            n.style.min_size.height = 28.;
         })?;
         present(ui, p)
     }
@@ -890,6 +980,9 @@ impl PropertyGrid {
         for (i, action) in actions {
             let name = self.properties[i].schema.name.clone();
             let result = match action {
+                0 if self.properties[i].descriptor.metadata.read_only => {
+                    self.select(ui, Some(i)).map(|_| ())
+                }
                 0 => self.begin_edit(ui, &name).map(|_| ()),
                 1 => self.commit(ui, &name).map(|_| ()),
                 _ => self.reset(ui, &name).map(|_| ()),
@@ -905,11 +998,27 @@ impl PropertyGrid {
         {
             present(ui, p)?;
         }
+        let selection_changed = self.sync_selection(ui)?;
         self.update_scroll_extent(ui)?;
-        Ok(changed)
+        Ok(changed || selection_changed)
     }
     /// Optional pre-dispatch Escape route: composition first, then this draft.
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if let InputEvent::PointerDown {
+            position,
+            button: rust_desktop_ui_core::PointerButton::Primary,
+            ..
+        } = event
+            && self.details.is_some()
+            && !ui.popup_open()
+            && let Some(target) = ui.runtime.hit_test(*position)
+            && let Some(index) = self
+                .properties
+                .iter()
+                .position(|p| ui.flyout_descendant(target, p.row))
+        {
+            self.select(ui, Some(index))?;
+        }
         let InputEvent::KeyDown {
             key,
             modifiers,

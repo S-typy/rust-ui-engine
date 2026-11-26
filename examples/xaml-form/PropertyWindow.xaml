@@ -4,12 +4,14 @@
     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
     <TextBlock Text="Свойства документов" Grid.Row="0" FontSize="21" FontWeight="SemiBold"/>
     <PropertyGrid Grid.Row="1" Scrollable="True" x:Name="DocumentProperties" AutomationName="Инспектор двух документов"
-                  DataSource="InspectionObjects" ObjectKeys="1,2" LabelWidth="186">
+                  DataSource="InspectionObjects" ObjectKeys="1,2" LabelWidth="44%">
       <PropertyGrid.Properties>
         <Property FieldName="name" Label="Название" Category="Документ" DefaultValue="Без названия"/>
         <Property FieldName="author" Label="Автор" Category="Документ"/>
         <Property FieldName="department" Label="Подразделение" Category="Документ"/>
         <Property FieldName="enabled" Label="Включён" Category="Документ" DefaultIsNull="True"/>
+        <Property FieldName="accent" Label="Цвет метки" Preview="Color" Category="Документ"/>
+        <Property FieldName="progress" Label="Готовность" Preview="Progress" IsReadOnly="True" Category="Документ"/>
         <Property FieldName="identifier" Label="Идентификатор" Category="Документ" IsReadOnly="True"/>
         <Property FieldName="count" Label="Количество" Category="Параметры" Group="Размеры" DefaultValue="10"/>
         <Property FieldName="price" Label="Стоимость" Category="Параметры" Group="Финансы" DefaultValue="0"/>

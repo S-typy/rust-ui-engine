@@ -90,7 +90,9 @@ pub use navigation::{
 };
 mod data_form;
 mod property_grid;
-pub use property_grid::{PropertyDefinition, PropertyGridDefinition, validate_property_grid};
+pub use property_grid::{
+    PropertyDefinition, PropertyGridDefinition, PropertyPreview, validate_property_grid,
+};
 mod gallery;
 pub use gallery::{
     GalleryDefinition, GalleryGroupDefinition, GalleryItemDefinition, validate_gallery,

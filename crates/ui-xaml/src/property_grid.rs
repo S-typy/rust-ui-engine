@@ -7,6 +7,7 @@ pub struct PropertyGridDefinition {
     pub object_keys: Vec<i64>,
     pub properties: Vec<PropertyDefinition>,
     pub label_width: f32,
+    pub label_fraction: Option<f32>,
     /// Keep the toolbar visible while the property rows scroll in a bounded host.
     pub scrollable: bool,
     pub is_read_only: bool,
@@ -18,6 +19,7 @@ impl Default for PropertyGridDefinition {
             object_keys: Vec::new(),
             properties: Vec::new(),
             label_width: 180.0,
+            label_fraction: None,
             scrollable: false,
             is_read_only: false,
         }
@@ -27,14 +29,25 @@ impl Default for PropertyGridDefinition {
 pub struct PropertyDefinition {
     pub metadata: DataFormFieldDefinition,
     pub category: String,
+    pub description: String,
     pub groups: Vec<String>,
     /// Typed storage text interpreted against the registered FieldSchema.
     pub default_value: Option<String>,
     pub default_is_null: bool,
     pub choices: Vec<String>,
     pub full_width: bool,
+    pub preview: PropertyPreview,
     pub display_template: Option<Box<ElementDefinition>>,
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PropertyPreview {
+    #[default]
+    Auto,
+    Switch,
+    Color,
+    Progress,
+}
+
 impl PropertyDefinition {
     /// Optional TextBlock that presents the accepted value in the compiled template.
     pub fn value_part(&self) -> Option<&ElementDefinition> {
@@ -61,11 +74,13 @@ impl Default for PropertyDefinition {
         Self {
             metadata: DataFormFieldDefinition::default(),
             category: "Свойства".into(),
+            description: String::new(),
             groups: Vec::new(),
             default_value: None,
             default_is_null: false,
             choices: Vec::new(),
             full_width: false,
+            preview: PropertyPreview::Auto,
             display_template: None,
         }
     }
@@ -87,6 +102,9 @@ pub fn validate_property_grid(
         is_read_only: value.is_read_only,
     };
     validate_data_form(&form)?;
+    if value.label_fraction.is_some_and(|v| !(v > 0. && v < 1.)) {
+        return Err("LabelWidth percentage must be between 0 and 100".into());
+    }
     if value.object_keys.is_empty()
         || value.object_keys.len() > 64
         || value.object_keys.iter().collect::<HashSet<_>>().len() != value.object_keys.len()
@@ -102,6 +120,11 @@ pub fn validate_property_grid(
     }
     let mut bytes = 0;
     for p in &value.properties {
+        if p.preview != PropertyPreview::Auto
+            && (p.display_template.is_some() || !p.choices.is_empty())
+        {
+            return Err("Preview cannot be combined with DisplayTemplate or Choices".into());
+        }
         if let Some(template) = &p.display_template {
             validate_header_content(template)?;
             let mut nodes = vec![template.as_ref()];
@@ -115,6 +138,10 @@ pub fn validate_property_grid(
                 nodes.extend(node.children());
             }
         }
+        if p.description.len() > 2048 || p.description.chars().any(char::is_control) {
+            return Err("Invalid Property description".into());
+        }
+        bytes += p.description.len();
         if p.choices.len() > 128
             || p.choices.iter().collect::<HashSet<_>>().len() != p.choices.len()
             || p.choices
@@ -168,7 +195,17 @@ pub(crate) fn attribute(
                 .collect::<Result<_, _>>()?;
         }
         "Scrollable" => value.scrollable = boolean(document, attr)?,
-        "LabelWidth" => value.label_width = editor_metric(document, attr, 4096.0, true)?,
+        "LabelWidth" => {
+            if let Some(percent) = attr.value().strip_suffix('%') {
+                value.label_fraction = Some(
+                    percent.parse::<f32>().map_err(|_| {
+                        at_attribute(document, attr, "Invalid LabelWidth percentage")
+                    })? / 100.,
+                );
+            } else {
+                value.label_width = editor_metric(document, attr, 4096.0, true)?;
+            }
+        }
         "IsReadOnly" => value.is_read_only = boolean(document, attr)?,
         _ => return Ok(false),
     }
@@ -234,8 +271,24 @@ pub(crate) fn parse_children(
                     "Editor" => p.metadata.editor = attr.value().into(),
                     "IsReadOnly" => p.metadata.is_read_only = boolean(item.document(), attr)?,
                     "IsVisible" => p.metadata.visible = boolean(item.document(), attr)?,
+                    "Description" => p.description = attr.value().into(),
                     "Category" => p.category = attr.value().into(),
                     "FullWidth" => p.full_width = boolean(item.document(), attr)?,
+                    "Preview" => {
+                        p.preview = match attr.value() {
+                            "Auto" => PropertyPreview::Auto,
+                            "Switch" => PropertyPreview::Switch,
+                            "Color" => PropertyPreview::Color,
+                            "Progress" => PropertyPreview::Progress,
+                            _ => {
+                                return Err(at_attribute(
+                                    item.document(),
+                                    attr,
+                                    "Unsupported Property Preview",
+                                ));
+                            }
+                        }
+                    }
                     "Choices" => {
                         p.choices = attr
                             .value()
@@ -307,12 +360,12 @@ pub(crate) fn code(v: &PropertyGridDefinition) -> String {
         let m = &p.metadata;
         let metadata = format!("rust_desktop_ui_xaml::DataFormFieldDefinition {{ field:{:?}.into(), label:{}, visible:{}, is_read_only:{}, editor:{:?}.into() }}",
             m.field, optional_string(&m.label), m.visible, m.is_read_only, m.editor);
-        format!("rust_desktop_ui_xaml::PropertyDefinition {{ metadata:{metadata}, category:{:?}.into(), groups:vec![{}], default_value:{}, default_is_null:{}, choices:vec![{}], full_width:{}, display_template:{} }}",
-            p.category, strings(&p.groups), optional_string(&p.default_value), p.default_is_null, strings(&p.choices), p.full_width, codegen::optional_child(p.display_template.as_deref()))
+        format!("rust_desktop_ui_xaml::PropertyDefinition {{ metadata:{metadata}, category:{:?}.into(), description:{:?}.into(), groups:vec![{}], default_value:{}, default_is_null:{}, choices:vec![{}], full_width:{}, preview:rust_desktop_ui_xaml::PropertyPreview::{:?}, display_template:{} }}",
+            p.category, p.description, strings(&p.groups), optional_string(&p.default_value), p.default_is_null, strings(&p.choices), p.full_width, p.preview, codegen::optional_child(p.display_template.as_deref()))
     }).collect::<Vec<_>>().join(",");
     format!(
-        "rust_desktop_ui_xaml::PropertyGridDefinition {{ data_source:{:?}.into(), object_keys:vec!{:?}, label_width:{:?}, is_read_only:{}, scrollable:{}, properties:vec![{properties}] }}",
-        v.data_source, v.object_keys, v.label_width, v.is_read_only, v.scrollable
+        "rust_desktop_ui_xaml::PropertyGridDefinition {{ data_source:{:?}.into(), object_keys:vec!{:?}, label_width:{:?}, label_fraction:{:?}, is_read_only:{}, scrollable:{}, properties:vec![{properties}] }}",
+        v.data_source, v.object_keys, v.label_width, v.label_fraction, v.is_read_only, v.scrollable
     )
 }
 fn optional_string(v: &Option<String>) -> String {

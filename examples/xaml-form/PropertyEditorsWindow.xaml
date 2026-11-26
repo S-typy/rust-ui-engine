@@ -1,0 +1,28 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Свойства публикации" Width="660" Height="525" Padding="12">
+  <PropertyGrid x:Name="PublicationProperties" DataSource="InspectionObjects" ObjectKeys="1"
+                LabelWidth="44%" Scrollable="True" AutomationName="Свойства публикации">
+    <PropertyGrid.Properties>
+      <Property FieldName="name" Label="Название" Category="Документ"
+                Description="Название документа, которое увидят читатели."/>
+      <Property FieldName="author" Label="Автор" Category="Документ"
+                Description="Имя автора в карточке документа."/>
+      <Property FieldName="department" Label="Подразделение" Category="Документ"
+                Description="Подразделение, которое отвечает за публикацию."/>
+      <Property FieldName="status" Label="Статус" Category="Документ" Choices="Черновик|На согласовании|Утверждён"
+                Description="Этап согласования перед публикацией."/>
+      <Property FieldName="accent" Label="Цвет метки" Preview="Color" Category="Оформление"
+                Description="Цвет метки документа. Можно ввести #RRGGBB или #AARRGGBB."/>
+      <Property FieldName="progress" Label="Готовность" Preview="Progress" IsReadOnly="True" Category="Оформление"
+                Description="Доля завершённых проверок перед публикацией."/>
+      <Property FieldName="alerts" Label="Уведомления" Preview="Switch" Category="Публикация"
+                Description="Отправлять уведомление об изменении статуса."/>
+      <Property FieldName="enabled" Label="Разрешить публикацию" Category="Публикация"
+                Description="Флажок может наследовать значение из настроек раздела."/>
+      <Property FieldName="created" Label="Дата создания" Category="Публикация"
+                Description="Дата создания документа в редакции."/>
+      <Property FieldName="time" Label="Время обновления" Category="Публикация"
+                Description="Время последнего обновления публикации."/>
+    </PropertyGrid.Properties>
+  </PropertyGrid>
+</Window>

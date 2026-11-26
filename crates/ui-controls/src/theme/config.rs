@@ -321,6 +321,16 @@ impl ThemeConfig {
 }
 
 impl Theme {
+    pub(crate) fn inspector_alternate_row(self) -> Color {
+        if self
+            .configuration()
+            .is_some_and(|c| c.palette.is_some() || c.mode.is_high_contrast())
+        {
+            return self.tokens().canvas;
+        }
+        mix(self.chrome().card_surface, self.tokens().canvas, 0.60)
+    }
+
     pub(crate) fn grid_alternate_row(self) -> Color {
         let tokens = self.tokens();
         if self

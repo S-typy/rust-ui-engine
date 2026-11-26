@@ -135,7 +135,8 @@ mod property_grid_model;
 mod property_grid_tests;
 pub use property_grid::PropertyGrid;
 pub use property_grid_model::{
-    PropertyChanged, PropertyCommit, PropertyDescriptor, PropertyGridSettings, PropertyValue,
+    PropertyChanged, PropertyCommit, PropertyDescriptor, PropertyGridSettings, PropertyPreview,
+    PropertyValue,
 };
 mod navigation;
 mod navigation_model;
@@ -3672,7 +3673,7 @@ impl Controls {
                 if !state.enabled
                     && matches!(
                         control.inspector_part,
-                        Some(property_grid::InspectorPart::Value)
+                        Some(property_grid::InspectorPart::Value(_))
                     )
                     && self
                         .runtime
@@ -3766,6 +3767,19 @@ impl Controls {
                 if self.button_content(id).is_some() {
                     continue;
                 }
+                let text_bounds = if let Some(property_grid::InspectorPart::Value(mark)) =
+                    control.inspector_part
+                {
+                    mark.paint(
+                        &mut self.scene,
+                        text_bounds,
+                        clip,
+                        self.theme,
+                        style.foreground,
+                    )
+                } else {
+                    text_bounds
+                };
                 if control.button_content_layout != ButtonContentLayout::Leading
                     || control.ribbon_command
                 {
@@ -3832,7 +3846,7 @@ impl Controls {
                         align: if indicator
                             || matches!(
                                 control.inspector_part,
-                                Some(property_grid::InspectorPart::Value)
+                                Some(property_grid::InspectorPart::Value(_))
                             ) {
                             TextAlign::Start
                         } else {
@@ -4098,6 +4112,17 @@ impl Controls {
                     !control.kind.clickable() && !control.single_line
                 },
             };
+            if matches!(
+                control.inspector_part,
+                Some(property_grid::InspectorPart::Name)
+            ) {
+                let height = self
+                    .engine
+                    .prepare(&run, 1.)
+                    .map_err(|e| ControlError::Text(e.to_string()))?
+                    .height;
+                run.bounds.y += ((text_bounds.height - height) * 0.5).max(0.);
+            }
             if editable {
                 if text_bounds.width <= 0.0 || text_bounds.height <= 0.0 {
                     continue;

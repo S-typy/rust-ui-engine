@@ -4166,11 +4166,13 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 name = "xaml-form"
 version = "0.1.0"
 dependencies = [
+ "pollster",
  "rust-desktop-ui-controls",
  "rust-desktop-ui-core",
  "rust-desktop-ui-data",
  "rust-desktop-ui-images",
  "rust-desktop-ui-platform-winit",
+ "rust-desktop-ui-render-wgpu",
  "rust-desktop-ui-text",
  "rust-desktop-ui-treegrid",
  "rust-desktop-ui-xaml",

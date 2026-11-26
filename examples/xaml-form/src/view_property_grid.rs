@@ -64,9 +64,24 @@ fn settings(ui: &Controls, value: &PropertyGridDefinition) -> Result<PropertyGri
                     editor: p.metadata.editor.clone(),
                 },
                 category: p.category.clone(),
+                description: p.description.clone(),
                 groups: p.groups.clone(),
                 choices: p.choices.clone(),
                 full_width: p.full_width,
+                preview: match p.preview {
+                    rust_desktop_ui_xaml::PropertyPreview::Auto => {
+                        rust_desktop_ui_controls::PropertyPreview::Auto
+                    }
+                    rust_desktop_ui_xaml::PropertyPreview::Switch => {
+                        rust_desktop_ui_controls::PropertyPreview::Switch
+                    }
+                    rust_desktop_ui_xaml::PropertyPreview::Color => {
+                        rust_desktop_ui_controls::PropertyPreview::Color
+                    }
+                    rust_desktop_ui_xaml::PropertyPreview::Progress => {
+                        rust_desktop_ui_controls::PropertyPreview::Progress
+                    }
+                },
                 default,
             })
         })
@@ -74,6 +89,7 @@ fn settings(ui: &Controls, value: &PropertyGridDefinition) -> Result<PropertyGri
     Ok(PropertyGridSettings {
         properties,
         label_width: value.label_width,
+        label_fraction: value.label_fraction,
         scrollable: value.scrollable,
         read_only: value.is_read_only,
     })
@@ -124,7 +140,11 @@ impl MountedView {
                     if p.full_width {
                         width
                     } else {
-                        (width - value.label_width).max(0.)
+                        (width
+                            - value
+                                .label_fraction
+                                .map_or(value.label_width, |fraction| width * fraction))
+                        .max(0.)
                     },
                     context,
                 )?;
@@ -410,6 +430,170 @@ mod tests {
                         && visible.height + 0.1 >= run.bounds.height,
                     "Draft clipped: {run:?}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn publication_inspector_aligns_rows_and_tracks_the_selected_description() {
+        use rust_desktop_ui_controls::SemanticAction;
+        let mut form = crate::form::Form::new_with_model(
+            crate::generated_property_editors::window_definition(),
+            false,
+            None,
+        )
+        .unwrap();
+        let grid = form
+            .view
+            .property_grids
+            .get_mut(&form.view.names["PublicationProperties"])
+            .unwrap();
+        let ui = &mut form.ui;
+        for width in [660., 420., 900.] {
+            ui.update(Size::new(width, 525.)).unwrap();
+            let row = ui
+                .runtime
+                .bounds(grid.property_row("author").unwrap())
+                .unwrap();
+            let button = ui
+                .runtime
+                .bounds(grid.property_actions("author").unwrap().0)
+                .unwrap();
+            assert!(((button.x - row.x - 1.) / row.width - 0.44).abs() < 0.005);
+            assert!(
+                ui.runtime
+                    .bounds(grid.row_viewport().unwrap())
+                    .unwrap()
+                    .height
+                    > 250.
+            );
+            assert!(row.height <= 30., "ordinary row height {}", row.height);
+            let y = |s| {
+                ui.scene()
+                    .texts
+                    .iter()
+                    .find(|t| t.text == s && t.bounds.intersection(row).is_some())
+                    .unwrap()
+                    .bounds
+                    .y
+            };
+            assert!((y("Автор") - y("Анна Мельникова")).abs() < 0.75);
+        }
+        let color_row = grid.property_row("accent").unwrap();
+        let before_edit = ui.runtime.bounds(color_row).unwrap();
+        grid.begin_edit(ui, "accent").unwrap();
+        ui.update(Size::new(900., 525.)).unwrap();
+        assert_eq!(ui.runtime.bounds(color_row).unwrap(), before_edit);
+        let color_editor = grid.property_editor("accent").unwrap();
+        ui.set_text(color_editor, "#A40442").unwrap();
+        grid.cancel(ui, "accent").unwrap();
+        assert_eq!(
+            ui.label_text(grid.property_actions("accent").unwrap().0),
+            Some("#28769B")
+        );
+        grid.set_draft(ui, "accent", CellValue::Text("#A40442".into()))
+            .unwrap();
+        assert_eq!(grid.commit(ui, "accent").unwrap(), PropertyCommit::Saved);
+        assert_eq!(
+            ui.label_text(grid.property_actions("accent").unwrap().0),
+            Some("#A40442")
+        );
+        let action = grid.property_actions("progress").unwrap().0;
+        ui.perform_action(action, SemanticAction::Activate, None)
+            .unwrap();
+        grid.update(ui).unwrap();
+        ui.update(Size::new(660., 525.)).unwrap();
+        assert!(
+            ui.scene()
+                .texts
+                .iter()
+                .any(|t| t.text == "Доля завершённых проверок перед публикацией.")
+        );
+        assert!(
+            ui.runtime
+                .bounds(grid.property_editor("progress").unwrap())
+                .is_none()
+        );
+        grid.begin_edit(ui, "alerts").unwrap();
+        let checkbox = grid.property("alerts").unwrap();
+        assert_eq!(
+            ui.check_presentation(checkbox),
+            Some(rust_desktop_ui_controls::CheckPresentation::Switch)
+        );
+        ui.set_checked(checkbox, false).unwrap();
+        grid.commit(ui, "alerts").unwrap();
+        assert_eq!(
+            ui.data_source("InspectionObjects")
+                .unwrap()
+                .borrow()
+                .value(1, "alerts"),
+            Some(&CellValue::Bool(false))
+        );
+        let (search, _, _) = grid.toolbar_parts();
+        ui.set_text(search, "статус").unwrap();
+        grid.update(ui).unwrap();
+        ui.update(Size::new(660., 525.)).unwrap();
+        assert!(
+            ui.scene()
+                .texts
+                .iter()
+                .any(|t| t.text == "Этап согласования перед публикацией.")
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a hardware GPU adapter"]
+    fn render_property_inspector_frames() {
+        use rust_desktop_ui_platform_winit::DesktopApp;
+        use rust_desktop_ui_xaml::Theme as WindowTheme;
+        let output = std::env::var_os("PROPERTY_GRID_FRAME_DIR").map(std::path::PathBuf::from);
+        let mut gpu =
+            pollster::block_on(rust_desktop_ui_render_wgpu::OffscreenRenderer::new()).unwrap();
+        eprintln!("GPU {:?}", gpu.adapter_info());
+        for (name, theme, width, height, scale) in [
+            ("publication", WindowTheme::Light, 660., 525., 1.25),
+            ("dark", WindowTheme::Dark, 660., 525., 1.25),
+            ("narrow", WindowTheme::Light, 420., 525., 1.25),
+            ("scale100", WindowTheme::Light, 660., 525., 1.),
+            ("scale150", WindowTheme::Light, 660., 525., 1.5),
+            ("documents", WindowTheme::Light, 700., 760., 1.25),
+        ] {
+            let mut definition = if name == "documents" {
+                crate::generated_properties::window_definition()
+            } else {
+                crate::generated_property_editors::window_definition()
+            };
+            definition.theme = theme;
+            let mut form = crate::form::Form::new_with_model(definition, false, None).unwrap();
+            let size = Size::new(width, height);
+            form.update(size, scale).unwrap();
+            form.update(size, scale).unwrap();
+            let bitmap = gpu
+                .render(
+                    form.ui.scene(),
+                    [
+                        (width * scale).round() as u32,
+                        (height * scale).round() as u32,
+                    ],
+                    scale,
+                )
+                .unwrap();
+            let swatch_pixels = bitmap
+                .pixels()
+                .chunks_exact(4)
+                .filter(|pixel| pixel[..3] == [0x28, 0x76, 0x9b])
+                .count();
+            assert!(
+                swatch_pixels >= 50,
+                "{name}: property color swatch outside the visible viewport"
+            );
+            if let Some(dir) = &output {
+                std::fs::create_dir_all(dir).unwrap();
+                std::fs::write(
+                    dir.join(format!("{name}.png")),
+                    rust_desktop_ui_images::encode_bitmap_png(&bitmap).unwrap(),
+                )
+                .unwrap();
             }
         }
     }

@@ -9,15 +9,30 @@ pub enum PropertyValue {
     Mixed,
 }
 
+/// Appearance of an accepted value before the editor is opened.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PropertyPreview {
+    #[default]
+    Auto,
+    /// A boolean switch. The editable control uses the same presentation.
+    Switch,
+    /// A text field containing #RRGGBB or #AARRGGBB. Other text stays readable.
+    Color,
+    /// An integer percentage. Values outside 0..=100 retain their numeric display.
+    Progress,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct PropertyDescriptor {
     pub metadata: DataFormField,
     pub category: String,
+    pub description: String,
     /// Static expandable path within a category, at most eight levels.
     pub groups: Vec<String>,
     pub default: Option<CellValue>,
     /// Finite choices for a text property, in popup order.
     pub choices: Vec<String>,
+    pub preview: PropertyPreview,
     /// Let the value occupy the name column as well.
     pub full_width: bool,
 }
@@ -26,9 +41,11 @@ impl PropertyDescriptor {
         Self {
             metadata: DataFormField::new(field),
             category: "Свойства".into(),
+            description: String::new(),
             groups: Vec::new(),
             default: None,
             choices: Vec::new(),
+            preview: PropertyPreview::Auto,
             full_width: false,
         }
     }
@@ -39,6 +56,8 @@ pub struct PropertyGridSettings {
     /// Empty generates schema fields in one category.
     pub properties: Vec<PropertyDescriptor>,
     pub label_width: f32,
+    /// Optional fraction of the entire row reserved for property names.
+    pub label_fraction: Option<f32>,
     /// Keep the toolbar visible while the property rows scroll in a bounded host.
     pub scrollable: bool,
     pub read_only: bool,
@@ -48,6 +67,7 @@ impl Default for PropertyGridSettings {
         Self {
             properties: Vec::new(),
             label_width: 180.0,
+            label_fraction: None,
             scrollable: false,
             read_only: false,
         }
@@ -55,6 +75,11 @@ impl Default for PropertyGridSettings {
 }
 impl PropertyGridSettings {
     pub(super) fn validate(&self) -> Result<(), ControlError> {
+        if self.label_fraction.is_some_and(|v| !(v > 0. && v < 1.)) {
+            return Err(invalid(
+                "PropertyGrid label fraction must be between zero and one",
+            ));
+        }
         DataFormSettings {
             fields: self.properties.iter().map(|v| v.metadata.clone()).collect(),
             label_width: self.label_width,
@@ -64,6 +89,12 @@ impl PropertyGridSettings {
         .validate()?;
         let mut bytes = 0usize;
         for property in &self.properties {
+            if property.description.len() > 2048
+                || property.description.chars().any(char::is_control)
+            {
+                return Err(invalid("Invalid property description"));
+            }
+            bytes += property.description.len();
             if property.groups.len() > 8
                 || std::iter::once(&property.category)
                     .chain(&property.groups)

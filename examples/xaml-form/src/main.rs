@@ -154,6 +154,9 @@ mod generated_font {
 mod generated_navigation {
     include!(concat!(env!("OUT_DIR"), "/navigation_window.rs"));
 }
+mod generated_property_editors {
+    include!(concat!(env!("OUT_DIR"), "/property_editors_window.rs"));
+}
 mod generated_properties {
     include!(concat!(env!("OUT_DIR"), "/property_window.rs"));
 }
@@ -248,6 +251,7 @@ fn start() -> Result<(), String> {
     let mut tiles = false;
     let mut gallery = false;
     let mut properties = false;
+    let mut property_editors = false;
     let mut badges = false;
     let mut breadcrumb = false;
     let mut font = false;
@@ -367,6 +371,7 @@ fn start() -> Result<(), String> {
             "--tiles" => tiles = true,
             "--gallery" => gallery = true,
             "--properties" => properties = true,
+            "--property-editors" => property_editors = true,
             "--badges" => badges = true,
             "--breadcrumb" => breadcrumb = true,
             "--font" => font = true,
@@ -497,6 +502,7 @@ fn start() -> Result<(), String> {
         tiles,
         gallery,
         properties,
+        property_editors,
         badges,
         breadcrumb,
         font,
@@ -559,6 +565,8 @@ fn start() -> Result<(), String> {
         generated_pivot::window_definition()
     } else if query_builder {
         generated_query::window_definition()
+    } else if property_editors {
+        generated_property_editors::window_definition()
     } else if properties {
         generated_properties::window_definition()
     } else if notifications {
@@ -737,7 +745,7 @@ fn start() -> Result<(), String> {
     if workspace {
         return run_workspace(definition, options, diagnostics, dialog_directory);
     }
-    let (context, sources) = if properties {
+    let (context, sources) = if properties || property_editors {
         (None, Vec::new())
     } else if gallery {
         (Some(gallery_model::model()?), Vec::new())

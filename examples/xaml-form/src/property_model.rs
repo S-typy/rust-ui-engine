@@ -65,6 +65,9 @@ pub(crate) fn register(ui: &mut Controls) -> Result<(), String> {
         FieldSchema::new("status", FieldType::Text),
         FieldSchema::new("notes", FieldType::Text),
         FieldSchema::new("cover", FieldType::Text),
+        FieldSchema::new("accent", FieldType::Text),
+        FieldSchema::new("progress", FieldType::Integer),
+        FieldSchema::new("alerts", FieldType::Bool),
     ])
     .map_err(err)?;
     let rows = vec![
@@ -84,6 +87,9 @@ pub(crate) fn register(ui: &mut Controls) -> Result<(), String> {
                 CellValue::Text("На согласовании".into()),
                 CellValue::Text("Согласовать финальную редакцию с автором. После утверждения документ будет доступен всем участникам отдела.".into()),
                 CellValue::Text("Горный пейзаж".into()),
+                CellValue::Text("#28769B".into()),
+                CellValue::Integer(68),
+                CellValue::Bool(true),
             ],
         ),
         DataRow::new(
@@ -102,6 +108,9 @@ pub(crate) fn register(ui: &mut Controls) -> Result<(), String> {
                 CellValue::Text("На согласовании".into()),
                 CellValue::Text("Согласовать финальную редакцию с автором. После утверждения документ будет доступен всем участникам отдела.".into()),
                 CellValue::Text("Горный пейзаж".into()),
+                CellValue::Text("#28769B".into()),
+                CellValue::Integer(68),
+                CellValue::Bool(true),
             ],
         ),
     ];

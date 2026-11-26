@@ -187,7 +187,36 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
         .label
         .as_ref()
         .unwrap_or(&p.schema.title);
-    let preview = match aggregate(&p.baseline) {
+    let accepted = aggregate(&p.baseline);
+    let mark = match (&accepted, p.descriptor.preview) {
+        (PropertyValue::Uniform(CellValue::Text(raw)), PropertyPreview::Color) => raw
+            .parse::<Srgba8>()
+            .map_or(ValueMark::Plain, ValueMark::Swatch),
+        (PropertyValue::Uniform(CellValue::Integer(v)), PropertyPreview::Progress)
+            if (0..=100).contains(v) =>
+        {
+            ValueMark::Percent(*v as u8)
+        }
+        (_, kind) if matches!(p.recipe, DataFormEditorFactory::CheckBox) => {
+            let state = match accepted {
+                PropertyValue::Uniform(CellValue::Bool(true)) => CheckState::Checked,
+                PropertyValue::Uniform(CellValue::Bool(false)) => CheckState::Unchecked,
+                _ => CheckState::Indeterminate,
+            };
+            if kind == PropertyPreview::Switch {
+                ValueMark::Switch(state)
+            } else {
+                ValueMark::Check(state)
+            }
+        }
+        _ if !p.descriptor.choices.is_empty() => ValueMark::Choice,
+        _ => ValueMark::Plain,
+    };
+    ui.controls.get_mut(&p.edit).unwrap().inspector_part = Some(InspectorPart::Value(mark));
+    let preview = match accepted {
+        PropertyValue::Uniform(CellValue::Integer(v)) if matches!(mark, ValueMark::Percent(_)) => {
+            format!("{v}%")
+        }
         PropertyValue::Mixed => "Разные значения".to_owned(),
         PropertyValue::Uniform(CellValue::Null) => "Не задано".to_owned(),
         PropertyValue::Uniform(CellValue::Bool(v)) => if v { "Да" } else { "Нет" }.to_owned(),
@@ -222,7 +251,7 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
         enabled(ui, null, writable)?;
         enabled(ui, p.owner, ui.checked(null) != Some(true))?;
     }
-    enabled(ui, p.edit, writable)?;
+    enabled(ui, p.edit, writable || !p.descriptor.description.is_empty())?;
     enabled(ui, p.apply, p.editing && writable)?;
     enabled(ui, p.reset, p.descriptor.default.is_some() && writable)?;
     Ok(())
