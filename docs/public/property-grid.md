@@ -95,8 +95,9 @@ is distinct from `PropertyGrid::accepted`. Pending asynchronous validation
 requires a later explicit Apply. Success emits one property change containing
 the selected stable object keys; drain it with `take_changes`.
 
-NULL uses an explicit toggle for nullable text and typed editors; nullable Bool
-uses its three-state checkbox. Empty text remains a string. Integer recipes use
+Nullable color fields offer **Нет значения** in their palette. Nullable Boolean
+fields use a three-state checkbox. Other nullable editors have a separate NULL
+toggle. Empty text remains a string. Integer recipes use
 exact signed 64-bit values, and Decimal uses exact decimal storage. Readonly
 metadata protects editor actions, embedded typed buttons, Apply, Reset and NULL.
 
@@ -185,12 +186,9 @@ Use `--property-publication` to inspect one publication or `--properties` for tw
 ## Cell editors
 
 Set `Editor` on a property to choose the control that prepares its typed value.
-Rows with explicit confirmation use the checkmark to apply the draft to all selected objects in one source transaction.
-Escape restores the accepted value. A popup first handles its own selection or cancellation.
-For one object, accepting a color or brush in the palette writes the accepted
-value once. Dismissing the palette discards the pending selection. Typing a
-color directly into its text field and editing several objects still use the
-row's explicit confirmation.
+When a row requires explicit confirmation, its Apply action writes to all selected
+objects in one transaction. Escape restores the accepted value. An open popup
+handles its own selection or cancellation first.
 
 | Editor | Source and interaction |
 | --- | --- |
@@ -200,7 +198,8 @@ row's explicit confirmation.
 | Lookup, SearchLookup, ListBox | Map stable text or integer keys to labels with `Choices` and `ChoiceKeys`. SearchLookup filters the popup. ListBox presents small sets of options using radio buttons. |
 | Date, DatePicker, Font | Date input with calendar, day/month/year picker, and font family picker. Dates use a typed source field. Fonts use a text family name. |
 | Calculator, Spin | Decimal calculator popup and numeric stepper. Spin accepts an integer or decimal source. Set `CurrencySymbol="₽"` for a grouped amount with a suffix. The symbol stays outside the input and the source stores the exact number. |
-| Color, Brush | The palette supports color channels and transparency. A brush can also contain an angle and ordered gradient stops. Accepted text keeps its original spelling until edited. |
+| Color | A swatch and color code share the value cell. Click the value to open the palette. |
+| Brush | Edit a solid color or a linear gradient with an angle and ordered stops. Accepting the popup writes a single object's value. |
 | Image | Displays a thumbnail of an encoded binary image. The popup supports working-image edits. The sample handles open/save requests with the platform file dialog. |
 | Slider, ZoomSlider, RangeSlider, ProgressBar | Numeric slider, zoom with step buttons, two bounds in a text value such as `20..75`, and read-only progress. Drag either thumb to change one bound or drag the selected track between the thumbs to move both together. Escape restores the pair at the start of the gesture. Use `Minimum`, `Maximum` and `Step` on supported numeric controls. |
 | CheckBox, Switch preview | Boolean state with a checkbox or `Preview="Switch"`. Nullable fields can represent an unset value. |
@@ -219,6 +218,31 @@ row's explicit confirmation.
 A linear brush can be stored as `linear(90;0=#28769B;1=#D5F2E6)`.
 StringCollection holds up to 64 single-line items. Each item may occupy 512 UTF-8 bytes,
 and the encoded collection may occupy 16 KiB. Nested application object graphs require their own descriptors.
+
+### Selecting a color
+
+Use `Editor="Color"` for a text field that stores a solid color. The swatch
+shows transparency over a checkerboard. Click the swatch, code or arrow to
+open a palette of 32 colors. Choosing a swatch closes the palette. Previously
+accepted colors appear under **Недавние цвета**.
+
+Choose **Другой цвет…** to mix a custom color. Select a hue on the vertical
+strip, then drag inside the color field. Moving right increases saturation,
+moving up increases brightness. The arrow keys adjust the focused field or
+hue strip. Hold Shift for larger steps. Both controls preserve the current alpha.
+
+For an exact value, enter `#RRGGBB` or `#AARRGGBB`, or change the individual
+channels. In the eight-digit form the first pair is alpha. **Применить** accepts
+the custom color. **Отмена** or Escape discards the pending input. For a
+nullable field, **Нет значения** stores NULL. A fully transparent color such
+as `#00112233` retains its RGB channels.
+
+With one object, accepting the palette writes the color to the source. With
+several objects, it prepares a draft. Choose **Применить** in the square
+property menu to write the draft to all selected objects. Opening and closing
+a mixed row preserves the individual colors. The editor preserves the source
+spelling while the color stays the same. Use `Preview="Color"` for a text
+field that accepts arbitrary strings and shows a swatch beside recognized codes.
 
 ### Application-defined editors
 

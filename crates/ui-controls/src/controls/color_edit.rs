@@ -31,6 +31,7 @@ pub(super) struct Entry {
     pub parts: ColorEditor,
     pub brush: bool,
     pub wide_preview: bool,
+    pub property_cell: bool,
     pub value: Option<BrushValue>,
     pub settings: ColorEditorSettings,
     pub draft: Draft,
@@ -138,7 +139,9 @@ impl Controls {
             let button = self.button(container, "Выбрать цвет или кисть", None, cell(3))?;
             self.set_button_icon(button, Some(ButtonIcon::new(IconSymbol::ChevronDown)))?;
             self.set_button_content_layout(button, ButtonContentLayout::IconOnly)?;
-            self.edit_props(button, |p| p.enabled = !settings.is_read_only)?;
+            if settings.is_read_only {
+                self.set_enabled(button, false)?;
+            }
             let parts = ColorEditor {
                 container,
                 editor,
@@ -151,6 +154,7 @@ impl Controls {
                     parts,
                     brush,
                     wide_preview: false,
+                    property_cell: false,
                     value: value.clone(),
                     settings,
                     draft: Draft::new(value.clone()),
@@ -407,8 +411,12 @@ impl Controls {
             !e.settings.is_read_only
                 && self.effective_enabled(id)
                 && self.activation_available(id)
-                && self.effective_enabled(e.parts.editor)
-                && (e.brush || self.is_text_editable(e.parts.editor))
+                && if e.property_cell {
+                    self.effective_enabled(e.parts.button)
+                } else {
+                    self.effective_enabled(e.parts.editor)
+                        && (e.brush || self.is_text_editable(e.parts.editor))
+                }
         })
     }
     pub(super) fn color_inline_owner(&self, editor: WidgetId) -> Option<WidgetId> {

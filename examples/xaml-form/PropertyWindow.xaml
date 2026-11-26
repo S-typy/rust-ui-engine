@@ -10,7 +10,7 @@
         <Property FieldName="author" Label="Автор" Category="Документ"/>
         <Property FieldName="department" Label="Подразделение" Category="Документ"/>
         <Property FieldName="enabled" Label="Включён" Category="Документ" DefaultIsNull="True"/>
-        <Property FieldName="accent" Label="Цвет метки" Preview="Color" Category="Документ"/>
+        <Property FieldName="accent" Label="Цвет метки" Editor="Color" Category="Документ"/>
         <Property FieldName="progress" Label="Готовность" Preview="Progress" IsReadOnly="True" Category="Документ"/>
         <Property FieldName="identifier" Label="Идентификатор" Category="Документ" IsReadOnly="True"/>
         <Property FieldName="count" Label="Количество" Category="Параметры" Group="Размеры" DefaultValue="10"/>

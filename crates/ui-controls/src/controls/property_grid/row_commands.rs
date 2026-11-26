@@ -66,17 +66,17 @@ impl Commands {
 }
 
 impl PropertyGrid {
-    fn open_spin_commands(
+    fn open_row_commands(
         &mut self,
         ui: &mut Controls,
         index: usize,
         anchor: WidgetId,
     ) -> Result<(), ControlError> {
         self.select(ui, Some(index))?;
-        if self.spin_commands.is_none() {
-            self.spin_commands = Some(Commands::new(ui, anchor)?);
+        if self.row_commands.is_none() {
+            self.row_commands = Some(Commands::new(ui, anchor)?);
         }
-        let menu = self.spin_commands.as_mut().unwrap();
+        let menu = self.row_commands.as_mut().unwrap();
         let p = &self.properties[index];
         menu.row = index;
         menu.editing = p.active;
@@ -89,6 +89,7 @@ impl PropertyGrid {
             },
         )?;
         show(ui, menu.cancel, p.active)?;
+        ui.set_enabled(menu.primary, !p.active || p.editing)?;
         let can_reset = p.descriptor.default.is_some();
         show(ui, menu.reset, can_reset)?;
         ui.set_flyout_anchor(menu.flyout, anchor)?;
@@ -101,9 +102,9 @@ impl PropertyGrid {
         ui.open_flyout(menu.flyout)
     }
 
-    pub(super) fn update_spin_commands(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
+    pub(super) fn update_row_commands(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
         let mut changed = false;
-        if let Some(menu) = &self.spin_commands {
+        if let Some(menu) = &self.row_commands {
             let mut action = None;
             ui.activated.retain(|id| {
                 if [menu.primary, menu.cancel, menu.reset].contains(id) {
@@ -132,7 +133,7 @@ impl PropertyGrid {
             if let Some(index) = self
                 .properties
                 .iter()
-                .position(|p| p.spin_menu_button == Some(*id))
+                .position(|p| p.menu_button == Some(*id))
             {
                 open = Some((index, *id));
                 return false;
@@ -140,7 +141,7 @@ impl PropertyGrid {
             true
         });
         if let Some((index, anchor)) = open {
-            self.open_spin_commands(ui, index, anchor)?;
+            self.open_row_commands(ui, index, anchor)?;
             changed = true;
         }
         Ok(changed)

@@ -223,6 +223,196 @@ fn palettes_apply_and_discard_without_normalizing_unedited_source_colors() {
     }
 }
 
+#[test]
+fn color_property_quick_palette_navigates_and_accepts_the_visible_swatch() {
+    let (mut ui, editor) = fixture("Color", FieldType::Text, CellValue::Text("#ffffff".into()));
+    let owner = editor.owner();
+    ui.open_color_popup(owner).unwrap();
+    let popup = ui.color_popup(owner).unwrap().clone();
+    let page = ui.runtime.bounds(popup.flyout.container).unwrap();
+    let first = ui.runtime.bounds(popup.palette[0]).unwrap();
+    let below = ui.runtime.bounds(popup.palette[8]).unwrap();
+    let more = ui.runtime.bounds(popup.more_colors.unwrap()).unwrap();
+    assert!(page.width < 300. && page.height < 240.);
+    assert_eq!(first.x, below.x);
+    assert!(below.y >= first.y + first.height && more.y + more.height <= page.y + page.height);
+    assert_eq!(ui.runtime.focused(), Some(popup.palette[0]));
+    for theme in [Theme::FluentLight, Theme::FluentDark] {
+        ui.set_theme(theme).unwrap();
+        ui.update(Size::new(900., 800.)).unwrap();
+        let semantics = ui.semantics();
+        let current = semantics
+            .iter()
+            .find(|node| node.id == popup.palette[0])
+            .unwrap();
+        assert!(current.selected && current.focused && current.role == Role::ListItem);
+        assert_eq!(current.label, "#FFFFFFFF");
+        assert!(semantics.iter().all(|node| node.id != popup.hex));
+        let b = ui.runtime.bounds(popup.palette[0]).unwrap();
+        assert!(ui.scene().rectangles.iter().any(
+            |r| r.color == theme.tokens().focus && r.bounds == Rect::new(b.x, b.y, b.width, 1.)
+        ));
+    }
+    for (key, index) in [(Key::ArrowDown, 8), (Key::ArrowRight, 9)] {
+        ui.dispatch(InputEvent::KeyDown {
+            key,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+        .unwrap();
+        assert_eq!(ui.runtime.focused(), Some(popup.palette[index]));
+        assert_eq!(ui.color_value(owner), Some(Some(Srgba8::WHITE)));
+    }
+    for (shift, target) in [
+        (false, popup.more_colors.unwrap()),
+        (true, popup.palette[9]),
+    ] {
+        ui.dispatch(InputEvent::KeyDown {
+            key: Key::Tab,
+            modifiers: Modifiers {
+                shift,
+                ..Default::default()
+            },
+            repeat: false,
+        })
+        .unwrap();
+        assert_eq!(ui.runtime.focused(), Some(target));
+    }
+    let selected = ui.color_editor_settings(owner).unwrap().palette[9];
+    ui.dispatch(InputEvent::KeyDown {
+        key: Key::Enter,
+        modifiers: Modifiers::default(),
+        repeat: false,
+    })
+    .unwrap();
+    assert!(!ui.color_popup_is_open(owner));
+    assert_eq!(ui.color_value(owner), Some(Some(selected)));
+    assert_eq!(ui.color_recent(owner), Some([selected].as_slice()));
+
+    ui.open_color_popup(owner).unwrap();
+    assert_eq!(ui.runtime.focused(), Some(popup.palette[9]));
+    click(&mut ui, popup.more_colors.unwrap());
+    assert_eq!(ui.runtime.focused(), Some(popup.hex));
+    ui.set_text(popup.hex, "#bad").unwrap();
+    click(&mut ui, popup.apply);
+    assert!(ui.color_popup_is_open(owner));
+    assert_eq!(ui.color_value(owner), Some(Some(selected)));
+    ui.dispatch(InputEvent::KeyDown {
+        key: Key::Escape,
+        modifiers: Modifiers::default(),
+        repeat: false,
+    })
+    .unwrap();
+    assert!(!ui.color_popup_is_open(owner));
+    assert_eq!(ui.color_recent(owner), Some([selected].as_slice()));
+}
+
+#[test]
+fn nullable_color_preserves_transparent_rgb_and_clears_only_on_empty_selection() {
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let mut schema = FieldSchema::new("paint", FieldType::Text);
+    schema.nullable = true;
+    let mut descriptor = PropertyDescriptor::new("paint");
+    descriptor.metadata.editor = "Color".into();
+    let root = ui.root();
+    let editor = mount(&mut ui, root, &descriptor, &schema, &CellValue::Null).unwrap();
+    ui.update(Size::new(900., 800.)).unwrap();
+    let owner = editor.owner();
+    ui.open_color_popup(owner).unwrap();
+    let popup = ui.color_popup(owner).unwrap().clone();
+    click(&mut ui, popup.more_colors.unwrap());
+    ui.set_text(popup.hex, "#001234AB").unwrap();
+    click(&mut ui, popup.apply);
+    assert_eq!(
+        editor.read(&ui).unwrap(),
+        CellValue::Text("#001234AB".into())
+    );
+    ui.open_color_popup(owner).unwrap();
+    assert_eq!(ui.runtime.focused(), Some(popup.recent[0]));
+    click(&mut ui, popup.empty);
+    assert!(!ui.color_popup_is_open(owner));
+    assert_eq!(editor.read(&ui).unwrap(), CellValue::Null);
+}
+
+#[test]
+fn property_spectrum_edits_a_preview_preserving_alpha_and_cancel_releases_the_pointer() {
+    let original = CellValue::Text("#80404040".into());
+    let (mut ui, editor) = fixture("Color", FieldType::Text, original.clone());
+    let owner = editor.owner();
+    ui.open_color_popup(owner).unwrap();
+    let popup = ui.color_popup(owner).unwrap().clone();
+    click(&mut ui, popup.more_colors.unwrap());
+    let plane = popup.saturation_value.unwrap();
+    let hue = popup.hue.unwrap();
+    let plane_bounds = ui.runtime.bounds(plane).unwrap();
+    let hue_bounds = ui.runtime.bounds(hue).unwrap();
+    let cyan = Point::new(
+        hue_bounds.x + hue_bounds.width * 0.5,
+        hue_bounds.y + hue_bounds.height * 0.5,
+    );
+    let center = Point::new(
+        plane_bounds.x + plane_bounds.width * 0.5,
+        plane_bounds.y + plane_bounds.height * 0.5,
+    );
+    let beyond_top_right = Point::new(
+        plane_bounds.x + plane_bounds.width + 24.,
+        plane_bounds.y - 12.,
+    );
+    let down = |position| InputEvent::PointerDown {
+        position,
+        button: PointerButton::Primary,
+        modifiers: Modifiers::default(),
+    };
+    let up = |position| InputEvent::PointerUp {
+        position,
+        button: PointerButton::Primary,
+        modifiers: Modifiers::default(),
+    };
+
+    ui.dispatch(down(cyan)).unwrap();
+    ui.dispatch(up(cyan)).unwrap();
+    assert_eq!(ui.document(popup.hex).unwrap().text(), "#80404040");
+    ui.dispatch(down(center)).unwrap();
+    assert_eq!(ui.runtime.captured(), Some(plane));
+    ui.dispatch(InputEvent::PointerMoved {
+        position: beyond_top_right,
+    })
+    .unwrap();
+    assert_eq!(ui.document(popup.hex).unwrap().text(), "#8000FFFF");
+    assert_eq!(
+        ui.color_value(owner),
+        Some(Some("#80404040".parse().unwrap()))
+    );
+    ui.dispatch(up(beyond_top_right)).unwrap();
+    assert_eq!(ui.runtime.captured(), None);
+    ui.dispatch(InputEvent::KeyDown {
+        key: Key::ArrowLeft,
+        modifiers: Modifiers::default(),
+        repeat: false,
+    })
+    .unwrap();
+    assert_eq!(ui.document(popup.hex).unwrap().text(), "#8003FFFF");
+
+    ui.set_text(popup.hex, "#40123456").unwrap();
+    ui.update(Size::new(900., 800.)).unwrap();
+    assert!(
+        ui.semantics()
+            .into_iter()
+            .any(|node| node.id == hue && node.label.contains("210°"))
+    );
+    ui.dispatch(down(center)).unwrap();
+    assert!(ui.document(popup.hex).unwrap().text().starts_with("#40"));
+    ui.dispatch(InputEvent::KeyDown {
+        key: Key::Escape,
+        modifiers: Modifiers::default(),
+        repeat: false,
+    })
+    .unwrap();
+    assert!(!ui.color_popup_is_open(owner));
+    assert_eq!(ui.runtime.captured(), None);
+    assert_eq!(editor.read(&ui).unwrap(), original);
+}
+
 fn paint_property(kind: &str, objects: &[i64]) -> (Controls, PropertyGrid, DataSourceHandle) {
     use rust_desktop_ui_data::{CollectionAdapter, DataRow, DataSource, DataTable};
     use std::rc::Rc;
@@ -288,6 +478,9 @@ fn accepting_a_single_paint_popup_posts_once_and_dismissal_preserves_the_source(
                 ui.close_flyout(popup.flyout).unwrap();
                 ui.update(Size::new(900., 800.)).unwrap();
             } else {
+                if let Some(more) = popup.more_colors {
+                    click(&mut ui, more);
+                }
                 click(&mut ui, popup.cancel);
             }
             grid.update(&mut ui).unwrap();
@@ -297,8 +490,11 @@ fn accepting_a_single_paint_popup_posts_once_and_dismissal_preserves_the_source(
         }
         ui.open_color_popup(owner).unwrap();
         ui.set_brush_draft(owner, Some(brush)).unwrap();
-        let apply = ui.color_popup(owner).unwrap().apply;
-        click(&mut ui, apply);
+        let popup = ui.color_popup(owner).unwrap().clone();
+        if let Some(more) = popup.more_colors {
+            click(&mut ui, more);
+        }
+        click(&mut ui, popup.apply);
         grid.update(&mut ui).unwrap();
         assert_eq!(source.borrow().value(1, "paint"), Some(&expected));
         let changes = grid.take_changes();
@@ -310,7 +506,89 @@ fn accepting_a_single_paint_popup_posts_once_and_dismissal_preserves_the_source(
 }
 
 #[test]
-fn paint_popup_keeps_bulk_and_typed_drafts_explicit_and_reports_writer_conflicts() {
+fn mixed_colors_require_a_choice_before_bulk_apply() {
+    let (mut ui, mut grid, source) = paint_property("Color", &[1, 2]);
+    let original = CellValue::Text("#abcDEF".into());
+    let other = CellValue::Text("#660000FF".into());
+    source
+        .borrow_mut()
+        .set_cell(2, "paint", other.clone())
+        .unwrap();
+    grid.refresh(&mut ui).unwrap();
+    let owner = grid.property("paint").unwrap();
+    let button = grid.property_editor("paint").unwrap();
+    assert_eq!(ui.controls[&button].label, "Разные значения");
+    grid.begin_edit(&mut ui, "paint").unwrap();
+    ui.open_color_popup(owner).unwrap();
+    ui.cancel_color_popup(owner).unwrap();
+    assert_eq!(
+        grid.commit(&mut ui, "paint").unwrap(),
+        PropertyCommit::Unchanged
+    );
+    assert_eq!(source.borrow().value(1, "paint"), Some(&original));
+    assert_eq!(source.borrow().value(2, "paint"), Some(&other));
+    assert!(grid.take_changes().is_empty());
+
+    ui.open_color_popup(owner).unwrap();
+    ui.set_color_draft(owner, "#00123456".parse().unwrap())
+        .unwrap();
+    ui.apply_color_popup(owner).unwrap();
+    grid.update(&mut ui).unwrap();
+    assert_eq!(ui.controls[&button].label, "#00123456");
+    assert_eq!(source.borrow().value(2, "paint"), Some(&other));
+    assert_eq!(
+        grid.commit(&mut ui, "paint").unwrap(),
+        PropertyCommit::Saved
+    );
+    let chosen = CellValue::Text("#00123456".into());
+    assert_eq!(source.borrow().value(1, "paint"), Some(&chosen));
+    assert_eq!(source.borrow().value(2, "paint"), Some(&chosen));
+    assert_eq!(grid.take_changes().len(), 1);
+}
+
+#[test]
+fn read_only_color_remains_visible_without_a_write_action() {
+    use rust_desktop_ui_data::{CollectionAdapter, DataRow, DataSource, DataTable};
+    let mut field = FieldSchema::new("paint", FieldType::Text);
+    field.read_only = true;
+    let table = DataTable::new(
+        TableSchema::new(vec![field]).unwrap(),
+        vec![DataRow::new(1, vec![CellValue::Text("#80223344".into())])],
+    )
+    .unwrap();
+    let source = std::rc::Rc::new(RefCell::new(
+        DataSource::new(CollectionAdapter::new(table)).unwrap(),
+    ));
+    let mut descriptor = PropertyDescriptor::new("paint");
+    descriptor.metadata.editor = "Color".into();
+    let mut ui = Controls::new(Theme::FluentLight).unwrap();
+    let root = ui.root();
+    let mut grid = PropertyGrid::mount(
+        &mut ui,
+        root,
+        source,
+        &[1],
+        PropertyGridSettings {
+            properties: vec![descriptor],
+            ..Default::default()
+        },
+        &DataFormFactories::default(),
+        LayoutStyle::default(),
+    )
+    .unwrap();
+    ui.update(Size::new(700., 400.)).unwrap();
+    let owner = grid.property("paint").unwrap();
+    let button = grid.property_editor("paint").unwrap();
+    assert_eq!(ui.controls[&button].label, "#80223344");
+    assert!(!ui.is_enabled(button));
+    assert!(grid.properties[0].menu_button.is_none());
+    assert!(grid.begin_edit(&mut ui, "paint").is_err());
+    assert!(ui.open_color_popup(owner).is_err());
+    assert!(!ui.color_popup_is_open(owner));
+}
+
+#[test]
+fn paint_popup_keeps_bulk_and_exact_color_drafts_explicit_and_reports_writer_conflicts() {
     let original = CellValue::Text("#abcDEF".into());
     let changed = CellValue::Text("#FF654321".into());
     let (mut ui, mut grid, source) = paint_property("Color", &[1, 2]);
@@ -331,13 +609,17 @@ fn paint_popup_keeps_bulk_and_typed_drafts_explicit_and_reports_writer_conflicts
 
     let (mut ui, mut grid, source) = paint_property("Color", &[1]);
     let owner = grid.property("paint").unwrap();
-    let editor = grid.property_editor("paint").unwrap();
     grid.begin_edit(&mut ui, "paint").unwrap();
-    ui.set_text(editor, "#654321").unwrap();
-    grid.update(&mut ui).unwrap();
-    assert_eq!(source.borrow().value(1, "paint"), Some(&original));
-    assert_eq!(grid.draft(&ui, "paint").unwrap(), Some(changed.clone()));
     ui.open_color_popup(owner).unwrap();
+    let popup = ui.color_popup(owner).unwrap().clone();
+    click(&mut ui, popup.more_colors.unwrap());
+    ui.set_text(popup.hex, "#654321").unwrap();
+    ui.update(Size::new(900., 800.)).unwrap();
+    assert_eq!(source.borrow().value(1, "paint"), Some(&original));
+    assert_eq!(
+        ui.brush_draft(owner),
+        Some(Some(&BrushValue::Solid("#654321".parse().unwrap())))
+    );
     let external = CellValue::Text("#112233".into());
     source
         .borrow_mut()

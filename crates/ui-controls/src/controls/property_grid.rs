@@ -12,8 +12,8 @@ use values::*;
 mod presentation;
 pub(super) use presentation::InspectorPart;
 use presentation::{ValueMark, action_icon, show, vertical_stack};
-#[path = "property_grid/spin_commands.rs"]
-mod spin_commands;
+#[path = "property_grid/row_commands.rs"]
+mod row_commands;
 
 #[path = "property_grid/inline_editors.rs"]
 mod inline_editors;
@@ -148,7 +148,7 @@ struct Property {
     currency: Option<WidgetId>,
     apply: WidgetId,
     reset: WidgetId,
-    spin_menu_button: Option<WidgetId>,
+    menu_button: Option<WidgetId>,
     null: Option<WidgetId>,
     baseline: Vec<CellValue>,
     seed: CellValue,
@@ -156,6 +156,10 @@ struct Property {
 }
 
 impl Property {
+    fn color_cell(&self) -> bool {
+        self.descriptor.metadata.editor == "Color"
+    }
+
     fn compact_spin(&self) -> bool {
         self.inplace_text
             && self.specialized.is_none()
@@ -188,7 +192,7 @@ pub struct PropertyGrid {
     grouped_order: Vec<(WidgetId, WidgetId)>,
     details: Option<(WidgetId, WidgetId)>,
     selection: Option<usize>,
-    spin_commands: Option<spin_commands::Commands>,
+    row_commands: Option<row_commands::Commands>,
     last_focus: Option<WidgetId>,
     error: Option<String>,
     changes: Vec<PropertyChanged>,
@@ -637,7 +641,10 @@ impl PropertyGrid {
                 {
                     ui.set_automation_name(editor, label)?;
                 }
-                let null = if schema.nullable && !matches!(recipe, DataFormEditorFactory::CheckBox)
+                let color_cell = descriptor.metadata.editor == "Color";
+                let null = if schema.nullable
+                    && !color_cell
+                    && !matches!(recipe, DataFormEditorFactory::CheckBox)
                 {
                     // Keep enough room for the Fluent checkbox indicator,
                     // chrome insets and the full caption at the largest theme font.
@@ -699,12 +706,12 @@ impl PropertyGrid {
                 if inplace_text {
                     style_inplace_text(ui, owner, editor, edit)?;
                 }
-                let spin_menu_button = if numeric && inplace_text && !descriptor.metadata.read_only
-                {
-                    Some(spin_commands::button(ui, host, label)?)
-                } else {
-                    None
-                };
+                let menu_button =
+                    if (numeric && inplace_text || color_cell) && !descriptor.metadata.read_only {
+                        Some(row_commands::button(ui, host, label)?)
+                    } else {
+                        None
+                    };
                 let apply = action_icon(
                     ui,
                     row,
@@ -721,7 +728,7 @@ impl PropertyGrid {
                     if descriptor.metadata.read_only
                         && !matches!(
                             descriptor.metadata.editor.as_str(),
-                            "ProgressBar" | "Hyperlink"
+                            "ProgressBar" | "Hyperlink" | "Color"
                         )
                     {
                         ui.set_enabled(owner, false)?;
@@ -756,7 +763,7 @@ impl PropertyGrid {
                     currency,
                     apply,
                     reset,
-                    spin_menu_button,
+                    menu_button,
                     null,
                     baseline,
                     seed,
@@ -863,7 +870,7 @@ impl PropertyGrid {
                 parents,
                 details,
                 selection: None,
-                spin_commands: None,
+                row_commands: None,
                 last_focus: None,
                 error: None,
                 changes: Vec::new(),
@@ -1041,7 +1048,7 @@ impl PropertyGrid {
         if p.descriptor.metadata.read_only {
             return Err(invalid("Property is read-only"));
         }
-        if !p.editing {
+        if !p.editing && !p.color_cell() {
             let seed = p.seed.clone();
             load(ui, p, &seed)?;
             p.editing = true;
@@ -1086,6 +1093,9 @@ impl PropertyGrid {
         }
         load(ui, p, &value)?;
         p.editing = true;
+        if p.active && p.color_cell() {
+            present(ui, p)?;
+        }
         self.activate(ui, i)
     }
     pub fn cancel(&mut self, ui: &mut Controls, name: &str) -> Result<(), ControlError> {
@@ -1353,13 +1363,16 @@ impl PropertyGrid {
             if let Some(editor) = &mut p.specialized {
                 editor.update(ui)?;
                 if let Some(value) = editor.take_popup_acceptance(ui)
-                    && self.objects.len() == 1
                     && p.active
                     && !p.descriptor.metadata.read_only
                     && read(ui, p).is_ok_and(|draft| draft == value)
                 {
-                    let name = p.schema.name.clone();
-                    self.commit(ui, &name)?;
+                    p.editing = true;
+                    present(ui, p)?;
+                    if self.objects.len() == 1 {
+                        let name = p.schema.name.clone();
+                        self.commit(ui, &name)?;
+                    }
                     posted = true;
                 }
             }
@@ -1369,7 +1382,7 @@ impl PropertyGrid {
             && let Some(i) = self.properties.iter().position(|p| {
                 !p.active
                     && !p.descriptor.metadata.read_only
-                    && p.editing
+                    && (p.editing || p.color_cell())
                     && p.specialized.as_ref().is_some_and(|e| e.inline())
                     && ui.flyout_descendant(focus, p.owner)
             })
@@ -1377,7 +1390,7 @@ impl PropertyGrid {
             self.activate(ui, i)?;
         }
         let mut view_mode = self.flat;
-        let row_command = self.update_spin_commands(ui)?;
+        let row_command = self.update_row_commands(ui)?;
         let mut actions = Vec::new();
         #[derive(Clone, Copy)]
         enum RowAction {
@@ -1539,7 +1552,7 @@ impl PropertyGrid {
                     let name = p.schema.name.clone();
                     self.begin_edit(ui, &name)?;
                 } else if !p.active
-                    && p.editing
+                    && (p.editing || p.color_cell())
                     && !p.descriptor.metadata.read_only
                     && p.specialized.as_ref().is_some_and(|e| e.inline())
                     && ui.flyout_descendant(target, p.owner)

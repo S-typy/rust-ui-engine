@@ -181,6 +181,9 @@ pub(super) fn load(ui: &mut Controls, p: &Property, value: &CellValue) -> Result
     Ok(())
 }
 pub(super) fn dirty(ui: &Controls, p: &Property) -> bool {
+    if p.color_cell() && ui.color_popup_is_open(p.owner) {
+        return true;
+    }
     if !p.editing {
         return false;
     }
@@ -299,7 +302,23 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
         ui.controls.get_mut(&p.owner).unwrap().inspector_part =
             direct_boolean.then_some(InspectorPart::BooleanCell);
     }
-    let inline = direct_boolean
+    let color_cell = p.color_cell();
+    if color_cell {
+        let swatch = ui.color_value(p.owner).flatten().filter(|_| p.editing);
+        let caption = if !p.editing {
+            "Разные значения".to_owned()
+        } else {
+            swatch.map_or_else(|| "Не задано".to_owned(), |color| color.to_string())
+        };
+        ui.set_automation_name(p.editor, format!("{label}: {caption}"))?;
+        ui.set_label(p.editor, caption)?;
+        ui.controls.get_mut(&p.editor).unwrap().inspector_part = Some(InspectorPart::ColorCell {
+            swatch,
+            active: p.active,
+        });
+    }
+    let inline = color_cell
+        || direct_boolean
         || (p.specialized.as_ref().is_some_and(|e| e.inline())
             && matches!(aggregate(&p.baseline), PropertyValue::Uniform(ref value) if *value != CellValue::Null));
     if let Some(editor) = &p.specialized {
@@ -310,19 +329,16 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
     show(
         ui,
         p.apply,
-        p.active && writable && !direct_boolean && !p.inplace_text,
+        p.active && writable && !direct_boolean && !p.inplace_text && !color_cell,
     )?;
     if let Some(unit) = p.currency {
         let separate_suffix = p.active && ui.numeric.inplace_suffix(p.owner).is_none();
         show(ui, unit, separate_suffix)?;
     }
-    if let Some(button) = p.spin_menu_button {
-        show(ui, button, p.compact_spin())?;
-    }
     show(
         ui,
         p.reset,
-        p.descriptor.default.is_some() && writable && !p.compact_spin(),
+        p.descriptor.default.is_some() && writable && p.menu_button.is_none(),
     )?;
     if let Some(null) = p.null {
         show(ui, null, p.active)?;

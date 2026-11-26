@@ -50,11 +50,11 @@ impl ValueMark {
                 text.width -= 23.;
             }
             Self::Swatch(color) => {
-                let b = Rect::new(text.x, middle - 8., 20., 16.);
+                let b = Rect::new(text.x, middle - 8., 16., 16.);
                 if color.a < 255 {
                     fill_clipped(scene, b, clip, Color::rgb(255, 255, 255));
                     for row in 0..4 {
-                        for col in (row % 2..5).step_by(2) {
+                        for col in (row % 2..4).step_by(2) {
                             fill_clipped(
                                 scene,
                                 Rect::new(b.x + col as f32 * 4., b.y + row as f32 * 4., 4., 4.),
@@ -66,8 +66,8 @@ impl ValueMark {
                 }
                 fill_clipped(scene, b, clip, color.into());
                 shape_border(scene, b, clip, 0., 1., chrome.control_bottom_border);
-                text.x += 27.;
-                text.width -= 27.;
+                text.x += 21.;
+                text.width -= 21.;
             }
             Self::Switch(state) if text.width >= 90. => {
                 let b = Rect::new(end - 32., middle - 9., 32., 18.);
@@ -144,11 +144,51 @@ pub(in crate::controls) enum InspectorPart {
     },
     Viewport,
     Value(ValueMark),
+    ColorCell {
+        swatch: Option<Srgba8>,
+        active: bool,
+    },
     BooleanCell,
     Commands,
     ReadOnlyText {
         host: WidgetId,
     },
+}
+
+impl InspectorPart {
+    pub(in crate::controls) fn paint_value(
+        self,
+        scene: &mut Scene,
+        mut text: Rect,
+        clip: Rect,
+        theme: Theme,
+        state: ButtonVisualState,
+        foreground: Color,
+    ) -> Rect {
+        match self {
+            Self::Value(mark) => mark.paint(scene, text, clip, theme, foreground),
+            Self::ColorCell { swatch, active } => {
+                if state.focused {
+                    let side = 18_f32.min(text.width).min(text.height);
+                    let focus = Rect::new(
+                        text.x + text.width - side + 2.,
+                        text.y + (text.height - side) * 0.5,
+                        side,
+                        side,
+                    );
+                    shape_border(scene, focus, clip, 2., 1., theme.tokens().focus);
+                }
+                if state.enabled && (active || state.hovered || state.focused) {
+                    text = ValueMark::Choice.paint(scene, text, clip, theme, foreground);
+                }
+                if let Some(color) = swatch {
+                    text = ValueMark::Swatch(color).paint(scene, text, clip, theme, foreground);
+                }
+                text
+            }
+            _ => text,
+        }
+    }
 }
 
 pub(super) fn vertical_stack() -> LayoutStyle {
@@ -511,6 +551,7 @@ impl Controls {
                 return Ok(true);
             }
             InspectorPart::Value(_)
+            | InspectorPart::ColorCell { .. }
             | InspectorPart::BooleanCell
             | InspectorPart::Name
             | InspectorPart::ReadOnlyText { .. } => {

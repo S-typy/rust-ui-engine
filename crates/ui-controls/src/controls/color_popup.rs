@@ -3,6 +3,13 @@ use super::color_model::{compact_number, error};
 use super::*;
 use rust_desktop_ui_core::{Bitmap, GridTrack, ImagePrimitive, Modifiers};
 
+mod property_palette;
+mod spectrum;
+mod spectrum_input;
+use property_palette::PropertyPalette;
+pub(super) use property_palette::property_colors;
+use spectrum_input::ColorSpectrum;
+
 #[derive(Clone, Debug)]
 pub struct ColorPopup {
     pub flyout: Flyout,
@@ -14,6 +21,14 @@ pub struct ColorPopup {
     pub channels: [EditorControl; 4],
     pub palette: Vec<WidgetId>,
     pub recent: Vec<WidgetId>,
+    /// Opens the precise color editor from a property's quick palette.
+    pub more_colors: Option<WidgetId>,
+    /// Two-axis saturation/brightness field on the custom property color page.
+    pub saturation_value: Option<WidgetId>,
+    /// Vertical hue strip on the custom property color page.
+    pub hue: Option<WidgetId>,
+    property_palette: Option<PropertyPalette>,
+    spectrum: Option<ColorSpectrum>,
     pub stops: ListBox,
     pub angle: WidgetId,
     pub offset: WidgetId,
@@ -216,7 +231,7 @@ impl Controls {
             ));
         }
         let entry = &self.color_editors.entries[&id];
-        let value = if entry.brush {
+        let value = if entry.brush || entry.property_cell {
             entry.value.clone()
         } else {
             let document = self
@@ -241,8 +256,13 @@ impl Controls {
         entry.pending = true;
         entry.popup.as_mut().unwrap().revealed_focus = None;
         self.refresh_color_popup(id)?;
+        let focus = if popup.property_palette.is_some() {
+            self.show_property_color_page(id, false)?
+        } else {
+            popup.hex
+        };
         self.open_flyout(popup.flyout)?;
-        self.runtime.apply(Mutation::Focus(Some(popup.hex)))?;
+        self.runtime.apply(Mutation::Focus(Some(focus)))?;
         self.synchronize_editor_focus()?;
         Ok(())
     }
@@ -255,6 +275,14 @@ impl Controls {
         entry.preview_bitmap = None;
         entry.error = None;
         let popup = entry.popup.clone();
+        if let Some(popup) = &popup
+            && self
+                .runtime
+                .captured()
+                .is_some_and(|part| popup.saturation_value == Some(part) || popup.hue == Some(part))
+        {
+            self.runtime.apply(Mutation::CapturePointer(None))?;
+        }
         if let Some(popup) = popup
             && self.flyout_is_open(popup.flyout)
         {
@@ -447,6 +475,7 @@ impl Controls {
             return Ok(());
         }
         let settings = self.color_editors.entries[&id].settings.clone();
+        let property_cell = self.color_editors.entries[&id].property_cell;
         let flyout = self.flyout(id, settings.popup_size)?;
         let result = (|| {
             self.edit_props(flyout.content, |p| {
@@ -477,7 +506,13 @@ impl Controls {
                 p.style.height = Length::Auto;
             })?;
             let content = scroll.content;
-            let preview = self.transparent_panel(content, row(72.0))?;
+            let spectrum = if property_cell {
+                Some(self.make_property_spectrum(content)?)
+            } else {
+                None
+            };
+            let preview =
+                self.transparent_panel(content, row(if property_cell { 28. } else { 72. }))?;
             self.set_automation_name(preview, "Предпросмотр цвета или кисти")?;
             let hex = self.edit_box(content, "Цвет: #AARRGGBB", "#FF000000", row(36.0))?;
             self.set_editor_settings(
@@ -533,24 +568,48 @@ impl Controls {
                 )?;
                 channels.push(editor);
             }
-            self.label(content, "Палитра", row(22.0))?;
+            let palette_label = self.label(content, "Палитра", row(22.0))?;
             let palette_host =
                 self.transparent_panel(content, swatch_grid(settings.palette.len()))?;
             let mut palette = Vec::new();
             for color in &settings.palette {
                 palette.push(self.button(palette_host, color.to_string(), None, row(30.0))?);
             }
-            self.label(content, "Последние принятые цвета", row(22.0))?;
+            let recent_caption = if property_cell {
+                "Недавние цвета"
+            } else {
+                "Последние принятые цвета"
+            };
+            let recent_label = self.label(content, recent_caption, row(22.0))?;
             let recent_host =
                 self.transparent_panel(content, swatch_grid(settings.recent_limit))?;
             let mut recent = Vec::new();
             for _ in 0..settings.recent_limit {
                 recent.push(self.button(recent_host, "", None, row(30.0))?);
             }
+            if property_cell {
+                for (host, label) in [
+                    (palette_host, "Палитра цветов"),
+                    (recent_host, recent_caption),
+                ] {
+                    self.set_role(host, Role::ListBox);
+                    self.set_automation_name(host, label)?;
+                }
+                for &swatch in palette.iter().chain(&recent) {
+                    self.set_role(swatch, Role::ListItem);
+                }
+            }
             let mode = self.transparent_panel(content, horizontal(36.0))?;
             let solid = self.button(mode, "Сплошной", None, grow())?;
             let linear = self.button(mode, "Линейный", None, grow())?;
             let empty = self.button(mode, "Нет значения", None, grow())?;
+            let more_colors = if property_cell {
+                let more = self.button(content, "Другой цвет…", None, row(28.0))?;
+                self.set_button_chrome(more, ButtonChrome::Flat)?;
+                Some(more)
+            } else {
+                None
+            };
             let gradient = self.transparent_panel(
                 content,
                 LayoutStyle {
@@ -604,6 +663,15 @@ impl Controls {
             let footer = self.transparent_panel(flyout.content, horizontal(36.0))?;
             let apply = self.button(footer, "Применить", None, grow())?;
             let cancel = self.button(footer, "Отмена", None, grow())?;
+            let property_palette = property_cell.then_some(PropertyPalette {
+                detail: [preview, hex, channel_row, footer],
+                palette_label,
+                palette_host,
+                recent_label,
+                recent_host,
+                mode,
+                expanded: false,
+            });
             let mut required = Vec::new();
             let mut stack = vec![flyout.container];
             while let Some(node) = stack.pop() {
@@ -626,6 +694,11 @@ impl Controls {
                 channels: channels.try_into().unwrap(),
                 palette,
                 recent,
+                more_colors,
+                property_palette,
+                saturation_value: spectrum.as_ref().map(|s| s.plane),
+                hue: spectrum.as_ref().map(|s| s.strip),
+                spectrum,
                 stops,
                 angle,
                 offset,
@@ -712,6 +785,18 @@ impl Controls {
         let recent = entry.recent.clone();
         let brush = entry.brush;
         let allow_empty = entry.settings.allow_empty;
+        if entry.property_cell {
+            let selected = entry.draft.value.as_ref();
+            for (&button, &color) in popup
+                .palette
+                .iter()
+                .zip(&entry.settings.palette)
+                .chain(popup.recent.iter().zip(&recent))
+            {
+                self.controls.get_mut(&button).unwrap().checked =
+                    selected == Some(&BrushValue::Solid(color));
+            }
+        }
         for (editor, text) in self.color_field_ids(&popup).into_iter().zip(&fields) {
             self.write_color_field(editor, text)?;
         }
@@ -733,6 +818,7 @@ impl Controls {
         let entry = self.color_editors.entries.get_mut(&id).unwrap();
         entry.last_fields = fields;
         entry.observed_stop = keys.first().cloned();
+        self.sync_property_spectrum(id)?;
         self.color_popup_error(id, None)?;
         self.refresh_color_source_status();
         self.scene_dirty = true;
@@ -813,6 +899,7 @@ impl Controls {
             }
         }
         self.color_editors.entries.get_mut(&id).unwrap().last_fields = seen;
+        self.sync_property_spectrum(id)?;
         if changed {
             self.refresh_color_stops(id)?;
         }
@@ -847,6 +934,9 @@ impl Controls {
         }
         if let Some(p) = entry.popup.clone() {
             self.set_label(p.error, message.clone().unwrap_or_default())?;
+            if p.property_palette.is_some() {
+                self.set_property_color_part(p.error, message.is_some())?;
+            }
         }
         self.color_editors.entries.get_mut(&id).unwrap().error = message;
         self.scene_dirty = true;
@@ -931,10 +1021,12 @@ impl Controls {
             .collect::<Vec<_>>()
         {
             let height = self.theme.tokens().control_height;
-            let cols = super::color_edit::inline_columns(
-                height,
-                self.color_editors.entries[&id].wide_preview,
-            );
+            let entry = &self.color_editors.entries[&id];
+            let cols = if entry.property_cell {
+                vec![GridTrack::Fr(1.)]
+            } else {
+                super::color_edit::inline_columns(height, entry.wide_preview)
+            };
             if self
                 .runtime
                 .tree()
@@ -988,6 +1080,7 @@ impl Controls {
                         p.remove_stop,
                     ]
                     .contains(&button)
+                        || p.more_colors == Some(button)
                         || p.palette.contains(&button)
                         || p.recent.contains(&button)
                 }))
@@ -1012,12 +1105,22 @@ impl Controls {
             return Ok(true);
         }
         let popup = self.color_popup(id).unwrap().clone();
-        let result = if button == popup.cancel {
+        let quick = popup.property_palette.as_ref().is_some_and(|p| !p.expanded);
+        let result = if popup.more_colors == Some(button) {
+            let focus = self.show_property_color_page(id, true)?;
+            self.update(self.viewport)?;
+            self.runtime.apply(Mutation::Focus(Some(focus)))?;
+            self.synchronize_editor_focus()
+        } else if button == popup.cancel {
             self.cancel_color_popup(id)
         } else if button == popup.apply {
             self.apply_color_popup(id).map(|_| ())
         } else if button == popup.empty {
-            self.set_brush_draft(id, None)
+            self.set_brush_draft(id, None)?;
+            if quick {
+                self.apply_color_popup(id)?;
+            }
+            Ok(())
         } else if button == popup.solid {
             let color = self.color_editors.entries[&id].draft.color();
             self.set_brush_draft(id, Some(BrushValue::Solid(color)))
@@ -1047,10 +1150,10 @@ impl Controls {
             }
         } else if let Some(index) = popup.palette.iter().position(|b| *b == button) {
             let color = self.color_editors.entries[&id].settings.palette[index];
-            self.set_color_draft(id, color)
+            self.choose_palette_color(id, color, quick)
         } else if let Some(index) = popup.recent.iter().position(|b| *b == button) {
             if let Some(color) = self.color_editors.entries[&id].recent.get(index).copied() {
-                self.set_color_draft(id, color)
+                self.choose_palette_color(id, color, quick)
             } else {
                 Ok(())
             }
@@ -1063,6 +1166,9 @@ impl Controls {
         Ok(true)
     }
     pub(super) fn color_before_input(&mut self, event: &InputEvent) -> Result<bool, ControlError> {
+        if self.property_spectrum_input(event)? {
+            return Ok(true);
+        }
         if matches!(event, InputEvent::WindowFocused(false)) {
             for id in self
                 .color_editors
@@ -1110,6 +1216,12 @@ impl Controls {
             }
             return Ok(true);
         }
+        if *modifiers == Modifiers::default()
+            && self.color_popup_is_open(id)
+            && self.property_palette_key(id, focused, key, *repeat)?
+        {
+            return Ok(true);
+        }
         if *key == Key::Enter
             && modifiers.control
             && !modifiers.alt
@@ -1130,26 +1242,42 @@ impl Controls {
         Ok(false)
     }
     pub(super) fn paint_color_editor(&mut self, id: WidgetId, bounds: Rect, clip: Rect) -> bool {
+        if self.paint_property_spectrum(id, bounds, clip) {
+            return true;
+        }
         let paint = self.color_editors.entries.values().find_map(|e| {
             if e.parts.preview == id {
-                return Some((e.bitmap.clone(), None));
+                return Some((e.bitmap.clone(), None, false, false));
             }
             let p = e.popup.as_ref()?;
             if p.preview == id {
-                return Some((e.preview_bitmap.clone(), None));
+                return Some((e.preview_bitmap.clone(), None, false, false));
             }
-            if let Some(i) = p.palette.iter().position(|b| *b == id) {
-                return Some((None, Some(e.settings.palette[i])));
-            }
-            if let Some(i) = p.recent.iter().position(|b| *b == id) {
-                return e.recent.get(i).copied().map(|c| (None, Some(c)));
-            }
-            None
+            let color = p
+                .palette
+                .iter()
+                .position(|b| *b == id)
+                .map(|i| e.settings.palette[i])
+                .or_else(|| {
+                    p.recent
+                        .iter()
+                        .position(|b| *b == id)
+                        .and_then(|i| e.recent.get(i).copied())
+                })?;
+            let selected = e.property_cell && e.draft.value == Some(BrushValue::Solid(color));
+            Some((None, Some(color), e.property_cell, selected))
         });
-        let Some((image, color)) = paint else {
+        let Some((image, color, property_swatch, selected)) = paint else {
             return false;
         };
-        let inset = if color.is_some() { 4.0 } else { 1.0 };
+        let emphasized = selected
+            || self.runtime.focused() == Some(id)
+            || (property_swatch && self.runtime.hovered() == Some(id));
+        let inset = match (property_swatch, color) {
+            (true, _) if emphasized => 3.,
+            (false, Some(_)) => 4.,
+            _ => 1.,
+        };
         let area = Rect::new(
             bounds.x + inset,
             bounds.y + inset,
@@ -1158,7 +1286,11 @@ impl Controls {
         );
         // At most 16×8 checker cells per preview, independent of window size.
         let columns = 16usize;
-        let rows = 8usize;
+        let rows = if color.is_some_and(|c| c.a == 255) {
+            0
+        } else {
+            8usize
+        };
         for y in 0..rows {
             for x in 0..columns {
                 let tile = Rect::new(
@@ -1199,7 +1331,7 @@ impl Controls {
                 self.scene.fill(line, token);
             }
         }
-        let border = if self.runtime.focused() == Some(id) {
+        let border = if emphasized {
             self.theme.tokens().focus
         } else {
             self.theme.tokens().border

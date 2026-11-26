@@ -3663,6 +3663,10 @@ impl Controls {
                 ) {
                     state.checked = control.checked;
                 }
+                let color_cell = matches!(
+                    control.inspector_part,
+                    Some(property_grid::InspectorPart::ColorCell { .. })
+                );
                 let indicator = matches!(control.kind, Kind::CheckBox | Kind::Radio { .. });
                 let radio = matches!(control.kind, Kind::Radio { .. });
                 let mut style = if indicator {
@@ -3715,6 +3719,10 @@ impl Controls {
                         divider,
                     );
                 }
+                if color_cell {
+                    // The color cell draws the keyboard focus cue around its disclosure glyph.
+                    style.focus_visible = false;
+                }
                 let button_bounds = if embedded {
                     Rect::new(
                         bounds.x + 2.0_f32.min(bounds.width * 0.5),
@@ -3754,7 +3762,9 @@ impl Controls {
                 }
                 // Composite editors own a dedicated disclosure button. Their
                 // shared expand semantics must not add arrows to every child.
-                let has_popup = self.rich_owner(id).is_none() && self.popup_expanded(id).is_some();
+                let has_popup = !color_cell
+                    && self.rich_owner(id).is_none()
+                    && self.popup_expanded(id).is_some();
                 let text_bounds = popup::paint_indicator(
                     &mut self.scene,
                     control,
@@ -3769,14 +3779,13 @@ impl Controls {
                 if self.button_content(id).is_some() {
                     continue;
                 }
-                let text_bounds = if let Some(property_grid::InspectorPart::Value(mark)) =
-                    control.inspector_part
-                {
-                    mark.paint(
+                let text_bounds = if let Some(part) = control.inspector_part {
+                    part.paint_value(
                         &mut self.scene,
                         text_bounds,
                         clip,
                         self.theme,
+                        state,
                         style.foreground,
                     )
                 } else {
@@ -3840,12 +3849,17 @@ impl Controls {
                         text: control.display_label(&self.commands).to_owned(),
                         font_size: style.font_size,
                         color: style.foreground,
-                        weight: if control.button_chrome == ButtonChrome::Tab && state.checked {
+                        weight: if control.button_chrome == ButtonChrome::Tab && state.checked
+                            || matches!(
+                                control.inspector_part,
+                                Some(property_grid::InspectorPart::ColorCell { active: true, .. })
+                            ) {
                             600
                         } else {
                             400
                         },
                         align: if indicator
+                            || color_cell
                             || matches!(
                                 control.inspector_part,
                                 Some(property_grid::InspectorPart::Value(_))

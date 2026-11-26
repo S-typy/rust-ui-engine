@@ -4,6 +4,7 @@ use rust_desktop_ui_core::{InputEvent, Key, Modifiers, Point, PointerButton, Rec
 use rust_desktop_ui_data::CellValue;
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent};
 
+mod color;
 mod custom;
 
 fn pointer_down(form: &mut Form, position: Point) {
@@ -30,17 +31,18 @@ fn click(form: &mut Form, position: Point) {
 }
 
 fn press_key(form: &mut Form, key: Key) {
+    press_modified_key(form, key, Modifiers::default());
+}
+
+fn press_modified_key(form: &mut Form, key: Key, modifiers: Modifiers) {
     form.event(PlatformEvent::Input(InputEvent::KeyDown {
         key: key.clone(),
-        modifiers: Modifiers::default(),
+        modifiers,
         repeat: false,
     }))
     .unwrap();
-    form.event(PlatformEvent::Input(InputEvent::KeyUp {
-        key,
-        modifiers: Modifiers::default(),
-    }))
-    .unwrap();
+    form.event(PlatformEvent::Input(InputEvent::KeyUp { key, modifiers }))
+        .unwrap();
 }
 
 fn reveal_spin_row(form: &mut Form, field: &str, size: Size, scale: f32) -> Rect {

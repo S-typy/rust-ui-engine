@@ -11,8 +11,8 @@
                 Description="Подразделение, которое отвечает за публикацию."/>
       <Property FieldName="status" Label="Статус" Category="Документ" Choices="Черновик|На согласовании|Утверждён"
                 Description="Этап согласования перед публикацией."/>
-      <Property FieldName="accent" Label="Цвет метки" Preview="Color" Category="Оформление"
-                Description="Цвет метки документа. Можно ввести #RRGGBB или #AARRGGBB."/>
+      <Property FieldName="accent" Label="Цвет метки" Editor="Color" Category="Оформление"
+                Description="Выберите образец в палитре. Для ввода кода #RRGGBB или #AARRGGBB нажмите «Другой цвет…»."/>
       <Property FieldName="progress" Label="Готовность" Preview="Progress" IsReadOnly="True" Category="Оформление"
                 Description="Доля завершённых проверок перед публикацией."/>
       <Property FieldName="alerts" Label="Уведомления" Preview="Switch" Category="Публикация"

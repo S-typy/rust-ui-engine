@@ -588,19 +588,17 @@ mod tests {
         ui.update(Size::new(900., 525.)).unwrap();
         assert_eq!(ui.runtime.bounds(color_row).unwrap(), before_edit);
         let color_editor = grid.property_editor("accent").unwrap();
-        ui.set_text(color_editor, "#A40442").unwrap();
+        let owner = grid.property("accent").unwrap();
+        ui.open_color_popup(owner).unwrap();
+        ui.set_color_draft(owner, "#A40442".parse().unwrap())
+            .unwrap();
         grid.cancel(ui, "accent").unwrap();
-        assert_eq!(
-            ui.label_text(grid.property_actions("accent").unwrap().0),
-            Some("#28769B")
-        );
+        assert!(!ui.color_popup_is_open(owner));
+        assert_eq!(ui.label_text(color_editor), Some("#FF28769B"));
         grid.set_draft(ui, "accent", CellValue::Text("#A40442".into()))
             .unwrap();
         assert_eq!(grid.commit(ui, "accent").unwrap(), PropertyCommit::Saved);
-        assert_eq!(
-            ui.label_text(grid.property_actions("accent").unwrap().0),
-            Some("#A40442")
-        );
+        assert_eq!(ui.label_text(color_editor), Some("#FFA40442"));
         let action = grid.property_actions("progress").unwrap().0;
         ui.perform_action(action, SemanticAction::Activate, None)
             .unwrap();

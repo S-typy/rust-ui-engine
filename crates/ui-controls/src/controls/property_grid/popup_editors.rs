@@ -88,7 +88,7 @@ pub(super) fn mount(
         "Color" | "Brush" => {
             let brush = d.metadata.editor == "Brush";
             let initial = brush_value(value, brush)?;
-            let settings = ColorEditorSettings {
+            let mut settings = ColorEditorSettings {
                 is_read_only: d.metadata.read_only,
                 allow_empty: f.nullable,
                 popup_size: if brush {
@@ -101,6 +101,7 @@ pub(super) fn mount(
             let parts = if brush {
                 ui.brush_edit(host, name, initial.clone(), settings, row_style())?
             } else {
+                settings.palette = super::super::color_popup::property_colors();
                 ui.color_edit(host, name, solid(initial.as_ref()), settings, row_style())?
             };
             ui.set_button_chrome(parts.button, ButtonChrome::Flat)?;
@@ -118,6 +119,34 @@ pub(super) fn mount(
             )?;
             if brush {
                 ui.stretch_brush_preview(parts)?;
+            } else {
+                ui.color_editors
+                    .entries
+                    .get_mut(&parts.container)
+                    .unwrap()
+                    .property_cell = true;
+                show(ui, parts.editor, false)?;
+                show(ui, parts.preview, false)?;
+                ui.edit_props(parts.container, |p| {
+                    p.style.grid_columns = vec![GridTrack::Fr(1.)];
+                    p.style.gap = 0.;
+                })?;
+                ui.edit_props(parts.button, |p| p.style.grid_column.start = Some(1))?;
+                ui.set_button_icon(parts.button, None)?;
+                ui.set_button_content_layout(parts.button, ButtonContentLayout::Leading)?;
+                ui.set_button_style(
+                    parts.button,
+                    ButtonStyle {
+                        padding: Some(Edges {
+                            left: 4.,
+                            right: 8.,
+                            ..Default::default()
+                        }),
+                        corner_radius: Some(0.),
+                        border_width: Some(0.),
+                        ..Default::default()
+                    },
+                )?;
             }
             Ok(Box::new(PaintEditor {
                 parts,
@@ -254,11 +283,7 @@ impl InspectorEditor for PaintEditor {
         self.parts.container
     }
     fn focus(&self) -> WidgetId {
-        if self.brush {
-            self.parts.button
-        } else {
-            self.parts.editor
-        }
+        self.parts.button
     }
     fn inline(&self) -> bool {
         true
@@ -277,18 +302,8 @@ impl InspectorEditor for PaintEditor {
         if ui.color_popup_is_open(self.owner()) {
             return Err("Подтвердите или отмените выбор в палитре.".into());
         }
-        let value = if self.brush {
-            ui.brush_value(self.owner())
-                .ok_or("Brush editor missing")?
-                .cloned()
-        } else {
-            super::super::color_edit::parse_inline(
-                ui.document(self.parts.editor)
-                    .ok_or("Color editor missing")?
-                    .text(),
-            )?
-        };
-        Ok(self.property_value(value.as_ref()))
+        let value = ui.brush_value(self.owner()).ok_or("Paint editor missing")?;
+        Ok(self.property_value(value))
     }
     fn take_popup_acceptance(&mut self, ui: &mut Controls) -> Option<CellValue> {
         let entry = ui.color_editors.entries.get_mut(&self.parts.container)?;
