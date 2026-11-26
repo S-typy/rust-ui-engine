@@ -12,6 +12,8 @@ use values::*;
 mod presentation;
 pub(super) use presentation::InspectorPart;
 use presentation::{ValueMark, action_icon, show, vertical_stack};
+#[path = "property_grid/spin_commands.rs"]
+mod spin_commands;
 
 #[path = "property_grid/inline_editors.rs"]
 mod inline_editors;
@@ -146,10 +148,19 @@ struct Property {
     currency: Option<WidgetId>,
     apply: WidgetId,
     reset: WidgetId,
+    spin_menu_button: Option<WidgetId>,
     null: Option<WidgetId>,
     baseline: Vec<CellValue>,
     seed: CellValue,
     editing: bool,
+}
+
+impl Property {
+    fn compact_spin(&self) -> bool {
+        self.inplace_text
+            && self.specialized.is_none()
+            && matches!(self.recipe, DataFormEditorFactory::Numeric(_))
+    }
 }
 
 /// Owns inspector state beside Controls. Call update after input and before
@@ -177,6 +188,7 @@ pub struct PropertyGrid {
     grouped_order: Vec<(WidgetId, WidgetId)>,
     details: Option<(WidgetId, WidgetId)>,
     selection: Option<usize>,
+    spin_commands: Option<spin_commands::Commands>,
     last_focus: Option<WidgetId>,
     error: Option<String>,
     changes: Vec<PropertyChanged>,
@@ -672,21 +684,27 @@ impl PropertyGrid {
                     },
                 )?;
                 ui.set_button_chrome(edit, ButtonChrome::Flat)?;
-                let inplace_text = objects.len() == 1
-                    && descriptor.preview == PropertyPreview::Auto
+                let numeric =
+                    family.is_none() && matches!(recipe, DataFormEditorFactory::Numeric(_));
+                let inplace_text = descriptor.preview == PropertyPreview::Auto
                     && descriptor.choices.is_empty()
-                    && (family.is_none()
-                        && matches!(
-                            recipe,
-                            DataFormEditorFactory::Text(_) | DataFormEditorFactory::Numeric(_)
-                        )
-                        || matches!(
-                            descriptor.metadata.editor.as_str(),
-                            "NumericText" | "MaskedText" | "ButtonText" | "Password"
-                        ));
+                    && (numeric
+                        || objects.len() == 1
+                            && (family.is_none()
+                                && matches!(recipe, DataFormEditorFactory::Text(_))
+                                || matches!(
+                                    descriptor.metadata.editor.as_str(),
+                                    "NumericText" | "MaskedText" | "ButtonText" | "Password"
+                                )));
                 if inplace_text {
                     style_inplace_text(ui, owner, editor, edit)?;
                 }
+                let spin_menu_button = if numeric && inplace_text && !descriptor.metadata.read_only
+                {
+                    Some(spin_commands::button(ui, host, label)?)
+                } else {
+                    None
+                };
                 let apply = action_icon(
                     ui,
                     row,
@@ -738,6 +756,7 @@ impl PropertyGrid {
                     currency,
                     apply,
                     reset,
+                    spin_menu_button,
                     null,
                     baseline,
                     seed,
@@ -844,6 +863,7 @@ impl PropertyGrid {
                 parents,
                 details,
                 selection: None,
+                spin_commands: None,
                 last_focus: None,
                 error: None,
                 changes: Vec::new(),
@@ -1028,16 +1048,23 @@ impl PropertyGrid {
         }
         self.activate(ui, i)?;
         let p = &self.properties[i];
+        let focus = if p.compact_spin() {
+            p.null
+                .filter(|id| ui.checked(*id) == Some(true))
+                .unwrap_or(p.editor)
+        } else {
+            p.editor
+        };
         if ui.window_focused
-            && ui.effective_enabled(p.editor)
+            && ui.effective_enabled(focus)
             && ui
                 .runtime
                 .tree()
-                .node(p.editor)
+                .node(focus)
                 .is_some_and(|node| node.props.focusable)
         {
-            match ui.runtime.apply(Mutation::Focus(Some(p.editor))) {
-                Ok(()) => self.last_focus = Some(p.editor),
+            match ui.runtime.apply(Mutation::Focus(Some(focus))) {
+                Ok(()) => self.last_focus = Some(focus),
                 Err(RuntimeError::IneligibleFocus(_)) => {}
                 Err(error) => return Err(error.into()),
             }
@@ -1233,14 +1260,22 @@ impl PropertyGrid {
             return Ok(false);
         }
         let name = p.schema.name.clone();
-        if read(ui, p).is_ok_and(|v| Some(&v) == p.baseline.first()) {
+        let bulk = self.objects.len() > 1;
+        let initial = if bulk && p.baseline.iter().any(|value| value != &p.baseline[0]) {
+            &p.seed
+        } else {
+            &p.baseline[0]
+        };
+        if read(ui, p).is_ok_and(|draft| &draft == initial) {
             self.cancel(ui, &name)?;
-        } else if matches!(
-            self.commit(ui, &name)?,
-            PropertyCommit::Pending | PropertyCommit::Rejected(_)
-        ) {
-            // A failed post keeps its draft for the next visit. Repainting or
-            // changing focus again must not retry a rejected write.
+        } else if bulk
+            || matches!(
+                self.commit(ui, &name)?,
+                PropertyCommit::Pending | PropertyCommit::Rejected(_)
+            )
+        {
+            // Moving focus preserves a pending group edit or a rejected
+            // single-object draft. The user can confirm or correct it on return.
             let p = &mut self.properties[index];
             p.active = false;
             present(ui, p)?;
@@ -1342,6 +1377,7 @@ impl PropertyGrid {
             self.activate(ui, i)?;
         }
         let mut view_mode = self.flat;
+        let row_command = self.update_spin_commands(ui)?;
         let mut actions = Vec::new();
         #[derive(Clone, Copy)]
         enum RowAction {
@@ -1422,7 +1458,7 @@ impl PropertyGrid {
         let selection_changed = self.sync_selection(ui)?;
         self.last_focus = ui.runtime.focused();
         self.update_scroll_extent(ui)?;
-        Ok(changed || selection_changed || posted)
+        Ok(changed || selection_changed || posted || row_command)
     }
     fn focused_text_cell(&self, ui: &Controls) -> Option<&Property> {
         let focus = ui.runtime.focused()?;
@@ -1560,14 +1596,20 @@ impl PropertyGrid {
             // Escape in this cell can then cancel the property transaction.
             return Ok(false);
         }
-        if *key == Key::Enter
-            && (p.descriptor.metadata.editor == "Memo"
-                || id != p.editor
-                || (ui.document(id).is_none() && ui.password_composition_active(id).is_none())
-                || ui.password_composition_active(id) == Some(true)
-                || ui.document(id).is_some_and(|d| d.composition().is_some()))
-        {
-            return Ok(false);
+        if *key == Key::Enter {
+            let spin_action =
+                p.compact_spin() && (ui.flyout_descendant(id, p.owner) || p.null == Some(id));
+            let single_line_input = id == p.editor
+                && p.descriptor.metadata.editor != "Memo"
+                && (ui.document(id).is_some() || ui.password_composition_active(id).is_some());
+            if !(spin_action || single_line_input)
+                || ui.password_composition_active(p.editor) == Some(true)
+                || ui
+                    .document(p.editor)
+                    .is_some_and(|d| d.composition().is_some())
+            {
+                return Ok(false);
+            }
         }
         let name = p.schema.name.clone();
         let button = if p.specialized.as_ref().is_some_and(|e| e.inline()) {

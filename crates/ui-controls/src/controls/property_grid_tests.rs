@@ -384,9 +384,19 @@ fn keyboard_actions_are_nonfatal_and_own_activation_consumption_preserves_others
     let editor = grid.property_editor("count").unwrap();
     ui.set_text(editor, "invalid").unwrap();
     let (_, apply, _) = grid.property_actions("count").unwrap();
-    ui.perform_action(apply, SemanticAction::Activate, None)
-        .unwrap();
-    assert!(grid.update(&mut ui).unwrap());
+    ui.update(Size::new(960., 700.)).unwrap();
+    assert!(ui.runtime.bounds(apply).is_none());
+    assert!(
+        grid.input(
+            &mut ui,
+            &InputEvent::KeyDown {
+                key: Key::Enter,
+                modifiers: Default::default(),
+                repeat: false
+            }
+        )
+        .unwrap()
+    );
     assert!(grid.error().is_some());
     assert_eq!(grid.accepted("count"), Some(PropertyValue::Mixed));
     ui.runtime.apply(Mutation::Focus(Some(editor))).unwrap();
@@ -402,6 +412,57 @@ fn keyboard_actions_are_nonfatal_and_own_activation_consumption_preserves_others
         .unwrap()
     );
     assert_eq!(grid.draft(&ui, "count").unwrap(), None);
+}
+
+#[test]
+fn numerical_row_commands_apply_cancel_and_reset_a_group_edit() {
+    let (mut ui, mut grid, source) = fixture();
+    let size = Size::new(960., 700.);
+    let click = |ui: &mut Controls, grid: &mut PropertyGrid, name: &str| {
+        ui.update(size).unwrap();
+        let id =
+            ui.runtime
+                .tree()
+                .preorder()
+                .into_iter()
+                .find(|id| {
+                    ui.controls.get(id).is_some_and(|c| {
+                        c.automation_name.as_deref() == Some(name) || c.label == name
+                    }) && ui.effective_enabled(*id)
+                        && ui.runtime.bounds(*id).is_some()
+                })
+                .unwrap_or_else(|| panic!("No enabled command {name}"));
+        ui.perform_action(id, SemanticAction::Activate, None)
+            .unwrap();
+        grid.update(ui).unwrap();
+    };
+    let actions = "Действия свойства «count»";
+    click(&mut ui, &mut grid, actions);
+    click(&mut ui, &mut grid, "Изменить");
+    grid.set_draft(&mut ui, "count", CellValue::Integer(22))
+        .unwrap();
+    click(&mut ui, &mut grid, actions);
+    click(&mut ui, &mut grid, "Отменить правку");
+    assert_eq!(grid.accepted("count"), Some(PropertyValue::Mixed));
+    assert!(grid.take_changes().is_empty());
+    grid.set_draft(&mut ui, "count", CellValue::Integer(14))
+        .unwrap();
+    click(&mut ui, &mut grid, actions);
+    click(&mut ui, &mut grid, "Применить");
+    assert_eq!(grid.take_changes().len(), 1);
+    for key in [1, 2] {
+        assert_eq!(
+            source.borrow().value(key, "count"),
+            Some(&CellValue::Integer(14))
+        );
+    }
+    click(&mut ui, &mut grid, actions);
+    click(&mut ui, &mut grid, "Значение по умолчанию");
+    assert_eq!(grid.take_changes().len(), 1);
+    assert_eq!(
+        grid.accepted("count"),
+        Some(PropertyValue::Uniform(CellValue::Integer(10)))
+    );
 }
 
 #[test]

@@ -313,9 +313,17 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
         p.active && writable && !direct_boolean && !p.inplace_text,
     )?;
     if let Some(unit) = p.currency {
-        show(ui, unit, p.active)?;
+        let separate_suffix = p.active && ui.numeric.inplace_suffix(p.owner).is_none();
+        show(ui, unit, separate_suffix)?;
     }
-    show(ui, p.reset, p.descriptor.default.is_some() && writable)?;
+    if let Some(button) = p.spin_menu_button {
+        show(ui, button, p.compact_spin())?;
+    }
+    show(
+        ui,
+        p.reset,
+        p.descriptor.default.is_some() && writable && !p.compact_spin(),
+    )?;
     if let Some(null) = p.null {
         show(ui, null, p.active)?;
         enabled(ui, null, writable)?;

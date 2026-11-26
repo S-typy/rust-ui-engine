@@ -217,14 +217,18 @@ impl Controls {
             let props = &self.runtime.tree().node(owner).unwrap().props;
             let available =
                 (bounds.width - props.style.padding.left - props.style.padding.right).max(0.0);
-            let desired: f32 = composite
+            let widths = composite
                 .parts
                 .buttons
                 .iter()
                 .filter_map(|id| self.rich.button_settings.get(id))
                 .filter(|s| s.visible)
-                .map(|s| s.width)
-                .sum();
+                .map(|s| s.width);
+            let desired: f32 = if self.numeric.inplace_suffix(owner).is_some() {
+                widths.fold(0.0, f32::max)
+            } else {
+                widths.sum()
+            };
             let budget = (available - available.min(24.0)).max(0.0);
             let scale = if desired > 0.0 {
                 (budget / desired).min(1.0)

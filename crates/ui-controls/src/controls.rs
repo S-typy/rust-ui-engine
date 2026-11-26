@@ -3997,6 +3997,11 @@ impl Controls {
             let has_popup = self.rich_owner(id).is_none() && self.popup_expanded(id).is_some();
             let has_content = self.button_content(id).is_some();
             let readable_label = self.readable_label(id, enabled);
+            let spin_suffix = self
+                .runtime
+                .tree()
+                .parent(id)
+                .and_then(|owner| self.numeric.inplace_suffix(owner));
             let Some(control) = self.controls.get_mut(&id) else {
                 continue;
             };
@@ -4102,7 +4107,9 @@ impl Controls {
                 ),
                 weight: if matches!(control.kind, Kind::Label) {
                     control.text_style.font_weight.unwrap_or(400)
-                } else if matches!(control.kind, Kind::Tab { .. }) {
+                } else if matches!(control.kind, Kind::Tab { .. })
+                    || (editable && spin_suffix.is_some())
+                {
                     600
                 } else {
                     400
@@ -4246,6 +4253,25 @@ impl Controls {
                         self.scene.text(placeholder);
                     } else {
                         self.scene.text(run.clone());
+                    }
+                    if let Some(symbol) = spin_suffix.filter(|symbol| !symbol.is_empty())
+                        && !run.text.is_empty()
+                    {
+                        let x = layout.horizontal_extent().end + run.font_size * 0.25;
+                        let suffix_bounds = Rect::new(
+                            x,
+                            run.bounds.y,
+                            (text_bounds.x + text_bounds.width - x).max(0.),
+                            run.bounds.height,
+                        );
+                        if let Some(suffix_clip) = suffix_bounds.intersection(run.clip) {
+                            self.scene.text(TextRun {
+                                text: symbol.into(),
+                                bounds: suffix_bounds,
+                                clip: suffix_clip,
+                                ..run.clone()
+                            });
+                        }
                     }
                     if focused
                         && self.caret_visible

@@ -22,6 +22,8 @@ struct CalculatorParts {
 }
 struct Entry {
     button: WidgetId,
+    // Present for a cell spinner. The suffix is painted after the editable digits.
+    inplace_suffix: Option<String>,
     binding_settings: Rc<RefCell<NumericEditSettings>>,
     popup: Option<CalculatorParts>,
     model: NumericCalculator,
@@ -33,6 +35,11 @@ struct Entry {
 #[derive(Default)]
 pub(super) struct NumericState {
     entries: HashMap<WidgetId, Entry>,
+}
+impl NumericState {
+    pub(super) fn inplace_suffix(&self, owner: WidgetId) -> Option<&str> {
+        self.entries.get(&owner)?.inplace_suffix.as_deref()
+    }
 }
 
 impl Controls {
@@ -71,6 +78,7 @@ impl Controls {
                 parts.container,
                 Entry {
                     button,
+                    inplace_suffix: None,
                     binding_settings: Rc::new(RefCell::new(settings.clone())),
                     popup: None,
                     model: NumericCalculator::new(value, settings.precision)
@@ -102,6 +110,76 @@ impl Controls {
             self.remove(parts.container)?;
         }
         result
+    }
+    pub(super) fn configure_inplace_spin(
+        &mut self,
+        owner: WidgetId,
+        currency: Option<&str>,
+    ) -> Result<(), ControlError> {
+        let entry =
+            self.numeric.entries.get(&owner).ok_or_else(|| {
+                ControlError::Invalid("A numeric property editor is required".into())
+            })?;
+        if entry.inplace_suffix.is_some() {
+            return Ok(());
+        }
+        let calculator = entry.button;
+        let parts = self.rich.composites[&owner].parts.clone();
+        self.set_editor_button_settings(
+            calculator,
+            EditorButtonSettings {
+                visible: false,
+                tab_stop: false,
+                ..Default::default()
+            },
+        )?;
+        self.edit_props(owner, |p| {
+            p.style.kind = LayoutKind::Grid;
+            p.style.grid_columns = vec![GridTrack::Fr(1.), GridTrack::Auto];
+            p.style.grid_rows = vec![GridTrack::Fr(1.), GridTrack::Fr(1.)];
+        })?;
+        self.edit_props(parts.editor, |p| {
+            p.style.width = Length::Percent(1.);
+            p.style.grid_column = GridPlacement {
+                start: Some(1),
+                span: 1,
+            };
+            p.style.grid_row = GridPlacement {
+                start: Some(1),
+                span: 2,
+            };
+        })?;
+        for button in parts.buttons {
+            let Some(selection::RichAction::Step { direction, .. }) =
+                self.rich.actions.get(&button)
+            else {
+                continue;
+            };
+            let row = if *direction > 0 { 1 } else { 2 };
+            self.set_editor_button_settings(
+                button,
+                EditorButtonSettings {
+                    width: 24.,
+                    tab_stop: false,
+                    ..Default::default()
+                },
+            )?;
+            self.edit_props(button, |p| {
+                p.style.width = Length::Px(24.);
+                p.style.grid_column = GridPlacement {
+                    start: Some(2),
+                    span: 1,
+                };
+                p.style.grid_row = GridPlacement {
+                    start: Some(row),
+                    span: 1,
+                };
+            })?;
+        }
+        self.numeric.entries.get_mut(&owner).unwrap().inplace_suffix =
+            Some(currency.unwrap_or_default().to_owned());
+        self.scene_dirty = true;
+        Ok(())
     }
     pub(crate) fn numeric_binding_settings(
         &self,
@@ -187,7 +265,7 @@ impl Controls {
         }
         let button = self.numeric.entries[&id].button;
         let mut button_settings = self.editor_button_settings(button).unwrap_or_default();
-        button_settings.visible = settings.calculator;
+        button_settings.visible = settings.calculator && self.numeric.inplace_suffix(id).is_none();
         self.set_editor_button_settings(button, button_settings)
     }
     pub fn numeric_calculator_is_open(&self, id: WidgetId) -> bool {
@@ -205,7 +283,10 @@ impl Controls {
             .numeric_settings(id)
             .cloned()
             .ok_or_else(|| ControlError::Invalid("Not a NumericEdit".into()))?;
-        if !settings.calculator || !self.numeric_editable(id) {
+        if !settings.calculator
+            || self.numeric.inplace_suffix(id).is_some()
+            || !self.numeric_editable(id)
+        {
             return Err(ControlError::Invalid(
                 "Numeric calculator is unavailable".into(),
             ));

@@ -1,5 +1,6 @@
 //! Selection rows and composite chrome share one retained interaction model.
 use super::*;
+use rust_desktop_ui_core::StrokeSegment;
 
 impl Controls {
     pub(super) fn paint_rich_surface(
@@ -8,6 +9,55 @@ impl Controls {
         bounds: Rect,
         clip: Rect,
     ) -> Result<bool, ControlError> {
+        if let Some(selection::RichAction::Step { owner, direction }) = self.rich.actions.get(&id)
+            && self.numeric.inplace_suffix(*owner).is_some()
+        {
+            let state = self.button_visual_state(id).unwrap_or_default();
+            let enabled = state.enabled && !self.rich_read_only(id);
+            let chrome = self.theme.chrome();
+            if enabled && (state.hovered || state.pressed || state.focused) {
+                editor_fill(
+                    &mut self.scene,
+                    bounds,
+                    clip,
+                    2.,
+                    if state.pressed {
+                        chrome.subtle_pressed
+                    } else {
+                        chrome.subtle_hover
+                    },
+                );
+            }
+            let half = 4.5_f32.min(bounds.width * 0.4).min(bounds.height * 0.5);
+            let cx = bounds.x + bounds.width * 0.5;
+            let cy = bounds.y + bounds.height * 0.5;
+            let dy = if *direction > 0 {
+                half * 0.5
+            } else {
+                -half * 0.5
+            };
+            let apex = Point::new(cx, cy - dy);
+            self.scene.stroke_path(
+                &[
+                    StrokeSegment {
+                        start: Point::new(cx - half, cy + dy),
+                        end: apex,
+                    },
+                    StrokeSegment {
+                        start: apex,
+                        end: Point::new(cx + half, cy + dy),
+                    },
+                ],
+                clip,
+                1.,
+                if enabled {
+                    self.theme.tokens().text
+                } else {
+                    chrome.disabled_text
+                },
+            );
+            return Ok(true);
+        }
         if let Some(composite) = self.rich.composites.get(&id) {
             let editor = composite.parts.editor;
             let control = &self.controls[&editor];
@@ -25,6 +75,12 @@ impl Controls {
             let mut style = control.edit_box_style.resolve(self.theme, state);
             if enabled && control.validation_error.is_some() {
                 style.apply_invalid(self.theme, control.edit_box_style.invalid);
+            }
+            if self.numeric.inplace_suffix(id).is_some() {
+                if enabled && control.validation_error.is_some() {
+                    shape_border(&mut self.scene, bounds, clip, 0., 1., style.border);
+                }
+                return Ok(true);
             }
             let radius = style
                 .corner_radius

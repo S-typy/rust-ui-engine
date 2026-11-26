@@ -36,6 +36,41 @@ fn type_number(ui: &mut Controls, id: WidgetId, digit: u8) {
 }
 
 #[test]
+fn inplace_spin_keeps_currency_out_of_the_document_and_owns_its_step_buttons() {
+    let (mut ui, parts) = setup();
+    ui.configure_inplace_spin(parts.container, Some("₽"))
+        .unwrap();
+    ui.configure_inplace_spin(parts.container, Some("₽"))
+        .unwrap();
+    frame(&mut ui);
+    let up = ui.runtime.bounds(parts.buttons[1]).unwrap();
+    let down = ui.runtime.bounds(parts.buttons[0]).unwrap();
+    let editor = ui.runtime.bounds(parts.editor).unwrap();
+    assert_eq!(up.x, down.x);
+    assert_eq!(up.width, down.width);
+    assert!(up.y + up.height <= down.y + 0.01);
+    assert!(editor.x + editor.width <= up.x + 0.01);
+    assert!(ui.runtime.bounds(parts.buttons[2]).is_none());
+    assert!(ui.open_numeric_calculator(parts.container).is_err());
+    assert_eq!(ui.document(parts.editor).unwrap().text(), "12,30");
+    let unit = ui.scene().texts.iter().find(|t| t.text == "₽").unwrap();
+    assert!(unit.bounds.x > editor.x && unit.bounds.x < up.x);
+    ui.perform_action(parts.buttons[1], SemanticAction::Activate, None)
+        .unwrap();
+    assert_eq!(
+        ui.numeric_value(parts.container),
+        Some(Some(decimal("13.3")))
+    );
+    ui.set_composite_read_only(parts.container, true).unwrap();
+    ui.perform_action(parts.buttons[0], SemanticAction::Activate, None)
+        .unwrap();
+    assert_eq!(
+        ui.numeric_value(parts.container),
+        Some(Some(decimal("13.3")))
+    );
+}
+
+#[test]
 fn decimal_cultures_roundtrip_extremes_grouping_and_nullable_are_exact() {
     for (culture, text) in [
         (

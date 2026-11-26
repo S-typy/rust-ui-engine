@@ -44,6 +44,18 @@ submits a changed draft. Escape restores the previous value. A rejected draft
 can be reopened for correction. This applies to plain text, numeric input,
 masked text, password and text with a button using the standard value display.
 
+An integer or decimal property with the standard numeric editor uses two
+vertically stacked step arrows at the right of the value. Clicking the upper
+arrow increases the draft by one step and the lower arrow decreases it. The
+number and its optional currency suffix share the row's baseline. A small
+square at the far right opens the property commands. Use it to edit, apply or
+cancel and, when the descriptor declares a default, restore that value.
+
+When editing several objects, Enter or **Применить** in this menu writes the
+number to all selected objects in one transaction. Leaving a mixed row after
+opening it preserves the original values. The calculator has its own
+`Editor="Calculator"` setting.
+
 Typing into the focused display cell selects the existing value and replaces it
 with the committed input. Hosts can call `prepare_text_input` before
 delivering text or an IME preedit and use `pending_text_editor` to identify

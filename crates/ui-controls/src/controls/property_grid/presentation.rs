@@ -145,6 +145,7 @@ pub(in crate::controls) enum InspectorPart {
     Viewport,
     Value(ValueMark),
     BooleanCell,
+    Commands,
     ReadOnlyText {
         host: WidgetId,
     },
@@ -272,9 +273,6 @@ impl PropertyGrid {
         ui: &mut Controls,
         index: Option<usize>,
     ) -> Result<bool, ControlError> {
-        let Some((title, hint)) = self.details else {
-            return Ok(false);
-        };
         if index == self.selection {
             return Ok(false);
         }
@@ -287,6 +285,9 @@ impl PropertyGrid {
             }
         }
         self.selection = index;
+        let Some((title, hint)) = self.details else {
+            return Ok(true);
+        };
         let selected = index.map(|i| &self.properties[i]);
         ui.set_label(
             title,
@@ -303,9 +304,6 @@ impl PropertyGrid {
     }
 
     pub(super) fn sync_selection(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
-        if self.details.is_none() {
-            return Ok(false);
-        }
         let focus = ui.runtime.focused();
         if focus != self.last_focus {
             self.last_focus = focus;
@@ -324,6 +322,9 @@ impl PropertyGrid {
         {
             return Ok(false);
         }
+        if self.details.is_none() {
+            return self.select(ui, None);
+        }
         let first = self
             .properties
             .iter()
@@ -332,6 +333,13 @@ impl PropertyGrid {
     }
 
     pub(super) fn activate(&mut self, ui: &mut Controls, index: usize) -> Result<(), ControlError> {
+        let activating = &self.properties[index];
+        if !activating.active && activating.compact_spin() {
+            ui.configure_inplace_spin(
+                activating.owner,
+                activating.descriptor.currency_symbol.as_deref(),
+            )?;
+        }
         self.select(ui, Some(index))?;
         for (i, p) in self.properties.iter_mut().enumerate() {
             if p.active != (i == index) {
@@ -477,6 +485,31 @@ impl Controls {
         let chrome = self.theme.chrome();
         let line = chrome.divider;
         match part {
+            InspectorPart::Commands => {
+                let state = self.button_visual_state(id).unwrap_or_default();
+                if state.hovered || state.pressed {
+                    fill_clipped(&mut self.scene, b, clip, chrome.control_hover);
+                }
+                if state.focused {
+                    shape_border(&mut self.scene, b, clip, 2., 1., self.theme.tokens().focus);
+                }
+                let size = 8_f32.min(b.width).min(b.height);
+                let glyph = Rect::new(
+                    b.x + (b.width - size) * 0.5,
+                    b.y + (b.height - size) * 0.5,
+                    size,
+                    size,
+                );
+                shape_border(
+                    &mut self.scene,
+                    glyph,
+                    clip,
+                    0.,
+                    1.25,
+                    self.theme.tokens().text,
+                );
+                return Ok(true);
+            }
             InspectorPart::Value(_)
             | InspectorPart::BooleanCell
             | InspectorPart::Name
