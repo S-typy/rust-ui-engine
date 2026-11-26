@@ -5,6 +5,7 @@ use rust_desktop_ui_data::CellValue;
 use rust_desktop_ui_platform_winit::{DesktopApp, PlatformEvent};
 
 mod color;
+mod column_resize;
 mod custom;
 
 fn pointer_down(form: &mut Form, position: Point) {

@@ -572,3 +572,124 @@ fn hostile_validator_error_is_bounded_and_nonfatal() {
     assert_eq!(grid.accepted("name"), Some(PropertyValue::Mixed));
     assert_eq!(source.borrow().value(1, "name"), Some(&CellValue::Null));
 }
+
+fn name_divider(ui: &Controls, grid: &PropertyGrid) -> Point {
+    let value_host = ui
+        .runtime
+        .tree()
+        .parent(grid.property("name").unwrap())
+        .unwrap();
+    let row = ui
+        .runtime
+        .bounds(grid.property_row("name").unwrap())
+        .unwrap();
+    Point::new(
+        ui.runtime.bounds(value_host).unwrap().x - 1.,
+        row.y + row.height / 2.,
+    )
+}
+
+fn press_name_divider(ui: &mut Controls, grid: &mut PropertyGrid) -> Point {
+    let position = name_divider(ui, grid);
+    assert!(grid.column_resize_cursor(ui, position));
+    assert!(
+        grid.input(
+            ui,
+            &InputEvent::PointerDown {
+                position,
+                button: PointerButton::Primary,
+                modifiers: Default::default()
+            }
+        )
+        .unwrap()
+    );
+    assert_eq!(ui.runtime.captured(), grid.property_row("name"));
+    position
+}
+
+#[test]
+fn captured_divider_finishes_outside_and_preserves_the_edit_selection() {
+    let (mut ui, mut grid, source) = fixture();
+    grid.set_draft(&mut ui, "name", CellValue::Text("draft".into()))
+        .unwrap();
+    grid.begin_edit(&mut ui, "name").unwrap();
+    let editor = grid.property_editor("name").unwrap();
+    ui.dispatch(InputEvent::KeyDown {
+        key: Key::Character("a".into()),
+        modifiers: rust_desktop_ui_core::Modifiers {
+            control: true,
+            ..Default::default()
+        },
+        repeat: false,
+    })
+    .unwrap();
+    assert_eq!(ui.document(editor).unwrap().selected_text(), "draft");
+    let viewport = Size::new(960., 700.);
+    ui.update(viewport).unwrap();
+    let start = press_name_divider(&mut ui, &mut grid);
+    assert!(!grid.input(&mut ui, &InputEvent::PointerLeft).unwrap());
+    ui.dispatch(InputEvent::PointerLeft).unwrap();
+    let outside = Point::new(start.x + 70., -30.);
+    assert!(grid.column_resize_cursor(&ui, outside));
+    // Windows can deliver the final pointer coordinates without a preceding move.
+    assert!(
+        grid.input(
+            &mut ui,
+            &InputEvent::PointerUp {
+                position: outside,
+                button: PointerButton::Primary,
+                modifiers: Default::default(),
+            }
+        )
+        .unwrap()
+    );
+    ui.update(viewport).unwrap();
+    assert!((name_divider(&ui, &grid).x - start.x - 70.).abs() < 0.01);
+    assert!(ui.runtime.captured().is_none());
+    assert!(!grid.column_resize_cursor(&ui, outside));
+    assert_eq!(ui.runtime.focused(), Some(editor));
+    assert_eq!(ui.document(editor).unwrap().selected_text(), "draft");
+    assert_eq!(source.borrow().value(1, "name"), Some(&CellValue::Null));
+    assert!(grid.take_changes().is_empty());
+}
+
+#[test]
+fn interrupted_divider_rolls_back_without_stealing_capture_or_closing_a_flyout() {
+    let (mut ui, mut grid, _) = fixture();
+    let viewport = Size::new(960., 700.);
+    let other = grid.property_row("enabled").unwrap();
+    let flyout = ui
+        .flyout(grid.toolbar_parts().0, Size::new(120., 75.))
+        .unwrap();
+    for open_flyout in [false, true] {
+        let start = press_name_divider(&mut ui, &mut grid);
+        assert!(
+            grid.input(
+                &mut ui,
+                &InputEvent::PointerMoved {
+                    position: Point::new(start.x + 53., start.y)
+                }
+            )
+            .unwrap()
+        );
+        ui.update(viewport).unwrap();
+        assert!((name_divider(&ui, &grid).x - start.x - 53.).abs() < 0.01);
+        if open_flyout {
+            ui.open_flyout(flyout).unwrap();
+        } else {
+            ui.runtime
+                .apply(Mutation::CapturePointer(Some(other)))
+                .unwrap();
+        }
+        grid.update(&mut ui).unwrap();
+        ui.update(viewport).unwrap();
+        assert_eq!(name_divider(&ui, &grid).x, start.x);
+        assert!(!grid.column_resize_cursor(&ui, start));
+        if open_flyout {
+            assert!(ui.flyout_is_open(flyout));
+        } else {
+            assert_eq!(ui.runtime.captured(), Some(other));
+            ui.runtime.apply(Mutation::CapturePointer(None)).unwrap();
+        }
+    }
+}

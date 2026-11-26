@@ -30,6 +30,7 @@ use rust_desktop_ui_core::{InputEvent, Rect, Scene, Size};
 pub use rust_desktop_ui_render_wgpu::RendererStats;
 use std::time::Duration;
 pub use wake::AppWaker;
+pub use winit::window::CursorIcon;
 
 /// Committed text is deliberately separate from logical shortcut keys.
 #[derive(Debug, Clone)]
@@ -78,6 +79,11 @@ pub struct NativeTextDrag {
 mod ole_drag;
 
 pub trait DesktopApp {
+    /// Cursor for a position in logical client coordinates. Queried after input
+    /// and layout so a stationary pointer follows changes to the underlying UI.
+    fn pointer_cursor(&self, _position: rust_desktop_ui_core::Point) -> CursorIcon {
+        CursorIcon::Default
+    }
     /// Opt in to Unicode text drops on a single-window Windows host.
     fn accepts_native_text_drops(&self) -> bool {
         false

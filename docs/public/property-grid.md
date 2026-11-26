@@ -160,11 +160,23 @@ Static group paths, finite text choices and display templates are supported.
 Editable collection children and interactive controls inside display templates
 are outside this profile.
 
-## Value previews and selected property
+## Resizing the name and value columns
 
-Use `LabelWidth="44%"` to reserve a proportion of each ordinary row for its name.
-Percentages must be greater than zero and less than 100. A number sets a fixed
-width in logical pixels. Long property names wrap as the window narrows.
+Drag the vertical line between a property name and its value. The pointer
+changes to a horizontal resize arrow, and both columns follow the drag across
+the ordinary rows. Release to keep the width, or press Escape during the drag
+to restore the starting width. The active editor keeps its focus and draft.
+With focus in an ordinary row, press **Alt+Shift+Left** or **Alt+Shift+Right**
+to move the divider by eight logical pixels.
+
+`LabelWidth` sets the starting width of the name column. A percentage such as
+`LabelWidth="44%"` must be greater than zero and less than 100. After the user
+moves the divider, the new proportion follows the window size. A number such
+as `LabelWidth="180"` uses logical pixels. A narrow window temporarily reduces
+that width to leave room for the value and restores it when space permits.
+Long names wrap. Group headings and `FullWidth="True"` rows span both columns.
+
+## Value previews and selected property
 
 | Preview | Source value | Appearance |
 | --- | --- | --- |

@@ -68,7 +68,7 @@ struct WindowState {
     spec: WindowSpec,
     accessible_nodes: AccessibilitySnapshot,
     modifiers: Modifiers,
-    cursor: (f64, f64),
+    cursor: input::ClientPointer,
     ime: crate::ime::ImeSession,
     focused: bool,
     modal_blocked: bool,
@@ -232,7 +232,7 @@ impl<A: DesktopApplication> MultiHost<A> {
             self.with_view(key, |state, app, clipboard| {
                 let response = app.pointer_capture_lost()?;
                 let redraw = state.effects(app, clipboard, response)?;
-                Ok(state.sync_ime(app, clipboard)? || redraw)
+                Ok(state.sync_native_input(app, clipboard)? || redraw)
             })?;
         }
         Ok(())
@@ -432,7 +432,7 @@ impl<A: DesktopApplication> MultiHost<A> {
                 window,
                 accessible_nodes: AccessibilitySnapshot::default(),
                 modifiers: Modifiers::default(),
-                cursor: (0.0, 0.0),
+                cursor: input::ClientPointer::default(),
                 ime: crate::ime::ImeSession::default(),
                 focused: false,
                 modal_blocked: false,
@@ -525,6 +525,8 @@ impl WindowState {
             redraw |= self.effects(app, clipboard, response)?;
         }
         self.window.set_ime_allowed(false);
+        self.cursor.left();
+        self.cursor.sync(&self.window, app);
         Ok(redraw)
     }
 
@@ -551,10 +553,7 @@ impl WindowState {
 
     fn pointer(&self) -> Point {
         let scale = self.window.scale_factor();
-        Point::new(
-            (self.cursor.0 / scale) as f32,
-            (self.cursor.1 / scale) as f32,
-        )
+        self.cursor.logical(scale)
     }
 
     fn geometry_changed(&self, app: &mut dyn DesktopApp) {
@@ -611,7 +610,7 @@ impl WindowState {
         Ok(redraw)
     }
 
-    fn sync_ime(
+    fn sync_native_input(
         &mut self,
         app: &mut dyn DesktopApp,
         clipboard: &mut Option<arboard::Clipboard>,
@@ -635,6 +634,7 @@ impl WindowState {
             let response = app.event(PlatformEvent::ImeCancel)?;
             redraw = self.effects(app, clipboard, response)?;
         }
+        self.cursor.sync(&self.window, app);
         if let Some(chrome) = &self.chrome {
             chrome.update(app.title_bar())
         }
@@ -658,7 +658,7 @@ impl WindowState {
         {
             eprintln!("Native resize unavailable: {error}");
         }
-        Ok(self.sync_ime(app, clipboard)? || redraw)
+        Ok(self.sync_native_input(app, clipboard)? || redraw)
     }
 
     fn render(
@@ -683,7 +683,7 @@ impl WindowState {
         app.window_chrome_changed(chrome);
         app.update(Size::new(logical.width, logical.height), scale as f32)?;
         self.publish_accessibility(app, scale as f32)?;
-        let redraw = self.sync_ime(app, clipboard)?;
+        let redraw = self.sync_native_input(app, clipboard)?;
         if let Some(caret) = crate::ime::valid_cursor(app.ime_target(), app.ime_cursor()) {
             self.window.set_ime_cursor_area(
                 LogicalPosition::new(f64::from(caret.x), f64::from(caret.y)),
@@ -875,6 +875,7 @@ impl WindowState {
                 }
                 self.focused = value;
                 if !value {
+                    self.cursor.left();
                     self.modifiers = Modifiers::default();
                     self.ime.disabled();
                 }
@@ -888,7 +889,7 @@ impl WindowState {
                     let response = app.event(PlatformEvent::Input(InputEvent::PointerLeft))?;
                     redraw |= self.effects(app, clipboard, response)?;
                 }
-                redraw |= self.sync_ime(app, clipboard)?;
+                redraw |= self.sync_native_input(app, clipboard)?;
                 self.window.request_redraw();
                 Ok(redraw)
             }
@@ -902,21 +903,21 @@ impl WindowState {
                 };
                 Ok(false)
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x, position.y);
+            WindowEvent::CursorMoved { .. } => self.dispatch(
+                app,
+                clipboard,
+                PlatformEvent::Input(InputEvent::PointerMoved {
+                    position: self.pointer(),
+                }),
+            ),
+            WindowEvent::CursorLeft { .. } => {
+                self.cursor.left();
                 self.dispatch(
                     app,
                     clipboard,
-                    PlatformEvent::Input(InputEvent::PointerMoved {
-                        position: self.pointer(),
-                    }),
+                    PlatformEvent::Input(InputEvent::PointerLeft),
                 )
             }
-            WindowEvent::CursorLeft { .. } => self.dispatch(
-                app,
-                clipboard,
-                PlatformEvent::Input(InputEvent::PointerLeft),
-            ),
             WindowEvent::MouseInput { state, button, .. } => {
                 let position = self.pointer();
                 let button = input::button(button);
@@ -1133,7 +1134,7 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
                 source
                     .capture
                     .pointer_position(&event, &source.window)
-                    .unwrap_or(source.cursor),
+                    .unwrap_or(source.cursor.physical),
             ),
             _ => None,
         };
@@ -1153,7 +1154,7 @@ impl<A: DesktopApplication> ApplicationHandler<HostEvent> for MultiHost<A> {
         } else {
             self.with_view(key, |state, app, clipboard| {
                 if let Some(position) = pointer_position {
-                    state.cursor = position;
+                    state.cursor.moved(position);
                 }
                 if let Some(context) = context {
                     app.desktop_pointer_changed(context);

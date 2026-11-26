@@ -2,7 +2,59 @@ use rust_desktop_ui_core::{Key, Modifiers, Point, PointerButton};
 use winit::{
     event::{MouseButton, MouseScrollDelta},
     keyboard::{Key as NativeKey, KeyCode, NamedKey, PhysicalKey},
+    window::{CursorIcon, Window},
 };
+
+/// Last device coordinates and the cursor already installed for this window.
+#[derive(Default)]
+pub(crate) struct ClientPointer {
+    pub physical: (f64, f64),
+    present: bool,
+    icon: CursorIcon,
+}
+
+impl ClientPointer {
+    pub fn moved(&mut self, physical: (f64, f64)) {
+        self.physical = physical;
+        self.present = true;
+    }
+
+    pub fn left(&mut self) {
+        self.present = false;
+    }
+
+    pub fn logical(&self, scale: f64) -> Point {
+        Point::new(
+            (self.physical.0 / scale) as f32,
+            (self.physical.1 / scale) as f32,
+        )
+    }
+
+    fn changed_icon(
+        &mut self,
+        scale: f64,
+        select: impl FnOnce(Point) -> CursorIcon,
+    ) -> Option<CursorIcon> {
+        let next = if self.present {
+            select(self.logical(scale))
+        } else {
+            CursorIcon::Default
+        };
+        if self.icon == next {
+            return None;
+        }
+        self.icon = next;
+        Some(next)
+    }
+
+    pub fn sync(&mut self, window: &Window, app: &dyn crate::DesktopApp) {
+        if let Some(icon) = self.changed_icon(window.scale_factor(), |position| {
+            app.pointer_cursor(position)
+        }) {
+            window.set_cursor(icon);
+        }
+    }
+}
 
 pub(crate) fn key(key: &NativeKey) -> Key {
     match key {
@@ -83,6 +135,52 @@ pub(crate) fn wheel(delta: MouseScrollDelta, scale: f64) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn column_cursor_tracks_layout_scale_and_departure_per_window() {
+        let mut pointer = ClientPointer::default();
+        let at_divider = |point: Point| {
+            if (point.x - 120.).abs() < 3. && point.y > 10. {
+                CursorIcon::ColResize
+            } else {
+                CursorIcon::Default
+            }
+        };
+        let outside = |_: Point| panic!("no pointer position in this window");
+        assert_eq!(pointer.changed_icon(1.5, outside), None);
+        pointer.moved((180., 90.));
+        assert_eq!(
+            pointer.changed_icon(1.5, at_divider),
+            Some(CursorIcon::ColResize)
+        );
+        assert_eq!(pointer.changed_icon(1.5, at_divider), None);
+        // Recalculate from physical coordinates on a stationary DPI change.
+        assert_eq!(
+            pointer.changed_icon(2., at_divider),
+            Some(CursorIcon::Default)
+        );
+        assert_eq!(
+            pointer.changed_icon(1.5, at_divider),
+            Some(CursorIcon::ColResize)
+        );
+        // A popup or layout change under a stationary pointer restores the cursor.
+        assert_eq!(
+            pointer.changed_icon(1.5, |_| CursorIcon::Default),
+            Some(CursorIcon::Default)
+        );
+        assert_eq!(
+            pointer.changed_icon(1.5, at_divider),
+            Some(CursorIcon::ColResize)
+        );
+        let mut other = ClientPointer::default();
+        assert_eq!(other.changed_icon(1.25, outside), None);
+        pointer.left();
+        assert_eq!(
+            pointer.changed_icon(1.5, outside),
+            Some(CursorIcon::Default)
+        );
+        assert_eq!(pointer.changed_icon(1.5, outside), None);
+    }
+
     #[test]
     fn non_latin_shortcuts_preserve_text_altgr_and_latin_layouts() {
         let control = Modifiers {

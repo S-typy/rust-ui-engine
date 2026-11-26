@@ -136,6 +136,7 @@ pub(in crate::controls) enum InspectorPart {
     Row {
         value_host: Option<WidgetId>,
         alternate: bool,
+        divider_highlighted: bool,
     },
     Name,
     Category {
@@ -565,6 +566,7 @@ impl Controls {
             InspectorPart::Row {
                 value_host,
                 alternate,
+                divider_highlighted,
             } => {
                 let color = if alternate {
                     self.theme.inspector_alternate_row()
@@ -576,11 +578,16 @@ impl Controls {
                     && host.x > b.x + 1.
                     && host.x < b.x + b.width
                 {
+                    let width = if divider_highlighted { 2. } else { 1. };
                     fill_clipped(
                         &mut self.scene,
-                        Rect::new(host.x - 1., b.y, 1., b.height),
+                        Rect::new(host.x - width, b.y, width, b.height),
                         clip,
-                        line,
+                        if divider_highlighted {
+                            self.theme.tokens().focus
+                        } else {
+                            line
+                        },
                     );
                 }
             }

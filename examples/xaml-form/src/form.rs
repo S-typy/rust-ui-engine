@@ -774,6 +774,22 @@ impl Form {
 }
 
 impl DesktopApp for Form {
+    fn pointer_cursor(
+        &self,
+        position: rust_desktop_ui_core::Point,
+    ) -> rust_desktop_ui_platform_winit::CursorIcon {
+        use rust_desktop_ui_platform_winit::CursorIcon;
+        if self
+            .view
+            .property_grids
+            .values()
+            .any(|grid| grid.column_resize_cursor(&self.ui, position))
+        {
+            CursorIcon::ColResize
+        } else {
+            CursorIcon::Default
+        }
+    }
     fn accepts_native_text_drops(&self) -> bool {
         self.grid_workspace.is_some()
     }

@@ -65,7 +65,7 @@ pub fn run(app: impl DesktopApp + 'static, options: RunOptions) -> Result<(), St
         accessible_nodes: AccessibilitySnapshot::default(),
         clipboard: None,
         modifiers: Modifiers::default(),
-        cursor: (0.0, 0.0),
+        cursor: input::ClientPointer::default(),
         ime: crate::ime::ImeSession::default(),
         focused: true,
         occluded: false,
@@ -100,7 +100,7 @@ struct Host<A> {
     accessible_nodes: AccessibilitySnapshot,
     clipboard: Option<arboard::Clipboard>,
     modifiers: Modifiers,
-    cursor: (f64, f64),
+    cursor: input::ClientPointer,
     ime: crate::ime::ImeSession,
     focused: bool,
     occluded: bool,
@@ -145,10 +145,7 @@ impl<A: DesktopApp> Host<A> {
 
     fn pointer(&self) -> Point {
         let scale = self.window.as_ref().map_or(1.0, |w| w.scale_factor());
-        Point::new(
-            (self.cursor.0 / scale) as f32,
-            (self.cursor.1 / scale) as f32,
-        )
+        self.cursor.logical(scale)
     }
 
     fn geometry_changed(&mut self) {
@@ -166,7 +163,7 @@ impl<A: DesktopApp> Host<A> {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => self.fail(event_loop, error),
             }
-            self.sync_ime(event_loop);
+            self.sync_native_input(event_loop);
         }
     }
 
@@ -176,7 +173,7 @@ impl<A: DesktopApp> Host<A> {
             Ok(response) => self.effects(event_loop, response),
             Err(error) => self.fail(event_loop, error),
         }
-        self.sync_ime(event_loop);
+        self.sync_native_input(event_loop);
         // Publish protected focus before the next queued key, not at the next
         // GPU frame. Screen-reader keyboard echo must see the password role.
         #[cfg(windows)]
@@ -205,7 +202,7 @@ impl<A: DesktopApp> Host<A> {
         }
     }
 
-    fn sync_ime(&mut self, event_loop: &ActiveEventLoop) {
+    fn sync_native_input(&mut self, event_loop: &ActiveEventLoop) {
         if let Some(window) = &self.window {
             window.set_ime_purpose(if self.app.borrow().ime_is_password() {
                 winit::window::ImePurpose::Password
@@ -235,6 +232,9 @@ impl<A: DesktopApp> Host<A> {
                 Ok(response) => self.effects(event_loop, response),
                 Err(error) => self.fail(event_loop, error),
             }
+        }
+        if let Some(window) = &self.window {
+            self.cursor.sync(window, &*self.app.borrow());
         }
         // Popup and layout changes must reach native hit testing before the next
         // queued mouse message, not only when a later redraw happens to arrive.
@@ -349,7 +349,7 @@ impl<A: DesktopApp> Host<A> {
             self.fail(event_loop, error);
             return;
         }
-        self.sync_ime(event_loop);
+        self.sync_native_input(event_loop);
         let caret = crate::ime::valid_cursor(
             self.app.borrow().ime_target(),
             self.app.borrow().ime_cursor(),
@@ -611,6 +611,7 @@ impl<A: DesktopApp + 'static> ApplicationHandler<HostEvent> for Host<A> {
         self.focused = false;
         self.modifiers = Modifiers::default();
         self.occluded = false;
+        self.cursor.left();
         dispatch_focus_transition(false, |event| self.dispatch(event_loop, event));
         self.ime = crate::ime::ImeSession::default();
         self.wake_at = None;
@@ -710,7 +711,7 @@ impl<A: DesktopApp + 'static> ApplicationHandler<HostEvent> for Host<A> {
                 self.capture
                     .as_ref()
                     .and_then(|capture| capture.pointer_position(&event, &window))
-                    .unwrap_or(self.cursor),
+                    .unwrap_or(self.cursor.physical),
             ),
             _ => None,
         };
@@ -724,7 +725,7 @@ impl<A: DesktopApp + 'static> ApplicationHandler<HostEvent> for Host<A> {
             self.app.borrow_mut().desktop_pointer_changed(context);
         }
         if let Some(position) = pointer_position {
-            self.cursor = position;
+            self.cursor.moved(position);
         }
         if let Some(adapter) = &mut self.adapter {
             adapter.process_event(&window, &event);
@@ -765,6 +766,7 @@ impl<A: DesktopApp + 'static> ApplicationHandler<HostEvent> for Host<A> {
             WindowEvent::Focused(value) => {
                 self.focused = value;
                 if !value {
+                    self.cursor.left();
                     self.modifiers = Modifiers::default();
                     self.ime.disabled();
                 }
@@ -780,8 +782,7 @@ impl<A: DesktopApp + 'static> ApplicationHandler<HostEvent> for Host<A> {
                     super_key: value.super_key(),
                 };
             }
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x, position.y);
+            WindowEvent::CursorMoved { .. } => {
                 self.dispatch(
                     event_loop,
                     PlatformEvent::Input(InputEvent::PointerMoved {
@@ -790,6 +791,7 @@ impl<A: DesktopApp + 'static> ApplicationHandler<HostEvent> for Host<A> {
                 );
             }
             WindowEvent::CursorLeft { .. } => {
+                self.cursor.left();
                 self.dispatch(event_loop, PlatformEvent::Input(InputEvent::PointerLeft))
             }
             WindowEvent::MouseInput { state, button, .. } => {

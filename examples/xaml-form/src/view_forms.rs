@@ -1456,8 +1456,24 @@ impl MountedView {
             ui.set_scroll_measured_extent(scroll.viewport, Size::new(width, height))
                 .map_err(err)?;
         }
-        if !self.scrolls.is_empty() {
+        if !self.scrolls.is_empty() || !self.property_grids.is_empty() && ui.runtime.needs_update()
+        {
             ui.update(viewport).map_err(err)?;
+        }
+        // Scroll content now has the new viewport width, so rows can use their
+        // actual arranged width when fitting an absolute name column.
+        let mut columns_changed = false;
+        for grid in self.property_grids.values() {
+            columns_changed |= grid.fit_columns(ui).map_err(err)?;
+        }
+        if columns_changed {
+            ui.update(viewport).map_err(err)?;
+            for grid in self.property_grids.values() {
+                grid.update_scroll_extent(ui).map_err(err)?;
+            }
+            if ui.runtime.needs_update() {
+                ui.update(viewport).map_err(err)?;
+            }
         }
         for border in &self.decorations {
             let Some(bounds) = ui.runtime.bounds(border.id) else {

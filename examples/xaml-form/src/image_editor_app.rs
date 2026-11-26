@@ -280,6 +280,9 @@ impl Drop for ImageDemo {
     }
 }
 impl DesktopApp for ImageDemo {
+    fn pointer_cursor(&self, position: rust_desktop_ui_core::Point) -> platform::CursorIcon {
+        self.form.pointer_cursor(position)
+    }
     fn set_waker(&mut self, w: Option<platform::AppWaker>) {
         self.waker = w.clone();
         self.form.set_waker(w);

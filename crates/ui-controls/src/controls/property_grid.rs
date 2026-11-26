@@ -12,6 +12,10 @@ use values::*;
 mod presentation;
 pub(super) use presentation::InspectorPart;
 use presentation::{ValueMark, action_icon, show, vertical_stack};
+#[path = "property_grid/column_resize.rs"]
+mod column_resize;
+#[path = "property_grid/columns.rs"]
+mod columns;
 #[path = "property_grid/row_commands.rs"]
 mod row_commands;
 
@@ -178,6 +182,8 @@ pub struct PropertyGrid {
     schema: TableSchema,
     objects: Vec<i64>,
     properties: Vec<Property>,
+    label_track: GridTrack,
+    column_resize: column_resize::ResizeState,
     groups: Vec<(Vec<String>, Expander)>,
     parents: Vec<(WidgetId, WidgetId)>,
     search: WidgetId,
@@ -426,6 +432,9 @@ impl PropertyGrid {
             .properties
             .iter()
             .any(|p| !p.description.is_empty());
+        let label_track = settings
+            .label_fraction
+            .map_or(GridTrack::Px(settings.label_width), GridTrack::Percent);
         if settings.scrollable {
             style.kind = LayoutKind::Grid;
             style.grid_columns = vec![GridTrack::Fr(1.)];
@@ -516,9 +525,7 @@ impl PropertyGrid {
                 let column = if descriptor.full_width {
                     GridTrack::Px(0.)
                 } else {
-                    settings
-                        .label_fraction
-                        .map_or(GridTrack::Px(settings.label_width), GridTrack::Percent)
+                    label_track
                 };
                 let row = ui.transparent_panel(
                     host,
@@ -585,6 +592,7 @@ impl PropertyGrid {
                 ui.controls.get_mut(&row).unwrap().inspector_part = Some(InspectorPart::Row {
                     value_host: (!descriptor.full_width).then_some(host),
                     alternate: properties.len() % 2 != 0,
+                    divider_highlighted: false,
                 });
                 let state = aggregate(&baseline);
                 let value = match &state {
@@ -866,6 +874,8 @@ impl PropertyGrid {
                 schema,
                 objects: objects.to_vec(),
                 properties,
+                label_track,
+                column_resize: column_resize::ResizeState::default(),
                 groups,
                 parents,
                 details,
@@ -1354,6 +1364,8 @@ impl PropertyGrid {
     /// Consumes only this inspector's action buttons; other activations remain.
     pub fn update(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
         self.check(ui)?;
+        let width_changed = self.fit_columns(ui)?;
+        self.sync_column_resize(ui)?;
         let focus = ui.runtime.focused();
         let mut posted = !ui.popup_open()
             && ui.window_focused
@@ -1471,7 +1483,7 @@ impl PropertyGrid {
         let selection_changed = self.sync_selection(ui)?;
         self.last_focus = ui.runtime.focused();
         self.update_scroll_extent(ui)?;
-        Ok(changed || selection_changed || posted || row_command)
+        Ok(changed || selection_changed || posted || row_command || width_changed)
     }
     fn focused_text_cell(&self, ui: &Controls) -> Option<&Property> {
         let focus = ui.runtime.focused()?;
@@ -1527,6 +1539,9 @@ impl PropertyGrid {
 
     /// Route input before Controls dispatch so an opening click reaches the editor itself.
     pub fn input(&mut self, ui: &mut Controls, event: &InputEvent) -> Result<bool, ControlError> {
+        if self.column_resize_input(ui, event)? {
+            return Ok(true);
+        }
         if let InputEvent::PointerDown {
             position,
             button: rust_desktop_ui_core::PointerButton::Primary,
