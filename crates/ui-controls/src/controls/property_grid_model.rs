@@ -32,6 +32,14 @@ pub struct PropertyDescriptor {
     pub default: Option<CellValue>,
     /// Finite choices for a text property, in popup order.
     pub choices: Vec<String>,
+    /// Stable keys corresponding to choice labels. Empty uses the labels as keys.
+    pub choice_keys: Vec<String>,
+    pub mask: Option<String>,
+    pub uri_format: Option<String>,
+    pub currency_symbol: Option<String>,
+    pub minimum: Option<i64>,
+    pub maximum: Option<i64>,
+    pub step: Option<i64>,
     pub preview: PropertyPreview,
     /// Let the value occupy the name column as well.
     pub full_width: bool,
@@ -45,6 +53,13 @@ impl PropertyDescriptor {
             groups: Vec::new(),
             default: None,
             choices: Vec::new(),
+            choice_keys: Vec::new(),
+            mask: None,
+            uri_format: None,
+            currency_symbol: None,
+            minimum: None,
+            maximum: None,
+            step: None,
             preview: PropertyPreview::Auto,
             full_width: false,
         }
@@ -89,6 +104,50 @@ impl PropertyGridSettings {
         .validate()?;
         let mut bytes = 0usize;
         for property in &self.properties {
+            if let Some(symbol) = &property.currency_symbol {
+                if !matches!(property.metadata.editor.as_str(), "Spin" | "Calculator")
+                    || symbol.is_empty()
+                    || symbol.len() > 12
+                    || symbol.chars().any(|c| c.is_control() || c.is_whitespace())
+                {
+                    return Err(invalid("Invalid property currency symbol"));
+                }
+                bytes += symbol.len();
+            }
+            if let Some(format) = &property.uri_format {
+                if property.metadata.editor != "Hyperlink"
+                    || format.len() > 2048
+                    || format.chars().any(char::is_control)
+                {
+                    return Err(invalid("Invalid property hyperlink format"));
+                }
+                bytes += format.len();
+            }
+            if !property.choice_keys.is_empty()
+                && (property.choice_keys.len() != property.choices.len()
+                    || property.choice_keys.iter().collect::<HashSet<_>>().len()
+                        != property.choice_keys.len()
+                    || property
+                        .choice_keys
+                        .iter()
+                        .any(|k| k.is_empty() || k.len() > 256 || k.chars().any(char::is_control)))
+            {
+                return Err(invalid("ChoiceKeys requires one unique key per choice"));
+            }
+            if property
+                .mask
+                .as_ref()
+                .is_some_and(|m| m.is_empty() || m.len() > 1024)
+                || property
+                    .minimum
+                    .zip(property.maximum)
+                    .is_some_and(|(lo, hi)| lo >= hi)
+                || property.step.is_some_and(|s| s <= 0)
+            {
+                return Err(invalid("Invalid property editor mask or numeric bounds"));
+            }
+            bytes += property.choice_keys.iter().map(String::len).sum::<usize>()
+                + property.mask.as_ref().map_or(0, String::len);
             if property.description.len() > 2048
                 || property.description.chars().any(char::is_control)
             {
@@ -109,10 +168,12 @@ impl PropertyGridSettings {
                     .choices
                     .iter()
                     .any(|v| v.is_empty() || v.len() > 256 || v.chars().any(char::is_control))
-                || property.choices.iter().collect::<HashSet<_>>().len() != property.choices.len()
+                || (property.choice_keys.is_empty()
+                    && property.choices.iter().collect::<HashSet<_>>().len()
+                        != property.choices.len())
             {
                 return Err(invalid(
-                    "Property choices require up to 128 unique nonempty labels",
+                    "Property choices require up to 128 nonempty labels with unique identities",
                 ));
             }
             bytes += property.choices.iter().map(String::len).sum::<usize>();

@@ -121,6 +121,88 @@ pub(crate) fn register(ui: &mut Controls) -> Result<(), String> {
     ui.register_data_source("InspectionObjects", Rc::new(RefCell::new(source)))
         .map_err(err)
 }
+pub(crate) fn register_editor_catalog(ui: &mut Controls) -> Result<(), String> {
+    use CellValue::{Bool, Date, Decimal, Integer, Real, Text};
+    let text = |s: &str| Text(s.to_owned());
+    let picture = crate::visual_model::LANDSCAPE.as_bytes().to_vec();
+    let values = [
+        ("title", FieldType::Text, text("Атлас мастерской")),
+        ("serial", FieldType::Text, text("00042")),
+        ("reference", FieldType::Text, text("10240-318-2048")),
+        ("password", FieldType::Text, text("local-sample")),
+        ("tag", FieldType::Text, text("Печать")),
+        ("country", FieldType::Text, text("Канада")),
+        ("subject", FieldType::Integer, Integer(25)),
+        ("department", FieldType::Text, text("ED")),
+        (
+            "notes",
+            FieldType::Text,
+            text("Проверить макет.\nПередать в печать."),
+        ),
+        (
+            "created",
+            FieldType::Date,
+            Date("2026-11-26".parse().map_err(err)?),
+        ),
+        (
+            "deadline",
+            FieldType::Date,
+            Date("2026-12-04".parse().map_err(err)?),
+        ),
+        ("font", FieldType::Text, text("Segoe UI")),
+        (
+            "budget",
+            FieldType::Decimal,
+            Decimal("1245.75".parse().map_err(err)?),
+        ),
+        ("accent", FieldType::Text, text("#28769B")),
+        (
+            "background",
+            FieldType::Text,
+            text("linear(90;0=#28769B;1=#D5F2E6)"),
+        ),
+        ("cover", FieldType::Binary, CellValue::Binary(picture)),
+        ("opacity", FieldType::Integer, Integer(65)),
+        ("zoom", FieldType::Real, Real(100.0)),
+        ("interval", FieldType::Text, text("20..75")),
+        ("progress", FieldType::Integer, Integer(68)),
+        ("approved", FieldType::Bool, Bool(false)),
+        ("notify", FieldType::Bool, Bool(true)),
+        (
+            "price",
+            FieldType::Decimal,
+            Decimal("49.95".parse().map_err(err)?),
+        ),
+        ("size", FieldType::Integer, Integer(24)),
+        ("barcode", FieldType::Text, text("ATLAS-42")),
+        ("rating", FieldType::Real, Real(3.0)),
+        ("link", FieldType::Text, text("PropertyGrid")),
+        ("rights", FieldType::Integer, Integer(3)),
+        ("contributors", FieldType::Text, text(r#"["Анна","Игорь"]"#)),
+        ("origin", FieldType::Text, text("12,24")),
+        ("topic", FieldType::Text, text("Архив")),
+        ("tags", FieldType::Text, text(r#"["design","print"]"#)),
+        ("history", FieldType::Text, text("[3,10,7,14,11,19]")),
+    ];
+    let schema = TableSchema::new(
+        values
+            .iter()
+            .map(|(name, kind, _)| FieldSchema::new(*name, *kind))
+            .collect(),
+    )
+    .map_err(err)?;
+    let table = DataTable::new(
+        schema,
+        vec![DataRow::new(
+            1,
+            values.into_iter().map(|(_, _, value)| value).collect(),
+        )],
+    )
+    .map_err(err)?;
+    let source = DataSource::new(CollectionAdapter::new(table)).map_err(err)?;
+    ui.register_data_source("EditorCatalogData", Rc::new(RefCell::new(source)))
+        .map_err(err)
+}
 pub(crate) struct State {
     owner: WidgetId,
     accepted: WidgetId,

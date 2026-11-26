@@ -57,6 +57,7 @@ mod wizard;
 pub(crate) struct MountedView {
     pub(crate) data_forms: HashMap<WidgetId, rust_desktop_ui_controls::DataForm>,
     pub(crate) property_grids: HashMap<WidgetId, rust_desktop_ui_controls::PropertyGrid>,
+    property_editors: rust_desktop_ui_controls::PropertyCellEditors,
     presentations: HashMap<WidgetId, templates::Presentation>,
     presentation_context: Option<templates::PresentationContext>,
     presentation_owner_contexts: HashMap<WidgetId, String>,
@@ -132,6 +133,18 @@ impl MountedView {
             std::cell::RefCell<rust_desktop_ui_controls::BindingConverterRegistry>,
         >,
     ) -> Result<Self, String> {
+        Self::mount_with_registries(ui, parent, element, context, converters, Default::default())
+    }
+    pub(crate) fn mount_with_registries(
+        ui: &mut Controls,
+        parent: WidgetId,
+        element: &ElementDefinition,
+        context: std::rc::Rc<std::cell::RefCell<rust_desktop_ui_controls::BindingContext>>,
+        converters: std::rc::Rc<
+            std::cell::RefCell<rust_desktop_ui_controls::BindingConverterRegistry>,
+        >,
+        property_editors: rust_desktop_ui_controls::PropertyCellEditors,
+    ) -> Result<Self, String> {
         let available_width = ui.runtime.bounds(parent).map_or(0.0, |bounds| {
             let padding = ui.runtime.tree().node(parent).unwrap().props.style.padding;
             (bounds.width - padding.left - padding.right).max(0.0)
@@ -142,7 +155,10 @@ impl MountedView {
         let focus_before = ui.runtime.focused();
         let motion_before = ui.reduced_motion();
         let result = (|| {
-            let mut view = Self::default();
+            let mut view = Self {
+                property_editors,
+                ..Default::default()
+            };
             let content =
                 view.mount_element(ui, parent, element, Axis::Vertical, available_width, "")?;
             if element.common.height.is_none()

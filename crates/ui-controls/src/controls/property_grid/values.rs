@@ -75,6 +75,13 @@ pub(super) fn neutral_value(
     Ok(value)
 }
 pub(super) fn check_recipe(ui: &Controls, p: &Property) -> Result<(), ControlError> {
+    if p.specialized.is_some() {
+        return if ui.controls.contains_key(&p.owner) && ui.controls.contains_key(&p.editor) {
+            Ok(())
+        } else {
+            Err(invalid("Property editor was removed"))
+        };
+    }
     let changed = match &p.recipe {
         DataFormEditorFactory::Numeric(s) => ui.numeric_settings(p.owner) != Some(s),
         DataFormEditorFactory::Date(s) => ui.date_settings(p.owner) != Some(s),
@@ -99,6 +106,8 @@ pub(super) fn validate_choice(choices: &[String], value: &CellValue) -> Result<(
 pub(super) fn read(ui: &Controls, p: &Property) -> Result<CellValue, String> {
     let value = if p.null.is_some_and(|id| ui.checked(id) == Some(true)) {
         CellValue::Null
+    } else if let Some(editor) = &p.specialized {
+        editor.read(ui)?
     } else if !p.descriptor.choices.is_empty() {
         ui.selected_keys(p.owner)
             .and_then(|v| v.first())
@@ -123,7 +132,9 @@ pub(super) fn read(ui: &Controls, p: &Property) -> Result<CellValue, String> {
                 .text(),
         )?
     };
-    validate_choice(&p.descriptor.choices, &value).map_err(|e| e.to_string())?;
+    if p.specialized.is_none() {
+        validate_choice(&p.descriptor.choices, &value).map_err(|e| e.to_string())?;
+    }
     p.schema.validate(&value).map_err(|e| e.to_string())?;
     Ok(value)
 }
@@ -131,8 +142,11 @@ pub(super) fn load(ui: &mut Controls, p: &Property, value: &CellValue) -> Result
     p.schema
         .validate(value)
         .map_err(|e| invalid(e.to_string()))?;
-    let text = checked_format(&p.recipe, &p.schema, value)?;
-    if !p.descriptor.choices.is_empty() {
+    if let Some(editor) = &p.specialized {
+        let family = p.family.as_ref().expect("mounted editor family");
+        family.validate(&p.descriptor, &p.schema, value)?;
+        editor.load(ui, value)?;
+    } else if !p.descriptor.choices.is_empty() {
         validate_choice(&p.descriptor.choices, value)?;
         let keys = if let CellValue::Text(v) = value {
             std::slice::from_ref(v)
@@ -150,6 +164,7 @@ pub(super) fn load(ui: &mut Controls, p: &Property, value: &CellValue) -> Result
             },
         )?;
     } else {
+        let text = checked_format(&p.recipe, &p.schema, value)?;
         match ui.set_editor_value(p.editor, &text)? {
             CommitOutcome::Committed | CommitOutcome::Unchanged => {}
             CommitOutcome::Invalid(message) => return Err(invalid(message)),
@@ -214,13 +229,46 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
     };
     ui.controls.get_mut(&p.edit).unwrap().inspector_part = Some(InspectorPart::Value(mark));
     let preview = match accepted {
+        PropertyValue::Uniform(ref amount @ (CellValue::Integer(_) | CellValue::Decimal(_)))
+            if p.descriptor.currency_symbol.is_some() =>
+        {
+            let digits = amount.display();
+            let precision = digits
+                .split_once('.')
+                .map_or(2, |(_, fraction)| fraction.len().max(2) as u8);
+            let culture = ui
+                .numeric_settings(p.owner)
+                .map_or(crate::UiCulture::Russian, |settings| settings.culture);
+            let formatted = super::super::numeric_model::format_decimal(
+                &digits,
+                culture,
+                true,
+                Some(precision),
+            );
+            format!(
+                "{formatted} {}",
+                p.descriptor.currency_symbol.as_deref().unwrap()
+            )
+        }
         PropertyValue::Uniform(CellValue::Integer(v)) if matches!(mark, ValueMark::Percent(_)) => {
             format!("{v}%")
         }
         PropertyValue::Mixed => "Разные значения".to_owned(),
         PropertyValue::Uniform(CellValue::Null) => "Не задано".to_owned(),
         PropertyValue::Uniform(CellValue::Bool(v)) => if v { "Да" } else { "Нет" }.to_owned(),
-        PropertyValue::Uniform(v) => checked_format(&p.recipe, &p.schema, &v)?,
+        PropertyValue::Uniform(v) => {
+            if let Some(editor) = &p.specialized {
+                editor.rest_label(&v).unwrap_or_else(|| {
+                    if matches!(v, CellValue::Binary(_)) {
+                        "Изображение".into()
+                    } else {
+                        v.display()
+                    }
+                })
+            } else {
+                checked_format(&p.recipe, &p.schema, &v)?
+            }
+        }
     };
     if let Some(label) = p.value_label
         && ui.controls.get(&label).is_some_and(|c| c.label != preview)
@@ -242,14 +290,27 @@ pub(super) fn present(ui: &mut Controls, p: &mut Property) -> Result<(), Control
         ui.set_automation_name(p.edit, format!("{label}: {preview}"))?;
         ui.set_label(p.edit, preview)?;
     }
-    show(ui, p.owner, p.active)?;
-    show(ui, p.edit, !p.active)?;
+    let inline = p.specialized.as_ref().is_some_and(|e| e.inline())
+        && matches!(aggregate(&p.baseline), PropertyValue::Uniform(ref value) if *value != CellValue::Null);
+    if let Some(editor) = &p.specialized {
+        editor.set_active(ui, p.active)?;
+    }
+    show(ui, p.owner, p.active || inline)?;
+    show(ui, p.edit, !p.active && !inline)?;
     show(ui, p.apply, p.active && writable)?;
+    if let Some(unit) = p.currency {
+        show(ui, unit, p.active)?;
+    }
     show(ui, p.reset, p.descriptor.default.is_some() && writable)?;
     if let Some(null) = p.null {
         show(ui, null, p.active)?;
         enabled(ui, null, writable)?;
-        enabled(ui, p.owner, ui.checked(null) != Some(true))?;
+        let usable = writable
+            || matches!(
+                p.descriptor.metadata.editor.as_str(),
+                "Hyperlink" | "ProgressBar"
+            );
+        enabled(ui, p.owner, usable && ui.checked(null) != Some(true))?;
     }
     enabled(ui, p.edit, writable || !p.descriptor.description.is_empty())?;
     enabled(ui, p.apply, p.editing && writable)?;

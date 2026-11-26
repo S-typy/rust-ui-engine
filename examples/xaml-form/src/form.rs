@@ -110,6 +110,10 @@ impl Form {
         crate::tile_model::register(&mut ui);
         crate::gallery_model::register(&mut ui)?;
         crate::property_model::register(&mut ui)?;
+        if matches!(&definition.content.kind, rust_desktop_ui_xaml::ElementKind::PropertyGrid(grid) if grid.data_source == "EditorCatalogData")
+        {
+            crate::property_model::register_editor_catalog(&mut ui)?;
+        }
         crate::font_model::register(&mut ui);
         crate::badge_model::register(&mut ui);
         crate::wizard_model::register(&mut ui);

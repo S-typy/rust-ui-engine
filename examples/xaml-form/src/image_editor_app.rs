@@ -29,8 +29,7 @@ enum Completion {
 }
 pub(crate) struct ImageDemo {
     pub(crate) form: Form,
-    editor: WidgetId,
-    viewer: WidgetId,
+    comparison: Option<(WidgetId, WidgetId)>,
     request: Option<DialogRequest>,
     pending: Option<(u64, Pending)>,
     next: u64,
@@ -87,11 +86,31 @@ impl ImageDemo {
                 form.view.names.insert(format!("{name}{suffix}"), part);
             }
         }
-        let (tx, rx) = mpsc::sync_channel(1);
-        Ok(Self {
+        Ok(Self::with_file_services(
             form,
-            editor,
-            viewer,
+            Some((editor, viewer)),
+            diagnostics,
+        ))
+    }
+    pub(crate) fn property_catalog(
+        definition: rust_desktop_ui_xaml::WindowDefinition,
+        diagnostics: bool,
+    ) -> Result<Self, String> {
+        Ok(Self::with_file_services(
+            Form::new(definition, diagnostics)?,
+            None,
+            diagnostics,
+        ))
+    }
+    fn with_file_services(
+        form: Form,
+        comparison: Option<(WidgetId, WidgetId)>,
+        diagnostics: bool,
+    ) -> Self {
+        let (tx, rx) = mpsc::sync_channel(1);
+        Self {
+            form,
+            comparison,
             request: None,
             pending: None,
             next: 0,
@@ -102,7 +121,7 @@ impl ImageDemo {
             waker: None,
             diagnostics,
             last: String::new(),
-        })
+        }
     }
     fn result(&mut self, text: &str) -> Result<(), String> {
         let text: String = text.chars().take(512).collect();
@@ -135,10 +154,12 @@ impl ImageDemo {
         for event in self.form.ui.take_image_editor_events() {
             match event {
                 ImageEditorEvent::Applied { owner, value } => {
-                    if owner == self.editor {
+                    if let Some((editor, viewer)) = self.comparison
+                        && owner == editor
+                    {
                         self.form
                             .ui
-                            .set_image_editor_value(self.viewer, value, true)
+                            .set_image_editor_value(viewer, value, true)
                             .map_err(err)?;
                         self.result("Рабочая версия принята; просмотр справа обновлён")?;
                     }
@@ -163,6 +184,13 @@ impl ImageDemo {
                     } else {
                         self.queue_dialog(Pending::Save(value))?;
                     }
+                }
+            }
+        }
+        for grid in self.form.view.property_grids.values_mut() {
+            for (_, url) in grid.take_navigation_requests() {
+                if let Err(error) = open_web_link(&url) {
+                    eprintln!("Не удалось открыть ссылку: {error}");
                 }
             }
         }
@@ -259,25 +287,27 @@ impl DesktopApp for ImageDemo {
     fn update(&mut self, size: Size, scale: f32) -> Result<(), String> {
         self.refresh()?;
         self.form.update(size, scale)?;
-        if self.diagnostics {
+        if self.diagnostics
+            && let Some((editor, _)) = self.comparison
+        {
             let accepted = self
                 .form
                 .ui
-                .image_editor_value(self.editor)
+                .image_editor_value(editor)
                 .flatten()
                 .map(|b| (b.id(), b.width(), b.height()));
             let draft = self
                 .form
                 .ui
-                .image_editor_draft(self.editor)
+                .image_editor_draft(editor)
                 .flatten()
                 .map(|b| (b.id(), b.width(), b.height()));
             let s = format!(
                 "accepted={accepted:?} draft={draft:?} dirty={:?} view={:?} busy={} error={:?}",
-                self.form.ui.image_editor_dirty(self.editor),
-                self.form.ui.image_editor_viewport(self.editor),
+                self.form.ui.image_editor_dirty(editor),
+                self.form.ui.image_editor_viewport(editor),
                 self.busy,
-                self.form.ui.image_editor_error(self.editor)
+                self.form.ui.image_editor_error(editor)
             );
             let snapshot = crate::batch_diagnostics::snapshot(&self.form.ui, &self.form.view);
             let signature = format!("{s}|{snapshot}");
@@ -364,6 +394,27 @@ impl DesktopApp for ImageDemo {
         self.form.ime_composition_active()
     }
 }
+fn open_web_link(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://"))
+        || url
+            .chars()
+            .any(|c| c.is_control() || c.is_whitespace() || c == '"')
+    {
+        return Err("Ожидается веб-адрес".into());
+    }
+    let launcher = if cfg!(target_os = "windows") {
+        "explorer.exe"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    std::process::Command::new(launcher)
+        .arg(url)
+        .spawn()
+        .map(drop)
+        .map_err(err)
+}
 fn sample() -> Result<Bitmap, String> {
     let mut p = Vec::with_capacity(320 * 180 * 4);
     for y in 0..180 {
@@ -424,28 +475,46 @@ mod tests {
             ImageDemo::new(crate::generated_image_editor::window_definition(), false).unwrap();
         for size in [Size::new(1200.0, 780.0), Size::new(900.0, 640.0)] {
             app.update(size, 1.0).unwrap();
-            let p = app.form.ui.image_editor_parts(app.editor).unwrap();
+            let p = app
+                .form
+                .ui
+                .image_editor_parts(app.comparison.unwrap().0)
+                .unwrap();
             let r = app.form.ui.runtime.bounds(p.viewport).unwrap();
             assert!(r.width > 400.0 && r.height > 250.0);
             let c = app.form.ui.runtime.clip(p.viewport).unwrap();
             assert!(r.intersection(c).unwrap().height >= r.height - 0.1);
         }
-        let before = app.form.ui.image_editor_value(app.viewer).unwrap().cloned();
+        let before = app
+            .form
+            .ui
+            .image_editor_value(app.comparison.unwrap().1)
+            .unwrap()
+            .cloned();
         app.form
             .ui
-            .rotate_image_editor(app.editor, rust_desktop_ui_images::QuarterTurn::Clockwise)
+            .rotate_image_editor(
+                app.comparison.unwrap().0,
+                rust_desktop_ui_images::QuarterTurn::Clockwise,
+            )
             .unwrap();
-        app.refresh().unwrap();
-        assert_eq!(
-            app.form.ui.image_editor_value(app.viewer).unwrap(),
-            before.as_ref()
-        );
-        app.form.ui.apply_image_editor(app.editor).unwrap();
         app.refresh().unwrap();
         assert_eq!(
             app.form
                 .ui
-                .image_editor_value(app.viewer)
+                .image_editor_value(app.comparison.unwrap().1)
+                .unwrap(),
+            before.as_ref()
+        );
+        app.form
+            .ui
+            .apply_image_editor(app.comparison.unwrap().0)
+            .unwrap();
+        app.refresh().unwrap();
+        assert_eq!(
+            app.form
+                .ui
+                .image_editor_value(app.comparison.unwrap().1)
                 .flatten()
                 .unwrap()
                 .width(),
@@ -479,7 +548,12 @@ mod worker_tests {
         let mut app =
             ImageDemo::new(crate::generated_image_editor::window_definition(), false).unwrap();
         app.update(Size::new(1200.0, 780.0), 1.0).unwrap();
-        let old = app.form.ui.image_editor_value(app.editor).unwrap().cloned();
+        let old = app
+            .form
+            .ui
+            .image_editor_value(app.comparison.unwrap().0)
+            .unwrap()
+            .cloned();
         let path =
             std::env::temp_dir().join(format!("image-worker-test-{}.png", std::process::id()));
         let image = Bitmap::new_rgba8(2, 3, vec![42; 24]).unwrap();
@@ -489,7 +563,11 @@ mod worker_tests {
             &AtomicBool::new(true),
         )
         .unwrap();
-        let token = app.form.ui.begin_image_editor_load(app.editor).unwrap();
+        let token = app
+            .form
+            .ui
+            .begin_image_editor_load(app.comparison.unwrap().0)
+            .unwrap();
         app.start(Pending::Load(token), path.clone());
         assert_eq!(app.wake_after(), Some(Duration::from_millis(40)));
         let until = std::time::Instant::now() + Duration::from_secs(3);
@@ -501,19 +579,29 @@ mod worker_tests {
         assert_eq!(
             app.form
                 .ui
-                .image_editor_draft(app.editor)
+                .image_editor_draft(app.comparison.unwrap().0)
                 .flatten()
                 .unwrap()
                 .width(),
             2
         );
         assert_eq!(
-            app.form.ui.image_editor_value(app.editor).unwrap(),
+            app.form
+                .ui
+                .image_editor_value(app.comparison.unwrap().0)
+                .unwrap(),
             old.as_ref()
         );
-        let token = app.form.ui.begin_image_editor_load(app.editor).unwrap();
+        let token = app
+            .form
+            .ui
+            .begin_image_editor_load(app.comparison.unwrap().0)
+            .unwrap();
         app.start(Pending::Load(token), path.clone());
-        app.form.ui.cancel_image_editor(app.editor).unwrap();
+        app.form
+            .ui
+            .cancel_image_editor(app.comparison.unwrap().0)
+            .unwrap();
         let until = std::time::Instant::now() + Duration::from_secs(3);
         while app.busy && std::time::Instant::now() < until {
             std::thread::sleep(Duration::from_millis(10));
@@ -521,7 +609,10 @@ mod worker_tests {
         }
         assert!(!app.busy);
         assert_eq!(
-            app.form.ui.image_editor_draft(app.editor).unwrap(),
+            app.form
+                .ui
+                .image_editor_draft(app.comparison.unwrap().0)
+                .unwrap(),
             old.as_ref()
         );
         std::fs::remove_file(path).unwrap();

@@ -43,6 +43,12 @@ impl Default for DataFormFieldDefinition {
     }
 }
 pub fn validate_data_form(form: &DataFormDefinition) -> Result<(), String> {
+    validate_form_fields(form, |_| false)
+}
+pub(crate) fn validate_form_fields(
+    form: &DataFormDefinition,
+    extra_editor: impl Fn(&str) -> bool,
+) -> Result<(), String> {
     if form.data_source.len() > 128 || !binding::valid_identifier(&form.data_source) {
         return Err("DataForm DataSource must be a registered identifier".into());
     }
@@ -64,10 +70,10 @@ pub fn validate_data_form(form: &DataFormDefinition) -> Result<(), String> {
                 .label
                 .as_ref()
                 .is_some_and(|s| s.len() > 4096 || s.contains('\0'))
-            || !matches!(
+            || !(matches!(
                 field.editor.as_str(),
                 "Auto" | "Text" | "Numeric" | "Date" | "Time" | "CheckBox"
-            )
+            ) || extra_editor(&field.editor))
         {
             return Err("Invalid or duplicate DataFormField metadata or editor recipe".into());
         }

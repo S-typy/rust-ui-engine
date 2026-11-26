@@ -20,3 +20,4 @@ roxmltree.workspace = true
 lopdf.workspace = true
 image.workspace = true
 html5ever.workspace = true
+regex-lite = "0.1.8"

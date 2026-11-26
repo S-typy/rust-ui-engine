@@ -1,0 +1,41 @@
+<Window xmlns="urn:rust-ui-engine:ui" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Редакторы свойств" Width="760" Height="730" Padding="12">
+  <PropertyGrid x:Name="EditorCatalog" DataSource="EditorCatalogData" ObjectKeys="1"
+                LabelWidth="44%" Scrollable="True" AutomationName="Редакторы свойств">
+    <PropertyGrid.Properties>
+      <Property Category="Ввод" FieldName="title" Label="Название" Editor="Text" Description="Название издания."/>
+      <Property Category="Ввод" FieldName="serial" Label="Цифровой код" Editor="NumericText"/>
+      <Property Category="Ввод" FieldName="reference" Label="Регистрационный номер" Editor="MaskedText" Mask="\d{5}-\d{3}-\d{4}"/>
+      <Property Category="Ввод" FieldName="password" Label="Пароль" Editor="Password"/>
+      <Property Category="Ввод" FieldName="tag" Label="Метка" Editor="ButtonText"/>
+      <Property Category="Выбор и формат" FieldName="country" Label="Страна" Editor="AutoComplete" Choices="Армения|Бразилия|Канада|Кения|Россия|Чили"/>
+      <Property Category="Выбор и формат" FieldName="subject" Label="Раздел с поиском" Editor="SearchLookup" Choices="Архитектура|Графика|Технологии" ChoiceKeys="11|25|30"/>
+      <Property Category="Выбор и формат" FieldName="department" Label="Подразделение" Editor="Lookup" Choices="Дизайн|Редакция|Печать" ChoiceKeys="DS|ED|PR"/>
+      <Property Category="Выбор и формат" FieldName="notes" Label="Заметки" Editor="Memo"/>
+      <Property Category="Выбор и формат" FieldName="created" Label="Дата выпуска" Editor="Date"/>
+      <Property Category="Выбор и формат" FieldName="deadline" Label="Выбор даты" Editor="DatePicker"/>
+      <Property Category="Выбор и формат" FieldName="font" Label="Шрифт" Editor="Font"/>
+      <Property Category="Выбор и формат" FieldName="budget" Label="Расчёт стоимости" Editor="Calculator" CurrencySymbol="₽"/>
+      <Property Category="Выбор и формат" FieldName="accent" Label="Цвет" Editor="Color"/>
+      <Property Category="Выбор и формат" FieldName="background" Label="Кисть" Editor="Brush"/>
+      <Property Category="Выбор и формат" FieldName="cover" Label="Иллюстрация" Editor="Image" Choices="Landscape|Compass"/>
+      <Property Category="Шкалы и действия" FieldName="opacity" Label="Непрозрачность" Editor="Slider" Minimum="0" Maximum="100"/>
+      <Property Category="Шкалы и действия" FieldName="zoom" Label="Масштаб" Editor="ZoomSlider" Minimum="25" Maximum="200" Step="5"/>
+      <Property Category="Шкалы и действия" FieldName="interval" Label="Диапазон" Editor="RangeSlider" Minimum="0" Maximum="100" Description="Нижняя и верхняя границы редактируются отдельно."/>
+      <Property Category="Шкалы и действия" FieldName="progress" Label="Готовность" Editor="ProgressBar"/>
+      <Property Category="Шкалы и действия" FieldName="approved" Label="Утверждено" Editor="CheckBox"/>
+      <Property Category="Шкалы и действия" FieldName="notify" Label="Уведомления" Preview="Switch"/>
+      <Property Category="Шкалы и действия" FieldName="price" Label="Цена экземпляра" Editor="Spin" Minimum="0" Maximum="10000" CurrencySymbol="₽"/>
+      <Property Category="Шкалы и действия" FieldName="size" Label="Размер значка" Editor="ListBox" Choices="16 × 16|24 × 24|32 × 32|48 × 48" ChoiceKeys="16|24|32|48"/>
+      <Property Category="Шкалы и действия" FieldName="barcode" Label="Штрихкод" Editor="Barcode"/>
+      <Property Category="Шкалы и действия" FieldName="rating" Label="Оценка" Editor="Rating"/>
+      <Property Category="Шкалы и действия" FieldName="link" Label="Задачи проекта" Editor="Hyperlink" UriFormat="https://github.com/S-typy/rust-ui-engine/issues?q={0}"/>
+      <Property Category="Наборы и составные значения" FieldName="rights" Label="Права публикации" Editor="Flags" Choices="Чтение|Правка|Публикация" ChoiceKeys="1|2|4"/>
+      <Property Category="Наборы и составные значения" FieldName="contributors" Label="Авторы выпуска" Editor="StringCollection"/>
+      <Property Category="Наборы и составные значения" FieldName="origin" Label="Начало координат" Editor="Point"/>
+      <Property Category="Наборы и составные значения" FieldName="topic" Label="Тема с подсказками" Editor="AutoSuggest" Choices="Архитектура|Архив|Графика"/>
+      <Property Category="Наборы и составные значения" FieldName="tags" Label="Метки выпуска" Editor="TokenList" Choices="Атлас|Дизайн|Печать" ChoiceKeys="atlas|design|print"/>
+      <Property Category="Наборы и составные значения" FieldName="history" Label="Динамика тиража" Editor="Sparkline"/>
+    </PropertyGrid.Properties>
+  </PropertyGrid>
+</Window>

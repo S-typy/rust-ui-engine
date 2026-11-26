@@ -926,11 +926,10 @@ impl Controls {
             .collect::<Vec<_>>()
         {
             let height = self.theme.tokens().control_height;
-            let cols = vec![
-                GridTrack::Px(height),
-                GridTrack::Fr(1.0),
-                GridTrack::Px(height),
-            ];
+            let cols = super::color_edit::inline_columns(
+                height,
+                self.color_editors.entries[&id].wide_preview,
+            );
             if self
                 .runtime
                 .tree()

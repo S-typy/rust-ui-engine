@@ -157,6 +157,11 @@ mod generated_navigation {
 mod generated_property_editors {
     include!(concat!(env!("OUT_DIR"), "/property_editors_window.rs"));
 }
+mod generated_property_catalog {
+    include!(concat!(env!("OUT_DIR"), "/property_editor_catalog.rs"));
+}
+#[cfg(test)]
+mod property_catalog_tests;
 mod generated_properties {
     include!(concat!(env!("OUT_DIR"), "/property_window.rs"));
 }
@@ -252,6 +257,7 @@ fn start() -> Result<(), String> {
     let mut gallery = false;
     let mut properties = false;
     let mut property_editors = false;
+    let mut property_publication = false;
     let mut badges = false;
     let mut breadcrumb = false;
     let mut font = false;
@@ -372,6 +378,7 @@ fn start() -> Result<(), String> {
             "--gallery" => gallery = true,
             "--properties" => properties = true,
             "--property-editors" => property_editors = true,
+            "--property-publication" => property_publication = true,
             "--badges" => badges = true,
             "--breadcrumb" => breadcrumb = true,
             "--font" => font = true,
@@ -503,6 +510,7 @@ fn start() -> Result<(), String> {
         gallery,
         properties,
         property_editors,
+        property_publication,
         badges,
         breadcrumb,
         font,
@@ -566,6 +574,8 @@ fn start() -> Result<(), String> {
     } else if query_builder {
         generated_query::window_definition()
     } else if property_editors {
+        generated_property_catalog::window_definition()
+    } else if property_publication {
         generated_property_editors::window_definition()
     } else if properties {
         generated_properties::window_definition()
@@ -715,6 +725,14 @@ fn start() -> Result<(), String> {
             image_editor_app::ImageDemo::new,
         );
     }
+    if property_editors {
+        return run_demo(
+            definition,
+            options,
+            diagnostics,
+            image_editor_app::ImageDemo::property_catalog,
+        );
+    }
     if charts {
         return run_demo(
             definition,
@@ -745,7 +763,7 @@ fn start() -> Result<(), String> {
     if workspace {
         return run_workspace(definition, options, diagnostics, dialog_directory);
     }
-    let (context, sources) = if properties || property_editors {
+    let (context, sources) = if properties || property_publication {
         (None, Vec::new())
     } else if gallery {
         (Some(gallery_model::model()?), Vec::new())

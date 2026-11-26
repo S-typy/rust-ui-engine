@@ -34,6 +34,7 @@ impl Default for ComboSelectionSettings {
 #[derive(Clone)]
 struct Entry {
     settings: ComboSelectionSettings,
+    reserve_query_width: bool,
     pending: Option<Vec<String>>,
     revision: u64,
     pending_revision: u64,
@@ -206,6 +207,7 @@ impl Controls {
                 owner,
                 Entry {
                     settings,
+                    reserve_query_width: true,
                     pending: None,
                     revision: 0,
                     pending_revision: 0,
@@ -669,13 +671,42 @@ impl Controls {
         self.sync_combo_geometry(owner)
     }
 
+    pub(super) fn reserve_combo_query_width(
+        &mut self,
+        owner: WidgetId,
+        reserve: bool,
+    ) -> Result<(), ControlError> {
+        let entry = self
+            .combos
+            .entries
+            .get_mut(&owner)
+            .ok_or_else(|| error("Not a token selection editor"))?;
+        if entry.reserve_query_width != reserve {
+            entry.reserve_query_width = reserve;
+            self.sync_combo_geometry(owner)?;
+        }
+        Ok(())
+    }
+
     fn sync_combo_geometry(&mut self, owner: WidgetId) -> Result<(), ControlError> {
         let entry = self.combos.entries[&owner].clone();
         let width = self
             .runtime
             .bounds(owner)
             .map_or(240.0, |bounds| bounds.width);
-        let budget = (width - 54.0).max(0.0) * 0.7;
+        let budget = if entry.reserve_query_width {
+            (width - 54.0).max(0.0) * 0.7
+        } else {
+            let buttons: f32 = self.rich.composites[&owner]
+                .parts
+                .buttons
+                .iter()
+                .filter_map(|id| self.editor_button_settings(*id))
+                .filter(|s| s.visible)
+                .map(|s| s.width)
+                .sum();
+            (width - buttons).max(0.)
+        };
         let desired = if entry.settings.presentation == ComboSelectionPresentation::Tokens {
             entry
                 .tokens

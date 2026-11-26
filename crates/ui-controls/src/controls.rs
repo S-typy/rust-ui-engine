@@ -133,7 +133,9 @@ mod property_grid;
 mod property_grid_model;
 #[cfg(test)]
 mod property_grid_tests;
-pub use property_grid::PropertyGrid;
+pub use property_grid::{
+    PropertyCellEditor, PropertyCellEditorFactory, PropertyCellEditors, PropertyGrid,
+};
 pub use property_grid_model::{
     PropertyChanged, PropertyCommit, PropertyDescriptor, PropertyGridSettings, PropertyPreview,
     PropertyValue,

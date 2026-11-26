@@ -35,10 +35,12 @@ pub(crate) fn theme(
     Ok(Theme::Configured(config))
 }
 
+pub(crate) const LANDSCAPE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#41b8e6"/><stop offset="1" stop-color="#d8f3f0"/></linearGradient></defs><rect width="240" height="120" rx="12" fill="url(#sky)"/><circle cx="187" cy="30" r="15" fill="#ffe09a"/><path d="M0 112L69 39L140 120H0Z" fill="#376d82"/><path d="M60 120L150 48L240 112V120Z" fill="#427b63"/><path d="M69 39L50 59L70 55L84 59Z" fill="#f7f9fd"/></svg>"##;
+
 pub(crate) fn register_images(ui: &mut Controls) -> Result<(), String> {
     // Original geometry: an abstract landscape and a currentColor compass.
     // Resource decoding cannot access files, network or system fonts.
-    const LANDSCAPE: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="120" viewBox="0 0 240 120"><defs><linearGradient id="sky" x2="0" y2="1"><stop stop-color="#41b8e6"/><stop offset="1" stop-color="#d8f3f0"/></linearGradient></defs><rect width="240" height="120" rx="12" fill="url(#sky)"/><circle cx="187" cy="30" r="15" fill="#ffe09a"/><path d="M0 112L69 39L140 120H0Z" fill="#376d82"/><path d="M60 120L150 48L240 112V120Z" fill="#427b63"/><path d="M69 39L50 59L70 55L84 59Z" fill="#f7f9fd"/></svg>"##;
+
     const COMPASS: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64"><circle cx="32" cy="32" r="27" fill="none" stroke="currentColor" stroke-width="3"/><path d="M42 19L36 36L20 45L27 27Z" fill="currentColor"/></svg>"##;
     for (name, data) in [
         ("Landscape", LANDSCAPE),

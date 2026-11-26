@@ -67,6 +67,13 @@ fn settings(ui: &Controls, value: &PropertyGridDefinition) -> Result<PropertyGri
                 description: p.description.clone(),
                 groups: p.groups.clone(),
                 choices: p.choices.clone(),
+                choice_keys: p.choice_keys.clone(),
+                mask: p.mask.clone(),
+                uri_format: p.uri_format.clone(),
+                currency_symbol: p.currency_symbol.clone(),
+                minimum: p.minimum,
+                maximum: p.maximum,
+                step: p.step,
                 full_width: p.full_width,
                 preview: match p.preview {
                     rust_desktop_ui_xaml::PropertyPreview::Auto => {
@@ -117,13 +124,14 @@ impl MountedView {
         let source = ui
             .data_source(&value.data_source)
             .ok_or("Property source is not registered")?;
-        let mut grid = PropertyGrid::mount(
+        let mut grid = PropertyGrid::mount_with_editors(
             ui,
             parent,
             source,
             &value.object_keys,
             settings,
             &DataFormFactories::default(),
+            &self.property_editors,
             style,
         )
         .map_err(err)?;

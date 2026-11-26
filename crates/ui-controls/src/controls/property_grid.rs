@@ -13,10 +13,121 @@ mod presentation;
 pub(super) use presentation::InspectorPart;
 use presentation::{ValueMark, action_icon, show, vertical_stack};
 
+#[path = "property_grid/inline_editors.rs"]
+mod inline_editors;
+#[path = "property_grid/popup_editors.rs"]
+mod popup_editors;
+#[path = "property_grid/registry.rs"]
+mod registry;
+#[path = "property_grid/structured_editors.rs"]
+mod structured_editors;
+#[path = "property_grid/text_editors.rs"]
+mod text_editors;
+pub use registry::{PropertyCellEditorFactory, PropertyCellEditors};
+
+/// Each editor prepares a typed draft. Only PropertyGrid owns source writes.
+pub trait PropertyCellEditor {
+    /// Root of the mounted editor's widgets within the property value host.
+    fn owner(&self) -> WidgetId;
+    /// Widget that receives keyboard focus when editing begins.
+    fn focus(&self) -> WidgetId;
+    /// Restore a typed value on initialization, refresh, programmatic draft or cancel.
+    fn load(&self, ui: &mut Controls, value: &CellValue) -> Result<(), ControlError>;
+    /// Read an editable draft without writing to the inspected data source.
+    fn read(&self, ui: &Controls) -> Result<CellValue, String>;
+    /// Process this editor's interactions. Leave other controls' events intact.
+    fn update(&mut self, _ui: &mut Controls) -> Result<(), ControlError> {
+        Ok(())
+    }
+    /// Keep the real editor visible in a uniform row before entering edit mode.
+    fn inline(&self) -> bool {
+        false
+    }
+    /// Update edit-only child visibility and close owned popups at session end.
+    fn set_active(&self, _ui: &mut Controls, _active: bool) -> Result<(), ControlError> {
+        Ok(())
+    }
+    /// Optional caption for an accepted value in the inactive row.
+    fn rest_label(&self, _value: &CellValue) -> Option<String> {
+        None
+    }
+    /// Retrieve a navigation request for the application to handle.
+    fn take_navigation(&mut self) -> Option<String> {
+        None
+    }
+}
+use PropertyCellEditor as InspectorEditor;
+
+enum EditorFamily {
+    Inline,
+    Popup,
+    Text,
+    Structured,
+    Custom(std::rc::Rc<dyn PropertyCellEditorFactory>),
+}
+impl EditorFamily {
+    fn resolve(name: &str, registry: &PropertyCellEditors) -> Option<Self> {
+        if inline_editors::supports(name) {
+            Some(Self::Inline)
+        } else if popup_editors::supports(name) {
+            Some(Self::Popup)
+        } else if text_editors::supports(name) {
+            Some(Self::Text)
+        } else if structured_editors::supports(name) {
+            Some(Self::Structured)
+        } else {
+            registry.get(name).map(Self::Custom)
+        }
+    }
+    fn validate(
+        &self,
+        d: &PropertyDescriptor,
+        f: &FieldSchema,
+        v: &CellValue,
+    ) -> Result<(), ControlError> {
+        match self {
+            Self::Inline => inline_editors::validate(d, f, v),
+            Self::Popup => popup_editors::validate(d, f, v),
+            Self::Text => text_editors::validate(d, f, v),
+            Self::Structured => structured_editors::validate(d, f, v),
+            Self::Custom(factory) => factory.validate(d, f, v),
+        }
+    }
+    fn mount(
+        &self,
+        ui: &mut Controls,
+        host: WidgetId,
+        d: &PropertyDescriptor,
+        f: &FieldSchema,
+        v: &CellValue,
+    ) -> Result<Box<dyn InspectorEditor>, ControlError> {
+        match self {
+            Self::Inline => inline_editors::mount(ui, host, d, f, v),
+            Self::Popup => popup_editors::mount(ui, host, d, f, v),
+            Self::Text => text_editors::mount(ui, host, d, f, v),
+            Self::Structured => structured_editors::mount(ui, host, d, f, v),
+            Self::Custom(factory) => {
+                let editor = factory.mount(ui, host, d, f, v)?;
+                if editor.owner() == host
+                    || !ui.flyout_descendant(editor.owner(), host)
+                    || !ui.flyout_descendant(editor.focus(), editor.owner())
+                {
+                    return Err(invalid(
+                        "A custom property editor must own a child of the value host and focus a widget in its own subtree",
+                    ));
+                }
+                Ok(editor)
+            }
+        }
+    }
+}
+
 struct Property {
     descriptor: PropertyDescriptor,
     schema: FieldSchema,
     recipe: DataFormEditorFactory,
+    specialized: Option<Box<dyn InspectorEditor>>,
+    family: Option<EditorFamily>,
     row: WidgetId,
     host: WidgetId,
     name_label: WidgetId,
@@ -26,6 +137,7 @@ struct Property {
     value_label: Option<WidgetId>,
     measure_value_width: bool,
     edit: WidgetId,
+    currency: Option<WidgetId>,
     apply: WidgetId,
     reset: WidgetId,
     null: Option<WidgetId>,
@@ -71,6 +183,32 @@ impl PropertyGrid {
         objects: &[i64],
         settings: PropertyGridSettings,
         factories: &DataFormFactories,
+        style: LayoutStyle,
+    ) -> Result<Self, ControlError> {
+        Self::mount_with_editors(
+            ui,
+            parent,
+            source,
+            objects,
+            settings,
+            factories,
+            &PropertyCellEditors::default(),
+            style,
+        )
+    }
+
+    /// Mount an inspector with application-defined property cell editors.
+    /// Registered factories validate each inspected value and default before
+    /// the inspector creates widgets. Each row owns its mounted editor.
+    #[allow(clippy::too_many_arguments)]
+    pub fn mount_with_editors(
+        ui: &mut Controls,
+        parent: WidgetId,
+        source: DataSourceHandle,
+        objects: &[i64],
+        settings: PropertyGridSettings,
+        factories: &DataFormFactories,
+        cell_editors: &PropertyCellEditors,
         mut style: LayoutStyle,
     ) -> Result<Self, ControlError> {
         settings.validate()?;
@@ -118,8 +256,74 @@ impl PropertyGrid {
                     field.name
                 )));
             }
-            descriptor.metadata.read_only |= settings.read_only || field.read_only;
-            let recipe = factories.resolve(&descriptor.metadata.editor, &field)?;
+            let name = descriptor.metadata.editor.as_str();
+            let family = EditorFamily::resolve(name, cell_editors);
+            let custom = matches!(family, Some(EditorFamily::Custom(_)));
+            if family.is_some() && descriptor.preview != PropertyPreview::Auto
+                || !custom
+                    && !descriptor.choice_keys.is_empty()
+                    && !matches!(
+                        name,
+                        "AutoComplete"
+                            | "Lookup"
+                            | "SearchLookup"
+                            | "ListBox"
+                            | "Flags"
+                            | "TokenList"
+                    )
+                || !custom
+                    && descriptor.mask.is_some()
+                    && !matches!(name, "MaskedText" | "NumericText")
+                || !custom
+                    && (descriptor.minimum.is_some()
+                        || descriptor.maximum.is_some()
+                        || descriptor.step.is_some())
+                    && !matches!(
+                        name,
+                        "Slider" | "ZoomSlider" | "RangeSlider" | "ProgressBar" | "Rating" | "Spin"
+                    )
+                || !custom
+                    && !descriptor.choices.is_empty()
+                    && family.is_some()
+                    && !matches!(
+                        name,
+                        "AutoComplete"
+                            | "Lookup"
+                            | "SearchLookup"
+                            | "ListBox"
+                            | "Image"
+                            | "Flags"
+                            | "AutoSuggest"
+                            | "TokenList"
+                    )
+            {
+                return Err(invalid(format!(
+                    "Incompatible property editor settings for '{}'",
+                    field.name
+                )));
+            }
+            descriptor.metadata.read_only |=
+                settings.read_only || field.read_only || name == "ProgressBar";
+            let base_name = match (&family, name) {
+                (Some(_), _) => "Auto",
+                (_, "Spin") => "Numeric",
+                _ => name,
+            };
+            let mut recipe = factories.resolve(base_name, &field)?;
+            if name == "Spin"
+                && let DataFormEditorFactory::Numeric(s) = &mut recipe
+            {
+                if let Some(v) = descriptor.minimum {
+                    s.minimum = DecimalValue::new(i128::from(v), 0).unwrap();
+                }
+                if let Some(v) = descriptor.maximum {
+                    s.maximum = DecimalValue::new(i128::from(v), 0).unwrap();
+                }
+                if let Some(v) = descriptor.step {
+                    s.step = DecimalValue::new(i128::from(v), 0).unwrap();
+                }
+                s.trim_trailing_zeros = true;
+            }
             if let DataFormEditorFactory::Text(s) = &recipe {
                 descriptor.metadata.read_only |= s.is_read_only;
             }
@@ -131,17 +335,27 @@ impl PropertyGrid {
                         .ok_or_else(|| invalid("Unknown inspected object"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            for value in &baseline {
+            for value in baseline.iter().chain(descriptor.default.as_ref()) {
                 field.validate(value).map_err(|e| invalid(e.to_string()))?;
-                checked_format(&recipe, &field, value)?;
+                if let Some(family) = &family {
+                    family.validate(&descriptor, &field, value)?;
+                } else {
+                    checked_format(&recipe, &field, value)?;
+                }
             }
-            if let Some(default) = &descriptor.default {
-                field
-                    .validate(default)
-                    .map_err(|e| invalid(e.to_string()))?;
-                checked_format(&recipe, &field, default)?;
-            }
-            let seed = if descriptor.choices.is_empty() {
+            let seed = if name == "Password"
+                && descriptor.default.is_none()
+                && matches!(aggregate(&baseline), PropertyValue::Mixed)
+            {
+                CellValue::Text(String::new())
+            } else if family.is_some() {
+                descriptor
+                    .default
+                    .as_ref()
+                    .or_else(|| baseline.iter().find(|v| **v != CellValue::Null))
+                    .unwrap_or(&CellValue::Null)
+                    .clone()
+            } else if descriptor.choices.is_empty() {
                 neutral_value(&recipe, &field, descriptor.default.as_ref())?
             } else {
                 if field.kind != rust_desktop_ui_data::FieldType::Text
@@ -183,7 +397,7 @@ impl PropertyGrid {
             {
                 ui.measure_text(label, 4096.0, false)?;
             }
-            definitions.push((descriptor, field, recipe, baseline, seed));
+            definitions.push((descriptor, field, recipe, family, baseline, seed));
         }
         drop(data);
         let descriptions = settings
@@ -233,7 +447,7 @@ impl PropertyGrid {
             show(ui, flat_host, false)?;
             let mut groups: Vec<(Vec<String>, Expander)> = Vec::new();
             let mut properties = Vec::new();
-            for (descriptor, schema, recipe, baseline, seed) in definitions {
+            for (descriptor, schema, recipe, family, baseline, seed) in definitions {
                 let path: Vec<_> = std::iter::once(descriptor.category.clone())
                     .chain(descriptor.groups.clone())
                     .collect();
@@ -355,7 +569,13 @@ impl PropertyGrid {
                     PropertyValue::Uniform(v) => v,
                     PropertyValue::Mixed => &seed,
                 };
-                let (owner, editor) = if descriptor.choices.is_empty() {
+                let specialized = family
+                    .as_ref()
+                    .map(|family| family.mount(ui, host, &descriptor, &schema, value))
+                    .transpose()?;
+                let (owner, editor) = if let Some(control) = &specialized {
+                    (control.owner(), control.focus())
+                } else if descriptor.choices.is_empty() {
                     create_editor(ui, host, label, &schema, &recipe, value)?
                 } else {
                     let choices = descriptor
@@ -386,12 +606,19 @@ impl PropertyGrid {
                 }
                 ui.edit_props(owner, |p| {
                     p.style.flex_grow = 1.0;
-                    if owner == editor {
+                    if owner == editor && specialized.is_none() {
                         p.style.height = Length::Px(28.);
                         p.style.vertical_alignment = Some(Align::Center);
                     }
                 })?;
-                ui.set_automation_name(editor, label)?;
+                if specialized.is_none()
+                    || ui
+                        .controls
+                        .get(&editor)
+                        .is_some_and(|part| part.automation_name.is_none())
+                {
+                    ui.set_automation_name(editor, label)?;
+                }
                 let null = if schema.nullable && !matches!(recipe, DataFormEditorFactory::CheckBox)
                 {
                     // Keep enough room for the Fluent checkbox indicator,
@@ -409,6 +636,21 @@ impl PropertyGrid {
                     )?;
                     ui.set_automation_name(id, format!("{label}: значение отсутствует"))?;
                     Some(id)
+                } else {
+                    None
+                };
+                let currency = if let Some(symbol) = &descriptor.currency_symbol {
+                    let width = ui.measure_text(symbol, 128., false)?.width.ceil() + 8.;
+                    Some(ui.label(
+                        host,
+                        symbol,
+                        LayoutStyle {
+                            width: Length::Px(width),
+                            flex_shrink: 0.,
+                            vertical_alignment: Some(Align::Center),
+                            ..Default::default()
+                        },
+                    )?)
                 } else {
                     None
                 };
@@ -436,7 +678,16 @@ impl PropertyGrid {
                     IconSymbol::Eraser,
                     &format!("{label}: значение по умолчанию"),
                 )?;
-                if matches!(recipe, DataFormEditorFactory::CheckBox) {
+                if specialized.is_some() {
+                    if descriptor.metadata.read_only
+                        && !matches!(
+                            descriptor.metadata.editor.as_str(),
+                            "ProgressBar" | "Hyperlink"
+                        )
+                    {
+                        ui.set_enabled(owner, false)?;
+                    }
+                } else if matches!(recipe, DataFormEditorFactory::CheckBox) {
                     ui.set_enabled(owner, !descriptor.metadata.read_only)?;
                 } else if owner != editor {
                     ui.set_composite_read_only(owner, descriptor.metadata.read_only)?;
@@ -451,6 +702,8 @@ impl PropertyGrid {
                     descriptor,
                     schema,
                     recipe,
+                    specialized,
+                    family,
                     row,
                     host,
                     name_label,
@@ -460,6 +713,7 @@ impl PropertyGrid {
                     value_label: None,
                     measure_value_width: false,
                     edit,
+                    currency,
                     apply,
                     reset,
                     null,
@@ -538,6 +792,13 @@ impl PropertyGrid {
                 .to_vec();
             while let Some(id) = stack.pop() {
                 parents.push((id, ui.runtime.tree().parent(id).unwrap()));
+                // Popups, lists and image editors may replace their internal children.
+                if properties
+                    .iter()
+                    .any(|p| p.specialized.is_some() && p.owner == id)
+                {
+                    continue;
+                }
                 stack.extend_from_slice(ui.runtime.tree().children(id).unwrap_or(&[]));
             }
             let mut inspector = Self {
@@ -585,7 +846,7 @@ impl PropertyGrid {
     ) -> Result<(), ControlError> {
         let i = self.index(field)?;
         let p = &mut self.properties[i];
-        if p.descriptor.preview != PropertyPreview::Auto {
+        if p.descriptor.preview != PropertyPreview::Auto || p.specialized.is_some() {
             return Err(invalid(
                 "A display template requires the Auto property preview",
             ));
@@ -676,6 +937,18 @@ impl PropertyGrid {
     }
     pub fn take_changes(&mut self) -> Vec<PropertyChanged> {
         std::mem::take(&mut self.changes)
+    }
+    /// Requests produced by explicit hyperlink activations, paired with their field names.
+    pub fn take_navigation_requests(&mut self) -> Vec<(String, String)> {
+        self.properties
+            .iter_mut()
+            .filter_map(|p| {
+                Some((
+                    p.schema.name.clone(),
+                    p.specialized.as_mut()?.take_navigation()?,
+                ))
+            })
+            .collect()
     }
     pub fn draft(&self, ui: &Controls, name: &str) -> Result<Option<CellValue>, ControlError> {
         self.check(ui)?;
@@ -775,6 +1048,7 @@ impl PropertyGrid {
         if ui
             .document(p.editor)
             .is_some_and(|d| d.composition().is_some())
+            || ui.password_composition_active(p.editor) == Some(true)
         {
             ui.cancel_preedit();
             return Ok(());
@@ -818,6 +1092,7 @@ impl PropertyGrid {
         if ui
             .document(p.editor)
             .is_some_and(|d| d.composition().is_some())
+            || ui.password_composition_active(p.editor) == Some(true)
         {
             return Ok(PropertyCommit::Pending);
         }
@@ -825,7 +1100,8 @@ impl PropertyGrid {
             Ok(v) => v,
             Err(e) => return self.reject(ui, &e),
         };
-        if p.descriptor.choices.is_empty()
+        if p.specialized.is_none()
+            && p.descriptor.choices.is_empty()
             && ui.document(p.editor).is_some()
             && p.null.is_none_or(|id| ui.checked(id) != Some(true))
         {
@@ -844,6 +1120,11 @@ impl PropertyGrid {
             return self.reject(ui, "Editor normalization changed the prepared typed value");
         }
         let changed = p.baseline.iter().any(|old| *old != value);
+        if let Some(family) = &p.family
+            && let Err(error) = family.validate(&p.descriptor, &p.schema, &value)
+        {
+            return self.reject(ui, &error.to_string());
+        }
         // Include unchanged targets too: their optimistic expectations still
         // belong to the single multi-object transaction.
         let operations: Vec<_> = self
@@ -867,21 +1148,30 @@ impl PropertyGrid {
             .map_err(|_| invalid("Property source is borrowed"))?
             .write_batch(&operations);
         if let Err(e) = result {
+            if self.properties[i].descriptor.metadata.editor == "Password" {
+                return self.reject(ui, "Источник отклонил изменение пароля");
+            }
             return self.reject(ui, &e.to_string());
         }
-        self.properties[i].active = false;
-        if !changed {
-            present(ui, &mut self.properties[i])?;
-            return Ok(PropertyCommit::Unchanged);
+        let p = &mut self.properties[i];
+        p.active = false;
+        if changed {
+            p.baseline = vec![value.clone(); self.objects.len()];
+            self.changes.push(PropertyChanged {
+                field: name.into(),
+                value: value.clone(),
+                objects: self.objects.clone(),
+            });
         }
-        self.properties[i].baseline = vec![value.clone(); self.objects.len()];
-        present(ui, &mut self.properties[i])?;
-        self.changes.push(PropertyChanged {
-            field: name.into(),
-            value,
-            objects: self.objects.clone(),
-        });
-        Ok(PropertyCommit::Saved)
+        if let Some(editor) = &p.specialized {
+            editor.load(ui, &value)?;
+        }
+        present(ui, p)?;
+        Ok(if changed {
+            PropertyCommit::Saved
+        } else {
+            PropertyCommit::Unchanged
+        })
     }
     fn reject(&mut self, ui: &mut Controls, message: &str) -> Result<PropertyCommit, ControlError> {
         let mut message = bounded_error(message);
@@ -914,6 +1204,17 @@ impl PropertyGrid {
             })
             .collect();
         drop(source);
+        // Validate all changed values before replacing any editor baseline,
+        // including values hidden behind a mixed multi-object presentation.
+        for (p, new) in self.properties.iter().zip(&values) {
+            if p.baseline != *new
+                && let Some(family) = &p.family
+            {
+                for value in new {
+                    family.validate(&p.descriptor, &p.schema, value)?;
+                }
+            }
+        }
         let mut conflict = false;
         for (p, new) in self.properties.iter_mut().zip(values) {
             if new == p.baseline {
@@ -944,6 +1245,23 @@ impl PropertyGrid {
     /// Consumes only this inspector's action buttons; other activations remain.
     pub fn update(&mut self, ui: &mut Controls) -> Result<bool, ControlError> {
         self.check(ui)?;
+        for p in &mut self.properties {
+            if let Some(editor) = &mut p.specialized {
+                editor.update(ui)?;
+            }
+        }
+        if let Some(focus) = ui.runtime.focused()
+            && Some(focus) != self.last_focus
+            && let Some(i) = self.properties.iter().position(|p| {
+                !p.active
+                    && !p.descriptor.metadata.read_only
+                    && p.editing
+                    && p.specialized.as_ref().is_some_and(|e| e.inline())
+                    && ui.flyout_descendant(focus, p.owner)
+            })
+        {
+            self.activate(ui, i)?;
+        }
         let mut view_mode = self.flat;
         let mut actions = Vec::new();
         ui.activated.retain(|id| {
@@ -999,6 +1317,7 @@ impl PropertyGrid {
             present(ui, p)?;
         }
         let selection_changed = self.sync_selection(ui)?;
+        self.last_focus = ui.runtime.focused();
         self.update_scroll_extent(ui)?;
         Ok(changed || selection_changed)
     }
@@ -1009,7 +1328,6 @@ impl PropertyGrid {
             button: rust_desktop_ui_core::PointerButton::Primary,
             ..
         } = event
-            && self.details.is_some()
             && !ui.popup_open()
             && let Some(target) = ui.runtime.hit_test(*position)
             && let Some(index) = self
@@ -1017,7 +1335,17 @@ impl PropertyGrid {
                 .iter()
                 .position(|p| ui.flyout_descendant(target, p.row))
         {
-            self.select(ui, Some(index))?;
+            let p = &self.properties[index];
+            if !p.active
+                && p.editing
+                && !p.descriptor.metadata.read_only
+                && p.specialized.as_ref().is_some_and(|e| e.inline())
+                && ui.flyout_descendant(target, p.owner)
+            {
+                self.activate(ui, index)?;
+            } else {
+                self.select(ui, Some(index))?;
+            }
         }
         let InputEvent::KeyDown {
             key,
@@ -1044,14 +1372,20 @@ impl PropertyGrid {
             return Ok(false);
         };
         if *key == Key::Enter
-            && (id != p.editor
-                || ui.document(id).is_none()
+            && (p.descriptor.metadata.editor == "Memo"
+                || id != p.editor
+                || (ui.document(id).is_none() && ui.password_composition_active(id).is_none())
+                || ui.password_composition_active(id) == Some(true)
                 || ui.document(id).is_some_and(|d| d.composition().is_some()))
         {
             return Ok(false);
         }
         let name = p.schema.name.clone();
-        let button = p.edit;
+        let button = if p.specialized.as_ref().is_some_and(|e| e.inline()) {
+            p.editor
+        } else {
+            p.edit
+        };
         if *key == Key::Escape {
             self.cancel(ui, &name)?;
         } else {

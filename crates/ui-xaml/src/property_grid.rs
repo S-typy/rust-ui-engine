@@ -35,6 +35,13 @@ pub struct PropertyDefinition {
     pub default_value: Option<String>,
     pub default_is_null: bool,
     pub choices: Vec<String>,
+    pub choice_keys: Vec<String>,
+    pub mask: Option<String>,
+    pub uri_format: Option<String>,
+    pub currency_symbol: Option<String>,
+    pub minimum: Option<i64>,
+    pub maximum: Option<i64>,
+    pub step: Option<i64>,
     pub full_width: bool,
     pub preview: PropertyPreview,
     pub display_template: Option<Box<ElementDefinition>>,
@@ -79,6 +86,13 @@ impl Default for PropertyDefinition {
             default_value: None,
             default_is_null: false,
             choices: Vec::new(),
+            choice_keys: Vec::new(),
+            mask: None,
+            uri_format: None,
+            currency_symbol: None,
+            minimum: None,
+            maximum: None,
+            step: None,
             full_width: false,
             preview: PropertyPreview::Auto,
             display_template: None,
@@ -101,7 +115,7 @@ pub fn validate_property_grid(
         row_gap: 0.0,
         is_read_only: value.is_read_only,
     };
-    validate_data_form(&form)?;
+    data_form::validate_form_fields(&form, inspector_editor)?;
     if value.label_fraction.is_some_and(|v| !(v > 0. && v < 1.)) {
         return Err("LabelWidth percentage must be between 0 and 100".into());
     }
@@ -120,6 +134,66 @@ pub fn validate_property_grid(
     }
     let mut bytes = 0;
     for p in &value.properties {
+        if let Some(symbol) = &p.currency_symbol {
+            if !matches!(p.metadata.editor.as_str(), "Spin" | "Calculator")
+                || symbol.is_empty()
+                || symbol.len() > 12
+                || symbol.chars().any(|c| c.is_control() || c.is_whitespace())
+            {
+                return Err("Invalid property currency symbol".into());
+            }
+            bytes += symbol.len();
+        }
+        if let Some(format) = &p.uri_format {
+            if p.metadata.editor != "Hyperlink"
+                || format.len() > 2048
+                || format.matches("{0}").count() != 1
+                || format.chars().any(char::is_control)
+            {
+                return Err("Invalid property hyperlink format".into());
+            }
+            bytes += format.len();
+        }
+        let name = p.metadata.editor.as_str();
+        if inspector_editor(name)
+            && name != "Spin"
+            && (p.display_template.is_some() || p.preview != PropertyPreview::Auto)
+            || !p.choice_keys.is_empty()
+                && !matches!(
+                    name,
+                    "AutoComplete" | "Lookup" | "SearchLookup" | "ListBox" | "Flags" | "TokenList"
+                )
+            || p.mask.is_some() && !matches!(name, "MaskedText" | "NumericText")
+            || (p.minimum.is_some() || p.maximum.is_some() || p.step.is_some())
+                && !matches!(
+                    name,
+                    "Slider" | "ZoomSlider" | "RangeSlider" | "ProgressBar" | "Rating" | "Spin"
+                )
+        {
+            return Err(format!(
+                "Incompatible editor settings for '{}'",
+                p.metadata.field
+            ));
+        }
+        if !p.choice_keys.is_empty()
+            && (p.choice_keys.len() != p.choices.len()
+                || p.choice_keys.iter().collect::<HashSet<_>>().len() != p.choice_keys.len()
+                || p.choice_keys
+                    .iter()
+                    .any(|k| k.is_empty() || k.len() > 256 || k.chars().any(char::is_control)))
+        {
+            return Err("ChoiceKeys requires one unique key per choice".into());
+        }
+        if p.mask
+            .as_ref()
+            .is_some_and(|m| m.is_empty() || m.len() > 1024)
+            || p.minimum.zip(p.maximum).is_some_and(|(lo, hi)| lo >= hi)
+            || p.step.is_some_and(|s| s <= 0)
+        {
+            return Err("Invalid property editor mask or numeric bounds".into());
+        }
+        bytes += p.choice_keys.iter().map(String::len).sum::<usize>()
+            + p.mask.as_ref().map_or(0, String::len);
         if p.preview != PropertyPreview::Auto
             && (p.display_template.is_some() || !p.choices.is_empty())
         {
@@ -143,7 +217,8 @@ pub fn validate_property_grid(
         }
         bytes += p.description.len();
         if p.choices.len() > 128
-            || p.choices.iter().collect::<HashSet<_>>().len() != p.choices.len()
+            || (p.choice_keys.is_empty()
+                && p.choices.iter().collect::<HashSet<_>>().len() != p.choices.len())
             || p.choices
                 .iter()
                 .any(|v| v.is_empty() || v.len() > 256 || v.chars().any(char::is_control))
@@ -171,6 +246,43 @@ pub fn validate_property_grid(
         return Err("Property metadata exceeds 32 KiB".into());
     }
     Ok(())
+}
+fn inspector_editor(name: &str) -> bool {
+    if let Some(local) = name.strip_prefix("Custom.") {
+        return name.len() <= 64 && binding::valid_identifier(local);
+    }
+    matches!(
+        name,
+        "NumericText"
+            | "MaskedText"
+            | "Password"
+            | "ButtonText"
+            | "AutoComplete"
+            | "Lookup"
+            | "SearchLookup"
+            | "Memo"
+            | "DatePicker"
+            | "Font"
+            | "Calculator"
+            | "Color"
+            | "Brush"
+            | "Image"
+            | "Slider"
+            | "ZoomSlider"
+            | "RangeSlider"
+            | "ProgressBar"
+            | "Spin"
+            | "ListBox"
+            | "Barcode"
+            | "Rating"
+            | "Hyperlink"
+            | "Flags"
+            | "Point"
+            | "StringCollection"
+            | "AutoSuggest"
+            | "TokenList"
+            | "Sparkline"
+    )
 }
 pub(crate) fn attribute(
     document: &roxmltree::Document<'_>,
@@ -269,6 +381,26 @@ pub(crate) fn parse_children(
                     "FieldName" => p.metadata.field = attr.value().into(),
                     "Label" => p.metadata.label = Some(attr.value().into()),
                     "Editor" => p.metadata.editor = attr.value().into(),
+                    "Mask" => p.mask = Some(attr.value().into()),
+                    "UriFormat" => p.uri_format = Some(attr.value().into()),
+                    "CurrencySymbol" => p.currency_symbol = Some(attr.value().into()),
+                    "ChoiceKeys" => {
+                        p.choice_keys = attr
+                            .value()
+                            .split('|')
+                            .map(|s| s.trim().to_owned())
+                            .collect()
+                    }
+                    "Minimum" | "Maximum" | "Step" => {
+                        let number = attr.value().parse::<i64>().map_err(|_| {
+                            at_attribute(item.document(), attr, "Expected a signed integer")
+                        })?;
+                        match attr.name() {
+                            "Minimum" => p.minimum = Some(number),
+                            "Maximum" => p.maximum = Some(number),
+                            _ => p.step = Some(number),
+                        }
+                    }
                     "IsReadOnly" => p.metadata.is_read_only = boolean(item.document(), attr)?,
                     "IsVisible" => p.metadata.visible = boolean(item.document(), attr)?,
                     "Description" => p.description = attr.value().into(),
@@ -360,8 +492,8 @@ pub(crate) fn code(v: &PropertyGridDefinition) -> String {
         let m = &p.metadata;
         let metadata = format!("rust_desktop_ui_xaml::DataFormFieldDefinition {{ field:{:?}.into(), label:{}, visible:{}, is_read_only:{}, editor:{:?}.into() }}",
             m.field, optional_string(&m.label), m.visible, m.is_read_only, m.editor);
-        format!("rust_desktop_ui_xaml::PropertyDefinition {{ metadata:{metadata}, category:{:?}.into(), description:{:?}.into(), groups:vec![{}], default_value:{}, default_is_null:{}, choices:vec![{}], full_width:{}, preview:rust_desktop_ui_xaml::PropertyPreview::{:?}, display_template:{} }}",
-            p.category, p.description, strings(&p.groups), optional_string(&p.default_value), p.default_is_null, strings(&p.choices), p.full_width, p.preview, codegen::optional_child(p.display_template.as_deref()))
+        format!("rust_desktop_ui_xaml::PropertyDefinition {{ metadata:{metadata}, category:{:?}.into(), description:{:?}.into(), groups:vec![{}], default_value:{}, default_is_null:{}, choices:vec![{}], choice_keys:vec![{}], mask:{}, uri_format:{}, currency_symbol:{}, minimum:{:?}, maximum:{:?}, step:{:?}, full_width:{}, preview:rust_desktop_ui_xaml::PropertyPreview::{:?}, display_template:{} }}",
+            p.category, p.description, strings(&p.groups), optional_string(&p.default_value), p.default_is_null, strings(&p.choices), strings(&p.choice_keys), optional_string(&p.mask), optional_string(&p.uri_format), optional_string(&p.currency_symbol), p.minimum, p.maximum, p.step, p.full_width, p.preview, codegen::optional_child(p.display_template.as_deref()))
     }).collect::<Vec<_>>().join(",");
     format!(
         "rust_desktop_ui_xaml::PropertyGridDefinition {{ data_source:{:?}.into(), object_keys:vec!{:?}, label_width:{:?}, label_fraction:{:?}, is_read_only:{}, scrollable:{}, properties:vec![{properties}] }}",

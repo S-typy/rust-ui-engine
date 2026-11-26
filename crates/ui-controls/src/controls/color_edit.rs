@@ -30,6 +30,7 @@ impl BrushValidator {
 pub(super) struct Entry {
     pub parts: ColorEditor,
     pub brush: bool,
+    pub wide_preview: bool,
     pub value: Option<BrushValue>,
     pub settings: ColorEditorSettings,
     pub draft: Draft,
@@ -48,6 +49,18 @@ pub(super) struct Entry {
 pub(super) struct ColorEditors {
     pub entries: HashMap<WidgetId, Entry>,
     pub changes: VecDeque<BrushChanged>,
+}
+
+pub(super) fn inline_columns(height: f32, wide_preview: bool) -> Vec<GridTrack> {
+    if wide_preview {
+        vec![GridTrack::Fr(1.), GridTrack::Px(0.), GridTrack::Px(height)]
+    } else {
+        vec![
+            GridTrack::Px(height),
+            GridTrack::Fr(1.),
+            GridTrack::Px(height),
+        ]
+    }
 }
 
 impl Controls {
@@ -99,11 +112,7 @@ impl Controls {
         let height = self.theme.tokens().control_height;
         let auto_height = style.height == Length::Auto;
         style.kind = LayoutKind::Grid;
-        style.grid_columns = vec![
-            GridTrack::Px(height),
-            GridTrack::Fr(1.0),
-            GridTrack::Px(height),
-        ];
+        style.grid_columns = inline_columns(height, false);
         style.grid_rows = vec![GridTrack::Fr(1.0)];
         style.gap = 4.0;
         if auto_height {
@@ -140,6 +149,7 @@ impl Controls {
                 Entry {
                     parts,
                     brush,
+                    wide_preview: false,
                     value: value.clone(),
                     settings,
                     draft: Draft::new(value.clone()),
@@ -162,6 +172,32 @@ impl Controls {
         }
         result
     }
+    pub(super) fn stretch_brush_preview(&mut self, parts: ColorEditor) -> Result<(), ControlError> {
+        let entry = self
+            .color_editors
+            .entries
+            .get_mut(&parts.container)
+            .filter(|entry| entry.brush && entry.parts == parts)
+            .ok_or_else(|| error("Expected brush editor parts"))?;
+        entry.wide_preview = true;
+        let height = self.theme.tokens().control_height;
+        self.edit_props(parts.container, |p| {
+            p.style.grid_columns = inline_columns(height, true);
+            p.style.gap = 0.;
+        })?;
+        self.edit_props(parts.editor, |p| {
+            p.style.width = Length::Px(0.);
+            p.clip = true;
+            p.focusable = false;
+            p.hit_test = false;
+        })?;
+        self.edit_props(parts.preview, |p| {
+            p.style.margin = Edges::all(3.);
+            p.style.width = Length::Auto;
+            p.style.height = Length::Auto;
+        })
+    }
+
     pub fn color_editor_parts(&self, id: WidgetId) -> Option<ColorEditor> {
         self.color_editors.entries.get(&id).map(|e| e.parts)
     }

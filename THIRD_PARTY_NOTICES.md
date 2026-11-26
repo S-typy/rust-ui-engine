@@ -1,7 +1,7 @@
 # Third-party notices
 
-Snapshot: 2026-11-05. The project code is licensed under Apache-2.0. Dependencies
-retain the licenses declared below. The table covers all 430 registry packages in
+Snapshot: 2026-11-26. The project code is licensed under Apache-2.0. Dependencies
+retain the licenses declared below. The table covers all 431 registry packages in
 `Cargo.lock`, including packages for targets outside the desktop build.
 It is not a list of libraries linked into every executable.
 
@@ -321,6 +321,7 @@ not constitute a complete binary redistribution review.
 | redox_syscall | 0.4.1 | MIT | [LICENSE](https://docs.rs/crate/redox_syscall/0.4.1/source/LICENSE) |
 | redox_syscall | 0.5.18 | MIT | [LICENSE](https://docs.rs/crate/redox_syscall/0.5.18/source/LICENSE) |
 | redox_syscall | 0.9.4 | MIT | [LICENSE](https://docs.rs/crate/redox_syscall/0.9.4/source/LICENSE) |
+| regex-lite | 0.1.9 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/regex-lite/0.1.9/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/regex-lite/0.1.9/source/LICENSE-MIT) |
 | renderdoc-sys | 1.1.0 | MIT OR Apache-2.0 | [LICENSE-APACHE](https://docs.rs/crate/renderdoc-sys/1.1.0/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/renderdoc-sys/1.1.0/source/LICENSE-MIT) |
 | resvg | 0.48.1 | Apache-2.0 OR MIT | [LICENSE-APACHE](https://docs.rs/crate/resvg/0.48.1/source/LICENSE-APACHE), [LICENSE-MIT](https://docs.rs/crate/resvg/0.48.1/source/LICENSE-MIT) |
 | rgb | 0.8.53 | MIT | [LICENSE](https://docs.rs/crate/rgb/0.8.53/source/LICENSE) |
